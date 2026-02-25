@@ -1451,14 +1451,8 @@ class GameState:
             for i in range(total_to_create):
                 unit_id = len(garrison['units'])
                 status = 'ready' if i < unmoved else 'moved'
-                garrison['units'].append({
-                    'id': unit_id,
-                    'status': status,
-                    'order': None,
-                    'type': 'Swordsman',
-                    'xp': 0,
-                    'level': 0
-                })
+                # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+                garrison['units'].append(self._make_unit('Swordsman', unit_id, status))
 
     def remove_garrison(self, territory, player):
         """
@@ -1781,6 +1775,34 @@ class GameState:
         # Sync legacy data for backward compatibility
         self.sync_legacy_garrison_data(territory)
 
+    # Phase 2E: Unit dict factory method — single source of truth for unit dict creation.
+    # All unit dicts in the codebase should be created through _make_unit() to ensure
+    # consistent structure and make future field additions (e.g., new stats) trivial.
+    def _make_unit(self, unit_type, unit_id, status='moved'):
+        """
+        Factory method for creating a single unit dict (Phase 2E dedup).
+
+        Every unit dict in the game has the same structure: type, id, status, order, xp, level.
+        This method is the single source of truth for that structure, replacing 20+ inline
+        dict literals scattered throughout the codebase.
+
+        Args:
+            unit_type: Unit type string ('Swordsman', 'Archer', 'Pikeman', 'Cavalry')
+            unit_id: Unique ID for the unit (int or string)
+            status: 'ready' (can move) or 'moved' (already moved/exhausted). Default: 'moved'
+
+        Returns:
+            dict: Unit dict with keys: id, status, order, type, xp, level
+        """
+        return {
+            'id': unit_id,
+            'status': status,
+            'order': None,
+            'type': unit_type,
+            'xp': 0,
+            'level': 0
+        }
+
     def _create_default_units(self, total_count, unmoved_count):
         """
         Helper to create default Swordsman units with correct statuses.
@@ -1792,16 +1814,11 @@ class GameState:
         Returns:
             list: List of unit dicts
         """
+        # Phase 2E: Now delegates to _make_unit() factory for consistent unit dict creation
         units = []
         for i in range(total_count):
-            unit = {
-                'id': f'unit_{id(self)}_{i}_{total_count}',  # Pseudo-unique ID
-                'type': 'Swordsman',  # Default unit type
-                'status': 'ready' if i < unmoved_count else 'moved',
-                'order': None,
-                'xp': 0,
-                'level': 0
-            }
+            status = 'ready' if i < unmoved_count else 'moved'
+            unit = self._make_unit('Swordsman', f'unit_{id(self)}_{i}_{total_count}', status)
             units.append(unit)
         return units
 
@@ -4262,14 +4279,8 @@ class GameState:
                             next_id += 1
 
                         # Create retreating unit (exhausted from battle, loses XP)
-                        self.army_units[keep_territory].append({
-                            'id': next_id,
-                            'status': 'moved',
-                            'order': None,
-                            'type': retreating_unit_type,
-                            'xp': 0,
-                            'level': 0
-                        })
+                        # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+                        self.army_units[keep_territory].append(self._make_unit(retreating_unit_type, next_id))
 
                         # Update army counters for Keep territory
                         self.armies_moved[keep_territory] += 1
@@ -4340,20 +4351,16 @@ class GameState:
                         for _ in range(min(allocated, count)):
                             if unit_id >= surviving_armies:
                                 break
-                            survivor_units.append({
-                                'id': unit_id, 'status': 'moved', 'order': None,
-                                'type': unit_type, 'xp': 0, 'level': 0
-                            })
+                            # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+                            survivor_units.append(self._make_unit(unit_type, unit_id))
                             unit_id += 1
                 # Fill remaining with Swordsmen if needed
                 if len(survivor_units) < surviving_armies:
                     logger.warning(f"[UNIT_TYPE_DIAG] _update_battle_results: filling {surviving_armies - len(survivor_units)} "
                                    f"remaining survivor slots with default Swordsmen at {territory}")
                 while len(survivor_units) < surviving_armies:
-                    survivor_units.append({
-                        'id': len(survivor_units), 'status': 'moved', 'order': None,
-                        'type': 'Swordsman', 'xp': 0, 'level': 0
-                    })
+                    # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+                    survivor_units.append(self._make_unit('Swordsman', len(survivor_units)))
 
             # Mark all survivors as 'moved' (just fought) and re-index IDs
             for idx, unit in enumerate(survivor_units):
@@ -4769,97 +4776,19 @@ class GameState:
         return checksum
 
     def calculate_player_income(self, player_index):
-        """Calculate total income for a player from their territories"""
+        """
+        Calculate total income for a player from their territories.
+
+        Phase 2F: Now delegates per-territory calculation to calculate_territory_income()
+        to eliminate ~80 lines of duplicated income logic. The only logic that remains here
+        is the iteration over owned territories and the territorial bonus applied at the end.
+        """
         total_income = 0
         for territory, owner in self.territory_owners.items():
             if owner == player_index:
-                # Get base income for territory (with error handling)
-                try:
-                    base_income = map_data.get_territory_income(territory)
-                except (KeyError, AttributeError) as e:
-                    self.log_error(f"Failed to get income for territory '{territory}'", e)
-                    base_income = 0  # Safe default
-
-                # Legacy of the Empire (Aidam Narn): +50% base income from territories
-                if self.player_has_narn(player_index):
-                    base_income = int(base_income * 1.5)
-
-                # Add building bonuses
-                building_bonus = 0
-                multiplier = 1.0
-                
-                if territory in self.buildings:
-                    for plot_index, building_type in self.buildings[territory].items():
-                        if building_type is None:
-                            continue
-
-                        # Safely access building info
-                        try:
-                            building_info = self.building_types[building_type]
-                            effect = building_info['effect']
-                            value = building_info['value']
-
-                            if effect == 'income':
-                                # Veterancy: +10% income per building level (applied first)
-                                bldg_data = self.get_building_xp_data(territory, plot_index)
-                                bldg_level = bldg_data['level']
-                                if bldg_level > 0:
-                                    value = int(value * (1.0 + bldg_level * self.BUILDING_LEVEL_INCOME_BONUS))
-                                # Farmer Subsidies (Evain Nithieln): +50% income from Farms
-                                if building_type == 'Farm' and self.player_has_nithieln(player_index):
-                                    value = int(value * 1.5)
-                                # Efficient Farming I: +20% income from Farms
-                                if building_type == 'Farm' and 'tech_0_0' in self.player_tech_researched.get(player_index, set()):
-                                    value = int(value * 1.2)
-                                # Efficient Farming II: Additional +20% income from Farms (stacks with I)
-                                if building_type == 'Farm' and 'tech_0_4' in self.player_tech_researched.get(player_index, set()):
-                                    value = int(value * 1.2)
-                                # Efficient Mining I: +20% income from Mines
-                                if building_type == 'Mine' and 'tech_0_1' in self.player_tech_researched.get(player_index, set()):
-                                    value = int(value * 1.2)
-                                # Efficient Mining II: Additional +20% income from Mines (stacks with I)
-                                if building_type == 'Mine' and 'tech_0_5' in self.player_tech_researched.get(player_index, set()):
-                                    value = int(value * 1.2)
-                                # Laws of Trade: +15% for Farms/Mines if Keep nearby
-                                if building_type in ['Farm', 'Mine'] and 'tech_0_6' in self.player_tech_researched.get(player_index, set()):
-                                    # Check if territory has a Keep or is adjacent to one
-                                    has_nearby_keep = False
-                                    # Check current territory for Keep
-                                    if territory in self.buildings:
-                                        for bldg in self.buildings[territory].values():
-                                            if bldg == 'Keep':
-                                                has_nearby_keep = True
-                                                break
-                                    # Check adjacent territories for Keep
-                                    if not has_nearby_keep:
-                                        try:
-                                            adjacent_territories = map_data.get_neighbors(territory)
-                                            for adj_territory in adjacent_territories:
-                                                if adj_territory in self.buildings:
-                                                    for bldg in self.buildings[adj_territory].values():
-                                                        if bldg == 'Keep':
-                                                            has_nearby_keep = True
-                                                            break
-                                                if has_nearby_keep:
-                                                    break
-                                        except (KeyError, AttributeError):
-                                            pass
-                                    if has_nearby_keep:
-                                        value = int(value * 1.15)
-                                building_bonus += value
-                            elif effect == 'multiplier':
-                                # Supply and Demand: Squares multiply by 2.5× instead of 1.5×
-                                if building_type == 'Square' and 'tech_0_3' in self.player_tech_researched.get(player_index, set()):
-                                    multiplier = 2.5
-                                else:
-                                    multiplier = value
-                        except (KeyError, TypeError) as e:
-                            self.log_error(f"Invalid building data for {building_type} in {territory}", e)
-                            continue  # Skip this building
-                
-                # Apply formula: (base + bonuses) * multiplier
-                territory_income = int((base_income + building_bonus) * multiplier)
-                total_income += territory_income
+                # Phase 2F: Delegate to calculate_territory_income with player_index
+                # to apply hero bonuses (Narn, Nithieln) in addition to base + tech bonuses
+                total_income += self.calculate_territory_income(territory, player_index)
 
         # Apply territorial income bonus to total (applies AFTER all territory income calculated)
         territorial_bonuses = self.calculate_player_territorial_bonuses(player_index)
@@ -4962,31 +4891,12 @@ class GameState:
         self.armies_unmoved[territory] = 3  # All can move immediately
 
         # Create army units: 1 Swordsman, 1 Archer, 1 Pikeman
-        army_units = []
-        army_units.append({
-            'type': 'Swordsman',
-            'status': 'ready',
-            'order': None,
-            'id': 0,
-            'xp': 0,
-            'level': 0
-        })
-        army_units.append({
-            'type': 'Archer',
-            'status': 'ready',
-            'order': None,
-            'id': 1,
-            'xp': 0,
-            'level': 0
-        })
-        army_units.append({
-            'type': 'Pikeman',
-            'status': 'ready',
-            'order': None,
-            'id': 2,
-            'xp': 0,
-            'level': 0
-        })
+        # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+        army_units = [
+            self._make_unit('Swordsman', 0, 'ready'),
+            self._make_unit('Archer', 1, 'ready'),
+            self._make_unit('Pikeman', 2, 'ready'),
+        ]
         self.army_units[territory] = army_units
 
         # Initialize garrison in multi-garrison system
@@ -5286,27 +5196,15 @@ class GameState:
                         for unit_type, count in composition.items():
                             for _ in range(count):
                                 if units_created < arriving_count:
-                                    units.append({
-                                        'id': next_id,
-                                        'status': 'moved',
-                                        'order': None,
-                                        'type': unit_type,
-                                        'xp': 0,
-                                        'level': 0
-                                    })
+                                    # Phase 2E: Use _make_unit() factory
+                                    units.append(self._make_unit(unit_type, next_id))
                                     next_id += 1
                                     units_created += 1
                     else:
                         # Fallback: create default Swordsmen
                         for i in range(arriving_count):
-                            units.append({
-                                'id': next_id + i,
-                                'status': 'moved',
-                                'order': None,
-                                'type': 'Swordsman',
-                                'xp': 0,
-                                'level': 0
-                            })
+                            # Phase 2E: Use _make_unit() factory
+                            units.append(self._make_unit('Swordsman', next_id + i))
 
                     # Add to garrison (use actual unit count to ensure consistency)
                     self.add_garrison(territory, winner, moved=len(units), units=units)
@@ -5346,28 +5244,16 @@ class GameState:
                             for _ in range(count):
                                 if count_added >= winner_armies:
                                     break
-                                units.append({
-                                    'id': count_added,
-                                    'status': 'moved',
-                                    'order': None,
-                                    'type': unit_type,
-                                    'xp': 0,
-                                    'level': 0
-                                })
+                                # Phase 2E: Use _make_unit() factory
+                                units.append(self._make_unit(unit_type, count_added))
                                 count_added += 1
                             if count_added >= winner_armies:
                                 break
                     else:
                         # Fallback: create default Swordsmen
                         for i in range(winner_armies):
-                            units.append({
-                                'id': i,
-                                'status': 'moved',
-                                'order': None,
-                                'type': 'Swordsman',
-                                'xp': 0,
-                                'level': 0
-                            })
+                            # Phase 2E: Use _make_unit() factory
+                            units.append(self._make_unit('Swordsman', i))
 
                     # Add ally garrison (ownership stays with current_owner)
                     # Use actual unit count to ensure consistency
@@ -5403,26 +5289,14 @@ class GameState:
                         for unit_type, count in composition.items():
                             for i in range(count):
                                 if units_created < winner_armies:
-                                    units.append({
-                                        'id': units_created,
-                                        'status': 'moved',
-                                        'order': None,
-                                        'type': unit_type,
-                                        'xp': 0,
-                                        'level': 0
-                                    })
+                                    # Phase 2E: Use _make_unit() factory
+                                    units.append(self._make_unit(unit_type, units_created))
                                     units_created += 1
                     else:
                         # Fallback: create default Swordsmen
                         for i in range(winner_armies):
-                            units.append({
-                                'id': i,
-                                'status': 'moved',
-                                'order': None,
-                                'type': 'Swordsman',
-                                'xp': 0,
-                                'level': 0
-                            })
+                            # Phase 2E: Use _make_unit() factory
+                            units.append(self._make_unit('Swordsman', i))
 
                     # Update ownership
                     self.territory_owners[territory] = winner
@@ -5593,14 +5467,8 @@ class GameState:
                                     for _ in range(count):
                                         if units_created >= arriving_count:
                                             break
-                                        units_to_add.append({
-                                            'id': next_id,
-                                            'status': 'moved',
-                                            'order': None,
-                                            'type': unit_type,
-                                            'xp': 0,
-                                            'level': 0
-                                        })
+                                        # Phase 2E: Use _make_unit() factory
+                                        units_to_add.append(self._make_unit(unit_type, next_id))
                                         next_id += 1
                                         units_created += 1
                                     if units_created >= arriving_count:
@@ -5611,14 +5479,8 @@ class GameState:
                                                f"creating {arriving_count} default Swordsmen for Player {player + 1} "
                                                f"at {territory} (no extracted_units or composition)")
                                 for i in range(arriving_count):
-                                    units_to_add.append({
-                                        'id': next_id + i,
-                                        'status': 'moved',
-                                        'order': None,
-                                        'type': 'Swordsman',
-                                        'xp': 0,
-                                        'level': 0
-                                    })
+                                    # Phase 2E: Use _make_unit() factory
+                                    units_to_add.append(self._make_unit('Swordsman', next_id + i))
 
                             # Add arriving armies to existing garrison using add_garrison
                             self.add_garrison(territory, player, unmoved=0, moved=arriving_count, units=units_to_add)
@@ -5640,14 +5502,8 @@ class GameState:
                             unit_id = 0
                             for unit_type, count in composition.items():
                                 for _ in range(count):
-                                    units.append({
-                                        'id': unit_id,
-                                        'status': 'moved',
-                                        'order': None,
-                                        'type': unit_type,
-                                        'xp': 0,
-                                        'level': 0
-                                    })
+                                    # Phase 2E: Use _make_unit() factory
+                                    units.append(self._make_unit(unit_type, unit_id))
                                     unit_id += 1
                         else:
                             # Default to Swordsmen — diagnostic: no unit data or composition available
@@ -5655,14 +5511,8 @@ class GameState:
                                            f"creating {army_count} default Swordsmen for Player {player + 1} "
                                            f"at {territory} (no extracted_units or composition)")
                             for i in range(army_count):
-                                units.append({
-                                    'id': i,
-                                    'status': 'moved',
-                                    'order': None,
-                                    'type': 'Swordsman',
-                                    'xp': 0,
-                                    'level': 0
-                                })
+                                # Phase 2E: Use _make_unit() factory
+                                units.append(self._make_unit('Swordsman', i))
 
                         # Set garrison for this player (new garrison)
                         self.set_garrison_armies(territory, player, unmoved=0, moved=army_count, units=units)
@@ -5742,17 +5592,13 @@ class GameState:
                             if composition:
                                 for unit_type, count in composition.items():
                                     for _ in range(count):
-                                        units.append({
-                                            'id': unit_id, 'status': 'moved', 'order': None,
-                                            'type': unit_type, 'xp': 0, 'level': 0
-                                        })
+                                        # Phase 2E: Use _make_unit() factory
+                                        units.append(self._make_unit(unit_type, unit_id))
                                         unit_id += 1
                             else:
                                 for i in range(player_armies.get(player, 0)):
-                                    units.append({
-                                        'id': i, 'status': 'moved', 'order': None,
-                                        'type': 'Swordsman', 'xp': 0, 'level': 0
-                                    })
+                                    # Phase 2E: Use _make_unit() factory
+                                    units.append(self._make_unit('Swordsman', i))
                             if units:
                                 self.set_garrison_armies(territory, player, unmoved=0, moved=len(units), units=units)
 
@@ -7374,14 +7220,8 @@ class GameState:
 
             # Add cavalry unit to garrison (Daradelle's Bounty - spawned fresh, no XP)
             # Haste makes units ready immediately, otherwise they're moved (exhausted)
-            garrison['units'].append({
-                'id': next_id,
-                'status': 'ready' if has_haste else 'moved',
-                'order': None,
-                'type': 'Cavalry',
-                'xp': 0,
-                'level': 0
-            })
+            # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+            garrison['units'].append(self._make_unit('Cavalry', next_id, 'ready' if has_haste else 'moved'))
 
             # Update garrison counters
             if has_haste:
@@ -7464,14 +7304,8 @@ class GameState:
 
             # Add swordsman unit to garrison (Valorian's Valor - spawned fresh, no XP)
             # Haste makes units ready immediately, otherwise they're moved (exhausted)
-            garrison['units'].append({
-                'id': next_id,
-                'status': 'ready' if has_haste else 'moved',
-                'order': None,
-                'type': 'Swordsman',
-                'xp': 0,
-                'level': 0
-            })
+            # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+            garrison['units'].append(self._make_unit('Swordsman', next_id, 'ready' if has_haste else 'moved'))
 
             # Update garrison counters
             if has_haste:
@@ -7602,26 +7436,42 @@ class GameState:
 
         return (True, None)
 
-    def calculate_territory_income(self, territory):
+    # Phase 2F: Income calculation dedup — this is now the single source of truth for
+    # territory income calculation. calculate_player_income() delegates to this method.
+    # When player_index is provided, hero bonuses (Narn, Nithieln) are also applied.
+    # When called without player_index (e.g., from Levy or AI), only base + tech bonuses apply.
+    def calculate_territory_income(self, territory, player_index=None):
         """
         Calculate income for a single territory.
 
+        Phase 2F: Unified income calculation. When player_index is provided, applies
+        player-specific hero bonuses (Legacy of the Empire, Farmer Subsidies).
+        When called without player_index, only base income + building/tech bonuses apply.
+
         Args:
             territory: Territory name
+            player_index: Optional player index for hero bonus calculations.
+                          When None, uses territory owner for tech checks only.
 
         Returns:
             int: Total income from this territory (base + buildings + multipliers)
         """
         # Get base income for territory
         try:
-            import map_data
             base_income = map_data.get_territory_income(territory)
         except (KeyError, AttributeError) as e:
             self.log_error(f"Failed to get income for territory '{territory}'", e)
             base_income = 0
 
-        # Get owner for technology checks
-        owner = self.territory_owners.get(territory, -1)
+        # Determine owner for technology checks
+        # When player_index is provided, use it (caller knows the owner);
+        # otherwise fall back to territory_owners lookup
+        owner = player_index if player_index is not None else self.territory_owners.get(territory, -1)
+
+        # Phase 2F: Legacy of the Empire (Aidam Narn): +50% base income from territories
+        # Only applied when called with explicit player_index (i.e., from calculate_player_income)
+        if player_index is not None and self.player_has_narn(player_index):
+            base_income = int(base_income * 1.5)
 
         # Add building bonuses
         building_bonus = 0
@@ -7644,21 +7494,22 @@ class GameState:
                         bldg_level = bldg_data['level']
                         if bldg_level > 0:
                             value = int(value * (1.0 + bldg_level * self.BUILDING_LEVEL_INCOME_BONUS))
-                        # Apply technology bonuses (if owner has researched)
-                        if building_type == 'Farm' and owner >= 0:
-                            # Efficient Farming I: +20% income from Farms
-                            if 'tech_0_0' in self.player_tech_researched.get(owner, set()):
-                                value = int(value * 1.2)
-                            # Efficient Farming II: Additional +20% income from Farms (stacks with I)
-                            if 'tech_0_4' in self.player_tech_researched.get(owner, set()):
-                                value = int(value * 1.2)
-                        if building_type == 'Mine' and owner >= 0:
-                            # Efficient Mining I: +20% income from Mines
-                            if 'tech_0_1' in self.player_tech_researched.get(owner, set()):
-                                value = int(value * 1.2)
-                            # Efficient Mining II: Additional +20% income from Mines (stacks with I)
-                            if 'tech_0_5' in self.player_tech_researched.get(owner, set()):
-                                value = int(value * 1.2)
+                        # Phase 2F: Farmer Subsidies (Evain Nithieln): +50% income from Farms
+                        # Only applied when called with explicit player_index
+                        if building_type == 'Farm' and player_index is not None and self.player_has_nithieln(player_index):
+                            value = int(value * 1.5)
+                        # Efficient Farming I: +20% income from Farms
+                        if building_type == 'Farm' and owner >= 0 and 'tech_0_0' in self.player_tech_researched.get(owner, set()):
+                            value = int(value * 1.2)
+                        # Efficient Farming II: Additional +20% income from Farms (stacks with I)
+                        if building_type == 'Farm' and owner >= 0 and 'tech_0_4' in self.player_tech_researched.get(owner, set()):
+                            value = int(value * 1.2)
+                        # Efficient Mining I: +20% income from Mines
+                        if building_type == 'Mine' and owner >= 0 and 'tech_0_1' in self.player_tech_researched.get(owner, set()):
+                            value = int(value * 1.2)
+                        # Efficient Mining II: Additional +20% income from Mines (stacks with I)
+                        if building_type == 'Mine' and owner >= 0 and 'tech_0_5' in self.player_tech_researched.get(owner, set()):
+                            value = int(value * 1.2)
                         # Laws of Trade: +15% for Farms/Mines if Keep nearby
                         if building_type in ['Farm', 'Mine'] and owner >= 0 and 'tech_0_6' in self.player_tech_researched.get(owner, set()):
                             # Check if territory has a Keep or is adjacent to one
@@ -8555,14 +8406,8 @@ class GameState:
 
                         # Add the new unit with its specific type (freshly trained, no XP)
                         # Haste makes units ready immediately, otherwise they're moved (exhausted)
-                        new_unit = {
-                            'id': next_id,
-                            'status': 'ready' if has_haste else 'moved',
-                            'order': None,
-                            'type': unit_type,
-                            'xp': 0,
-                            'level': 0
-                        }
+                        # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+                        new_unit = self._make_unit(unit_type, next_id, 'ready' if has_haste else 'moved')
                         self.army_units[territory].append(new_unit)
 
                         # Update garrison system

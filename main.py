@@ -733,17 +733,33 @@ class Game:
         self.hero_ability_buttons = {}  # {(hero_name, ability_index): pygame.Rect}
         self.hero_ability_images = {}  # {(hero_name, ability_index): pygame.Surface or None}
 
-        # Defiance bubble animation system
-        self.defiance_bubbles = []  # List of bubble objects: {territory, x, y, radius, alpha, lifetime}
-        self.defiance_bubble_spawn_timer = 0  # Time until next bubble spawns
-
-        # Haste bubble animation system
-        self.haste_bubbles = []  # List of bubble objects: {territory, x, y, radius, alpha, lifetime}
-        self.haste_bubble_spawn_timer = 0  # Time until next bubble spawns
-
-        # Safe Haven bubble animation system
-        self.safe_haven_bubbles = []  # List of bubble objects: {territory, x, y, radius, alpha, lifetime}
-        self.safe_haven_bubble_spawn_timer = 0  # Time until next bubble spawns
+        # Unified hero bubble animation system (Phase 2B dedup)
+        # Config-driven: each entry defines hero name(s), territory getter, color, rise speed
+        self._bubble_configs = {
+            'defiance': {
+                'heroes': ('Seledra Rennervail',),
+                'territory_getter': 'get_defiance_protected_territories',
+                'color': (150, 50, 200),   # Purple
+                'rise_speed': 7.5,
+                'check_polygon': True,     # Full polygon check in update
+            },
+            'haste': {
+                'heroes': ('Vearen Asford',),
+                'territory_getter': 'get_haste_affected_territories',
+                'color': (255, 165, 0),    # Orange
+                'rise_speed': 7.5,
+                'check_polygon': True,
+            },
+            'safe_haven': {
+                'heroes': ('Darius Brennhen', 'Regnus Aevencourne'),
+                'territory_getter': 'get_safe_haven_territories',
+                'color': (135, 206, 250),  # Light blue
+                'rise_speed': 15,
+                'check_polygon': False,    # Only bbox check in update
+            },
+        }
+        # Per-effect state: bubbles list and spawn timer
+        self._bubble_state = {key: {'bubbles': [], 'spawn_timer': 0} for key in self._bubble_configs}
 
         # PERFORMANCE: Surface cache for bubble effects (avoids per-frame allocations)
         # Key: (radius, color_tuple) -> Surface
@@ -3695,6 +3711,39 @@ class Game:
 
         return result
 
+    def _get_building_effect_text(self, effect, value):
+        """Return human-readable description string for a building effect (Phase 2G dedup).
+
+        Used in both existing-building and under-construction building UI panels.
+        """
+        if effect == 'income':
+            return f"- Generates {value} Gold per turn."
+        elif effect == 'defense':
+            return f"- Provides +{value} defense bonus."
+        elif effect == 'multiplier':
+            return f"- Multiplies territory income x{value}."
+        elif effect == 'recruitment':
+            return "- Allows training of military units."
+        else:
+            return f"- {str(effect)}"
+
+    def _is_tutorial_active(self):
+        """Check if a tutorial mission is currently running.
+
+        Replaces the repeated 3-condition guard: hasattr + truthy + .active.
+        """
+        return (hasattr(self, 'tutorial_mission')
+                and self.tutorial_mission
+                and self.tutorial_mission.active)
+
+    def _is_tutorial_blocking(self, action):
+        """Check if the tutorial mission is active and blocking a given action.
+
+        Returns True if the action is blocked, False if allowed or no tutorial is active.
+        """
+        return (self._is_tutorial_active()
+                and not self.tutorial_mission.is_action_allowed(action))
+
     def _get_cached_text(self, text, font, color):
         """
         Get or create a cached rendered text surface.
@@ -3726,178 +3775,46 @@ class Game:
 
         return self._text_cache[cache_key]
 
-    def update_defiance_bubbles(self, delta_time):
+    def _update_hero_bubbles(self, effect_key, delta_time):
         """
-        Update Defiance protection bubble animations.
+        Update hero ability bubble animations (Phase 2B: unified from 3 identical methods).
 
-        Args:
-            delta_time: Time elapsed since last frame (seconds)
+        Parameterized by effect_key ('defiance', 'haste', 'safe_haven') which maps to
+        the config in self._bubble_configs for hero names, territory getter, rise speed, etc.
         """
-        # Only update if Seledra is selected
-        if self.selected_hero != 'Seledra Rennervail':
-            self.defiance_bubbles.clear()
-            self.defiance_bubble_spawn_timer = 0
+        config = self._bubble_configs[effect_key]
+        state = self._bubble_state[effect_key]
+
+        # Only update if the matching hero is selected
+        if self.selected_hero not in config['heroes']:
+            state['bubbles'].clear()
+            state['spawn_timer'] = 0
             return
 
-        # Get protected territories
+        # Get affected territories via the configured getter method
         current_player = self.game_state.current_player
-        protected_territories = self.game_state.get_defiance_protected_territories(current_player)
-
-        if not protected_territories:
-            self.defiance_bubbles.clear()
-            return
-
-        # Update existing bubbles
-        bubbles_to_remove = []
-        for bubble in self.defiance_bubbles:
-            # Increment lifetime
-            bubble['lifetime'] += delta_time
-
-            # Bubble rises and fades over 1 second (halved to travel half the distance)
-            bubble_duration = 1.0
-            if bubble['lifetime'] >= bubble_duration:
-                bubbles_to_remove.append(bubble)
-            else:
-                # Move bubble upward (50% slower)
-                bubble['y'] -= 7.5 * delta_time  # Rise speed reduced from 15 to 7.5
-
-                # PERFORMANCE: Bounding box rejection before expensive polygon check
-                # Use precomputed bounding boxes from MapRenderer for O(1) rejection
-                territory = bubble['territory']
-                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
-                if bbox:
-                    min_x, min_y, max_x, max_y = bbox
-                    if not (min_x <= bubble['x'] <= max_x and min_y <= bubble['y'] <= max_y):
-                        # Outside bounding box - definitely outside polygon, remove
-                        bubbles_to_remove.append(bubble)
-                        continue
-
-                # Only do expensive polygon check if inside bounding box
-                territory_polygon = self.scaled_polygons.get(territory)
-                if territory_polygon:
-                    if not self._point_in_polygon(bubble['x'], bubble['y'], territory_polygon):
-                        # Bubble has left the territory - remove it
-                        bubbles_to_remove.append(bubble)
-                        continue
-
-                # Fade out over lifetime
-                progress = bubble['lifetime'] / bubble_duration
-                bubble['alpha'] = int(150 * (1.0 - progress))  # Fade from 150 to 0
-
-                # Grow slightly
-                bubble['radius'] = bubble['initial_radius'] * (1.0 + progress * 0.3)
-
-        # Remove expired bubbles
-        for bubble in bubbles_to_remove:
-            self.defiance_bubbles.remove(bubble)
-
-        # Spawn new bubbles
-        self.defiance_bubble_spawn_timer += delta_time
-        spawn_interval = 0.1  # Spawn every 100ms (increased from 150ms for 50% more density)
-
-        if self.defiance_bubble_spawn_timer >= spawn_interval:
-            self.defiance_bubble_spawn_timer = 0
-
-            # Spawn bubbles on random positions within protected territories
-            for territory in protected_territories:
-                # Get territory polygon from scaled_polygons
-                territory_polygon = self.scaled_polygons.get(territory)
-                if not territory_polygon:
-                    continue
-
-                # PERFORMANCE: Use precomputed bounding boxes instead of recomputing from polygon
-                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
-                if not bbox:
-                    continue
-                min_x, min_y, max_x, max_y = bbox
-
-                # Try to spawn a bubble inside the territory (max 10 attempts for better coverage)
-                for attempt in range(10):
-                    # Random position within bounding box
-                    x = random.uniform(min_x, max_x)
-                    y = random.uniform(min_y, max_y)
-
-                    # Check if point is actually inside the territory polygon
-                    if self._point_in_polygon(x, y, territory_polygon):
-                        # 70% chance to spawn each bubble
-                        if random.random() < 0.7:
-                            initial_radius = random.uniform(1.5, 3)  # 50% smaller (was 3-6)
-                            bubble = {
-                                'territory': territory,
-                                'x': x,
-                                'y': y,
-                                'radius': initial_radius,
-                                'initial_radius': initial_radius,
-                                'alpha': 150,
-                                'lifetime': 0
-                            }
-                            self.defiance_bubbles.append(bubble)
-                            break  # Only one bubble per territory per spawn cycle
-
-    def draw_defiance_bubbles(self):
-        """
-        Draw purple bubbles on territories protected by Defiance.
-
-        Only draws when Seledra is selected.
-        """
-        if not self.defiance_bubbles:
-            return
-
-        # Purple color for Defiance
-        purple_color = (150, 50, 200)
-
-        for bubble in self.defiance_bubbles:
-            # Transform position with camera
-            screen_x, screen_y = self.world_to_screen((bubble['x'], bubble['y']))
-
-            # Only draw if on screen
-            if 0 <= screen_x <= WINDOW_WIDTH and TOP_PANEL_HEIGHT <= screen_y <= MAP_HEIGHT:
-                # Scale radius with zoom
-                scaled_radius = int(bubble['radius'] * self.camera_zoom)
-                if scaled_radius < 1:
-                    continue
-
-                # PERFORMANCE: Use cached bubble surface instead of creating new one each frame
-                bubble_surface = self._get_bubble_surface(scaled_radius, purple_color, bubble['alpha'])
-
-                # Blit bubble to screen
-                self.screen.blit(bubble_surface,
-                               (screen_x - scaled_radius, screen_y - scaled_radius))
-
-    def update_haste_bubbles(self, delta_time):
-        """
-        Update Haste effect bubble animations.
-
-        Args:
-            delta_time: Time elapsed since last frame (seconds)
-        """
-        # Only update if Vearen Asford is selected
-        if self.selected_hero != 'Vearen Asford':
-            self.haste_bubbles.clear()
-            self.haste_bubble_spawn_timer = 0
-            return
-
-        # Get affected territories
-        current_player = self.game_state.current_player
-        affected_territories = self.game_state.get_haste_affected_territories(current_player)
+        territory_getter = getattr(self.game_state, config['territory_getter'])
+        affected_territories = territory_getter(current_player)
 
         if not affected_territories:
-            self.haste_bubbles.clear()
+            state['bubbles'].clear()
             return
+
+        rise_speed = config['rise_speed']
+        check_polygon = config['check_polygon']
+        bubbles = state['bubbles']
 
         # Update existing bubbles
         bubbles_to_remove = []
-        for bubble in self.haste_bubbles:
-            # Increment lifetime
+        for bubble in bubbles:
             bubble['lifetime'] += delta_time
-
-            # Bubble rises and fades over 1 second
             bubble_duration = 1.0
+
             if bubble['lifetime'] >= bubble_duration:
                 bubbles_to_remove.append(bubble)
             else:
-                # Move bubble upward
-                bubble['y'] -= 7.5 * delta_time  # Rise speed
+                progress = bubble['lifetime'] / bubble_duration
+                bubble['y'] -= rise_speed * delta_time
 
                 # PERFORMANCE: Bounding box rejection before expensive polygon check
                 territory = bubble['territory']
@@ -3908,222 +3825,73 @@ class Game:
                         bubbles_to_remove.append(bubble)
                         continue
 
-                # Only do expensive polygon check if inside bounding box
-                territory_polygon = self.scaled_polygons.get(territory)
-                if territory_polygon:
-                    if not self._point_in_polygon(bubble['x'], bubble['y'], territory_polygon):
-                        bubbles_to_remove.append(bubble)
-                        continue
+                # Full polygon check only for effects that need it (defiance, haste)
+                if check_polygon:
+                    territory_polygon = self.scaled_polygons.get(territory)
+                    if territory_polygon:
+                        if not self._point_in_polygon(bubble['x'], bubble['y'], territory_polygon):
+                            bubbles_to_remove.append(bubble)
+                            continue
 
-                # Fade out over lifetime
-                progress = bubble['lifetime'] / bubble_duration
-                bubble['alpha'] = int(150 * (1.0 - progress))  # Fade from 150 to 0
-
-                # Grow slightly
-                bubble['radius'] = bubble['initial_radius'] * (1.0 + progress * 0.3)
-
-        # Remove expired bubbles
-        for bubble in bubbles_to_remove:
-            self.haste_bubbles.remove(bubble)
-
-        # Spawn new bubbles
-        self.haste_bubble_spawn_timer += delta_time
-        spawn_interval = 0.1  # Spawn every 100ms
-
-        if self.haste_bubble_spawn_timer >= spawn_interval:
-            self.haste_bubble_spawn_timer = 0
-
-            # Spawn bubbles on random positions within affected territories
-            for territory in affected_territories:
-                # Get territory polygon from scaled_polygons
-                territory_polygon = self.scaled_polygons.get(territory)
-                if not territory_polygon:
-                    continue
-
-                # PERFORMANCE: Use precomputed bounding boxes instead of recomputing from polygon
-                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
-                if not bbox:
-                    continue
-                min_x, min_y, max_x, max_y = bbox
-
-                # Try to spawn a bubble inside the territory (max 10 attempts)
-                for attempt in range(10):
-                    # Random position within bounding box
-                    x = random.uniform(min_x, max_x)
-                    y = random.uniform(min_y, max_y)
-
-                    # Check if point is actually inside the territory polygon
-                    if self._point_in_polygon(x, y, territory_polygon):
-                        # 70% chance to spawn each bubble
-                        if random.random() < 0.7:
-                            initial_radius = random.uniform(1.5, 3)
-                            bubble = {
-                                'territory': territory,
-                                'x': x,
-                                'y': y,
-                                'radius': initial_radius,
-                                'initial_radius': initial_radius,
-                                'alpha': 150,
-                                'lifetime': 0
-                            }
-                            self.haste_bubbles.append(bubble)
-                            break  # Only one bubble per territory per spawn cycle
-
-    def draw_haste_bubbles(self):
-        """
-        Draw orange bubbles on territories affected by Haste.
-
-        Only draws when Vearen Asford is selected.
-        """
-        if not self.haste_bubbles:
-            return
-
-        # Orange color for Haste (bright orange)
-        orange_color = (255, 165, 0)
-
-        for bubble in self.haste_bubbles:
-            # Transform position with camera
-            screen_x, screen_y = self.world_to_screen((bubble['x'], bubble['y']))
-
-            # Only draw if on screen
-            if 0 <= screen_x <= WINDOW_WIDTH and TOP_PANEL_HEIGHT <= screen_y <= MAP_HEIGHT:
-                # Scale radius with zoom
-                scaled_radius = int(bubble['radius'] * self.camera_zoom)
-                if scaled_radius < 1:
-                    continue
-
-                # PERFORMANCE: Use cached bubble surface instead of creating new one each frame
-                bubble_surface = self._get_bubble_surface(scaled_radius, orange_color, bubble['alpha'])
-
-                # Blit bubble to screen
-                self.screen.blit(bubble_surface,
-                               (screen_x - scaled_radius, screen_y - scaled_radius))
-
-    def update_safe_haven_bubbles(self, delta_time):
-        """
-        Update Safe Haven effect bubble animations.
-
-        Args:
-            delta_time: Time elapsed since last frame (seconds)
-        """
-        # Only update if Darius Brennhen or Regnus Aevencourne is selected
-        if self.selected_hero not in ('Darius Brennhen', 'Regnus Aevencourne'):
-            self.safe_haven_bubbles.clear()
-            self.safe_haven_bubble_spawn_timer = 0
-            return
-
-        # Get affected territories
-        current_player = self.game_state.current_player
-        affected_territories = self.game_state.get_safe_haven_territories(current_player)
-
-        if not affected_territories:
-            self.safe_haven_bubbles.clear()
-            return
-
-        # Update existing bubbles
-        bubbles_to_remove = []
-        for bubble in self.safe_haven_bubbles:
-            # Increment lifetime
-            bubble['lifetime'] += delta_time
-
-            # Bubble rises and fades over 1 second
-            bubble_duration = 1.0
-            if bubble['lifetime'] >= bubble_duration:
-                bubbles_to_remove.append(bubble)
-            else:
-                # Fade out as lifetime approaches duration
-                progress = bubble['lifetime'] / bubble_duration
-
-                # Rise upward
-                bubble['y'] -= 15 * delta_time  # pixels per second
-
-                # PERFORMANCE: Remove bubbles that have left territory (bounding box check)
-                territory = bubble['territory']
-                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
-                if bbox:
-                    min_x, min_y, max_x, max_y = bbox
-                    if not (min_x <= bubble['x'] <= max_x and min_y <= bubble['y'] <= max_y):
-                        bubbles_to_remove.append(bubble)
-                        continue
-
-                # Fade alpha from 150 to 0
                 bubble['alpha'] = int(150 * (1.0 - progress))
-
-                # Grow slightly
                 bubble['radius'] = bubble['initial_radius'] * (1.0 + progress * 0.3)
 
-        # Remove expired bubbles
         for bubble in bubbles_to_remove:
-            self.safe_haven_bubbles.remove(bubble)
+            bubbles.remove(bubble)
 
-        # Spawn new bubbles
-        self.safe_haven_bubble_spawn_timer += delta_time
-        spawn_interval = 0.1  # Spawn every 100ms
+        # Spawn new bubbles every 100ms
+        state['spawn_timer'] += delta_time
+        if state['spawn_timer'] >= 0.1:
+            state['spawn_timer'] = 0
 
-        if self.safe_haven_bubble_spawn_timer >= spawn_interval:
-            self.safe_haven_bubble_spawn_timer = 0
-
-            # Spawn bubbles on random positions within affected territories
             for territory in affected_territories:
-                # Get territory polygon from scaled_polygons
-                if territory in self.scaled_polygons:
-                    polygon = self.scaled_polygons[territory]
+                territory_polygon = self.scaled_polygons.get(territory)
+                if not territory_polygon:
+                    continue
 
-                    # PERFORMANCE: Use precomputed bounding boxes instead of recomputing from polygon
-                    bbox = self.map_renderer.territory_bounding_boxes.get(territory)
-                    if not bbox:
-                        continue
-                    min_x, min_y, max_x, max_y = bbox
+                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
+                if not bbox:
+                    continue
+                min_x, min_y, max_x, max_y = bbox
 
-                    # Try to spawn bubble inside territory polygon
-                    for attempt in range(10):
-                        # Random position in bounding box
-                        x = random.uniform(min_x, max_x)
-                        y = random.uniform(min_y, max_y)
+                for attempt in range(10):
+                    x = random.uniform(min_x, max_x)
+                    y = random.uniform(min_y, max_y)
 
-                        # Check if inside polygon using ray casting
-                        if self._point_in_polygon(x, y, polygon):
-                            # Spawn bubble (same size as Haste and Defiance)
+                    if self._point_in_polygon(x, y, territory_polygon):
+                        if random.random() < 0.7:
                             initial_radius = random.uniform(1.5, 3)
-                            bubble = {
+                            bubbles.append({
                                 'territory': territory,
-                                'x': x,
-                                'y': y,
+                                'x': x, 'y': y,
                                 'radius': initial_radius,
                                 'initial_radius': initial_radius,
                                 'alpha': 150,
                                 'lifetime': 0
-                            }
-                            self.safe_haven_bubbles.append(bubble)
-                            break  # Only one bubble per territory per spawn cycle
+                            })
+                            break
 
-    def draw_safe_haven_bubbles(self):
+    def _draw_hero_bubbles(self, effect_key):
         """
-        Draw light blue bubbles on territories affected by Safe Haven.
+        Draw hero ability bubbles (Phase 2B: unified from 3 identical methods).
 
-        Only draws when Darius Brennhen is selected.
+        Uses the color from self._bubble_configs[effect_key].
         """
-        if not self.safe_haven_bubbles:
+        state = self._bubble_state[effect_key]
+        if not state['bubbles']:
             return
 
-        # Light blue color for Safe Haven
-        light_blue_color = (135, 206, 250)
+        color = self._bubble_configs[effect_key]['color']
 
-        for bubble in self.safe_haven_bubbles:
-            # Transform position with camera
+        for bubble in state['bubbles']:
             screen_x, screen_y = self.world_to_screen((bubble['x'], bubble['y']))
 
-            # Only draw if on screen
             if 0 <= screen_x <= WINDOW_WIDTH and TOP_PANEL_HEIGHT <= screen_y <= MAP_HEIGHT:
-                # Scale radius with zoom
                 scaled_radius = int(bubble['radius'] * self.camera_zoom)
                 if scaled_radius < 1:
                     continue
 
-                # PERFORMANCE: Use cached bubble surface instead of creating new one each frame
-                bubble_surface = self._get_bubble_surface(scaled_radius, light_blue_color, bubble['alpha'])
-
-                # Blit bubble to screen
+                bubble_surface = self._get_bubble_surface(scaled_radius, color, bubble['alpha'])
                 self.screen.blit(bubble_surface,
                                (screen_x - scaled_radius, screen_y - scaled_radius))
 
@@ -4308,13 +4076,25 @@ class Game:
                     break
 
             if clicked_territory:
-                # Execute the targeted ability
-                if self.ability_targeting_ability_name == 'Relentless Charge':
+                # Dispatch table: maps ability names to their execute functions on GameState
+                # All targeted abilities follow the same pattern: execute → cooldown → network sync
+                ability_dispatch = {
+                    'Relentless Charge': self.game_state.execute_relentless_charge,
+                    'Aggressive Diplomacy': self.game_state.execute_aggressive_diplomacy,
+                    'Levy': self.game_state.execute_levy,
+                    'Decisive Strike': self.game_state.execute_decisive_strike,
+                    'Valorous Charge': self.game_state.execute_valorous_charge,
+                    'Royal Charisma': self.game_state.execute_royal_charisma,
+                    'Regicide': self.game_state.execute_regicide,
+                }
+
+                execute_fn = ability_dispatch.get(self.ability_targeting_ability_name)
+                if execute_fn:
                     current_player = self.game_state.current_player
-                    success, error_msg = self.game_state.execute_relentless_charge(clicked_territory, current_player)
+                    success, error_msg = execute_fn(clicked_territory, current_player)
 
                     if success:
-                        # Ability succeeded - put on cooldown and exit targeting mode
+                        # Ability succeeded — put on cooldown and exit targeting mode
                         hero_name = self.ability_targeting_hero
                         ability_index = self.ability_targeting_ability_index
                         ability_name = self.ability_targeting_ability_name
@@ -4331,259 +4111,6 @@ class Game:
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
                         if self.multiplayer_mode and self.sim_state is not None:
-                    
-                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
-                                'player_id': current_player,
-                                'hero_name': hero_name,
-                                'ability_index': ability_index,
-                                'ability_name': ability_name,
-                                'target': clicked_territory
-                            })
-                            logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name} on {clicked_territory}")
-
-                        # Exit targeting mode
-                        self.ability_targeting_active = False
-                        self.ability_targeting_hero = None
-                        self.ability_targeting_ability_index = None
-                        self.ability_targeting_ability_name = None
-                    else:
-                        # Invalid target - show error message
-                        self.invalid_target_message = error_msg
-                        self.invalid_target_message_time = pygame.time.get_ticks()
-
-                elif self.ability_targeting_ability_name == 'Aggressive Diplomacy':
-                    current_player = self.game_state.current_player
-                    success, error_msg = self.game_state.execute_aggressive_diplomacy(clicked_territory, current_player)
-
-                    if success:
-                        # Ability succeeded - put on cooldown and exit targeting mode
-                        hero_name = self.ability_targeting_hero
-                        ability_index = self.ability_targeting_ability_index
-                        ability_name = self.ability_targeting_ability_name
-                        hero_info = self.game_state.HERO_TYPES[hero_name]
-                        ability = hero_info['abilities'][ability_index]
-                        cooldown = ability.get('cooldown', 0)
-
-                        # Put on cooldown
-                        if current_player not in self.game_state.hero_ability_cooldowns:
-                            self.game_state.hero_ability_cooldowns[current_player] = {}
-                        if hero_name not in self.game_state.hero_ability_cooldowns[current_player]:
-                            self.game_state.hero_ability_cooldowns[current_player][hero_name] = {}
-                        self.game_state.hero_ability_cooldowns[current_player][hero_name][ability_name] = cooldown
-
-                        # MULTIPLAYER: Broadcast targeted ability to other players
-                        if self.multiplayer_mode and self.sim_state is not None:
-                    
-                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
-                                'player_id': current_player,
-                                'hero_name': hero_name,
-                                'ability_index': ability_index,
-                                'ability_name': ability_name,
-                                'target': clicked_territory
-                            })
-                            logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name} on {clicked_territory}")
-
-                        # Exit targeting mode
-                        self.ability_targeting_active = False
-                        self.ability_targeting_hero = None
-                        self.ability_targeting_ability_index = None
-                        self.ability_targeting_ability_name = None
-                    else:
-                        # Invalid target - show error message
-                        self.invalid_target_message = error_msg
-                        self.invalid_target_message_time = pygame.time.get_ticks()
-
-                elif self.ability_targeting_ability_name == 'Levy':
-                    current_player = self.game_state.current_player
-                    success, error_msg = self.game_state.execute_levy(clicked_territory, current_player)
-
-                    if success:
-                        # Ability succeeded - put on cooldown and exit targeting mode
-                        hero_name = self.ability_targeting_hero
-                        ability_index = self.ability_targeting_ability_index
-                        ability_name = self.ability_targeting_ability_name
-                        hero_info = self.game_state.HERO_TYPES[hero_name]
-                        ability = hero_info['abilities'][ability_index]
-                        cooldown = ability.get('cooldown', 0)
-
-                        # Put on cooldown
-                        if current_player not in self.game_state.hero_ability_cooldowns:
-                            self.game_state.hero_ability_cooldowns[current_player] = {}
-                        if hero_name not in self.game_state.hero_ability_cooldowns[current_player]:
-                            self.game_state.hero_ability_cooldowns[current_player][hero_name] = {}
-                        self.game_state.hero_ability_cooldowns[current_player][hero_name][ability_name] = cooldown
-
-                        # MULTIPLAYER: Broadcast targeted ability to other players
-                        if self.multiplayer_mode and self.sim_state is not None:
-                    
-                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
-                                'player_id': current_player,
-                                'hero_name': hero_name,
-                                'ability_index': ability_index,
-                                'ability_name': ability_name,
-                                'target': clicked_territory
-                            })
-                            logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name} on {clicked_territory}")
-
-                        # Exit targeting mode
-                        self.ability_targeting_active = False
-                        self.ability_targeting_hero = None
-                        self.ability_targeting_ability_index = None
-                        self.ability_targeting_ability_name = None
-                    else:
-                        # Invalid target - show error message
-                        self.invalid_target_message = error_msg
-                        self.invalid_target_message_time = pygame.time.get_ticks()
-
-                elif self.ability_targeting_ability_name == 'Decisive Strike':
-                    current_player = self.game_state.current_player
-                    success, error_msg = self.game_state.execute_decisive_strike(clicked_territory, current_player)
-
-                    if success:
-                        # Ability succeeded - put on cooldown and exit targeting mode
-                        hero_name = self.ability_targeting_hero
-                        ability_index = self.ability_targeting_ability_index
-                        ability_name = self.ability_targeting_ability_name
-                        hero_info = self.game_state.HERO_TYPES[hero_name]
-                        ability = hero_info['abilities'][ability_index]
-                        cooldown = ability.get('cooldown', 0)
-
-                        # Put on cooldown
-                        if current_player not in self.game_state.hero_ability_cooldowns:
-                            self.game_state.hero_ability_cooldowns[current_player] = {}
-                        if hero_name not in self.game_state.hero_ability_cooldowns[current_player]:
-                            self.game_state.hero_ability_cooldowns[current_player][hero_name] = {}
-                        self.game_state.hero_ability_cooldowns[current_player][hero_name][ability_name] = cooldown
-
-                        # MULTIPLAYER: Broadcast targeted ability to other players
-                        if self.multiplayer_mode and self.sim_state is not None:
-                    
-                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
-                                'player_id': current_player,
-                                'hero_name': hero_name,
-                                'ability_index': ability_index,
-                                'ability_name': ability_name,
-                                'target': clicked_territory
-                            })
-                            logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name} on {clicked_territory}")
-
-                        # Exit targeting mode
-                        self.ability_targeting_active = False
-                        self.ability_targeting_hero = None
-                        self.ability_targeting_ability_index = None
-                        self.ability_targeting_ability_name = None
-                    else:
-                        # Invalid target - show error message
-                        self.invalid_target_message = error_msg
-                        self.invalid_target_message_time = pygame.time.get_ticks()
-
-                elif self.ability_targeting_ability_name == 'Valorous Charge':
-                    current_player = self.game_state.current_player
-                    success, error_msg = self.game_state.execute_valorous_charge(clicked_territory, current_player)
-
-                    if success:
-                        # Ability succeeded - put on cooldown and exit targeting mode
-                        hero_name = self.ability_targeting_hero
-                        ability_index = self.ability_targeting_ability_index
-                        ability_name = self.ability_targeting_ability_name
-                        hero_info = self.game_state.HERO_TYPES[hero_name]
-                        ability = hero_info['abilities'][ability_index]
-                        cooldown = ability.get('cooldown', 0)
-
-                        # Put on cooldown
-                        if current_player not in self.game_state.hero_ability_cooldowns:
-                            self.game_state.hero_ability_cooldowns[current_player] = {}
-                        if hero_name not in self.game_state.hero_ability_cooldowns[current_player]:
-                            self.game_state.hero_ability_cooldowns[current_player][hero_name] = {}
-                        self.game_state.hero_ability_cooldowns[current_player][hero_name][ability_name] = cooldown
-
-                        # MULTIPLAYER: Broadcast targeted ability to other players
-                        if self.multiplayer_mode and self.sim_state is not None:
-                    
-                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
-                                'player_id': current_player,
-                                'hero_name': hero_name,
-                                'ability_index': ability_index,
-                                'ability_name': ability_name,
-                                'target': clicked_territory
-                            })
-                            logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name} on {clicked_territory}")
-
-                        # Exit targeting mode
-                        self.ability_targeting_active = False
-                        self.ability_targeting_hero = None
-                        self.ability_targeting_ability_index = None
-                        self.ability_targeting_ability_name = None
-                    else:
-                        # Invalid target - show error message
-                        self.invalid_target_message = error_msg
-                        self.invalid_target_message_time = pygame.time.get_ticks()
-
-                elif self.ability_targeting_ability_name == 'Royal Charisma':
-                    current_player = self.game_state.current_player
-                    success, error_msg = self.game_state.execute_royal_charisma(clicked_territory, current_player)
-
-                    if success:
-                        # Ability succeeded - put on cooldown and exit targeting mode
-                        hero_name = self.ability_targeting_hero
-                        ability_index = self.ability_targeting_ability_index
-                        ability_name = self.ability_targeting_ability_name
-                        hero_info = self.game_state.HERO_TYPES[hero_name]
-                        ability = hero_info['abilities'][ability_index]
-                        cooldown = ability.get('cooldown', 0)
-
-                        # Put on cooldown
-                        if current_player not in self.game_state.hero_ability_cooldowns:
-                            self.game_state.hero_ability_cooldowns[current_player] = {}
-                        if hero_name not in self.game_state.hero_ability_cooldowns[current_player]:
-                            self.game_state.hero_ability_cooldowns[current_player][hero_name] = {}
-                        self.game_state.hero_ability_cooldowns[current_player][hero_name][ability_name] = cooldown
-
-                        # MULTIPLAYER: Broadcast targeted ability to other players
-                        if self.multiplayer_mode and self.sim_state is not None:
-                    
-                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
-                                'player_id': current_player,
-                                'hero_name': hero_name,
-                                'ability_index': ability_index,
-                                'ability_name': ability_name,
-                                'target': clicked_territory
-                            })
-                            logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name} on {clicked_territory}")
-
-                        # Exit targeting mode
-                        self.ability_targeting_active = False
-                        self.ability_targeting_hero = None
-                        self.ability_targeting_ability_index = None
-                        self.ability_targeting_ability_name = None
-                    else:
-                        # Invalid target - show error message
-                        self.invalid_target_message = error_msg
-                        self.invalid_target_message_time = pygame.time.get_ticks()
-
-                elif self.ability_targeting_ability_name == 'Regicide':
-                    current_player = self.game_state.current_player
-                    success, error_msg = self.game_state.execute_regicide(clicked_territory, current_player)
-
-                    if success:
-                        # Ability succeeded - put on cooldown and exit targeting mode
-                        hero_name = self.ability_targeting_hero
-                        ability_index = self.ability_targeting_ability_index
-                        ability_name = self.ability_targeting_ability_name
-                        hero_info = self.game_state.HERO_TYPES[hero_name]
-                        ability = hero_info['abilities'][ability_index]
-                        cooldown = ability.get('cooldown', 0)
-
-                        # Put on cooldown
-                        if current_player not in self.game_state.hero_ability_cooldowns:
-                            self.game_state.hero_ability_cooldowns[current_player] = {}
-                        if hero_name not in self.game_state.hero_ability_cooldowns[current_player]:
-                            self.game_state.hero_ability_cooldowns[current_player][hero_name] = {}
-                        self.game_state.hero_ability_cooldowns[current_player][hero_name][ability_name] = cooldown
-
-                        # MULTIPLAYER: Broadcast targeted ability to other players
-                        if self.multiplayer_mode and self.sim_state is not None:
-                    
                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
@@ -4612,9 +4139,7 @@ class Game:
         # PRIORITY 1: Check if clicking on a quick-access building icon
         # NOTE: Icons checked FIRST (before armies) so they're clickable when overlapping!
         # Tutorial gate: block quick-access building icons when build not allowed
-        _tutorial_build_allowed = True
-        if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
-            _tutorial_build_allowed = self.tutorial_mission.is_action_allowed('click_plots')
+        _tutorial_build_allowed = not self._is_tutorial_blocking('click_plots')
         # Block building during simultaneous mode resolution phase (battles/alliance markers pending)
         sim_resolving = (self.sim_state is not None and self.sim_state.sim_phase == 'resolving')
         if _tutorial_build_allowed and self.selected_plot and self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning' and not sim_resolving:
@@ -4696,9 +4221,7 @@ class Game:
         
         # PRIORITY 2: Check if clicking on a quick-access training icon (around Barracks)
         # Tutorial gate: block quick-access training icons when train not allowed
-        _tutorial_train_allowed = True
-        if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
-            _tutorial_train_allowed = self.tutorial_mission.is_action_allowed('click_barracks')
+        _tutorial_train_allowed = not self._is_tutorial_blocking('click_barracks')
         # Block training during simultaneous mode resolution phase (battles/alliance markers pending)
         if _tutorial_train_allowed and self.selected_barracks and self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning' and not sim_resolving:
             territory, barracks_plot_index = self.selected_barracks
@@ -4841,7 +4364,7 @@ class Game:
                     self.selected_army_units = []
                     play_structure_sound('Barracks')
                     # Tutorial hook: notify barracks clicked
-                    if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+                    if self._is_tutorial_active():
                         self.tutorial_mission.notify_event('barracks_clicked', territory=territory)
                 elif has_keep:
                     # Select Keep for hero training UI
@@ -6729,7 +6252,7 @@ class Game:
             end_turn_color = (100, 150, 100)  # Default green
             end_turn_text = "End Turn"  # Default text
 
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+            if self._is_tutorial_active():
                 if self.tutorial_mission.should_highlight_button('end_turn'):
                     end_turn_color = (50, 255, 50)  # Bright green highlight
                 elif self.tutorial_mission.is_button_locked('end_turn'):
@@ -6754,7 +6277,7 @@ class Game:
                                       text=end_turn_text)
 
             # Tutorial hook: draw pulsing green glow border on End Turn when highlighted
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+            if self._is_tutorial_active():
                 if self.tutorial_mission.should_highlight_button('end_turn'):
                     pulse = int(180 + 75 * math.sin(pygame.time.get_ticks() / 200.0))
                     glow_rect = end_turn_rect.inflate(6, 6)
@@ -6765,7 +6288,7 @@ class Game:
             # Planning timer display (under End Turn button) - scaled
             # Check mission's is_timer_visible() if active, otherwise show during planning
             _show_timer = self.game_state.turn_phase == 'planning'
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+            if self._is_tutorial_active():
                 # Mission controls timer visibility (intro sequence hides/shows it)
                 if hasattr(self.tutorial_mission, 'is_timer_visible'):
                     _show_timer = _show_timer and self.tutorial_mission.is_timer_visible()
@@ -7119,17 +6642,8 @@ class Game:
             effect = building_info['effect']
             value = building_info['value']
 
-            if effect == 'income':
-                effect_text = self.small_font.render(f"- Generates {value} Gold per turn.", True, effect_color)
-            elif effect == 'defense':
-                effect_text = self.small_font.render(f"- Provides +{value} defense bonus.", True, effect_color)
-            elif effect == 'multiplier':
-                effect_text = self.small_font.render(f"- Multiplies territory income x{value}.", True, effect_color)
-            elif effect == 'recruitment':
-                effect_text = self.small_font.render("- Allows training of military units.", True, effect_color)
-            else:
-                effect_text = self.small_font.render(f"- {str(effect)}", True, effect_color)
-
+            effect_text = self.small_font.render(
+                self._get_building_effect_text(effect, value), True, effect_color)
             self.screen.blit(effect_text, (build_ui_x, build_ui_y))
             build_ui_y += 25
 
@@ -7246,17 +6760,8 @@ class Game:
             effect = building_info['effect']
             value = building_info['value']
 
-            if effect == 'income':
-                effect_text = self.small_font.render(f"- Generates {value} Gold per turn.", True, effect_color)
-            elif effect == 'defense':
-                effect_text = self.small_font.render(f"- Provides +{value} defense bonus.", True, effect_color)
-            elif effect == 'multiplier':
-                effect_text = self.small_font.render(f"- Multiplies territory income x{value}.", True, effect_color)
-            elif effect == 'recruitment':
-                effect_text = self.small_font.render("- Allows training of military units.", True, effect_color)
-            else:
-                effect_text = self.small_font.render(f"- {str(effect)}", True, effect_color)
-
+            effect_text = self.small_font.render(
+                self._get_building_effect_text(effect, value), True, effect_color)
             self.screen.blit(effect_text, (build_ui_x, build_ui_y))
             build_ui_y += 22
 
@@ -7331,7 +6836,7 @@ class Game:
                     button_color = (200, 100, 100)  # Red
 
                 # Tutorial hook: override button color for locking/highlighting
-                if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+                if self._is_tutorial_active():
                     btn_id = f'building_{building_name}'
                     if self.tutorial_mission.is_button_locked(btn_id):
                         button_color = (120, 120, 120)  # Grey (locked)
@@ -7848,7 +7353,7 @@ class Game:
             is_available = can_afford and can_queue and not at_army_limit
 
             # Tutorial hook: override training button availability
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+            if self._is_tutorial_active():
                 btn_id = f'training_{unit_type}'
                 if self.tutorial_mission.is_button_locked(btn_id):
                     is_available = False
@@ -7907,7 +7412,7 @@ class Game:
                                        button_type='training', button_id=unit_type)
 
             # Tutorial hook: draw green highlight border if button is highlighted
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+            if self._is_tutorial_active():
                 btn_id = f'training_{unit_type}'
                 if self.tutorial_mission.should_highlight_button(btn_id):
                     # Pulsing green glow border
@@ -9103,14 +8608,9 @@ class Game:
                     logger.info(f"[MAIN] Animations complete in sim mode, calling on_animations_complete")
                     self.sim_state.phase_manager.on_animations_complete()
 
-                # Update Defiance bubble animations
-                self.update_defiance_bubbles(delta_time)
-
-                # Update Haste bubble animations
-                self.update_haste_bubbles(delta_time)
-
-                # Update Safe Haven bubble animations
-                self.update_safe_haven_bubbles(delta_time)
+                # Update hero ability bubble animations (unified system)
+                for effect_key in self._bubble_configs:
+                    self._update_hero_bubbles(effect_key, delta_time)
 
                 # Update castle upgrade particle effects
                 self.map_renderer.update_castle_upgrade_effects(delta_time)
@@ -9712,9 +9212,7 @@ class Game:
             # Keyboard camera control (Phase 2D: continuous per-frame)
             # Must be outside event loop to allow smooth continuous scrolling
             # Tutorial gate: block camera movement when camera not allowed
-            _tutorial_camera_ok = True
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
-                _tutorial_camera_ok = self.tutorial_mission.is_action_allowed('camera')
+            _tutorial_camera_ok = not self._is_tutorial_blocking('camera')
 
             keys = pygame.key.get_pressed()
             if _tutorial_camera_ok:
@@ -9727,7 +9225,7 @@ class Game:
                 self.handle_edge_scrolling(mouse_pos)
             
             # Tutorial mission: update logic before rendering so camera animation applies this frame
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active and not self.is_game_paused:
+            if self._is_tutorial_active() and not self.is_game_paused:
                 tutorial_result = self.tutorial_mission.update(delta_time)
                 # Handle victory sequence exit to campaign screen
                 if tutorial_result == 'exit_campaign':
@@ -9771,14 +9269,9 @@ class Game:
             # Draw silence fog overlay if any player is silenced
             self.draw_silence_fog_overlay()
 
-            # Draw Defiance protection bubbles if Seledra is selected
-            self.draw_defiance_bubbles()
-
-            # Draw Haste effect bubbles if Vearen Asford is selected
-            self.draw_haste_bubbles()
-
-            # Draw Safe Haven effect bubbles if Darius Brennhen is selected
-            self.draw_safe_haven_bubbles()
+            # Draw hero ability bubbles (unified system)
+            for effect_key in self._bubble_configs:
+                self._draw_hero_bubbles(effect_key)
 
             # Draw movement arrows (orders)
             self.draw_movement_arrows()
@@ -9836,7 +9329,7 @@ class Game:
                     self.hover_start_time_button = None
             
             # Tutorial mission: render overlay (below menus so Menu renders on top)
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+            if self._is_tutorial_active():
                 self.tutorial_mission.render(self.screen)
 
             # Draw battle popup (on top of everything)
@@ -10654,7 +10147,7 @@ class Game:
 
         # Notify tutorial mission that battle popup was dismissed by the player,
         # so deferred voice lines can play after the report is closed
-        if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+        if self._is_tutorial_active():
             self.tutorial_mission.notify_event('battle_popup_closed')
 
         # SIMULTANEOUS MODE: Check if all battles resolved
@@ -10811,7 +10304,7 @@ class Game:
                 self.trigger_click_flash('bottom_button', 'end_turn')
 
                 # Tutorial hook: notify end turn event
-                if hasattr(self, 'tutorial_mission') and self.tutorial_mission and self.tutorial_mission.active:
+                if self._is_tutorial_active():
                     self.tutorial_mission.notify_event('end_turn')
 
                 # SIMULTANEOUS MODE: Mark player ready instead of advancing turn
@@ -13116,296 +12609,141 @@ if __name__ == "__main__":
                     if intro_cutscene.has_cutscene:
                         intro_cutscene.run()
 
-                    if launched_mission == 'mission_1':
-                        # Launch tutorial mission with campaign-specific map
-                        from tutorial_mission import TutorialMission
+                    # Phase 2D: Unified campaign mission launcher
+                    # All missions share the same launch/run/cleanup pattern, differing only in
+                    # config (players, territories), map path, and mission class.
+                    # Mission 1 (tutorial) is special: 2 players, no territory cleanup.
+                    _MISSION_REGISTRY = {
+                        'mission_1': {
+                            'import': ('tutorial_mission', 'TutorialMission'),
+                            'map': 'assets/CampaignMaps/Campaign1Map.png',
+                            'config': {
+                                'num_players': 2,
+                                'player_is_ai': [False, True],
+                                'player_ai_difficulty': [0, 0],
+                                'player_teams': [0, 1],
+                                'win_condition': 'Total Conquest',
+                                'taxation_level': 0,
+                                'player1_territory': 'Lunedale',
+                                'player2_territory': 'Free Cities',
+                            },
+                            'cleanup_territories': False,  # Tutorial doesn't filter territories
+                        },
+                        'mission_2': {
+                            'import': ('campaign_mission_2', 'Mission2'),
+                            'map': 'assets/CampaignMaps/Campaign2Map.png',
+                            'config': {
+                                'num_players': 4,
+                                'player_is_ai': [False, True, True, True],
+                                'player_ai_difficulty': [0, 0, 0, 0],
+                                'player_teams': [0, 1, 2, 3],
+                                'win_condition': 'Total Conquest',
+                                'taxation_level': 0,
+                                'player1_territory': 'Lobardia',
+                                'player2_territory': 'Elletian Isles',
+                                'player3_territory': 'Venexia',
+                                'player4_territory': 'Valeonia',
+                            },
+                        },
+                        'mission_3': {
+                            'import': ('campaign_mission_3', 'Mission3'),
+                            'map': 'assets/CampaignMaps/Campaign3Map.png',
+                            'config': {
+                                'num_players': 4,
+                                'player_is_ai': [False, True, True, True],
+                                'player_ai_difficulty': [0, 0, 0, 0],
+                                'player_teams': [0, 1, 2, 3],
+                                'win_condition': 'Total Conquest',
+                                'taxation_level': 0,
+                                'player1_territory': 'Zjoal Islands',
+                                'player2_territory': 'Free Cities',
+                                'player3_territory': 'Damlére',
+                                'player4_territory': 'Ahtep',
+                            },
+                        },
+                        'mission_4': {
+                            'import': ('campaign_mission_4', 'Mission4'),
+                            'map': 'assets/CampaignMaps/Campaign4Map.png',
+                            'config': {
+                                'num_players': 4,
+                                'player_is_ai': [False, True, True, True],
+                                'player_ai_difficulty': [0, 0, 0, 0],
+                                'player_teams': [0, 1, 2, 3],
+                                'win_condition': 'Total Conquest',
+                                'taxation_level': 0,
+                                'player1_territory': 'Aelatania',
+                                'player2_territory': 'Londia',
+                                'player3_territory': 'Valeonia',
+                                'player4_territory': 'Amennia',
+                            },
+                        },
+                        'mission_5': {
+                            'import': ('campaign_mission_5', 'Mission5'),
+                            'map': 'assets/CampaignMaps/Campaign5Map.png',
+                            'config': {
+                                'num_players': 4,
+                                'player_is_ai': [False, True, True, True],
+                                'player_ai_difficulty': [0, 0, 0, 0],
+                                'player_teams': [0, 1, 2, 3],
+                                'win_condition': 'Total Conquest',
+                                'taxation_level': 0,
+                                'player1_territory': 'Aelatania',
+                                'player2_territory': 'Lobardia',
+                                'player3_territory': 'Venexia',
+                                'player4_territory': 'Valeonia',
+                            },
+                        },
+                        'mission_6': {
+                            'import': ('campaign_mission_6', 'Mission6'),
+                            'map': 'assets/CampaignMaps/Campaign6Map.png',
+                            'config': {
+                                'num_players': 4,
+                                'player_is_ai': [False, True, True, True],
+                                'player_ai_difficulty': [0, 0, 0, 0],
+                                'player_teams': [0, 1, 2, 3],
+                                'win_condition': 'Total Conquest',
+                                'taxation_level': 0,
+                                'player1_territory': 'Aelatania',
+                                'player2_territory': 'Lobardia',
+                                'player3_territory': 'Venexia',
+                                'player4_territory': 'Valeonia',
+                            },
+                        },
+                    }
+
+                    mission_info = _MISSION_REGISTRY.get(launched_mission)
+                    if mission_info:
                         import map_data as _map_data
+                        # Dynamic import of mission class
+                        import importlib
+                        module = importlib.import_module(mission_info['import'][0])
+                        MissionClass = getattr(module, mission_info['import'][1])
 
-                        game = Game(existing_screen=screen, campaign_map='assets/CampaignMaps/Campaign1Map.png')
+                        # Create game with campaign map, initialize, wire up mission
+                        game = Game(existing_screen=screen, campaign_map=mission_info['map'])
                         screen = game.screen
+                        game.initialize_game(mission_info['config'])
 
-                        # Create tutorial-specific setup config
-                        tutorial_config = {
-                            'num_players': 2,
-                            'player_is_ai': [False, True],
-                            'player_ai_difficulty': [0, 0],
-                            'player_teams': [0, 1],
-                            'win_condition': 'Total Conquest',
-                            'taxation_level': 0,
-                            'player1_territory': 'Lunedale',
-                            'player2_territory': 'Free Cities',
-                        }
-                        game.initialize_game(tutorial_config)
+                        mission_obj = MissionClass(game.game_state, game)
+                        game.tutorial_mission = mission_obj
+                        game.game_state.tutorial_mission = mission_obj
+                        _map_data.set_tutorial_mission(mission_obj)
 
-                        # Create tutorial mission and wire it up
-                        tutorial = TutorialMission(game.game_state, game)
-                        game.tutorial_mission = tutorial
-                        game.game_state.tutorial_mission = tutorial
-                        _map_data.set_tutorial_mission(tutorial)
-
-                        # Run the game with tutorial active
                         game_result = game.run()
 
-                        # Play post-mission outro cutscene only after victory (not on defeat or quit)
+                        # Post-mission outro cutscene (only after victory)
                         if game_result == 'campaign':
                             outro_cutscene = CutscenePlayer(screen, f"{launched_mission}_outro")
                             if outro_cutscene.has_cutscene:
                                 outro_cutscene.run()
 
-                        # Show post-game recap screen if game ended with a winner
-                        show_recap_if_ended(game)
-
-                        # Clean up tutorial reference in map_data
-                        _map_data.set_tutorial_mission(None)
-
-                        if game_result == 'quit':
-                            pygame.quit()
-                            sys.exit()
-                        # 'campaign' or 'main_menu' result: loop back to campaign screen
-
-                    elif launched_mission == 'mission_2':
-                        # Launch Mission 2: Early Eastern Conquests
-                        from campaign_mission_2 import Mission2
-                        import map_data as _map_data
-
-                        # Create game with Mission 2 campaign map
-                        game = Game(existing_screen=screen, campaign_map='assets/CampaignMaps/Campaign2Map.png')
-                        screen = game.screen
-
-                        # Create mission 2 config: 4 players, sequential mode
-                        mission2_config = {
-                            'num_players': 4,
-                            'player_is_ai': [False, True, True, True],
-                            'player_ai_difficulty': [0, 0, 0, 0],  # Easy AI for awakened factions
-                            'player_teams': [0, 1, 2, 3],  # All independent
-                            'win_condition': 'Total Conquest',
-                            'taxation_level': 0,
-                            'player1_territory': 'Lobardia',
-                            'player2_territory': 'Elletian Isles',
-                            'player3_territory': 'Venexia',
-                            'player4_territory': 'Valeonia',
-                        }
-                        game.initialize_game(mission2_config)
-
-                        # Create Mission 2 and wire it up
-                        mission2 = Mission2(game.game_state, game)
-                        game.tutorial_mission = mission2  # Use same hook as tutorial for compatibility
-                        game.game_state.tutorial_mission = mission2
-                        _map_data.set_tutorial_mission(mission2)  # For adjacency overrides if needed
-
-                        # Run the game with mission active
-                        game_result = game.run()
-
-                        # Play post-mission outro cutscene only after victory (not on defeat or quit)
-                        if game_result == 'campaign':
-                            outro_cutscene = CutscenePlayer(screen, f"{launched_mission}_outro")
-                            if outro_cutscene.has_cutscene:
-                                outro_cutscene.run()
-
-                        # Show post-game recap screen if game ended with a winner
                         show_recap_if_ended(game)
 
                         # Clean up mission reference and territory filtering
                         _map_data.set_tutorial_mission(None)
-                        _map_data.clear_enabled_territories()
-                        _map_data.clear_territory_display_names()
-
-                        if game_result == 'quit':
-                            pygame.quit()
-                            sys.exit()
-                        # 'campaign' or 'main_menu' result: loop back to campaign screen
-
-                    elif launched_mission == 'mission_3':
-                        # Launch Mission 3: Western Expansion
-                        from campaign_mission_3 import Mission3
-                        import map_data as _map_data
-
-                        game = Game(existing_screen=screen, campaign_map='assets/CampaignMaps/Campaign3Map.png')
-                        screen = game.screen
-
-                        # Create mission 3 config: 4 players, sequential mode
-                        mission3_config = {
-                            'num_players': 4,
-                            'player_is_ai': [False, True, True, True],
-                            'player_ai_difficulty': [0, 0, 0, 0],
-                            'player_teams': [0, 1, 2, 3],  # Start as all enemies
-                            'win_condition': 'Total Conquest',
-                            'taxation_level': 0,
-                            'player1_territory': 'Zjoal Islands',
-                            'player2_territory': 'Free Cities',
-                            'player3_territory': 'Damlére',
-                            'player4_territory': 'Ahtep',
-                        }
-                        game.initialize_game(mission3_config)
-
-                        # Create Mission 3 and wire it up
-                        mission3 = Mission3(game.game_state, game)
-                        game.tutorial_mission = mission3
-                        game.game_state.tutorial_mission = mission3
-                        _map_data.set_tutorial_mission(mission3)
-
-                        # Run the game with mission active
-                        game_result = game.run()
-
-                        # Play post-mission outro cutscene only after victory (not on defeat or quit)
-                        if game_result == 'campaign':
-                            outro_cutscene = CutscenePlayer(screen, f"{launched_mission}_outro")
-                            if outro_cutscene.has_cutscene:
-                                outro_cutscene.run()
-
-                        # Show post-game recap screen if game ended with a winner
-                        show_recap_if_ended(game)
-
-                        # Clean up mission reference and territory filtering
-                        _map_data.set_tutorial_mission(None)
-                        _map_data.clear_enabled_territories()
-                        _map_data.clear_territory_display_names()
-
-                        if game_result == 'quit':
-                            pygame.quit()
-                            sys.exit()
-                        # 'campaign' or 'main_menu' result: loop back to campaign screen
-
-                    elif launched_mission == 'mission_4':
-                        # Launch Mission 4: Domination
-                        from campaign_mission_4 import Mission4
-                        import map_data as _map_data
-
-                        game = Game(existing_screen=screen, campaign_map='assets/CampaignMaps/Campaign4Map.png')
-                        screen = game.screen
-
-                        # Create mission 4 config: 4 players, sequential mode
-                        mission4_config = {
-                            'num_players': 4,
-                            'player_is_ai': [False, True, True, True],
-                            'player_ai_difficulty': [0, 0, 0, 0],
-                            'player_teams': [0, 1, 2, 3],  # All independent
-                            'win_condition': 'Total Conquest',
-                            'taxation_level': 0,
-                            'player1_territory': 'Aelatania',
-                            'player2_territory': 'Londia',
-                            'player3_territory': 'Valeonia',
-                            'player4_territory': 'Amennia',
-                        }
-                        game.initialize_game(mission4_config)
-
-                        # Create Mission 4 and wire it up
-                        mission4 = Mission4(game.game_state, game)
-                        game.tutorial_mission = mission4
-                        game.game_state.tutorial_mission = mission4
-                        _map_data.set_tutorial_mission(mission4)
-
-                        # Run the game with mission active
-                        game_result = game.run()
-
-                        # Play post-mission outro cutscene only after victory (not on defeat or quit)
-                        if game_result == 'campaign':
-                            outro_cutscene = CutscenePlayer(screen, f"{launched_mission}_outro")
-                            if outro_cutscene.has_cutscene:
-                                outro_cutscene.run()
-
-                        # Show post-game recap screen if game ended with a winner
-                        show_recap_if_ended(game)
-
-                        # Clean up mission reference and territory filtering
-                        _map_data.set_tutorial_mission(None)
-                        _map_data.clear_enabled_territories()
-                        _map_data.clear_territory_display_names()
-
-                        if game_result == 'quit':
-                            pygame.quit()
-                            sys.exit()
-                        # 'campaign' or 'main_menu' result: loop back to campaign screen
-
-                    elif launched_mission == 'mission_5':
-                        # Launch Mission 5 (placeholder)
-                        from campaign_mission_5 import Mission5
-                        import map_data as _map_data
-
-                        # Use default map until Campaign5Map is created
-                        game = Game(existing_screen=screen, campaign_map='assets/CampaignMaps/Campaign5Map.png')
-                        screen = game.screen
-
-                        # Mission 5 config: 4 players, placeholder setup
-                        mission5_config = {
-                            'num_players': 4,
-                            'player_is_ai': [False, True, True, True],
-                            'player_ai_difficulty': [0, 0, 0, 0],
-                            'player_teams': [0, 1, 2, 3],
-                            'win_condition': 'Total Conquest',
-                            'taxation_level': 0,
-                            'player1_territory': 'Aelatania',
-                            'player2_territory': 'Lobardia',
-                            'player3_territory': 'Venexia',
-                            'player4_territory': 'Valeonia',
-                        }
-                        game.initialize_game(mission5_config)
-
-                        # Create Mission 5 and wire it up
-                        mission5 = Mission5(game.game_state, game)
-                        game.tutorial_mission = mission5
-                        game.game_state.tutorial_mission = mission5
-                        _map_data.set_tutorial_mission(mission5)
-
-                        game_result = game.run()
-
-                        if game_result == 'campaign':
-                            outro_cutscene = CutscenePlayer(screen, f"{launched_mission}_outro")
-                            if outro_cutscene.has_cutscene:
-                                outro_cutscene.run()
-
-                        show_recap_if_ended(game)
-
-                        _map_data.set_tutorial_mission(None)
-                        _map_data.clear_enabled_territories()
-                        _map_data.clear_territory_display_names()
-
-                        if game_result == 'quit':
-                            pygame.quit()
-                            sys.exit()
-
-                    elif launched_mission == 'mission_6':
-                        # Launch Mission 6 (placeholder)
-                        from campaign_mission_6 import Mission6
-                        import map_data as _map_data
-
-                        # Use default map until Campaign6Map is created
-                        game = Game(existing_screen=screen, campaign_map='assets/CampaignMaps/Campaign6Map.png')
-                        screen = game.screen
-
-                        # Mission 6 config: 4 players, placeholder setup
-                        mission6_config = {
-                            'num_players': 4,
-                            'player_is_ai': [False, True, True, True],
-                            'player_ai_difficulty': [0, 0, 0, 0],
-                            'player_teams': [0, 1, 2, 3],
-                            'win_condition': 'Total Conquest',
-                            'taxation_level': 0,
-                            'player1_territory': 'Aelatania',
-                            'player2_territory': 'Lobardia',
-                            'player3_territory': 'Venexia',
-                            'player4_territory': 'Valeonia',
-                        }
-                        game.initialize_game(mission6_config)
-
-                        # Create Mission 6 and wire it up
-                        mission6 = Mission6(game.game_state, game)
-                        game.tutorial_mission = mission6
-                        game.game_state.tutorial_mission = mission6
-                        _map_data.set_tutorial_mission(mission6)
-
-                        game_result = game.run()
-
-                        if game_result == 'campaign':
-                            outro_cutscene = CutscenePlayer(screen, f"{launched_mission}_outro")
-                            if outro_cutscene.has_cutscene:
-                                outro_cutscene.run()
-
-                        show_recap_if_ended(game)
-
-                        _map_data.set_tutorial_mission(None)
-                        _map_data.clear_enabled_territories()
-                        _map_data.clear_territory_display_names()
+                        if mission_info.get('cleanup_territories', True):
+                            _map_data.clear_enabled_territories()
+                            _map_data.clear_territory_display_names()
 
                         if game_result == 'quit':
                             pygame.quit()

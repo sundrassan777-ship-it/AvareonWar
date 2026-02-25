@@ -6,6 +6,9 @@
 import pygame
 import map_data
 from utils.logger import get_logger
+# Phase 2C refactoring: import shared campaign utilities instead of defining them locally
+from campaign_utils import TransmissionOverlay, CameraPanAnimation, CameraZoomAnimation
+from campaign_utils import update_endgame_sequence, render_endgame_sequence
 
 logger = get_logger(__name__)
 
@@ -189,255 +192,8 @@ INTRO_SEQUENCE = [
 ]
 
 
-# ============================================================================
-# TRANSMISSION OVERLAY (reused from tutorial)
-# ============================================================================
-
-class TransmissionOverlay:
-    """Renders the Transmission Board with speaker header, flush at top-left of map area."""
-
-    def __init__(self, screen_width, screen_height, text, top_panel_height, speaker=""):
-        self.text = text
-        self.screen_width = screen_width
-        self.screen_height = screen_height
-        self.top_panel_height = top_panel_height
-        self.speaker = speaker
-
-        # Board dimensions: ~29% screen width (full image including transparent padding)
-        self.width = int(screen_width * 0.29)
-
-        # TransmissionBG.png has transparent padding around the visible wooden board.
-        # These fractions (measured from the source image) let us align the header
-        # with the visible board area and eliminate visual gaps.
-        BG_LEFT_FRAC = 0.069   # 6.9% left/right transparent margin
-        BG_TOP_FRAC = 0.200    # 20% top transparent margin
-
-        # Load and scale body background (TransmissionBG.png)
-        try:
-            raw_bg = pygame.image.load('assets/TransmissionBG.png').convert_alpha()
-        except pygame.error:
-            raw_bg = None
-
-        if raw_bg:
-            aspect = raw_bg.get_height() / raw_bg.get_width()
-            self.body_height = int(self.width * aspect)
-            self.bg_surface = pygame.transform.smoothscale(raw_bg, (self.width, self.body_height))
-        else:
-            self.body_height = int(screen_height * 0.12)
-            self.bg_surface = None
-
-        # Calculate visible body area insets (in scaled pixels)
-        bg_left_inset = int(self.width * BG_LEFT_FRAC)
-        bg_top_inset = int(self.body_height * BG_TOP_FRAC)
-        visible_body_width = self.width - 2 * bg_left_inset
-
-        # Load and scale speaker header (GMenuButton.png) to match visible body width
-        try:
-            raw_header = pygame.image.load('assets/SpeakerBG.png').convert_alpha()
-        except pygame.error:
-            raw_header = None
-
-        if raw_header:
-            header_aspect = raw_header.get_height() / raw_header.get_width()
-            natural_header_h = int(visible_body_width * header_aspect)
-            self.header_height = int(natural_header_h * 0.2)  # 20% of natural height
-            self.header_surface = pygame.transform.smoothscale(
-                raw_header, (visible_body_width, self.header_height))
-        else:
-            self.header_height = int(screen_height * 0.03)
-            self.header_surface = None
-
-        self.header_width = visible_body_width
-
-        # Header: flush at screen left edge, just below top panel
-        self.header_x = 0
-        self.header_y = top_panel_height
-
-        # Body: shifted left so visible board edge aligns with screen edge,
-        # shifted up so visible board top touches header bottom
-        self.body_x = -bg_left_inset
-        self.body_y = self.header_y + self.header_height - bg_top_inset
-
-        # Keep self.height for text padding calculations
-        self.height = self.body_height
-
-        # Body text font
-        try:
-            self.font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', max(14, int(screen_height / 47)))
-        except (FileNotFoundError, OSError):
-            self.font = pygame.font.SysFont('serif', max(14, int(screen_height / 47)))
-
-        # Speaker name font (bold, slightly smaller)
-        try:
-            self.speaker_font = pygame.font.Font('assets/fonts/Cinzel-Bold.ttf', max(13, int(screen_height / 52)))
-        except (FileNotFoundError, OSError):
-            self.speaker_font = pygame.font.SysFont('serif', max(13, int(screen_height / 52)), bold=True)
-
-    def set_text(self, text, speaker=None):
-        """Update the displayed text and optionally the speaker."""
-        self.text = text
-        if speaker is not None:
-            self.speaker = speaker
-
-    def render(self, screen):
-        """Draw the speaker header + transmission board overlay."""
-        # Draw body first (TransmissionBG.png) — its transparent padding won't cover the header
-        if self.bg_surface:
-            screen.blit(self.bg_surface, (self.body_x, self.body_y))
-        else:
-            panel_rect = pygame.Rect(self.body_x, self.body_y, self.width, self.body_height)
-            bg = pygame.Surface((self.width, self.body_height), pygame.SRCALPHA)
-            bg.fill((20, 20, 30, 220))
-            screen.blit(bg, (self.body_x, self.body_y))
-            pygame.draw.rect(screen, (180, 160, 100), panel_rect, 2)
-
-        # Draw speaker header (GMenuButton.png) on top
-        if self.header_surface:
-            screen.blit(self.header_surface, (self.header_x, self.header_y))
-        else:
-            hdr_bg = pygame.Surface((self.header_width, self.header_height), pygame.SRCALPHA)
-            hdr_bg.fill((40, 30, 20, 230))
-            screen.blit(hdr_bg, (self.header_x, self.header_y))
-            pygame.draw.rect(screen, (180, 160, 100),
-                             pygame.Rect(self.header_x, self.header_y,
-                                         self.header_width, self.header_height), 2)
-
-        # Draw speaker name centered on header
-        if self.speaker:
-            speaker_surface = self.speaker_font.render(self.speaker, True, (255, 255, 240))
-            sx = self.header_x + (self.header_width - speaker_surface.get_width()) // 2
-            sy = self.header_y + (self.header_height - speaker_surface.get_height()) // 2
-            screen.blit(speaker_surface, (sx, sy))
-
-        # Render wrapped text inside the visible body area
-        padding_x = int(self.width * 0.12)
-        padding_y = int(self.body_height * 0.25)
-        text_area_width = self.width - 2 * padding_x
-        self._render_wrapped_text(screen, self.text, self.body_x + padding_x,
-                                  self.body_y + padding_y, text_area_width)
-
-    def _render_wrapped_text(self, screen, text, x, y, max_width):
-        """Render text with word wrapping."""
-        words = text.split(' ')
-        lines = []
-        current_line = ''
-        for word in words:
-            test_line = current_line + (' ' if current_line else '') + word
-            test_surface = self.font.render(test_line, True, (255, 255, 255))
-            if test_surface.get_width() > max_width and current_line:
-                lines.append(current_line)
-                current_line = word
-            else:
-                current_line = test_line
-        if current_line:
-            lines.append(current_line)
-
-        line_height = self.font.get_linesize()
-        for i, line in enumerate(lines):
-            line_surface = self.font.render(line, True, (255, 255, 240))
-            screen.blit(line_surface, (x, y + i * line_height))
-
-
-# ============================================================================
-# CAMERA PAN ANIMATION
-# ============================================================================
-
-class CameraPanAnimation:
-    """Smooth camera pan from current position to a target territory center."""
-
-    def __init__(self, camera_handler, target_center_world, duration, screen_width, map_area_height):
-        self.camera = camera_handler
-        self.target_center = target_center_world
-        self.duration = duration
-        self.screen_width = screen_width
-        self.map_area_height = map_area_height
-        self.elapsed = 0.0
-        self.active = True
-
-        # Calculate start center from current camera position
-        screen_cx = screen_width / 2.0
-        screen_cy = map_area_height / 2.0
-        self.start_center = (
-            self.camera.offset[0] + screen_cx / self.camera.zoom,
-            self.camera.offset[1] + screen_cy / self.camera.zoom
-        )
-
-    def update(self, delta_time):
-        """Update animation each frame. Returns True while still animating."""
-        if not self.active:
-            return False
-
-        self.elapsed += delta_time
-        progress = min(1.0, self.elapsed / self.duration)
-
-        # Ease-in-out for smooth pan
-        if progress < 0.5:
-            eased = 2 * progress * progress
-        else:
-            eased = 1 - pow(-2 * progress + 2, 2) / 2
-
-        # Interpolate center position
-        current_x = self.start_center[0] + (self.target_center[0] - self.start_center[0]) * eased
-        current_y = self.start_center[1] + (self.target_center[1] - self.start_center[1]) * eased
-
-        # Update camera offset
-        screen_cx = self.screen_width / 2.0
-        screen_cy = self.map_area_height / 2.0
-        self.camera.offset[0] = current_x - screen_cx / self.camera.zoom
-        self.camera.offset[1] = current_y - screen_cy / self.camera.zoom
-        self.camera.clamp_to_bounds()
-
-        if progress >= 1.0:
-            self.active = False
-        return self.active
-
-
-class CameraZoomAnimation:
-    """Smooth camera zoom animation centered on a target point."""
-
-    def __init__(self, camera_handler, start_zoom, target_zoom, duration, target_center_world,
-                 screen_width, map_area_height):
-        self.camera = camera_handler
-        self.start_zoom = start_zoom
-        self.target_zoom = target_zoom
-        self.duration = duration
-        self.target_center = target_center_world
-        self.screen_width = screen_width
-        self.map_area_height = map_area_height
-        self.elapsed = 0.0
-        self.active = True
-
-        # Set starting zoom and position
-        self.camera.zoom = start_zoom
-        self._update_camera_position(0.0)
-
-    def update(self, delta_time):
-        """Update animation each frame. Returns True while still animating."""
-        if not self.active:
-            return False
-        self.elapsed += delta_time
-        progress = min(1.0, self.elapsed / self.duration)
-
-        # Ease-out cubic for smooth deceleration
-        eased = 1.0 - pow(1.0 - progress, 3)
-
-        # Interpolate zoom
-        self.camera.zoom = self.start_zoom + (self.target_zoom - self.start_zoom) * eased
-
-        # Keep target centered
-        self._update_camera_position(eased)
-
-        if progress >= 1.0:
-            self.active = False
-        return self.active
-
-    def _update_camera_position(self, progress):
-        """Adjust camera offset to keep target_center in screen center."""
-        screen_cx = self.screen_width / 2.0
-        screen_cy = self.map_area_height / 2.0
-        self.camera.offset[0] = self.target_center[0] - screen_cx / self.camera.zoom
-        self.camera.offset[1] = self.target_center[1] - screen_cy / self.camera.zoom
-        self.camera.clamp_to_bounds()
+# Phase 2C: TransmissionOverlay, CameraPanAnimation, CameraZoomAnimation
+# are now imported from campaign_utils.py (see imports at top of file).
 
 
 # ============================================================================
@@ -1357,77 +1113,16 @@ class Mission2:
         self._defeat_waiting = True
 
     def _update_defeat_sequence(self, delta_time):
-        """Update the defeat sequence animation. Returns 'exit' when done."""
-        # Wait for transmission to finish (timer is incremented by gameplay timer block in update())
-        if self._pending_defeat:
-            if not self.transmission_overlay:
-                # Transmission expired (cleared by gameplay timer) — start defeat animation
-                self._pending_defeat = False
-                self.defeat_sequence_active = True
-                self.defeat_phase = 'fade'
-                self.defeat_timer = 0.0
-                # Load defeat image
-                try:
-                    self.defeat_image = pygame.image.load('assets/defeatscrn.png').convert_alpha()
-                except pygame.error:
-                    self.defeat_image = None
-            return None
-
-        if not self.defeat_sequence_active:
-            return None
-
-        self.defeat_timer += delta_time
-
-        if self.defeat_phase == 'fade':
-            fade_duration = 0.5
-            progress = min(self.defeat_timer / fade_duration, 1.0)
-            self.defeat_fade_alpha = int(255 * progress)
-            if progress >= 1.0:
-                self.defeat_phase = 'image_grow'
-                self.defeat_timer = 0.0
-
-        elif self.defeat_phase == 'image_grow':
-            grow_duration = 0.3
-            progress = min(self.defeat_timer / grow_duration, 1.0)
-            self.defeat_image_scale = 0.75 * (1.0 - (1.0 - progress) ** 2)
-            if progress >= 1.0:
-                self.defeat_phase = 'image_hold'
-                self.defeat_timer = 0.0
-
-        elif self.defeat_phase == 'image_hold':
-            hold_duration = 5.0
-            if self.defeat_timer >= hold_duration:
-                self.defeat_phase = 'exit'
-                return 'exit'
-
-        return None
+        """Update the defeat sequence animation. Returns 'exit' when done.
+        Phase 2C: delegates to shared update_endgame_sequence() from campaign_utils.
+        """
+        return update_endgame_sequence(self, delta_time, 'defeat')
 
     def _render_defeat_sequence(self, screen):
-        """Render the defeat sequence overlay."""
-        if not self.defeat_sequence_active:
-            return
-
-        screen_width, screen_height = screen.get_size()
-
-        # Draw black overlay (fade)
-        if self.defeat_fade_alpha > 0:
-            overlay = pygame.Surface((screen_width, screen_height))
-            overlay.fill((0, 0, 0))
-            overlay.set_alpha(self.defeat_fade_alpha)
-            screen.blit(overlay, (0, 0))
-
-        # Draw defeat image (grows from center)
-        if self.defeat_phase in ('image_grow', 'image_hold') and self.defeat_image:
-            img_width, img_height = self.defeat_image.get_size()
-            scale = max(0.01, self.defeat_image_scale)
-            scaled_width = int(img_width * scale)
-            scaled_height = int(img_height * scale)
-
-            if scaled_width > 0 and scaled_height > 0:
-                scaled_img = pygame.transform.smoothscale(self.defeat_image, (scaled_width, scaled_height))
-                x = (screen_width - scaled_width) // 2
-                y = (screen_height - scaled_height) // 2
-                screen.blit(scaled_img, (x, y))
+        """Render the defeat sequence overlay.
+        Phase 2C: delegates to shared render_endgame_sequence() from campaign_utils.
+        """
+        render_endgame_sequence(self, screen, 'defeat')
 
     def get_bonus_conditions(self):
         """Return bonus condition flags for achievement system."""
@@ -1454,77 +1149,16 @@ class Mission2:
     # ========================================================================
 
     def _update_victory_sequence(self, delta_time):
-        """Update the victory sequence animation. Returns 'exit' when done."""
-        # Wait for transmission to finish (timer is incremented by gameplay timer block in update())
-        if hasattr(self, '_pending_victory') and self._pending_victory:
-            if not self.transmission_overlay:
-                # Transmission expired (cleared by gameplay timer) — start victory animation
-                self._pending_victory = False
-                self.victory_sequence_active = True
-                self.victory_phase = 'fade'
-                self.victory_timer = 0.0
-                # Load victory image
-                try:
-                    self.victory_image = pygame.image.load('assets/victoryscrn.png').convert_alpha()
-                except pygame.error:
-                    self.victory_image = None
-            return None
-
-        if not self.victory_sequence_active:
-            return None
-
-        self.victory_timer += delta_time
-
-        if self.victory_phase == 'fade':
-            fade_duration = 0.5
-            progress = min(self.victory_timer / fade_duration, 1.0)
-            self.victory_fade_alpha = int(255 * progress)
-            if progress >= 1.0:
-                self.victory_phase = 'image_grow'
-                self.victory_timer = 0.0
-
-        elif self.victory_phase == 'image_grow':
-            grow_duration = 0.3
-            progress = min(self.victory_timer / grow_duration, 1.0)
-            self.victory_image_scale = 0.75 * (1.0 - (1.0 - progress) ** 2)
-            if progress >= 1.0:
-                self.victory_phase = 'image_hold'
-                self.victory_timer = 0.0
-
-        elif self.victory_phase == 'image_hold':
-            hold_duration = 5.0
-            if self.victory_timer >= hold_duration:
-                self.victory_phase = 'exit'
-                return 'exit'
-
-        return None
+        """Update the victory sequence animation. Returns 'exit' when done.
+        Phase 2C: delegates to shared update_endgame_sequence() from campaign_utils.
+        """
+        return update_endgame_sequence(self, delta_time, 'victory')
 
     def _render_victory_sequence(self, screen):
-        """Render the victory sequence overlay."""
-        if not self.victory_sequence_active:
-            return
-
-        screen_width, screen_height = screen.get_size()
-
-        # Draw black overlay (fade)
-        if self.victory_fade_alpha > 0:
-            overlay = pygame.Surface((screen_width, screen_height))
-            overlay.fill((0, 0, 0))
-            overlay.set_alpha(self.victory_fade_alpha)
-            screen.blit(overlay, (0, 0))
-
-        # Draw victory image (grows from center)
-        if self.victory_phase in ('image_grow', 'image_hold') and self.victory_image:
-            img_width, img_height = self.victory_image.get_size()
-            scale = max(0.01, self.victory_image_scale)
-            scaled_width = int(img_width * scale)
-            scaled_height = int(img_height * scale)
-
-            if scaled_width > 0 and scaled_height > 0:
-                scaled_img = pygame.transform.smoothscale(self.victory_image, (scaled_width, scaled_height))
-                x = (screen_width - scaled_width) // 2
-                y = (screen_height - scaled_height) // 2
-                screen.blit(scaled_img, (x, y))
+        """Render the victory sequence overlay.
+        Phase 2C: delegates to shared render_endgame_sequence() from campaign_utils.
+        """
+        render_endgame_sequence(self, screen, 'victory')
 
     # ========================================================================
     # RENDER

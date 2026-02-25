@@ -2,6 +2,26 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-25 - Phase 2C: Extract Shared Campaign Utilities
+
+### Refactoring
+- **Extracted `campaign_utils.py`** - New shared module containing campaign classes that were duplicated across missions 2, 3, and 4:
+  - `TransmissionOverlay` (~120 lines, was duplicated x3) - narrative text overlay with speaker header
+  - `CameraPanAnimation` (~50 lines, was duplicated x2) - smooth camera pan between territories
+  - `CameraZoomAnimation` (~40 lines, was duplicated x3) - smooth camera zoom to territory
+  - `update_endgame_sequence()` / `render_endgame_sequence()` (~80 lines, was duplicated x6) - victory/defeat animation helpers
+- **Fixed CameraZoomAnimation return value inconsistency in Mission 4** - Mission 4's old version returned True=done (inverted from missions 2/3 which return True=still-animating). Unified to match missions 2/3 convention; Mission 4 caller updated to check `.active` instead.
+- **Net reduction:** ~700 lines of duplicated code eliminated
+
+### New Files
+- `campaign_utils.py` - Shared campaign utilities
+
+### Modified Files
+- `campaign_mission_2.py` - Replaced local TransmissionOverlay, CameraPanAnimation, CameraZoomAnimation, victory/defeat sequences with imports from campaign_utils
+- `campaign_mission_3.py` - Replaced local TransmissionOverlay, CameraPanAnimation, CameraZoomAnimation, victory/defeat sequences with imports from campaign_utils
+- `campaign_mission_4.py` - Replaced local TransmissionOverlay, CameraZoomAnimation, victory/defeat sequences with imports from campaign_utils; fixed CameraZoomAnimation constructor call and return value handling
+- `docs/CODE_GUIDE.md` - Updated Campaign System section to document campaign_utils.py and shared utilities
+
 ## 2026-02-24 - Campaign Missions 5 & 6 Infrastructure + Campaign Screen Pagination
 
 ### New Feature

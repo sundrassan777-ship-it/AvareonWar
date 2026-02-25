@@ -1763,11 +1763,15 @@ Campaign missions are self-contained modules that:
 - **Territory Filtering:** `map_data.set_enabled_territories()` limits visible territories
 - **Display Names:** `map_data.set_territory_display_names()` renames territories for the mission
 - **AI Control:** `block_ai` property prevents normal AI, mission handles turns
-- **Transmissions:** `TransmissionOverlay` class shows narrative text
-- **Camera Animations:** `CameraPanAnimation`, `CameraZoomAnimation` for cinematics
+- **Shared Utilities:** `campaign_utils.py` contains shared classes used by missions 2-4+:
+  - `TransmissionOverlay` - narrative text overlay with speaker header
+  - `CameraPanAnimation` - smooth camera pan between territories
+  - `CameraZoomAnimation` - smooth camera zoom to a territory
+  - `update_endgame_sequence()` / `render_endgame_sequence()` - victory/defeat animation helpers
 
 ### Files
 
+- [campaign_utils.py](../campaign_utils.py) - Shared campaign utilities (TransmissionOverlay, camera animations, endgame sequences)
 - [campaign_screen.py](../campaign_screen.py) - Campaign menu UI
 - [tutorial_mission.py](../tutorial_mission.py) - Tutorial mission (Lobardia)
 - [campaign_mission_2.py](../campaign_mission_2.py) - Early Eastern Conquests (9 territories, 4 players)
@@ -1831,6 +1835,7 @@ Campaign missions are self-contained modules that:
 
 **Steps:**
 1. Create `campaign_mission_N.py` based on `campaign_mission_2.py` template
+   - Import shared utilities: `from campaign_utils import TransmissionOverlay, CameraPanAnimation, CameraZoomAnimation, update_endgame_sequence, render_endgame_sequence`
 2. Define constants:
    ```python
    MISSION_N_TERRITORIES = ["Territory1", "Territory2", ...]
