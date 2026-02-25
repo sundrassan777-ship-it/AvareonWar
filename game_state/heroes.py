@@ -92,11 +92,11 @@ class HeroMixin:
         self.player_gold[self.current_player] -= hero_cost
         self._track_stat(self.current_player, 'gold_spent', hero_cost)
 
-        # 9. Add to training queue
+        # 9. Add to training queue — store paid cost for accurate refund on cancel (H1 fix)
         training_time = self.HERO_TYPES[hero_type]['training_time']
         if territory not in self.hero_training_queue:
             self.hero_training_queue[territory] = {}
-        self.hero_training_queue[territory][keep_plot_index] = (hero_type, training_time)
+        self.hero_training_queue[territory][keep_plot_index] = (hero_type, training_time, hero_cost)
 
         # 10. Mark as owned (prevents duplicate training)
         self.hero_ownership[self.current_player].add(hero_type)
@@ -111,12 +111,19 @@ class HeroMixin:
             keep_plot_index not in self.hero_training_queue[territory]):
             return False
 
-        # 2. Get hero info and calculate refund (must match what was paid)
-        hero_type, _ = self.hero_training_queue[territory][keep_plot_index]
+        # 2. Get hero info — H1 fix: use stored paid_cost for accurate refund
+        entry = self.hero_training_queue[territory][keep_plot_index]
+        if len(entry) == 3:
+            hero_type, _, paid_cost = entry
+        else:
+            # Backwards compat: old format without paid_cost
+            hero_type, _ = entry
+            owner = self.territory_owners[territory]
+            paid_cost = self.get_hero_cost(hero_type, owner)
         owner = self.territory_owners[territory]
-        hero_cost = self.get_hero_cost(hero_type, owner)
 
-        # 3. 100% refund (key difference!)
+        # 3. 100% refund of what was actually paid (key difference!)
+        hero_cost = paid_cost
         self.player_gold[owner] += hero_cost
 
         # 4. Remove from queue
@@ -146,7 +153,9 @@ class HeroMixin:
 
             keeps_to_remove = []
 
-            for keep_plot_index, (hero_type, turns_remaining) in list(keeps_dict.items()):
+            for keep_plot_index, entry in list(keeps_dict.items()):
+                # H1 fix: queue entries are now (hero_type, turns, paid_cost) 3-tuples
+                hero_type, turns_remaining = entry[0], entry[1]
                 # Verify Keep still exists
                 keep_exists = (territory in self.buildings and
                               keep_plot_index in self.buildings[territory] and
@@ -197,8 +206,9 @@ class HeroMixin:
                     keeps_to_remove.append(keep_plot_index)
                     # NOTE: Keep in hero_ownership - hero is owned!
                 else:
-                    # Update timer
-                    keeps_dict[keep_plot_index] = (hero_type, turns_remaining)
+                    # Update timer — preserve paid_cost in 3rd slot (H1 fix)
+                    paid_cost = entry[2] if len(entry) == 3 else 0
+                    keeps_dict[keep_plot_index] = (hero_type, turns_remaining, paid_cost)
 
             # Clean up
             for keep_plot_index in keeps_to_remove:
@@ -388,9 +398,12 @@ class HeroMixin:
                 #   - Player 1 turn starts: decrement 1->0, effect expires
                 self.hero_silence_status[player_index] = self.num_players
 
-        # Record activation time for visual effects
-        import pygame
-        self.silence_activation_time = pygame.time.get_ticks()
+        # M5 fix: Guard pygame import for headless (test) environments
+        try:
+            import pygame
+            self.silence_activation_time = pygame.time.get_ticks()
+        except Exception:
+            self.silence_activation_time = 0
 
         # Add message to action log
         self.add_message(f"Player {current_player + 1}: {caster_hero_name} casts Vow of Silence!")

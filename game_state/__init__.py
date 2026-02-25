@@ -903,6 +903,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             'armies_unmoved': dict(sorted(self.armies_unmoved.items())),
             'player_gold': self.player_gold.copy(),
             'buildings': {t: dict(sorted(plots.items())) for t, plots in sorted(self.buildings.items())},
+            # L2 fix: Include heroes, research, and building XP in checksum
+            'heroes': {str(k): sorted(v.keys()) for k, v in self.heroes.items() if v},
+            'tech_researched': {str(k): sorted(list(v)) for k, v in self.player_tech_researched.items() if v},
+            'building_xp': {t: dict(sorted(plots.items())) for t, plots in sorted(self.building_xp.items()) if plots},
             # Note: We don't include chat, messages, or UI state
         }
 

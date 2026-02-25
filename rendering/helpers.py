@@ -14,6 +14,8 @@ Classes:
 These were extracted from main.py to eliminate code duplication and improve maintainability.
 """
 
+from collections import OrderedDict
+
 import pygame
 from config.constants import *
 from utils.colors import lighten_color, brighten_color
@@ -53,7 +55,7 @@ class DrawingHelpers:
         self._button_bg_cache = {}
         # PERFORMANCE: Text rendering cache for button labels (avoids font.render() every frame)
         # Key: (text, id(font), color) -> pygame.Surface
-        self.text_cache = {}
+        self.text_cache = OrderedDict()  # M10 fix: OrderedDict for LRU eviction
         self._text_cache_max_size = 200
     
     def update_separator(self, separator_image, separator_width):
@@ -157,11 +159,15 @@ class DrawingHelpers:
             cache_key = (text, id(font), text_color)
             text_surf = self.text_cache.get(cache_key)
             if text_surf is None:
+                # M10 fix: LRU eviction — remove least recently used, not FIFO
                 if len(self.text_cache) >= self._text_cache_max_size:
                     oldest_key = next(iter(self.text_cache))
                     del self.text_cache[oldest_key]
                 text_surf = font.render(text, True, text_color)
                 self.text_cache[cache_key] = text_surf
+            else:
+                # M10 fix: Move to end on access (LRU behavior)
+                self.text_cache.move_to_end(cache_key)
             text_rect = text_surf.get_rect(center=rect.center)
             self.screen.blit(text_surf, text_rect)
 

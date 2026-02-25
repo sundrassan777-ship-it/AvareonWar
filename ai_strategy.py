@@ -152,8 +152,9 @@ class ThreatAnalyzer:
         for neighbor in neighbors:
             neighbor_owner = game_state.territory_owners.get(neighbor, -1)
 
-            # Enemy neighbor increases threat
-            if neighbor_owner != owner and neighbor_owner != -1 and neighbor_owner != player_index:
+            # H6 fix: Exclude allies from threat calculation (they're friendly)
+            if neighbor_owner != owner and neighbor_owner != -1 and neighbor_owner != player_index \
+                    and not game_state.are_allies(player_index, neighbor_owner):
                 # FPS OPTIMIZATION 5B: Use cached territory armies when available
                 # IMPORTANT: Use total armies (all garrisons) for threat assessment
                 # R4: Use .get() for safe access, consistent with ai_military.py / ai_hero.py

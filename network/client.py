@@ -520,7 +520,8 @@ class NetworkClient:
             timeout = 5.0
             # C6: Use monotonic clock -- immune to NTP sync / daylight saving shifts
             start_time = time.monotonic()
-            while self.player_index is None or self.player_index < 0:
+            # L7 fix: player_index is always None or valid int, never negative
+            while self.player_index is None:
                 if time.monotonic() - start_time > timeout:
                     logger.warning("Reconnection timeout - no response from server")
                     self.disconnect()

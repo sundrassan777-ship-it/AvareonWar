@@ -15,7 +15,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import map_data
-map_data.load_polygons()  # Must be called FIRST
+# H12 fix: conftest.py autouse fixture handles load_polygons() + cleanup
 
 from game_state import GameState
 
@@ -23,13 +23,11 @@ from game_state import GameState
 @pytest.fixture
 def game():
     """Create a fresh GameState with 2 human players, skipping setup phase.
-    Reloads map_data to ensure clean state (campaign tests may contaminate it).
+    L10 fix: conftest.py autouse fixture handles map_data cleanup.
 
     All territories start neutral (owner=-1), each player starts with 100 gold,
     no buildings, no heroes, no tech researched.
     """
-    map_data.load_polygons()
-    map_data.clear_enabled_territories()  # Reset campaign territory filtering
     gs = GameState(
         num_players=2,
         player_is_ai=[False, False],
@@ -250,14 +248,16 @@ class TestTaxation:
 
     def test_taxation_reduces_gold(self, game):
         """Higher tax level should reduce gold by the expected percentage."""
-        game.taxation_level = 2  # 50% tax rate
+        # M14 fix: Use game's actual tax rates instead of hardcoded assumption
+        game.taxation_level = 2  # index 2 = 50% in default tax_rates
         game.player_gold[0] = 200
+        expected_rate = [0.0, 0.25, 0.5, 0.75, 1.0][game.taxation_level]
 
         game.apply_taxation(0)
 
-        # 50% of 200 = 100 deducted, leaving 100
-        assert game.player_gold[0] == 100, (
-            f"Gold after 50% tax on 200 should be 100, got {game.player_gold[0]}"
+        expected_gold = 200 - int(200 * expected_rate)
+        assert game.player_gold[0] == expected_gold, (
+            f"Gold after {expected_rate*100:.0f}% tax on 200 should be {expected_gold}, got {game.player_gold[0]}"
         )
 
     def test_taxation_cannot_go_negative(self, game):

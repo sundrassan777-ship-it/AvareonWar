@@ -18,16 +18,14 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import map_data
-map_data.load_polygons()  # Must be called FIRST
+# H12 fix: conftest.py autouse fixture handles load_polygons() + cleanup
 
 from game_state import GameState
 
 
 @pytest.fixture
 def game():
-    """Reloads map_data to ensure clean state (campaign tests may contaminate it)."""
-    map_data.load_polygons()
-    map_data.clear_enabled_territories()  # Reset campaign territory filtering
+    """L10 fix: conftest.py autouse fixture handles map_data cleanup."""
     gs = GameState(num_players=2, player_is_ai=[False, False], player_ai_difficulty=[1, 1], skip_setup_phase=True)
     return gs
 

@@ -305,6 +305,10 @@ def run_sequential_test(num_turns=40, verbose=True):
                 turn_actions.append(num_actions)
                 turn_battles += battles
 
+                # M16 fix: Track AI failures instead of silently swallowing
+                if not success:
+                    turn_errors.append((turn, player, "AI turn raised exception"))
+
                 if verbose and (num_actions > 0 or battles > 0):
                     print(f"  P{player+1}: {num_actions} actions, {battles} battles")
 

@@ -328,12 +328,11 @@ class AIPlayer:
             logger.info(f"Player {self.player_index + 1} thinking... ({delay:.1f}s)")
             time.sleep(delay)
 
-            # C2 fix: Snapshot game state under lock before planning to avoid
-            # reading game_state while the main thread may be modifying it.
-            # Planning reads many game_state fields; lock ensures consistent snapshot.
-            with self._game_state_lock:
-                self.actions_taken = []
-                self._plan_turn_actions(game_state)
+            # C2 fix: Planning is read-only — no lock needed here.
+            # Lock is held only around actual game state mutations:
+            # _execute_action (line 527), next_player (line 372), battle resolution (line 824).
+            self.actions_taken = []
+            self._plan_turn_actions(game_state)
 
             logger.info(f"Player {self.player_index + 1} planned {len(self.actions_taken)} actions")
 
@@ -623,7 +622,9 @@ class AIPlayer:
                     # Silently skip - AI often over-plans moves from same territory
                     # This is expected behavior when units are already ordered
                     pass
-                elif not army_count or army_count <= 0:
+                elif army_count is not None and army_count <= 0:
+                    # C1 fix: Only catch explicitly invalid counts (<=0).
+                    # None means "move all" and is handled in the else branch below.
                     logger.warning(f"Invalid army count: {army_count}")
                 else:
                     # Determine how many units to move
@@ -687,13 +688,13 @@ class AIPlayer:
                         1 for owner in game_state.territory_owners.values()
                         if owner == self.player_index
                     )
-                    # Add armies to a random owned territory
+                    # H5 fix: Use scored target from planning, fall back to random
                     owned_terrs = [
                         t for t, owner in game_state.territory_owners.items()
                         if owner == self.player_index
                     ]
                     if owned_terrs:
-                        target_terr = random.choice(owned_terrs)
+                        target_terr = target if target and target in owned_terrs else random.choice(owned_terrs)
                         bonus_armies = territory_count // 2
                         # Add to garrison system
                         game_state.add_garrison(

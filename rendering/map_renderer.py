@@ -83,12 +83,10 @@ class MapRenderer:
         self.scaled_border_cache = {}
 
         # Surface reuse pools to avoid creating thousands of surfaces per frame
-        # Reusable full-screen overlay surface for territory overlays
-        self.fullscreen_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        # FPS OPTIMIZATION: Reusable hover overlay surface (avoid 5.44MB allocation per frame)
-        # Old: Create new Surface every frame when hovering
-        # New: Pre-create once, clear with fill() each frame
-        self.hover_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        # H8 fix: Track overlay size so they can be rebuilt on window resize
+        self._overlay_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.fullscreen_overlay = pygame.Surface(self._overlay_size, pygame.SRCALPHA)
+        self.hover_overlay = pygame.Surface(self._overlay_size, pygame.SRCALPHA)
         # Pools of reusable surfaces by size for overlays, glows, and effects
         self.surface_pool = {}  # key = (width, height), value = list of surfaces
         self.max_pool_size = 50  # Limit pool size to prevent memory bloat
@@ -333,9 +331,10 @@ class MapRenderer:
         if cache_key in self.glitter_overlay_cache:
             return self.glitter_overlay_cache[cache_key]
 
-        # Fallback: create on demand for unusual sizes
+        # M11 fix: Cache fallback surfaces too (avoids per-frame allocation)
         surface = pygame.Surface((size, size), pygame.SRCALPHA)
         surface.fill((255, 255, 255, alpha))
+        self.glitter_overlay_cache[cache_key] = surface
         return surface
 
     def get_cached_font(self, size):
@@ -730,6 +729,13 @@ class MapRenderer:
         self.game.screen.blit(self.fullscreen_overlay, (0, 0))
     def draw_territories(self):
         """Draw territory overlays, markers and ownership colors"""
+        # H8 fix: Rebuild overlay surfaces if window was resized
+        current_size = (self.game.screen.get_width(), self.game.screen.get_height())
+        if current_size != self._overlay_size:
+            self._overlay_size = current_size
+            self.fullscreen_overlay = pygame.Surface(current_size, pygame.SRCALPHA)
+            self.hover_overlay = pygame.Surface(current_size, pygame.SRCALPHA)
+
         # PHASE 1 OPTIMIZATION: Pre-compute values used multiple times per frame
         # Cache mouse position in world coordinates (used for all hover checks)
         mouse_screen_x, mouse_screen_y = self.game.mouse_pos

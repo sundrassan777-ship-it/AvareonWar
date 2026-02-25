@@ -537,9 +537,11 @@ class MilitaryMixin:
             # Leave Nothing Behind: Refund 50% of cost for destroyed Farms and Mines
             if (destroyed_farms > 0 or destroyed_mines > 0) and previous_owner is not None and previous_owner >= 0:
                 if 'tech_0_2' in self.player_tech_researched.get(previous_owner, set()):
-                    # Calculate recovery (50% of building costs)
-                    farm_recovery = destroyed_farms * 15  # 50% of 30 gold Farm cost
-                    mine_recovery = destroyed_mines * 20  # 50% of 40 gold Mine cost
+                    # L4 fix: Use actual building costs instead of hardcoded values
+                    farm_cost = self.building_types.get('Farm', {}).get('cost', 30)
+                    mine_cost = self.building_types.get('Mine', {}).get('cost', 40)
+                    farm_recovery = destroyed_farms * (farm_cost // 2)  # 50% recovery
+                    mine_recovery = destroyed_mines * (mine_cost // 2)  # 50% recovery
                     total_recovery = farm_recovery + mine_recovery
 
                     if total_recovery > 0:
@@ -1085,8 +1087,8 @@ class MilitaryMixin:
                             if unit.get('status') == 'ordered':
                                 unit['status'] = 'ready'
 
-                    # Update garrison counts (use actual removed count)
-                    garrison['unmoved'] -= actual_removed
+                    # M3 fix: Clamp to 0 to prevent negative unmoved count
+                    garrison['unmoved'] = max(0, garrison['unmoved'] - actual_removed)
 
                     # Sync to legacy arrays ONLY if this player is the owner
                     # (Allies moving shouldn't affect owner's legacy data)
@@ -1856,7 +1858,13 @@ class MilitaryMixin:
                         # Phase 2E: Use _make_unit() factory for consistent unit dict creation
                         self.army_units[keep_territory].append(self._make_unit(retreating_unit_type, next_id))
 
-                        # Update army counters for Keep territory
+                        # M4 fix: Update garrison system alongside legacy counters
+                        self.add_garrison(
+                            keep_territory, loser_player,
+                            unmoved=0, moved=1,
+                            units=[self._make_unit(retreating_unit_type, next_id)]
+                        )
+                        # Update legacy army counters for Keep territory
                         self.armies_moved[keep_territory] += 1
                         self.armies[keep_territory] = self.armies_moved[keep_territory] + self.armies_unmoved[keep_territory]
 

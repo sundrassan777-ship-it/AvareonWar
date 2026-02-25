@@ -275,6 +275,17 @@ class VictoryMixin:
             if territory in self.hero_training_queue:
                 del self.hero_training_queue[territory]
 
+        # M8 fix: Clean up hero cooldowns and silence status for eliminated player
+        if hasattr(self, 'hero_ability_cooldowns') and player_index in self.hero_ability_cooldowns:
+            del self.hero_ability_cooldowns[player_index]
+        if hasattr(self, 'hero_silence_status'):
+            self.hero_silence_status[player_index] = 0
+        # Remove eliminated player's heroes
+        if hasattr(self, 'heroes') and player_index in self.heroes:
+            self.heroes[player_index] = {}
+        if hasattr(self, 'hero_ownership') and player_index in self.hero_ownership:
+            self.hero_ownership[player_index] = set()
+
         # Add message log
         self.add_message(f"")
         self.add_message(f"============================")

@@ -122,7 +122,10 @@ class EconomyMixin:
             if owner == player_index:
                 bonus_type = map_data.get_territory_bonus(territory)
                 if bonus_type:
-                    bonuses[bonus_type] = bonuses.get(bonus_type, 0) + self.BONUS_TYPES[bonus_type]['value']
+                    # M7 fix: Guard against unknown bonus types
+                    bonus_def = self.BONUS_TYPES.get(bonus_type)
+                    if bonus_def:
+                        bonuses[bonus_type] = bonuses.get(bonus_type, 0) + bonus_def['value']
         return bonuses
 
     def get_hero_cost(self, hero_type, player=None):
@@ -361,6 +364,9 @@ class EconomyMixin:
                                 try:
                                     adjacent_territories = map_data.get_neighbors(territory)
                                     for adj_territory in adjacent_territories:
+                                        # M6 fix: Only count Keeps owned by the same player
+                                        if self.territory_owners.get(adj_territory) != owner:
+                                            continue
                                         if adj_territory in self.buildings:
                                             for bldg in self.buildings[adj_territory].values():
                                                 if bldg == 'Keep':

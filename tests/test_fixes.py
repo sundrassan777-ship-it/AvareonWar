@@ -345,33 +345,37 @@ class TestInstanceLevelLock:
     """Tests for AI instance-level locking"""
 
     def test_lock_exists_on_class(self):
-        """Verify lock exists (class-level before fix, instance after)"""
+        """H11 fix: Verify _game_state_lock is class-level (shared by design)."""
         from ai_player import AIPlayer
 
+        # Lock should be a class attribute shared by all instances
+        assert hasattr(AIPlayer, '_game_state_lock'), "Class-level lock must exist"
+
         ai = AIPlayer(player_index=0, difficulty=0)
+        assert ai._game_state_lock is AIPlayer._game_state_lock, \
+            "Instance lock should be the same class-level lock"
 
-        # Lock should exist
-        assert hasattr(AIPlayer, '_game_state_lock') or hasattr(ai, '_game_state_lock')
-
-    def test_multiple_ai_instances_have_locks(self):
-        """Multiple AI instances should have lock access"""
+    def test_multiple_ai_share_game_state_lock(self):
+        """H11 fix: All AI instances share one lock (protects shared game_state)."""
         from ai_player import AIPlayer
 
         ai1 = AIPlayer(player_index=0, difficulty=0)
         ai2 = AIPlayer(player_index=1, difficulty=1)
 
-        # Both should be able to acquire lock
-        # After fix, they would have separate locks (no contention)
-        # Before fix, they share a lock (potential contention)
+        # Class-level lock: both instances reference the SAME lock object
+        assert ai1._game_state_lock is ai2._game_state_lock, \
+            "_game_state_lock must be shared (class-level) to protect game_state"
 
-        # This test just verifies they can both work with locks
-        acquired1 = ai1._game_state_lock.acquire(blocking=False)
-        if acquired1:
-            ai1._game_state_lock.release()
+    def test_turn_lock_is_instance_level(self):
+        """H11 fix: _turn_lock is instance-level (per-AI, prevents double-entry)."""
+        from ai_player import AIPlayer
 
-        acquired2 = ai2._game_state_lock.acquire(blocking=False)
-        if acquired2:
-            ai2._game_state_lock.release()
+        ai1 = AIPlayer(player_index=0, difficulty=0)
+        ai2 = AIPlayer(player_index=1, difficulty=1)
+
+        # Instance-level lock: each AI has its own
+        assert ai1._turn_lock is not ai2._turn_lock, \
+            "_turn_lock must be instance-level (each AI has its own)"
 
 
 # ============================================================================

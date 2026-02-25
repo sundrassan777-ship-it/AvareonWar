@@ -281,36 +281,33 @@ class NetworkServer:
             attempts.append(now)
             self._connection_attempts[client_ip] = attempts
 
-            # Check if we have room for more clients
+            # M13 fix: Hold lock across check + insert to prevent TOCTOU race
             with self._clients_lock:
                 if len(self.clients) >= MAX_CLIENTS:
-                    # Reject - lobby full
                     reject_msg = self.protocol.create_connect_reject("Lobby is full")
                     client_socket.sendall(reject_msg)
                     client_socket.close()
                     logger.warning(f"Rejected connection from {client_address} - lobby full")
                     return
 
-            client_socket.setblocking(False)
+                client_socket.setblocking(False)
 
-            # Find next available player index
-            player_index = self._get_next_player_index()
-            if player_index is None:
-                reject_msg = self.protocol.create_connect_reject("No slots available")
-                client_socket.sendall(reject_msg)
-                client_socket.close()
-                return
+                # Find next available player index
+                player_index = self._get_next_player_index()
+                if player_index is None:
+                    reject_msg = self.protocol.create_connect_reject("No slots available")
+                    client_socket.sendall(reject_msg)
+                    client_socket.close()
+                    return
 
-            # Create client connection object
-            client = ClientConnection(
-                socket=client_socket,
-                address=client_address,
-                player_index=player_index,
-                last_pong_time=time.monotonic()
-            )
+                # Create client connection object
+                client = ClientConnection(
+                    socket=client_socket,
+                    address=client_address,
+                    player_index=player_index,
+                    last_pong_time=time.monotonic()
+                )
 
-            # Add to clients dict
-            with self._clients_lock:
                 self.clients[player_index] = client
 
             logger.info(f"Client connected from {client_address} as Player {player_index + 1}")
@@ -499,7 +496,10 @@ class NetworkServer:
         """Handle connection request from client"""
         data = message.get('data', {})
         client_version = data.get('version')
+        # L6 fix: Validate and truncate player name length
         player_name = data.get('player_name', f"Player {player_index + 1}")
+        if len(player_name) > 32:
+            player_name = player_name[:32]
 
         # Check version compatibility
         from network_config import NETWORK_VERSION

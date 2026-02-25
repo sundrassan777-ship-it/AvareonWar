@@ -642,14 +642,14 @@ class UIRenderer:
         All buttons have hover highlighting and click flash feedback.
         Background is semi-transparent overlay that disables other UI.
         """
-        # Semi-transparent overlay (cached to avoid per-frame allocation)
+        # H7 fix: Use dedicated menu overlay (non-SRCALPHA) to avoid corrupting
+        # _reusable_overlay which other code (battle popups) expects to be SRCALPHA.
         size = (self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
-        if self._reusable_overlay is None or self._reusable_overlay_size != size:
-            self._reusable_overlay = pygame.Surface(size)
-            self._reusable_overlay.set_alpha(180)
-            self._reusable_overlay.fill((0, 0, 0))
-            self._reusable_overlay_size = size
-        self.game.screen.blit(self._reusable_overlay, (0, 0))
+        if not hasattr(self, '_menu_overlay') or self._menu_overlay is None or self._menu_overlay.get_size() != size:
+            self._menu_overlay = pygame.Surface(size)
+            self._menu_overlay.set_alpha(180)
+            self._menu_overlay.fill((0, 0, 0))
+        self.game.screen.blit(self._menu_overlay, (0, 0))
 
         # Menu panel (centered) - Scaled based on 1600×900 reference resolution
         # Uses InGameMenuBG.png as background image
@@ -733,14 +733,13 @@ class UIRenderer:
         All controls have hover highlighting and click flash feedback.
         Background is semi-transparent overlay that disables other UI.
         """
-        # Semi-transparent overlay (reuse cached overlay from draw_game_menu)
+        # H7 fix: Reuse dedicated _menu_overlay (same as draw_game_menu)
         size = (self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
-        if self._reusable_overlay is None or self._reusable_overlay_size != size:
-            self._reusable_overlay = pygame.Surface(size)
-            self._reusable_overlay.set_alpha(180)
-            self._reusable_overlay.fill((0, 0, 0))
-            self._reusable_overlay_size = size
-        self.game.screen.blit(self._reusable_overlay, (0, 0))
+        if not hasattr(self, '_menu_overlay') or self._menu_overlay is None or self._menu_overlay.get_size() != size:
+            self._menu_overlay = pygame.Surface(size)
+            self._menu_overlay.set_alpha(180)
+            self._menu_overlay.fill((0, 0, 0))
+        self.game.screen.blit(self._menu_overlay, (0, 0))
 
         # Menu panel (centered, 3x size of main menu) - Scaled based on 1600×900 reference
         # Uses IGOptMenuBG.png as background image

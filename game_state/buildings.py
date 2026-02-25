@@ -174,10 +174,10 @@ class BuildingMixin:
         else:
             turns_to_build = 1
 
-        # Add to construction queue
+        # Add to construction queue — H2 fix: store paid_cost for accurate refund on cancel
         if territory not in self.under_construction:
             self.under_construction[territory] = {}
-        self.under_construction[territory][plot_index] = (building_type, turns_to_build)
+        self.under_construction[territory][plot_index] = (building_type, turns_to_build, cost)
 
         # Mark this territory as having started construction this turn
         self.buildings_started_this_turn.add(territory)
@@ -263,7 +263,10 @@ class BuildingMixin:
                 continue
 
             for plot_index in list(self.under_construction[territory].keys()):
-                building_type, turns_remaining = self.under_construction[territory][plot_index]
+                # H2 fix: entries are now (building_type, turns, paid_cost) 3-tuples
+                entry = self.under_construction[territory][plot_index]
+                building_type, turns_remaining = entry[0], entry[1]
+                paid_cost = entry[2] if len(entry) == 3 else 0
 
                 # Decrease turns remaining (only on owner's turn)
                 turns_remaining -= 1
@@ -281,8 +284,8 @@ class BuildingMixin:
 
                     completed.append((territory, building_type, plot_index))
                 else:
-                    # Update turns remaining
-                    self.under_construction[territory][plot_index] = (building_type, turns_remaining)
+                    # Update turns remaining — preserve paid_cost
+                    self.under_construction[territory][plot_index] = (building_type, turns_remaining, paid_cost)
 
         # Add messages for completed buildings (stats tracked at start_construction time)
         for territory, building_type, plot_index in completed:
@@ -300,13 +303,18 @@ class BuildingMixin:
         if plot_index not in self.under_construction[territory]:
             return False
 
-        building_type, _ = self.under_construction[territory][plot_index]
+        # H2 fix: use stored paid_cost for accurate refund
+        entry = self.under_construction[territory][plot_index]
+        building_type = entry[0]
         owner = self.territory_owners[territory]
 
-        # Get effective cost with all discounts applied (what was actually paid)
-        cost = self.get_building_cost(building_type, owner)
+        if len(entry) == 3:
+            cost = entry[2]  # paid_cost stored at construction time
+        else:
+            # Backwards compat: old format without paid_cost
+            cost = self.get_building_cost(building_type, owner)
 
-        # Refund 100%
+        # Refund 100% of what was actually paid
         self.player_gold[owner] += cost
 
         # Remove from construction
@@ -643,6 +651,9 @@ class BuildingMixin:
                                 moved=0 if has_haste else 1,
                                 units=[new_unit.copy()]
                             )
+
+                        # M2 fix: Sync legacy garrison data after updating garrison system
+                        self.sync_legacy_garrison_data(territory)
 
                         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
                         self.add_message(f"Player {owner + 1}: {unit_type} trained in {territory}{haste_msg}")

@@ -30,10 +30,8 @@ from game_state import GameState
 @pytest.fixture
 def game():
     """Standard 2-player game with setup phase skipped (phase='playing').
-    Reloads map_data to ensure clean state (campaign tests may contaminate it).
+    L10 fix: conftest.py autouse fixture handles map_data cleanup.
     """
-    map_data.load_polygons()
-    map_data.clear_enabled_territories()  # Reset campaign territory filtering
     gs = GameState(
         num_players=2,
         player_is_ai=[False, False],
@@ -46,8 +44,6 @@ def game():
 @pytest.fixture
 def game_3p():
     """3-player game for Capital Assault multi-player elimination tests."""
-    map_data.load_polygons()
-    map_data.clear_enabled_territories()
     gs = GameState(
         num_players=3,
         player_is_ai=[False, False, False],
@@ -60,8 +56,6 @@ def game_3p():
 @pytest.fixture
 def game_4p():
     """4-player game for team-based victory tests."""
-    map_data.load_polygons()
-    map_data.clear_enabled_territories()
     gs = GameState(
         num_players=4,
         player_is_ai=[False, False, False, False],
@@ -184,6 +178,36 @@ class TestCapitalAssaultVictory:
         result = game.check_victory()
         assert result == 0, "Player 0 should win as last player standing"
         assert game.phase == 'ended', "Phase should be 'ended' after capital assault win"
+        # M15 fix: Also verify game.winner is set correctly
+        assert game.winner == 0, "game.winner should be set to player 0"
+
+    def test_capital_capture_triggers_elimination_and_victory(self, game):
+        """C3 fix: Full Capital Assault flow — eliminate_player → check_victory → winner.
+        Tests the actual capital-capture mechanic end-to-end."""
+        territories = list(game.territory_owners.keys())
+        game.victory_condition = "Capital Assault"
+
+        # Player 0 owns 40 territories, player 1 owns 17
+        for t in territories[:40]:
+            game.territory_owners[t] = 0
+        for t in territories[40:]:
+            game.territory_owners[t] = 1
+
+        # No winner yet — both players alive
+        assert game.check_victory() == -1
+
+        # Simulate capital capture: eliminate player 1
+        game.eliminate_player(1)
+
+        # Player 1's territories should now be neutral
+        for t in territories[40:]:
+            assert game.territory_owners[t] == -1, f"{t} should be neutral after elimination"
+
+        # Now check victory — player 0 is last standing
+        result = game.check_victory()
+        assert result == 0, "Player 0 should win after eliminating player 1"
+        assert game.winner == 0
+        assert game.phase == 'ended'
 
     def test_capital_assault_three_players(self, game_3p):
         """With 3 players, need all others eliminated for victory."""

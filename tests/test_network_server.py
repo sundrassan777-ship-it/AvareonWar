@@ -106,7 +106,8 @@ class TestNetworkServerStartStop:
             result = server.start()
             # On Windows with SO_REUSEADDR, this might succeed, so we just
             # verify the test doesn't crash - the behavior varies by OS
-            assert result in (True, False)
+            # L9 fix: Assert type rather than trivially-true membership
+            assert isinstance(result, bool), f"start() should return bool, got {type(result)}"
         finally:
             server.stop()
             blocking_socket.close()

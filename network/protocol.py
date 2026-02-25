@@ -485,26 +485,6 @@ class NetworkProtocol:
 
         return True
 
-    def validate_sequence(self, message: Dict[str, Any], last_seq: int) -> bool:
-        """
-        Check if a message's sequence number is strictly greater than the last seen.
-
-        Used to detect out-of-order or duplicate messages. Each sender maintains
-        a monotonically increasing sequence number, so a valid next message must
-        have seq > last_seq.
-
-        Args:
-            message: Decoded message dict (must contain 'seq' field)
-            last_seq: The last sequence number received from this sender
-
-        Returns:
-            True if the sequence number is valid (greater than last_seq), False otherwise
-        """
-        seq = message.get('seq')
-        if seq is None:
-            return False
-        return seq > last_seq
-
 
 class MessageBuffer:
     """
@@ -519,13 +499,19 @@ class MessageBuffer:
     # Maximum total buffer size to prevent memory exhaustion from partial messages
     MAX_BUFFER_SIZE = 2 * MAX_MESSAGE_SIZE  # 2 MB
 
-    def add_data(self, data: bytes) -> None:
-        """Add received data to buffer, with overflow protection."""
+    def add_data(self, data: bytes) -> bool:
+        """Add received data to buffer, with overflow protection.
+
+        Returns:
+            True if data was added, False if buffer overflow (caller should disconnect).
+        """
         if len(self.buffer) + len(data) > self.MAX_BUFFER_SIZE:
-            logger.warning(f"Buffer overflow: {len(self.buffer) + len(data)} > {self.MAX_BUFFER_SIZE}, clearing")
+            # M12 fix: Return False so caller can disconnect instead of silently desyncing
+            logger.warning(f"Buffer overflow: {len(self.buffer) + len(data)} > {self.MAX_BUFFER_SIZE}")
             self.buffer = b''
-            return
+            return False
         self.buffer += data
+        return True
 
     def extract_message(self) -> Optional[bytes]:
         """

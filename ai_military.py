@@ -264,11 +264,11 @@ class AttackPlanner:
                     territory, target_territory, available_army, game_state, player_index, cache=cache
                 )
 
-                # Reduce score for distant targets (prefer adjacent over through-ally)
+                # H4 fix: Single penalty for distant targets (was double-penalizing)
                 if not is_adjacent:
-                    score -= 15.0  # Penalty for indirect attacks
-                distance_penalty = (path_distance - 1) * 10
-                score -= distance_penalty
+                    # path_distance > 1 for through-ally; apply one proportional penalty
+                    distance_penalty = (path_distance - 1) * 15
+                    score -= distance_penalty
 
                 # Lower threshold to allow more attacks (was 30.0)
                 if score > 20.0:

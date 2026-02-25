@@ -19,7 +19,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import map_data
-map_data.load_polygons()  # Must be called FIRST before importing GameState
+# H12 fix: conftest.py autouse fixture handles load_polygons() + cleanup
 
 from game_state import GameState, Battle
 
@@ -88,10 +88,8 @@ def _create_battle(territory, attacker, attacker_count, attacker_comp,
 @pytest.fixture
 def game():
     """Create a fresh GameState for each test (skip setup phase).
-    Reloads map_data to ensure clean state (campaign tests may contaminate it).
+    L10 fix: conftest.py autouse fixture handles map_data cleanup.
     """
-    map_data.load_polygons()
-    map_data.clear_enabled_territories()  # Reset campaign territory filtering
     gs = GameState(
         num_players=2,
         player_is_ai=[False, False],
@@ -366,11 +364,15 @@ class TestBattleCounterSystem:
         counter_survivors = battle_counter.surviving_armies
         mirror_survivors = battle_mirror.surviving_armies
 
-        # Counter advantage: 10 vs 10 with advantage -> should have good survivors
-        # Mirror: 12 vs 10 neutral -> raw numerical advantage needed
-        # Counter advantage should yield at least as many survivors starting from FEWER troops
-        assert counter_survivors >= 1, "Counter-advantaged attacker should have survivors"
-        assert mirror_survivors >= 1, "Mirror attacker should have survivors"
+        # H10 fix: Assert comparative advantage, not trivially-true >= 1.
+        # Counter-advantaged attacker (10 vs 10) should do at least as well as
+        # the mirror attacker (12 vs 10) relative to starting troops.
+        counter_ratio = counter_survivors / 10.0  # started with 10
+        mirror_ratio = mirror_survivors / 12.0    # started with 12
+        assert counter_ratio >= mirror_ratio, (
+            f"Counter advantage should yield better survival ratio: "
+            f"counter={counter_ratio:.2f} vs mirror={mirror_ratio:.2f}"
+        )
 
 
 # ===========================================================================
