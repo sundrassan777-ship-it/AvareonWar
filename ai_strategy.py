@@ -19,7 +19,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # FPS OPTIMIZATION 5B: Dispatch dict replaces if/elif chain in _evaluate_buildings
-_BUILDING_VALUES = {'Farm': 3.0, 'Mine': 4.0, 'Barracks': 5.0, 'Keep': 7.0, 'Square': 6.0}
+_BUILDING_VALUES = {'Farm': 3.0, 'Mine': 4.0, 'Barracks': 5.0, 'Keep': 7.0, 'Castle': 9.0, 'Square': 6.0}  # R8 fix: Added Castle (Keep upgrade)
 
 
 class TerritoryScorer:
@@ -139,7 +139,8 @@ class ThreatAnalyzer:
         owner = game_state.territory_owners.get(territory, -1)
         # FPS OPTIMIZATION 5B: Use cached territory armies when available
         # IMPORTANT: Use total armies (all garrisons) for threat assessment
-        garrison = cache.territory_armies[territory] if cache else game_state.get_territory_total_armies(territory)
+        # R4: Use .get() for safe access, consistent with ai_military.py / ai_hero.py
+        garrison = cache.territory_armies.get(territory, 0) if cache else game_state.get_territory_total_armies(territory)
         neighbors = map_data.get_neighbors(territory)
 
         # M15 FIX: Account for keep defense bonus in threat calculation
@@ -155,7 +156,8 @@ class ThreatAnalyzer:
             if neighbor_owner != owner and neighbor_owner != -1 and neighbor_owner != player_index:
                 # FPS OPTIMIZATION 5B: Use cached territory armies when available
                 # IMPORTANT: Use total armies (all garrisons) for threat assessment
-                enemy_army = cache.territory_armies[neighbor] if cache else game_state.get_territory_total_armies(neighbor)
+                # R4: Use .get() for safe access, consistent with ai_military.py / ai_hero.py
+                enemy_army = cache.territory_armies.get(neighbor, 0) if cache else game_state.get_territory_total_armies(neighbor)
 
                 # Undefended territory at enemy border = HIGH threat
                 if effective_garrison == 0:
@@ -297,7 +299,8 @@ class OpportunityDetector:
                 )
                 # FPS OPTIMIZATION 5B: Use cached territory armies when available
                 # IMPORTANT: Use total armies (all garrisons) to evaluate enemy strength
-                enemy_garrison = cache.territory_armies[neighbor] if cache else game_state.get_territory_total_armies(neighbor)
+                # R4: Use .get() for safe access, consistent with ai_military.py / ai_hero.py
+                enemy_garrison = cache.territory_armies.get(neighbor, 0) if cache else game_state.get_territory_total_armies(neighbor)
 
                 # CRITICAL: Check AI player's garrison, not owner's legacy array
                 garrison = game_state.territory_garrisons.get(owned_terr, {}).get(player_index)
@@ -352,7 +355,8 @@ class OpportunityDetector:
             # FPS OPTIMIZATION 5B: Use cached territory armies when available
             # Calculate weakness (low garrison = more weak)
             # IMPORTANT: Use total armies (all garrisons) to assess enemy strength
-            garrison = cache.territory_armies[territory] if cache else game_state.get_territory_total_armies(territory)
+            # R4: Use .get() for safe access, consistent with ai_military.py / ai_hero.py
+            garrison = cache.territory_armies.get(territory, 0) if cache else game_state.get_territory_total_armies(territory)
             weakness = max(0, 20 - garrison)  # Weaker if fewer armies
 
             if weakness > 0:

@@ -55,7 +55,7 @@ class TurnCache:
         self.player_income = game_state.calculate_player_income(player_index)
         self.player_army_count = game_state.get_player_army_count(player_index)
 
-        # Check if player has a Keep or Castle anywhere
+        # Check if player has a Keep or Castle anywhere (completed buildings)
         self.player_has_keep = False
         for terr in self.owned_territories:
             if terr in game_state.buildings:
@@ -63,6 +63,18 @@ class TurnCache:
                     if bt in ('Keep', 'Castle'):
                         self.player_has_keep = True
                         break
+                if self.player_has_keep:
+                    break
+
+        # R4: Also check under-construction Keeps so AI doesn't redundantly
+        # queue a second Keep while one is already being built
+        if not self.player_has_keep:
+            for terr in self.owned_territories:
+                if terr in game_state.under_construction:
+                    for building_tuple in game_state.under_construction[terr].values():
+                        if building_tuple[0] == 'Keep':
+                            self.player_has_keep = True
+                            break
                 if self.player_has_keep:
                     break
 

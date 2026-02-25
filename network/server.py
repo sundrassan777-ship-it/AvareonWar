@@ -141,6 +141,7 @@ class NetworkServer:
         self._connection_attempts = {}  # {ip: [timestamp, ...]}
         self._rate_limit_window = 10.0  # seconds
         self._rate_limit_max = 5  # max connections per window per IP
+        self._last_rate_limit_cleanup = 0  # monotonic time of last stale-entry pruning
 
         # UPnP port forwarding manager (created on demand via setup_upnp())
         self.upnp_manager = None
@@ -710,6 +711,14 @@ class NetworkServer:
         # Note: _disconnect_client will only set self.disconnected when ALL clients are gone
         for player_index in timed_out:
             self._disconnect_client(player_index, f"Player {player_index + 1} timeout")
+
+        # R10: Periodically prune stale rate limit entries to prevent memory leak
+        if current_time - self._last_rate_limit_cleanup > 60.0:
+            self._last_rate_limit_cleanup = current_time
+            stale_ips = [ip for ip, attempts in self._connection_attempts.items()
+                         if not attempts or current_time - attempts[-1] > self._rate_limit_window]
+            for ip in stale_ips:
+                del self._connection_attempts[ip]
 
     def _disconnect_client(self, player_index: int, reason: str = "", allow_reconnect: bool = True):
         """

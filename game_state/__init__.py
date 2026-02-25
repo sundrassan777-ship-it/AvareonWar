@@ -102,9 +102,11 @@ import map_data
 from config.constants import PLAYER_COLORS
 from utils.logger import get_logger
 # Phase 7: Data definitions and mixin imports for decomposed GameState
+# R12: All data defs imported here and set as instance attrs in __init__ for consistency
 from game_state.data_definitions import (
     HERO_TYPES as _HERO_TYPES,
     BUILDING_TYPES as _BUILDING_TYPES,
+    BONUS_TYPES as _BONUS_TYPES,
     build_technologies
 )
 from game_state.garrison import GarrisonMixin
@@ -451,6 +453,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
         # Hero type definitions (extracted to data_definitions.py)
         self.HERO_TYPES = _HERO_TYPES
+
+        # R12: Territory bonus definitions — moved from EconomyMixin class attribute
+        # to instance attribute for consistency with building_types / HERO_TYPES pattern
+        self.BONUS_TYPES = _BONUS_TYPES
 
         # Game phase: 'setup', 'playing', 'ended'
         if skip_setup_phase:
@@ -872,9 +878,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
                 return True
 
             # Check if viewer is on same team as sender
+            # R2 fix: player_teams is a list indexed by player_index, not a dict
             if hasattr(self, 'player_teams') and self.player_teams:
-                sender_team = self.player_teams.get(sender_id, sender_id)
-                viewer_team = self.player_teams.get(viewer_player_id, viewer_player_id)
+                sender_team = self.player_teams[sender_id] if sender_id < len(self.player_teams) else sender_id
+                viewer_team = self.player_teams[viewer_player_id] if viewer_player_id < len(self.player_teams) else viewer_player_id
                 return sender_team == viewer_team
 
             # No team system - team chat not visible to others

@@ -193,6 +193,36 @@ class BuildingMixin:
 
         return True
 
+    # R11: get_building_xp_data() and award_building_xp() moved here from MilitaryMixin (military.py)
+    # — they belong with building logic alongside _tick_building_xp()
+
+    def get_building_xp_data(self, territory, plot_index):
+        """Get building XP/level data, defaulting to {'xp': 0, 'level': 0}."""
+        if territory in self.building_xp and plot_index in self.building_xp[territory]:
+            return self.building_xp[territory][plot_index]
+        return {'xp': 0, 'level': 0}
+
+    def award_building_xp(self, territory, plot_index, amount):
+        """Award XP to a building, auto-level-up. Returns new level."""
+        if amount <= 0:
+            return 0
+        if territory not in self.building_xp:
+            self.building_xp[territory] = {}
+        if plot_index not in self.building_xp[territory]:
+            self.building_xp[territory][plot_index] = {'xp': 0, 'level': 0}
+        data = self.building_xp[territory][plot_index]
+        data['xp'] += amount
+        # Check for level-ups against cumulative thresholds
+        current_level = data['level']
+        while current_level < self.MAX_LEVEL:
+            threshold = self.LEVEL_XP_CUMULATIVE[current_level]
+            if data['xp'] >= threshold:
+                current_level += 1
+                data['level'] = current_level
+            else:
+                break
+        return data['level']
+
     def _tick_building_xp(self):
         """Award XP to all Farms and Mines owned by the current player.
         Called at start of each player's turn. Skips newly completed buildings."""

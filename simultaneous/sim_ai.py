@@ -76,8 +76,10 @@ class SimultaneousAI:
         # Planning complete flags
         self.ai_ready = {}  # {player_id: bool}
 
-        # Phase 6C: Initialize _selected_unit_ids in __init__ (removes hasattr guard later)
-        self._selected_unit_ids = {}  # {territory: set of unit IDs already selected}
+        # R7: _selected_unit_ids keyed by player_index for thread safety - each AI
+        # thread only reads/writes its own player's key, preventing cross-thread wipes
+        # when multiple AI players plan simultaneously
+        self._selected_unit_ids = {}  # {player_index: {territory: set of unit IDs}}
 
         sim_log.detail(f"SimultaneousAI initialized for {self.gs.num_players} players")
 
@@ -191,9 +193,9 @@ class SimultaneousAI:
         """
         sim_log.ai(player_id, "Making decisions")
 
-        # Reset unit selection tracking for this planning session
-        # This prevents selecting the same unit for multiple movement orders
-        self._selected_unit_ids = {}  # {territory: set of unit IDs already selected}
+        # R7: Reset only THIS player's unit selection tracking for this planning session.
+        # Keyed by player_id so concurrent AI threads don't wipe each other's data.
+        self._selected_unit_ids[player_id] = {}
 
         if player_id not in self.ai_players:
             sim_log.error(f"No AIPlayer instance for player {player_id}")
@@ -302,10 +304,9 @@ class SimultaneousAI:
             player_garrison = garrison.get(player_id, {})
             units = player_garrison.get('units', [])
 
-            # Get set of already-selected unit IDs for this territory
-            # (prevents selecting same unit for multiple movements in one planning session)
-            # Phase 6C: _selected_unit_ids always exists (initialized in __init__, reset per session)
-            already_selected = self._selected_unit_ids.get(from_territory, set())
+            # R7: Get already-selected unit IDs for this player+territory combo.
+            # Keyed by player_id for thread safety across concurrent AI planning.
+            already_selected = self._selected_unit_ids.get(player_id, {}).get(from_territory, set())
 
             # Select units that are ready to move AND not already selected for another order
             units_selected = 0
@@ -317,10 +318,8 @@ class SimultaneousAI:
                     unit_ids.append(unit_id)
                     units_selected += 1
 
-            # Track the newly selected units so they won't be selected again
-            if from_territory not in self._selected_unit_ids:
-                self._selected_unit_ids[from_territory] = set()
-            self._selected_unit_ids[from_territory].update(unit_ids)
+            # R7: Track newly selected units under this player's key for thread safety
+            self._selected_unit_ids.setdefault(player_id, {}).setdefault(from_territory, set()).update(unit_ids)
 
             order = {
                 'type': 'movement',

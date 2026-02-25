@@ -141,32 +141,8 @@ class MilitaryMixin:
             result[ut] = sum(levels) / len(levels) if levels else 0
         return result
 
-    def get_building_xp_data(self, territory, plot_index):
-        """Get building XP/level data, defaulting to {'xp': 0, 'level': 0}."""
-        if territory in self.building_xp and plot_index in self.building_xp[territory]:
-            return self.building_xp[territory][plot_index]
-        return {'xp': 0, 'level': 0}
-
-    def award_building_xp(self, territory, plot_index, amount):
-        """Award XP to a building, auto-level-up. Returns new level."""
-        if amount <= 0:
-            return 0
-        if territory not in self.building_xp:
-            self.building_xp[territory] = {}
-        if plot_index not in self.building_xp[territory]:
-            self.building_xp[territory][plot_index] = {'xp': 0, 'level': 0}
-        data = self.building_xp[territory][plot_index]
-        data['xp'] += amount
-        # Check for level-ups against cumulative thresholds
-        current_level = data['level']
-        while current_level < self.MAX_LEVEL:
-            threshold = self.LEVEL_XP_CUMULATIVE[current_level]
-            if data['xp'] >= threshold:
-                current_level += 1
-                data['level'] = current_level
-            else:
-                break
-        return data['level']
+    # R11: get_building_xp_data() and award_building_xp() moved to BuildingMixin (buildings.py)
+    # — they belong with building logic alongside _tick_building_xp()
 
     def calculate_unit_effectiveness(self, attacker_type, defender_composition):
         """
@@ -276,30 +252,8 @@ class MilitaryMixin:
 
         return total_strength
 
-    def calculate_army_base_strength(self, composition):
-        """
-        Calculate the total BASE strength of an army WITHOUT counter modifiers.
-        
-        Used for Keep defense battles where unit types should not matter.
-        Keep defense is type-neutral - only numbers matter.
-        
-        Returns: float representing total base strength
-        """
-        if not composition:
-            return 0.0
-        
-        total_strength = 0.0
-        for unit_type, count in composition.items():
-            # Get base strength from UNIT_TYPES
-            unit_info = self.UNIT_TYPES.get(unit_type)
-            if unit_info:
-                base_strength = unit_info['strength']
-                total_strength += count * base_strength
-            else:
-                # Fallback if unit type unknown
-                total_strength += count * 10  # Default strength
-        
-        return total_strength
+    # R3: Removed dead code calculate_army_base_strength() — had a KeyError bug
+    # (referenced non-existent 'strength' key in UNIT_TYPES) and zero callers
 
     def apply_casualties_with_priority(self, territory, casualties, enemy_composition):
         """
@@ -769,9 +723,9 @@ class MilitaryMixin:
             self.add_message("Territories are not adjacent!")
             return False
         
-        # Validate: must have unmoved armies (check current player's garrison)
-        from_owner = self.territory_owners.get(from_territory, -1)
-        garrison = self.territory_garrisons.get(from_territory, {}).get(from_owner)
+        # R8 fix: Validate against current player's garrison, not territory owner's
+        # In allied scenarios, a player may garrison in territory they don't own
+        garrison = self.territory_garrisons.get(from_territory, {}).get(self.current_player)
         if not garrison or garrison.get('unmoved', 0) <= 0:
             self.add_message("No armies available to move")
             return False
@@ -2064,7 +2018,7 @@ class MilitaryMixin:
                     # Capital conquered - eliminate the player
                     logger.info(f"[CAPITAL ASSAULT] Player {winner + 1} conquered Player {player_index + 1}'s capital!")
                     self.eliminate_player(player_index)
-                    # Note: check_victory() is called at end of _update_battle_results() at line 3701
+                    # R9: Note: check_victory() is called at end of _update_battle_results()
 
         # Enforce army limit on surviving armies
         if surviving_armies > self.MAX_ARMIES_PER_TERRITORY:
@@ -2728,7 +2682,7 @@ class MilitaryMixin:
                         if existing_garrison:
                             # This player already has a garrison - ADD arriving armies to it
                             # CRITICAL: player_armies may include defender's garrison IF player is owner
-                            # If player is owner and defending, their garrison was added at line 3933
+                            # R9: If player is owner and defending, their garrison was added in _process_arrivals()
                             # If player is NOT owner but has garrison (visitor), garrison NOT in player_armies
 
                             # Check if this player is the owner (defender)
@@ -2931,232 +2885,6 @@ class MilitaryMixin:
             if self.turn_phase == 'execution':
                 self._advance_to_next_player()
 
-    def can_move_army(self, from_territory, to_territory):
-        """Check if an army can move from one territory to another"""
-        if self.phase != 'playing':
-            return False
-        
-        # Must own the source territory
-        if self.territory_owners[from_territory] != self.current_player:
-            return False
-        
-        # Must have at least 1 unmoved army
-        if self.armies_unmoved[from_territory] < 1:
-            return False
-        
-        # Territories must be adjacent
-        if not map_data.are_adjacent(from_territory, to_territory):
-            return False
-        
-        return True
-
-    def move_army(self, from_territory, to_territory, army_size):
-        """Move armies from one territory to another (if owned) or attack"""
-        if not self.can_move_army(from_territory, to_territory):
-            return False
-
-        to_owner = self.territory_owners[to_territory]
-
-        # TEAM CHECK: Cannot attack allies, but CAN reinforce them
-        is_ally = (to_owner >= 0 and self.are_allies(self.current_player, to_owner))
-
-        if is_ally:
-            # Allied reinforcement - check total army limit
-            total_at_dest = self.get_territory_total_armies(to_territory)
-            if total_at_dest + army_size > self.MAX_ARMIES_PER_TERRITORY:
-                self.add_message(f"Cannot reinforce {to_territory}: would exceed army limit of {self.MAX_ARMIES_PER_TERRITORY}!")
-                return False
-
-        # Can only move unmoved armies
-        army_size = min(army_size, self.armies_unmoved[from_territory])
-        if army_size == 0:
-            return False
-
-        # Get source garrison to extract units
-        source_garrison = self.territory_garrisons.get(from_territory, {}).get(self.current_player)
-        units_to_move = []
-
-        if not source_garrison:
-            # Fallback: No garrison exists, just use old system
-            self.armies_unmoved[from_territory] -= army_size
-        else:
-            # Extract units from source garrison (take first army_size unmoved units)
-            remaining_units = []
-            units_moved_count = 0
-
-            for unit in source_garrison['units']:
-                if units_moved_count < army_size and unit['status'] == 'ready':
-                    # Mark unit as moved and transfer it
-                    unit['status'] = 'moved'
-                    units_to_move.append(unit.copy())
-                    units_moved_count += 1
-                else:
-                    remaining_units.append(unit)
-
-            # Validate we got enough units
-            if units_moved_count < army_size:
-                logger.warning(f"[TOOLTIP MISMATCH] {from_territory} Player {self.current_player}: "
-                      f"Requested {army_size} units but only found {units_moved_count} ready units. "
-                      f"Garrison claims unmoved={source_garrison.get('unmoved', 0)} but units list mismatch.")
-
-            # Update garrison count with actual moved count
-            source_garrison['unmoved'] -= units_moved_count
-            source_garrison['units'] = remaining_units
-
-            # Sync legacy data for source territory after removing units
-            self.sync_legacy_garrison_data(from_territory)
-
-        # Moving to own territory or ally territory (reinforcement)
-        if to_owner == self.current_player or is_ally:
-            if is_ally:
-                # Allied reinforcement - add garrison for current player at destination
-                # Units arrive as "moved" (can't move again this turn)
-                self.add_garrison(to_territory, self.current_player, unmoved=0, moved=army_size, units=units_to_move if units_to_move else None)
-                # Sync legacy data for destination (shows owner's garrison in legacy arrays)
-                self.sync_legacy_garrison_data(to_territory)
-                self.add_message(f"Player {self.current_player + 1} reinforced ally {to_territory} with {army_size} armies")
-            else:
-                # Moving to own territory - use garrison system
-                self.add_garrison(to_territory, self.current_player, unmoved=0, moved=army_size, units=units_to_move if units_to_move else None)
-                self.sync_legacy_garrison_data(to_territory)
-                self.add_message(f"Player {self.current_player + 1} moved {army_size} armies to {to_territory}")
-            return True
-
-        # Attacking enemy or neutral territory
-        else:
-            attacking_force = army_size
-            defending_armies = self.armies_unmoved[to_territory] + self.armies_moved[to_territory]
-            
-            # Check for Fortress (Keep) - it provides defense but fights separately
-            has_keep = self.has_fortress(to_territory)
-            fortress_bonus = 2 if has_keep else 0
-            
-            # Add attack message
-            defender_name = f"Player {to_owner + 1}" if to_owner >= 0 else "Neutral"
-            self.add_message(f"Player {self.current_player + 1} attacks {to_territory}!")
-            
-            # Show combat forces
-            if has_keep:
-                self.add_message(f"  Attacker: {attacking_force} vs Defender: {defending_armies} armies (+{fortress_bonus} Fortress)")
-            else:
-                self.add_message(f"  Attacker: {attacking_force} vs Defender: {defending_armies}")
-            
-            # STAGE 1: Army vs Army combat
-            army_combat_result = attacking_force - defending_armies
-            
-            # STAGE 2: If attacker wins Stage 1, check if they can overcome the Keep
-            if army_combat_result > 0 and has_keep:
-                # Attacker has survivors after destroying all armies
-                # Now they must overcome the Keep's defense
-                remaining_attackers = army_combat_result
-                
-                if remaining_attackers > fortress_bonus:
-                    # Attacker has enough to destroy the Keep
-                    final_survivors = remaining_attackers - fortress_bonus
-                    self.add_message(f"  Armies eliminated! {remaining_attackers} attackers storm the Fortress...")
-                    self.add_message(f"  Fortress destroyed! {final_survivors} attackers remain!")
-
-                    # Territory captured, Keep destroyed
-                    # Check for Pillage ability (trigger BEFORE changing ownership)
-                    previous_owner = to_owner
-                    keep_was_destroyed = has_keep
-
-                    self.destroy_all_buildings(to_territory)
-                    self.territory_owners[to_territory] = self.current_player
-
-                    # Capital Assault: Check if conquered territory is enemy's capital
-                    logger.debug(f"Conquered {to_territory} (with Keep), Victory Condition: {self.victory_condition}")
-                    logger.debug(f"Starting territories: {self.player_starting_territories}")
-                    logger.debug(f"Current player: {self.current_player}")
-
-                    if self.victory_condition == "Capital Assault":
-                        for player_index, capital in self.player_starting_territories.items():
-                            logger.debug(f"Checking player {player_index}'s capital {capital} vs conquered {to_territory}")
-                            # Check: capital matches, not self, and not an ally (enemies only)
-                            if capital == to_territory and player_index != self.current_player and not self.are_allies(self.current_player, player_index):
-                                # Capital conquered - eliminate the player
-                                logger.info(f"[CAPITAL ASSAULT] Player {self.current_player + 1} conquered Player {player_index + 1}'s capital!")
-                                self.eliminate_player(player_index)
-
-                    # Pillage: Award gold if attacker has Vearen Asford and destroyed enemy Keep
-                    if keep_was_destroyed and previous_owner >= 0 and previous_owner != self.current_player:
-                        if self.player_has_asford(self.current_player):
-                            self.player_gold[self.current_player] += 200
-                            self.add_message(f"  Pillage! Vearen Asford plunders 200 Gold from the ruins!")
-
-                    self.armies_moved[to_territory] = final_survivors
-                    self.armies_unmoved[to_territory] = 0
-                    self.add_message(f"  Victory! {to_territory} captured!")
-                    self.check_victory()
-                    return True
-                else:
-                    # Not enough attackers to overcome the Keep
-                    self.add_message(f"  Armies eliminated! {remaining_attackers} attackers assault the Fortress...")
-                    self.add_message(f"  Fortress holds! Attack repelled!")
-                    
-                    # All attackers dead, all defenders dead, but Keep survives and territory holds
-                    self.armies_unmoved[to_territory] = 0
-                    self.armies_moved[to_territory] = 0
-                    return True
-            
-            # STAGE 1 Resolution (no Keep, or attacker didn't win Stage 1)
-            elif army_combat_result > 0:
-                # Attacker wins (no Keep to worry about)
-                # Check for Pillage ability (trigger BEFORE changing ownership)
-                previous_owner = to_owner
-                keep_existed = self.has_fortress(to_territory)
-
-                self.destroy_all_buildings(to_territory)
-                self.territory_owners[to_territory] = self.current_player
-
-                # Capital Assault: Check if conquered territory is enemy's capital
-                logger.debug(f"Conquered {to_territory}, Victory Condition: {self.victory_condition}")
-                logger.debug(f"Starting territories: {self.player_starting_territories}")
-                logger.debug(f"Current player: {self.current_player}")
-
-                if self.victory_condition == "Capital Assault":
-                    for player_index, capital in self.player_starting_territories.items():
-                        logger.debug(f"Checking player {player_index}'s capital {capital} vs conquered {to_territory}")
-                        # Check: capital matches, not self, and not an ally (enemies only)
-                        if capital == to_territory and player_index != self.current_player and not self.are_allies(self.current_player, player_index):
-                            # Capital conquered - eliminate the player
-                            logger.info(f"[CAPITAL ASSAULT] Player {self.current_player + 1} conquered Player {player_index + 1}'s capital!")
-                            self.eliminate_player(player_index)
-
-                # Pillage: Award gold if attacker has Vearen Asford and destroyed enemy Keep
-                if keep_existed and previous_owner >= 0 and previous_owner != self.current_player:
-                    if self.player_has_asford(self.current_player):
-                        self.player_gold[self.current_player] += 200
-                        self.add_message(f"  Pillage! Vearen Asford plunders 200 Gold from the ruins!")
-
-                survivors = army_combat_result
-                self.armies_moved[to_territory] = survivors
-                self.armies_unmoved[to_territory] = 0
-                self.add_message(f"  Victory! {to_territory} captured!")
-                self.check_victory()
-                return True
-            else:
-                # Defender wins or tie (attacker didn't even get through the armies)
-                remaining = -army_combat_result  # negative means defender wins
-                
-                # Keep same proportions of moved/unmoved for surviving defenders
-                if defending_armies > 0:
-                    ratio_unmoved = self.armies_unmoved[to_territory] / defending_armies
-                    self.armies_unmoved[to_territory] = int(remaining * ratio_unmoved)
-                    self.armies_moved[to_territory] = remaining - self.armies_unmoved[to_territory]
-                else:
-                    self.armies_unmoved[to_territory] = 0
-                    self.armies_moved[to_territory] = 0
-                
-                if army_combat_result == 0:
-                    self.add_message(f"  Draw! Both armies destroyed!")
-                    if has_keep:
-                        self.add_message(f"  Fortress stands untouched!")
-                else:
-                    self.add_message(f"  Defeat! Attack repelled!")
-                    if has_keep:
-                        self.add_message(f"  Fortress protected the defenders!")
-                
-                return True
-
-
+    # R3: Removed legacy can_move_army() and move_army() — 0 external callers.
+    # These used simple army-count subtraction without unit composition, animations,
+    # or proper garrison handling. The order/animation system replaced them.

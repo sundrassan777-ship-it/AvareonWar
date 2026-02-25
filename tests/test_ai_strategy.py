@@ -25,6 +25,8 @@ class MockGameState:
         self.player_gold = {0: 100, 1: 100}
         self.player_command_limit = {0: 50, 1: 50}
         self.player_tech_researched = {0: set(), 1: set()}
+        # Garrison-based army storage used by refactored AI code
+        self.territory_garrisons = {}
 
     def calculate_player_income(self, player_index):
         return 50
@@ -35,6 +37,18 @@ class MockGameState:
             for t, owner in self.territory_owners.items()
             if owner == player_index
         )
+
+    def get_territory_total_armies(self, territory):
+        """Return total armies in a territory (mock uses legacy armies dict)"""
+        return self.armies.get(territory, 0)
+
+    def are_allies(self, player1, player2):
+        """Check if two players are allies (mock always returns False)"""
+        return False
+
+    def has_fortress(self, territory):
+        """Check if territory has a Keep (mock always returns False)"""
+        return False
 
 
 class TestTerritoryScorer:
@@ -314,7 +328,7 @@ class TestStrategyEvaluator:
 
     def test_get_strategic_priority_victory_push(self, evaluator, game_state):
         """Many territories triggers victory push"""
-        game_state.territory_owners = {f'T{i}': 0 for i in range(26)}  # 26 territories
+        game_state.territory_owners = {f'T{i}': 0 for i in range(40)}  # 40 territories (threshold is >=40)
 
         with patch.object(evaluator.threat_analyzer, 'find_threatened_territories', return_value=[]):
             priority = evaluator.get_strategic_priority(game_state)
@@ -323,7 +337,7 @@ class TestStrategyEvaluator:
 
     def test_get_strategic_priority_expansion(self, evaluator, game_state):
         """Mid-game with no threats triggers expansion"""
-        game_state.territory_owners = {f'T{i}': 0 for i in range(15)}  # 15 territories
+        game_state.territory_owners = {f'T{i}': 0 for i in range(20)}  # 20 territories (above economy threshold of <16)
 
         with patch.object(evaluator.threat_analyzer, 'find_threatened_territories', return_value=[]):
             priority = evaluator.get_strategic_priority(game_state)

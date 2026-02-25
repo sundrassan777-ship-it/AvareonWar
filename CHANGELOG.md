@@ -2,6 +2,31 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-25 - QA Review Fixes (R1-R12)
+
+### Bug Fixes
+- **R2: `player_teams.get()` crash** — `player_teams` is a list, not dict. Team chat would crash with `AttributeError`. Fixed to use index-based access.
+- **R4: TurnCache missing under-construction Keeps** — AI could redundantly prioritize building a second Keep while one was under construction. Added under_construction check.
+- **R4: Inconsistent cache dict access** — `ai_strategy.py` used direct indexing (`cache.territory_armies[key]`) which would KeyError on missing keys. Changed to `.get(key, 0)` matching other AI files.
+- **R7: sim_ai thread safety** — `_selected_unit_ids` was shared across all AI threads. One thread resetting it could wipe another's data. Made per-player keyed.
+- **R8: Castle scoring gap** — `_BUILDING_VALUES` dict was missing `'Castle'` entry; territories with Castles scored 0. Added Castle: 9.0.
+- **R8: Allied garrison validation** — `add_movement_order` validated against territory owner's garrison instead of current player's, failing in allied scenarios.
+
+### Dead Code Removal (~250 lines)
+- **R3:** Removed `calculate_army_base_strength()` (had KeyError bug on non-existent `'strength'` key, 0 callers)
+- **R3:** Removed legacy `can_move_army()` / `move_army()` (0 callers, replaced by order/animation system)
+
+### Test Fixes (132→170 passing)
+- **R1:** Rewrote 21 `test_network_server.py` tests for multi-client API (`ClientConnection` dict pattern)
+- **R1:** Fixed 8 `test_fixes.py` tests (method renames, `caplog` instead of `capsys`)
+- **R1:** Fixed 9 `test_ai_strategy.py` tests (added `get_territory_total_armies`, `are_allies`, `has_fortress` to MockGameState)
+
+### Code Quality
+- **R9:** Replaced stale line-number references in military.py comments with method name references
+- **R10:** Added periodic pruning of `_connection_attempts` dict in server.py (prevents slow memory leak)
+- **R11:** Moved `get_building_xp_data()` / `award_building_xp()` from MilitaryMixin to BuildingMixin
+- **R12:** Normalized `BONUS_TYPES` from class attribute to instance attribute (matches HERO_TYPES/building_types pattern)
+
 ## 2026-02-25 - Phase 7: game_state.py Decomposition
 
 ### Architecture

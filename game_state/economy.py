@@ -9,7 +9,6 @@ tax collection, and territorial bonus computation.
 """
 
 import map_data
-from game_state.data_definitions import BONUS_TYPES as _BONUS_TYPES
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,9 +17,8 @@ logger = get_logger(__name__)
 class EconomyMixin:
     """Mixin providing economy and income methods for GameState."""
 
-    # Territory Bonus System - each territory provides global bonuses to its owner
-    # (extracted to data_definitions.py, kept as class attribute for self.BONUS_TYPES access)
-    BONUS_TYPES = _BONUS_TYPES
+    # R12: BONUS_TYPES removed as class attribute — now set as instance attribute
+    # in GameState.__init__ (consistent with HERO_TYPES, building_types pattern)
 
     def get_effective_cost(self, item_type, base_cost, player=None):
         """
