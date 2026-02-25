@@ -1,0 +1,2062 @@
+# Code Modification Guide
+
+**Living knowledge base for developers working on AvareonWar**
+
+This guide provides module-specific guidance on when and how to modify different parts of the codebase. Use this as your primary reference when implementing features, fixing bugs, or making balance changes.
+
+---
+
+## Table of Contents
+
+1. [Logging System](#logging-system) - Structured logging
+2. [game_state.py](#game_statepy) - Core game logic
+3. [main.py](#mainpy) - Main game loop and UI
+4. [AI System](#ai-system) - AI decision making
+5. [Network System](#network-system) - Multiplayer
+6. [Simultaneous Mode](#simultaneous-mode) - Simultaneous turn mode
+7. [Rendering System](#rendering-system) - Map and UI rendering
+8. [Input System](#input-system) - Mouse, keyboard, camera
+9. [Sound System](#sound-system) - Audio and sound effects
+10. [Campaign System](#campaign-system) - Campaign missions and scripting
+11. [map_data.py](#map_datapy) - Territory data
+12. [Quick Navigation](#quick-navigation) - Where to find things
+13. [Achievement System](#achievement-system) - Achievements, rewards, tracking
+14. [Recap Screen](#recap-screen) - Post-game statistics
+
+---
+
+## Logging System
+
+**What it does:** Structured logging with file+console output, log rotation
+**File:** `utils/logger.py` (120 lines)
+**Used by:** All modules (replaces `print()` throughout codebase)
+
+### Usage
+
+```python
+from utils.logger import get_logger
+logger = get_logger(__name__)
+
+logger.debug("Detailed info for development")
+logger.info("Normal operational messages")
+logger.warning("Something unexpected but recoverable")
+logger.error("Something failed")
+```
+
+### Setup
+
+Called once in `main.py` at startup:
+```python
+from utils.logger import setup_logging
+setup_logging()  # console=INFO, file=DEBUG, rotation=5MB x 3
+```
+
+### Key Rules
+
+- **Never use `print()` for game output** — always use `logger.info()` / `logger.debug()` / etc.
+- Console shows INFO+ by default; log file captures DEBUG+ for diagnostics
+- Log files: `logs/avareonwar.log` (5MB rotation, 3 backups)
+- Windows console: UTF-8 encoding forced to prevent mojibake on arrow chars (→)
+- Runtime level change: `set_level(logging.DEBUG)` for debug toggle
+
+### When to Modify
+
+- **Add new log category:** No action needed — just use `get_logger(__name__)` in your module
+- **Change default levels:** Edit `DEFAULT_CONSOLE_LEVEL` / `DEFAULT_FILE_LEVEL` in `utils/logger.py`
+- **Suppress noisy library:** Add `logging.getLogger('library').setLevel(logging.WARNING)` in `setup_logging()`
+
+---
+
+## game_state.py
+
+**What it does:** Core game logic - territories, armies, buildings, economy, battles
+**Size:** 7,425 lines
+**Dependencies:** map_data.py (territory definitions)
+**Used by:** main.py (UI), ai_player.py (AI), network/protocol.py (sync)
+
+### Constants (Lines 168-200)
+
+```python
+MAX_ARMIES_PER_TERRITORY = 15
+
+UNIT_TYPES = {
+    'Swordsman': {'cost': 25, 'counters': 'Pikeman', 'countered_by': 'Archer'},
+    'Archer': {'cost': 20, 'counters': 'Swordsman', 'countered_by': 'Cavalry'},
+    'Pikeman': {'cost': 30, 'counters': 'Cavalry', 'countered_by': 'Swordsman'},
+    'Cavalry': {'cost': 40, 'counters': 'Archer', 'countered_by': 'Pikeman'}
+}
+
+building_types = {
+    'Farm': {'cost': 30, 'effect': 'income', 'value': 10, 'time': 1},
+    'Mine': {'cost': 40, 'effect': 'income', 'value': 15, 'time': 1},
+    'Barracks': {'cost': 50, 'effect': 'recruitment', 'value': True, 'time': 1},
+    'Keep': {'cost': 100, 'effect': 'defense', 'value': 2, 'time': 2},
+    'Square': {'cost': 60, 'effect': 'multiplier', 'value': 1.5, 'time': 1}
+}
+```
+
+### When to Modify
+
+#### ✅ Add New Unit Type
+
+**Steps:**
+1. Add entry to `UNIT_TYPES` dict (lines 171-200)
+   ```python
+   'YourUnit': {
+       'cost': 35,
+       'letter': 'Y',
+       'name': 'YourUnit',
+       'counters': 'SomeUnit',      # Who this unit beats
+       'countered_by': 'OtherUnit', # Who beats this unit
+       'strength': 12               # Add if using strength system
+   }
+   ```
+2. Add icon to `assets/mapicons/YourUnit.png`
+3. Update counter chain to maintain balance (must be circular)
+4. Test training in `start_training()` method
+5. Test combat in `resolve_battle()` method
+6. Update `GAME_MECHANICS.md` and `QUICK_REFERENCE.md`
+
+**Methods to check:**
+- `start_training()` - Validates unit type, deducts cost
+- `resolve_battle()` - Uses counter relationships
+- `calculate_effectiveness()` - Computes unit matchups
+
+#### ✅ Add New Building Type
+
+**Steps:**
+1. Add entry to `building_types` dict (line 387)
+   ```python
+   'YourBuilding': {
+       'cost': 50,
+       'letter': 'Y',
+       'effect': 'income',  # or 'defense', 'recruitment', 'multiplier'
+       'value': 20,         # income amount or bonus value
+       'time': 1            # turns to build
+   }
+   ```
+2. Add icon to `assets/mapicons/YourBuilding.png`
+3. Update `calculate_income()` if `effect: 'income'` (line ~4000)
+4. Update `apply_combat_modifiers()` if affects combat
+5. Test building construction in `build_building()` method
+6. Update `GAME_MECHANICS.md` and `QUICK_REFERENCE.md`
+
+**Methods to check:**
+- `build_building()` - Validates building, deducts cost, starts construction
+- `calculate_income()` - Processes income effects
+- `get_effective_building_cost()` - Applies tech discounts
+
+#### ✅ Change Game Balance
+
+**Unit costs:**
+- Modify `UNIT_TYPES[unit_name]['cost']`
+- Test with AI at all difficulty levels
+- Update `QUICK_REFERENCE.md`
+
+**Building costs:**
+- Modify `building_types[building_name]['cost']`
+- Test economy with AI
+- Update `QUICK_REFERENCE.md`
+
+**Income values:**
+- Building income: `building_types[name]['value']`
+- Territory base income: Edit `economic_data.json`
+- Town Square multiplier: `building_types['Square']['value']`
+
+**Army limit:**
+- Change `MAX_ARMIES_PER_TERRITORY` (currently 15)
+- Affects spam prevention and territory capacity
+- Order validation uses `_get_effective_capacity()` which accounts for outgoing orders (armies leaving the destination)
+- Cancelling an outgoing order triggers `_revalidate_incoming_orders()` which auto-cancels excess incoming orders (last-added first) with red shake animation
+- Safety net: `_enforce_army_limits()` clamps all per-player garrisons after arrivals and battle resolution
+- Called from both `game_state.py` (sequential) and `sim_phase_manager.py` (simultaneous)
+
+#### ✅ Modify Combat Mechanics
+
+**Battle resolution:** (Lines 2000-2100)
+```python
+def resolve_battle(self, battle):
+    # Modify combat calculation here
+```
+
+**Counter multipliers:**
+- Currently: Counter = 2×, Countered = 0.5×, Neutral = 1×
+- Change in `calculate_effectiveness()` method
+- Update `GAME_MECHANICS.md` with new values
+
+**Keep defense bonus:**
+- Currently: +2 effective units for defender
+- Change in `resolve_battle()` where Keep bonus applied
+- Located around line 2050
+
+**Casualty calculation:**
+- Modify casualty formula in `_apply_battle_casualties_simple()` (~line 3861)
+- Formula: `casualties = loser_count * (loser_strength / winner_strength)`, min 1
+- Same formula applied in `_resolve_keep_battle()` Phase 1 (~line 3707, 3741)
+- Keep Phase 2 uses fixed numerical comparison (unchanged)
+
+#### ✅ Modify Veterancy/Experience System
+
+**Key constants** (lines 175-183):
+- `LEVEL_XP_PER_LEVEL`, `LEVEL_XP_CUMULATIVE`, `MAX_LEVEL`
+- `UNIT_LEVEL_STRENGTH_BONUS` (0.15 = +15% per level)
+- `BUILDING_LEVEL_INCOME_BONUS` (0.10 = +10% per level)
+- `BUILDING_XP_PER_TURN` (20), `BATTLE_XP_PER_KILL` (10), `HERO_KEEP_DESTROY_XP` (100)
+
+**Unit XP/Level data model:**
+- Every unit dict has `'xp': 0, 'level': 0` — ~25 creation points in game_state.py
+- `award_unit_xp(unit, amount)` — adds XP and auto-levels up
+- `get_unit_avg_levels(units)` — returns `{unit_type: avg_level}` for strength calc
+
+**Strength calculation:**
+- `calculate_army_effective_strength(composition, enemy_comp, unit_avg_levels=None)`
+- Level bonus: `1.0 + avg_level * UNIT_LEVEL_STRENGTH_BONUS` per unit type
+- Propagated through `_calculate_battle_strengths()` and `_resolve_keep_battle()`
+- Also updated in `ui/effects/battle_interface.py` display
+
+**Casualty priority:**
+- `apply_casualties_with_priority()` — sorts all units by `(level ASC, counter_tier ASC)`
+- Level overrides counter type: a Level 0 advantaged unit dies before a Level 1 countered unit
+- `apply_multi_garrison_casualties()` — allies die first, owner last (within each: level-based)
+
+**Battle XP awards** (in `_update_battle_results()`):
+- Only winners get XP. Formula: `enemies_killed * 10 + enemy_level_bonus + (100 if hero_keep_destroyed)`
+- `battle.enemy_level_xp_bonus` pre-computed in `_calculate_battle_strengths()`
+- `battle._keep_had_hero` checked before `destroy_buildings()` clears heroes
+
+**Building XP:**
+- `self.building_xp = {territory: {plot_index: {'xp': int, 'level': int}}}`
+- `award_building_xp(territory, plot_index, amount)` — adds XP, auto-levels
+- `_tick_building_xp()` — called from `_complete_turn_announcement()`, +20/turn to Farms/Mines
+- Income bonus in `calculate_player_income()` and `calculate_territory_income()`
+- Cleanup in `destroy_buildings()`, `destroy_building()`, `destroy_all_buildings()`
+
+**Animation pipeline (XP preservation):**
+- `ArmyAnimation.units` — stores actual unit dicts extracted from garrison
+- `execute_all_orders()` extracts units into `extracted_units` list → passed to animation
+- `_process_arrivals()` aggregates `moving_units` dict and reuses actual unit dicts
+- `sim_phase_manager.py` also carries units through animation
+
+**UI display** (main.py):
+- Army composition grid: XP bars + level shields in `draw_army_composition_ui()`
+- Building info: XP bars + shields in `draw_territory_info_panel()`
+- Tooltips: `draw_button_tooltip()` handles 4-tuple `(type, status, level, xp)` for units
+- Asset: `level_shield_icon` loaded from `assets/upgrades/LevelDisplay.png`
+
+#### ✅ Add New Technology
+
+**Steps:**
+1. Find technology tree data structure (search for `player_technologies`)
+2. Add new tech with effect type:
+   ```python
+   {
+       'name': 'Your Tech',
+       'cost': 100,
+       'prerequisites': ['Other Tech'],
+       'effect_type': 'unit_cost_reduction',  # or 'income_boost', etc.
+       'effect_value': 15  # percentage or absolute value
+   }
+   ```
+3. Implement effect in appropriate method:
+   - Cost reduction: `get_effective_cost()` (line ~1760)
+   - Income boost: `calculate_income()` (line ~4000)
+   - Combat bonus: `resolve_battle()` or strength calculations
+4. Add tech icon to `assets/upgrades/`
+5. Test research cost and effect
+6. Update `GAME_MECHANICS.md`
+
+**Existing tech effects:**
+- `player_royal_decree_discount` - Hero/Keep cost reduction
+- `player_training_cost_discount` - Swordsman/Pikeman 20% off
+- `player_cavalry_cost_discount` - Cavalry 25% off
+- `player_farm_income_bonus` - Farmer Subsidies +50% farms
+- `player_mine_income_bonus` - Mining Efficiency +50% mines
+- `player_archer_keep_strength` - Battlement Archery bonus
+
+#### ✅ Change Victory Conditions
+
+**All three victory conditions are implemented:**
+
+| Condition | Threshold | Team Behavior |
+|-----------|-----------|---------------|
+| Domination (45+) | 45 territories | Team counts aggregated |
+| Capital Assault | Capture enemy capitals | Allies can't eliminate each other |
+| Total Conquest | All 57 territories | Team counts aggregated |
+
+**Methods in game_state.py:**
+- `check_victory()` - Main entry point, routes to specific check
+- `_check_domination_victory()` - Aggregates team territory counts
+- `_check_capital_assault_victory()` - Checks last team standing
+- `_check_total_conquest_victory()` - Aggregates team territory counts
+- `eliminate_player()` - Called when capital captured (neutralizes territories)
+
+**Team-based logic:**
+```python
+# Domination/Total Conquest aggregate by team:
+if hasattr(self, 'player_teams') and self.player_teams:
+    team_counts = {}  # team_id -> total territories
+    for player_id, count in enumerate(territory_counts):
+        team_id = self.player_teams[player_id]
+        team_counts[team_id] = team_counts.get(team_id, 0) + count
+    # Check if any team meets threshold
+```
+
+**Capital Assault ally protection:**
+- All elimination paths include `are_allies()` check
+- Prevents allies from eliminating each other when capturing capitals
+- 5 code locations: 4 in sequential mode, 1 in sim_phase_manager.py
+
+#### ✅ Victory/Defeat Cinematic (Custom & Multiplayer Games)
+
+**Flow:** `phase='ended'` → wait for animations → fade to black → victory/defeat PNG → auto-recap
+
+**State variables in main.py `Game.__init__`:**
+- `victory_sequence_pending` - Waiting for animations to finish
+- `victory_sequence_active` - Cinematic is playing
+- `victory_phase` - Current animation phase: 'fade' | 'image_grow' | 'image_hold'
+
+**Methods in main.py:**
+- `_is_victory_for_local_player()` - Determines win/loss perspective (supports teams)
+- `_all_animations_complete()` - Checks no animations/battles/UI pending
+- `_start_victory_sequence()` - Loads image, initializes cinematic
+- `_update_victory_sequence()` - Phase state machine (fade 0.5s → grow 0.3s → hold 5s)
+- `_render_victory_sequence()` - Draws black overlay + scaled PNG
+
+**Images:** `assets/victoryscrn.png`, `assets/defeatscrn.png`
+
+**Input blocking:** Event loop blocks all input during `victory_sequence_active`
+**Mouse handler:** `mouse_handler.py` line 86 guards `phase=='ended'` to allow battle clicks during pending state
+
+**Campaign missions** have their own victory system (tutorial_mission hook) - the cinematic is skipped when a campaign mission is active.
+
+#### ✅ Modify Economy
+
+**Income calculation:** `calculate_income()` (line ~4000)
+- Base income from `economic_data.json`
+- Building bonuses from `building_types`
+- Tech multipliers from research
+- Town Square 1.5× multiplier
+
+**Taxation:** `apply_taxation()` (line ~4082)
+- Applied at turn end BEFORE income collection
+- Deducts percentage of leftover gold from previous turn
+- 5 levels: 0% (no tax), 25%, 50%, 75%, 100%
+- Configured in game setup (not changeable mid-game)
+- Modify tax_rates list to change percentages: `[0.0, 0.25, 0.5, 0.75, 1.0]`
+- Called from `_advance_to_next_player()` (line ~3832)
+- Generates log message if tax > 0
+
+**Starting resources:**
+- Find `__init__` method
+- Look for `player_gold` initialization
+- Currently grants starting gold
+
+#### ✅ Modify Territorial Bonuses
+
+**What it does:** Each territory grants one of 9 bonus types to its owner. Bonuses stack globally.
+
+**Files involved:**
+- `territory_bonuses.json` - Territory → bonus_type mappings (57 territories)
+- `game_state.py` - Bonus calculation and integration (lines 1803-1828, 1893-1919, 2111-2120, 4165-4170)
+- `map_data.py` - Bonus loading (line 136+)
+- `Bonus_Tool.py` - Assignment tool for configuring bonuses
+
+**Bonus types and values:**
+```python
+BONUS_TYPES = {
+    'income_bonus': +3%,        # Applied to total income per territory
+    'tech_cost': -5%,           # Tech research cost reduction per territory
+    'unit_cost': -5%,           # Unit training cost reduction per territory
+    'hero_cost': -3%,           # Hero training cost reduction per territory
+    'pikeman_str': +10%,        # Pikeman strength bonus per territory
+    'archer_str': +10%,         # Archer strength bonus per territory
+    'swordsman_str': +10%,      # Swordsman strength bonus per territory
+    'cavalry_str': +10%,        # Cavalry strength bonus per territory
+    'building_cost': -15%       # Building cost reduction per territory
+}
+```
+
+**To change bonus assignments:**
+1. Run `Bonus_Tool.py` (interactive GUI tool)
+2. Navigate territories with arrow keys or click
+3. Press number keys 1-9 to assign bonus type
+4. Press S to save (validates all 57 territories assigned)
+5. Restart game to load new bonuses
+
+**To add new bonus type:**
+1. Add entry to `BONUS_TYPES` in `game_state.py` (line ~1750)
+2. Add integration point:
+   - Cost bonus: `get_effective_cost()` or `get_effective_tech_cost()`
+   - Income bonus: `calculate_player_income()` (line ~4165)
+   - Strength bonus: `calculate_army_effective_strength()` (line ~2111)
+3. Add color to `Bonus_Tool.py` BONUS_TYPES dict (line 41)
+4. Update `GAME_MECHANICS.md` and `QUICK_REFERENCE.md`
+
+**To change bonus values:**
+1. Modify `BONUS_TYPES['bonus_type']['value']` in `game_state.py`
+2. Values are percentages (3 = +3%, -5 = -5%)
+3. Test stacking behavior (multiple territories with same bonus)
+4. Update `QUICK_REFERENCE.md` with new values
+
+**Integration points:**
+- **Income:** `calculate_player_income()` (line 4165) - Applied after all territory income summed
+- **Building costs:** `get_effective_cost()` (line 1803) - Checked for 'building_cost' bonus
+- **Unit costs:** `get_effective_cost()` (line 1803) - Checked for 'unit_cost' bonus
+- **Hero costs:** `get_effective_cost()` (line 1803) - Checked for 'hero_cost' bonus
+- **Tech costs:** `get_effective_tech_cost()` (line 1893) - Separate method for research
+- **Unit strength:** `calculate_army_effective_strength()` (line 2111) - Per-unit-type bonuses
+
+**How bonuses work:**
+- Bonuses recalculate automatically each turn based on current territory ownership
+- Capturing a bonus territory gives benefits starting next turn
+- Losing a bonus territory removes benefits starting next turn
+- Multiple territories with same bonus stack (e.g., 2× income_bonus = +6% total)
+- Bonuses apply globally to all player actions (not per-territory)
+
+**UI display:**
+- Bonus button in top panel (right of phase indicator) shows active bonuses on hover
+- Tooltip always shows YOUR bonuses (automatically detects human player in single-player, uses local_player_index in multiplayer)
+- Works correctly regardless of player slot (1-4) or whose turn it is
+- Territory info in bottom panel shows territory's bonus type
+- Tooltip format: "+6% Income", "-10% Technology Research Cost" (no territory counts)
+
+### When NOT to Modify
+
+❌ **Rendering** → Use `rendering/map_renderer.py`, `rendering/ui_renderer.py`
+❌ **Input handling** → Use `input/mouse_handler.py`, `input/keyboard_handler.py`
+❌ **UI layout** → Use `main.py` or `rendering/ui_renderer.py`
+❌ **Visual effects** → Use `ui/effects/` directory
+❌ **Asset loading** → Use `main.py` or rendering modules
+❌ **Camera/zoom** → Use `input/camera_handler.py`
+❌ **Network protocol** → Use `network/protocol.py`
+
+### Key Methods Reference
+
+| Method | Purpose | Line (approx) |
+|--------|---------|---------------|
+| `__init__()` | Initialize game state | 202 |
+| `build_building()` | Start building construction | 5000 |
+| `start_training()` | Queue unit for training | 5248 |
+| `create_movement_order()` | Create army movement | ~2500 |
+| `execute_orders()` | Process all movement orders | ~2800 |
+| `resolve_battle()` | Combat resolution | ~2000 |
+| `calculate_income()` | Generate player income | ~4000 |
+| `apply_taxation()` | Deduct taxation at turn end | 4082 |
+| `check_victory()` | Check win conditions | Search |
+| `get_effective_cost()` | Apply tech discounts | 1760 |
+| `calculate_effectiveness()` | Unit matchup calculation | 1937 |
+
+---
+
+## main.py
+
+**What it does:** Main game loop, UI rendering, event handling
+**Size:** 9,750 lines
+**Dependencies:** pygame, game_state, rendering modules, input modules
+**Pure UI layer:** No game logic (delegates to game_state.py)
+
+### When to Modify
+
+#### ✅ Add UI Element
+
+**New panel/window:**
+1. Add rendering code in `Game.draw_ui()` or delegate to `rendering/ui_renderer.py`
+2. Add click detection in `Game.handle_mouse_click()` with priority
+3. Load assets in `Game.__init__()` if needed
+4. Update `rendering/ui_renderer.py` for complex UI
+
+**New button:**
+1. Define button rect in UI layout calculation
+2. Add click handler in appropriate priority level
+3. Draw button in rendering phase
+4. Consider using `rendering/ui_renderer.py` for consistency
+
+#### ✅ Add Button Tooltip (Lines 4227-4500)
+
+**Tooltip types supported:**
+- `'building'` / `'map_building'` - Building tooltips
+- `'training'` / `'map_training'` - Unit training tooltips
+- `'hero_training'` / `'map_hero_training'` - Hero training tooltips
+- `'army_unit_tooltip'` - Army unit composition tooltips
+- `'resource_slot'` - Top panel resource stat tooltips (no visual hover)
+- `'territorial_bonuses'` - Territorial bonuses button tooltip
+
+**Adding new tooltip:**
+1. Define hover tracking in rendering code using `update_button_hover()`
+2. Add tooltip definition in `draw_button_tooltip()` with button_type
+3. Use font sizes: `'normal_bold'` for titles, `'small'` for descriptions
+4. Clear hover with `update_button_hover(None, 'your_type')` when not hovering
+
+**Tooltip clearing pattern (Lines 6843-6962):**
+- Track hover state with boolean flag: `any_button_hovered = False`
+- Set flag to `True` when hovering over any button in the group
+- After loop: `if not any_button_hovered: update_button_hover(None, 'button_type')`
+- Purpose: Prevents tooltips from persisting when mouse moves away
+
+#### ✅ Modify Battle Interface
+
+**Battle resolution flow:**
+1. Player clicks territory with battle marker → `EnhancedBattleInterface` opens
+2. Player clicks FIGHT → `game_state.resolve_battle()` called immediately
+3. Actual survivors passed to UI via `set_actual_battle_result()`
+4. Battle info stored in `_resolved_battle_info` for deferred cleanup
+5. Player clicks CLOSE → cleanup applied using stored info
+
+**Key method in battle_interface.py:**
+```python
+def set_actual_battle_result(self, winner: int, attacker_survivors: int,
+                             defender_survivors: int, surviving_units: list = None):
+    """Update the battle result with actual values from game_state.resolve_battle()."""
+    # Recalculates unit_breakdown using actual surviving_units list
+```
+
+**Important:** Battle resolution happens on FIGHT click (not CLOSE). This ensures:
+- Accurate survivor counts displayed (not estimates)
+- Correct unit-by-unit breakdown in report (which Archers/Cavalry survived)
+- Battle cleanup happens separately from resolution
+
+**Storage pattern in main.py:**
+```python
+self._resolved_battle_info = {
+    'battle': battle_copy,
+    'winner': winner,
+    'attacker_survivors': attacker_survivors,
+    'defender_survivors': defender_survivors,
+    'surviving_units': surviving_units
+}
+```
+
+#### ✅ Add Visual Effect
+
+**Effect types:**
+- Battle map markers (hurricane spiral) → `ui/effects/battleeffect.py` — 1000 particles in 4 spiral arms
+- Alliance markers (blue hurricane) → `ui/effects/alliance_marker_effect.py` — 600 particles in 3 spiral arms
+- Production glow (sunrays) → `ui/effects/production_glow_effect.py` — 8 rotating ray trapezoids
+- Castle upgrades (golden explosion) → `ui/effects/castle_upgrade_effect.py` — 140 gold particles, 3 phases
+- Battle bar combat (particles) → `ui/effects/battle_interface.py` (BattleBarParticleEffect) — 600 circle particles
+- Sparkle particles → `ui/effects/sparkle_effect.py`
+- Turn announcements → `ui/effects/turn_announcement_sparkle.py`
+
+**Key techniques used across effects:**
+- `pygame.draw.circle` for particle rendering (1-4px sizes)
+- `pygame.draw.polygon` for tapered ray/trapezoid shapes
+- `pygame.SRCALPHA` surfaces for per-pixel alpha transparency
+- Reusable surfaces to avoid per-frame allocation
+
+**Steps:**
+1. Create effect class in `ui/effects/your_effect.py`
+2. Implement `__init__()`, `update(dt)`, `render(screen)`, `is_finished()` interface
+3. Instantiate in `Game.__init__()` or when triggered
+4. Update in `Game.update()` method
+5. Render in `Game.draw_effects()` or appropriate phase
+
+#### ✅ Modify Camera/Zoom
+
+**Don't modify main.py** - Use `input/camera_handler.py` instead
+
+**Camera controls:**
+- Pan: Arrow keys or edge scrolling
+- Zoom: Mouse wheel
+- Handler: `CameraHandler` class in `input/camera_handler.py`
+
+#### ✅ Change Window Size
+
+**Method 1: Settings (recommended)**
+Edit `config.json`:
+```json
+{
+  "resolution": [1920, 1080],
+  "fullscreen": true
+}
+```
+
+**Method 2: Code**
+Edit `config/constants.py`:
+```python
+WINDOW_WIDTH = 1920
+WINDOW_HEIGHT = 1080
+```
+
+**Auto-scaling:** UI automatically scales via `ui/scaler.py`
+
+### When NOT to Modify
+
+❌ **Game rules/logic** → Use `game_state.py`
+❌ **Territory data** → Use `map_data.py` or data files
+❌ **AI decisions** → Use `ai_player.py` and AI modules
+❌ **Network sync** → Use `network/` directory
+
+### Key Methods Reference
+
+| Method | Purpose | Line (approx) |
+|--------|---------|---------------|
+| `__init__()` | Initialize pygame, load assets | ~97 |
+| `run()` | Main game loop | Search |
+| `handle_events()` | Process pygame events | Search |
+| `handle_mouse_click()` | Click detection with priority | Search |
+| `draw_map()` | Delegates to MapRenderer | Search |
+| `draw_ui()` | Delegates to UIRenderer | Search |
+| `update()` | Update animations, effects | Search |
+
+---
+
+## AI System
+
+**Modules:** `ai_player.py`, `ai_strategy.py`, `ai_military.py`, `ai_economy.py`, `ai_hero.py`
+**Total:** 3,246 lines
+**Difficulty levels:** Easy (0), Medium (1), Hard (2) - all fully implemented
+
+### ai_player.py (682 lines)
+
+**What it does:** Main AI controller with threading
+**Entry point:** Called by main game loop when AI turn
+
+**Threading model (H6):**
+- Uses `ThreadPoolExecutor(max_workers=1)` per AI player instance (not raw `Thread()`)
+- Thread pool created in `__init__()`, reused across turns to avoid thread creation overhead
+- Call `shutdown()` when AI player is no longer needed to clean up the worker thread
+
+**Animation waiting (H8):**
+- Uses `threading.Event` (`_animation_done`) instead of `time.sleep()` polling
+- External code can call `notify_animation_complete()` to wake the AI thread immediately
+- Falls back to 100ms timeout if event not signaled (backward-compatible)
+
+#### When to Modify
+
+✅ **Add new AI decision type:**
+1. Add method to `AIPlayer` class
+2. Call from `make_decisions()` method
+3. Use thread-safe access to game state
+4. Test at all difficulty levels
+
+✅ **Change AI turn timing:**
+- Modify decision delays in `make_decisions()`
+- Adjust threading/locking as needed
+
+✅ **Integrate notify_animation_complete():**
+- Call `ai_player.notify_animation_complete()` from game loop when animations finish
+- This wakes the AI thread immediately, reducing idle wait time
+
+### ai_strategy.py (~460 lines)
+
+**What it does:** Territory evaluation, threat assessment, strategic planning
+
+**Key classes:**
+- `TerritoryScorer` - Evaluates territory strategic value (0-100)
+- `ThreatAnalyzer` - Calculates threat to territories, finds threatened areas
+- `OpportunityDetector` - Finds expansion targets and weak enemies (caches own `TerritoryScorer`)
+- `StrategyEvaluator` - Main coordinator (caches all three above)
+
+**Army API pattern (H11):**
+- `get_territory_total_armies()` for threat assessment (enemy + allied garrisons)
+- `territory_garrisons[player_index]` for own available forces
+- `ThreatAnalyzer.calculate_territory_threat()` uses effective garrison (includes +10 keep defense bonus via M15)
+
+#### When to Modify
+
+✅ **Change territory priority:**
+- Modify scoring in `TerritoryScorer.calculate_territory_value()`
+- Adjust threat detection weights in `ThreatAnalyzer`
+- Change expansion priorities in `OpportunityDetector`
+
+✅ **Add new strategic factor:**
+- Add to territory evaluation scoring
+- Update `calculate_territory_threat()`
+- Test impact on AI behavior
+
+### ai_military.py (~1060 lines)
+
+**What it does:** Combat decisions, army movement, attack planning
+
+**Key classes:**
+- `ArmyComposer` - Calculates optimal unit composition (counter system)
+- `AttackPlanner` - Selects targets, scores attacks (caches `TerritoryScorer`)
+- `DefenseCoordinator` - Reinforcement and repositioning moves (shared helpers: `_get_territories_with_available_garrison`, `_try_queue_move`)
+- `TrainingPlanner` - Unit training decisions
+- `MilitaryCommander` - Main coordinator
+
+**Keep defense bonus (M15):**
+- `_score_attack_target()` adds +10 to enemy effective strength when target has Keep
+- This is a flat bonus (not percentage), making keeps consistently valuable
+
+**BFS reachability pre-computation (H5):**
+- `select_attack_targets()` pre-computes BFS reachability for all garrison territories
+- Stored in `precomputed_reachability` dict before the scoring loop
+- Avoids redundant O(n) BFS calls inside the O(n) territory loop (was O(n^2+) overall)
+
+#### When to Modify
+
+✅ **Change attack behavior:**
+- Modify `AttackPlanner._score_attack_target()` scoring logic
+- Adjust `_calculate_garrison_needed()` for garrison requirements
+- Change `DefenseCoordinator` reinforcement strategies
+
+✅ **Add unit composition strategy:**
+- Update `TrainingPlanner._select_unit_type()` decisions
+- Modify `ArmyComposer.calculate_counter_composition()` ratios
+- Balance unit type priorities
+
+**Tiered attack aggression (war economy):**
+- Gold tiers at 1200/2400/4000g reduce garrison requirements (-1/-2/-3) and attack min_ratio (-0.2/-0.4/-0.5)
+- Max attacks per turn: 4/5/7 at each tier (default 3)
+- `plan_training()` skips territories at MAX_ARMIES_PER_TERRITORY
+
+### ai_economy.py (~1040 lines)
+
+**What it does:** Building priorities, tech research, economic planning
+
+**Key classes:**
+- `BuildingPlanner` - Building placement scoring (caches `TerritoryScorer` and `ThreatAnalyzer`)
+- `TechResearcher` - Technology research priority by difficulty
+- `BudgetAllocator` - Gold allocation across spending categories
+- `EconomyManager` - Main coordinator
+
+**Dynamic building types (M14):**
+- `select_building_action()` iterates `game_state.building_types.keys()` instead of hardcoded list
+- New building types added to `game_state.building_types` are automatically considered
+
+#### When to Modify
+
+✅ **Change building priorities:**
+- Modify `_score_building()` pipeline (base scores + modifiers)
+- Adjust economic vs military balance in `BudgetAllocator`
+- Change tech research order in `TechResearcher.TECH_PRIORITIES`
+
+✅ **Add new economic strategy:**
+- Add modifier functions to building scoring pipeline
+- Update `BudgetAllocator.allocate_budget()` for new strategic modes
+- Modify resource allocation percentages
+
+**War economy system (multi-tier gold thresholds):**
+- `select_buildings_to_demolish()` returns a list of buildings to demolish (not just one)
+- Gold tiers: 1200g (tier 1), 2400g (tier 2), 4000g (tier 3)
+- Higher tiers demolish more economy buildings (Farm→Mine→Market), boost tech scores, force research
+- `_adjust_tech_score()` accepts `gold_tier` param for multiplied scores (1.25x/1.5x/2.0x)
+- Demolition no longer requires all plots to be occupied
+
+### ai_hero.py (~750 lines)
+
+**What it does:** Hero ability management, hero training selection
+
+**Key classes:**
+- `HeroSelector` - Chooses which heroes to train (difficulty-specific priorities)
+- `AbilityExecutor` - Scores and selects abilities (caches `TerritoryScorer`, difficulty-aware via M30)
+- `HeroManager` - Main coordinator
+
+**Difficulty-aware ability scoring (M30):**
+- `evaluate_ability_usage()` accepts `difficulty` parameter
+- Scores multiplied by difficulty modifier: Easy=0.5x, Normal=0.8x, Hard=1.0x
+- Lower scores mean fewer abilities pass `MIN_ABILITY_THRESHOLD` (15.0)
+- This makes Easy AI use abilities less optimally (not just less frequently)
+
+**Hero training queue structure:**
+- `hero_training_queue` is `{territory_name: {plot_index: (hero_type, training_time)}}` — keyed by territory, NOT player
+- `_count_training_heroes()` and `_get_training_hero_types()` iterate all queue entries filtered by territory owner
+- `_find_keep_for_training()` checks if territory already in queue (not player in queue)
+
+#### When to Modify
+
+✅ **Add new hero ability:**
+1. Add scoring method `_score_your_ability()` to `AbilityExecutor`
+2. Add entry to `_ability_scorers` dispatch dict in `__init__()`
+3. Test ability effectiveness at all difficulty levels
+4. Balance usage priority (base score 60+ = "use when ready")
+
+### When NOT to Modify AI
+
+❌ **Change game rules** → Use `game_state.py`
+❌ **Cheat/give AI advantages** → Difficulty should affect decision quality, not resources
+❌ **Modify rendering** → AI doesn't touch rendering
+
+### Testing AI Changes
+
+```bash
+# Run AI strategy tests
+pytest tests/test_ai_strategy.py
+
+# 40-turn stress tests (sequential mode)
+python tests/test_ffa_sequential_40turn.py
+python tests/test_2v2_sequential_40turn.py
+
+# 40-turn stress tests (simultaneous mode)
+python tests/test_ffa_simultaneous_40turn.py
+python tests/test_2v2_simultaneous_40turn.py
+
+# All 4 tests validate: army limits, garrison consistency, gold, territory ownership
+# Plus AI behavior analysis, building analysis, hero analysis
+```
+
+---
+
+## Network System
+
+**Modules:** `network/server.py`, `network/client.py`, `network/protocol.py`, `network/message_queue.py`, `network/lobby.py`, `network/territory_selector.py`, `network/multiplayer_setup.py`, `network/upnp.py`
+**Total:** ~2,700 lines
+**Status:** Full 2-4 player multiplayer with AI slots, reconnection support, UPnP internet play
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        HOST (Player 0)                       │
+│  ┌─────────────────┐     ┌─────────────────────────────────┐│
+│  │  NetworkServer  │────▶│  Game Loop (authoritative)      ││
+│  │  (multi-client) │     │  - Runs all game logic          ││
+│  └────────┬────────┘     │  - Executes AI turns            ││
+│           │              │  - Broadcasts state changes     ││
+│           │              └─────────────────────────────────┘│
+└───────────┼─────────────────────────────────────────────────┘
+            │ TCP
+    ┌───────┴───────┬───────────────┐
+    ▼               ▼               ▼
+┌────────┐    ┌────────┐      ┌────────┐
+│Client 1│    │Client 2│      │Client 3│
+│(P1)    │    │(P2)    │      │(P3)    │
+└────────┘    └────────┘      └────────┘
+```
+
+### Key Design Decisions
+
+| Decision | Implementation |
+|----------|----------------|
+| Authority | Host-authoritative (runs all logic, AI, battles) |
+| Player count | 2-4 flexible (host + up to 3 clients) |
+| AI slots | Configurable per-slot (Easy/Medium/Hard) |
+| Disconnect | AI takes over immediately, player can reconnect |
+| Reconnection | Name + password authentication (5-min window) |
+| Host disconnect | Game ends for all clients |
+| Allied vision | Allies see each other's movement arrows |
+| Internet play | UPnP auto port-forward + public IP detection (graceful LAN fallback) |
+
+### network/upnp.py (~150 lines)
+
+**What it does:** Automates router port-forwarding via UPnP IGD protocol for internet play
+
+**Key Class:** `UPnPManager` — full lifecycle: discover IGD → map port → detect public IP → cleanup
+
+**When to Modify:**
+- Change UPnP timeout/description → `network_config.py` constants `UPNP_DISCOVERY_TIMEOUT`, `UPNP_DESCRIPTION`
+- Change public IP detection APIs → `PUBLIC_IP_APIS` list in `network/upnp.py`
+- Change UI status messages → `get_status_text()` in `UPnPManager`
+- Change port mapping protocol (e.g. UDP) → `_setup_worker()` addportmapping call
+
+**Integration points:** `server.setup_upnp()` starts it, `server.stop()` cleans up, `territory_selector._draw_host_ip()` polls status
+
+### network/server.py (~900 lines)
+
+**What it does:** Multi-client TCP server for 2-4 player multiplayer
+
+**Key Classes:**
+- `NetworkServer` - Main server managing multiple clients
+- `ClientConnection` - Per-client state (socket, buffer, player info)
+- `DisconnectedPlayer` - Reconnection info storage
+
+**Key Methods:**
+```python
+broadcast_message(msg, exclude=None)  # Send to all clients
+send_to_player(idx, msg)              # Send to specific player
+kick_player(idx, reason)              # Kick player from lobby
+reserve_slot(idx)                     # Reserve slot for AI
+set_game_started(started)             # Enable reconnection mode
+```
+
+#### When to Modify
+
+✅ **Add new network message type:**
+1. Define in `network_config.py` MessageType class
+2. Add handler in `_handle_received_message()` if server needs to process it
+3. Update `NetworkClient` to send/receive
+4. Add handler in `main.py _handle_network_message()`
+5. Test with host and multiple clients
+
+✅ **Change connection settings:**
+- Modify in `network_config.py`:
+  - `MAX_CLIENTS = 3` (host + 3 = 4 players)
+  - `CONNECTION_TIMEOUT = 15.0` seconds
+  - `RECONNECTION_TIMEOUT = 300.0` seconds (5 min)
+  - `HEARTBEAT_INTERVAL = 5.0` seconds
+
+✅ **Change disconnect behavior:**
+- `_disconnect_client()` handles client disconnect
+- `game_started` flag determines reconnection vs removal
+- AI takeover triggered via `PLAYER_DISCONNECT` message
+
+### network/client.py (~450 lines)
+
+**What it does:** Network client for joining multiplayer games
+
+**Key Features:**
+- Automatic reconnection with password
+- Heartbeat/ping response
+- Disconnect detection with reason
+
+**Key Methods:**
+```python
+connect(host, port, player_name)      # Initial connection
+reconnect(host, port, name, password) # Reconnect after disconnect
+send_message(message)                 # Queue message to server
+is_connected()                        # Check connection status
+```
+
+#### When to Modify
+
+✅ **Add reconnection features:**
+- Modify `_handle_reconnect_accept()` for state sync
+- Update `reconnect()` for new authentication
+
+✅ **Change disconnect detection:**
+- `disconnected` flag set on host disconnect
+- `disconnect_reason` provides user-facing message
+
+### network/protocol.py
+
+**What it does:** Message serialization, state sync
+
+**Key Message Categories:**
+```python
+# Connection
+CONNECT_REQUEST, CONNECT_ACCEPT, CONNECT_REJECT, DISCONNECT
+
+# Lobby
+LOBBY_STATE, LOBBY_JOIN, LOBBY_LEAVE, LOBBY_KICK
+LOBBY_SLOT_UPDATE, LOBBY_COUNTDOWN, LOBBY_LAUNCH
+
+# Reconnection
+RECONNECT_REQUEST, RECONNECT_ACCEPT, RECONNECT_REJECT
+PLAYER_DISCONNECT, AI_TAKEOVER
+
+# Gameplay
+MOVEMENT_ORDER, BUILDING_ORDER, TRAINING_ORDER
+EXECUTE_ORDERS, BATTLE_RESOLVE, TURN_END
+
+# Simultaneous Mode
+SIM_PLAYER_READY, SIM_ALL_READY, SIM_TIMER_UPDATE
+SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
+```
+
+### network/lobby.py (~150 lines)
+
+**What it does:** Lobby state management
+
+**Key Classes:**
+- `LobbySlot` - Per-slot state (human/AI/empty, color, team, territory)
+- `LobbyState` - Full lobby state with serialization
+
+### network/territory_selector.py (~1,500 lines)
+
+**What it does:** Multiplayer lobby UI with territory selection
+
+**Features:**
+- Player slot configuration (Human/AI/Empty)
+- AI difficulty per-slot (Easy/Medium/Hard)
+- Color and team selection
+- Territory claiming with first-come-wins
+- Host-only kick and launch controls
+
+### main.py Network Integration
+
+**Key Attributes:**
+```python
+self.network_connection      # NetworkServer (host) or NetworkClient (client)
+self.multiplayer_mode        # True if networked game
+self.local_player_index      # 0 for host, 1-3 for clients
+```
+
+**Key Methods:**
+```python
+_process_network_messages()   # Process incoming messages
+_handle_network_message(msg)  # Route message to handler
+_send_action_to_remote(type, data)  # Send action to network
+```
+
+**Adding new message handler in main.py:**
+```python
+# In _handle_network_message():
+elif msg_type == MessageType.YOUR_NEW_MESSAGE:
+    data = message.get('data', {})
+    # Handle the message
+    self.game_state.do_something(data)
+```
+
+### Multiplayer Mode Checks
+
+**Always guard network code:**
+```python
+# Check if multiplayer before accessing network
+if self.multiplayer_mode:
+    self._send_action_to_remote(MessageType.SOME_ACTION, data)
+
+# Check if host (player 0)
+if self.local_player_index == 0:
+    # Host-only logic
+
+# Check if client
+if self.local_player_index != 0:
+    # Client-only logic
+```
+
+### When NOT to Modify Network
+
+❌ **Game logic** → Use `game_state.py` (network just syncs state)
+❌ **UI rendering** → Network doesn't handle rendering
+❌ **AI decisions** → AI runs on host only, network syncs results
+
+### Testing Network Changes
+
+```bash
+# Run network tests
+pytest tests/test_network_server.py
+pytest tests/test_network_protocol.py
+
+# Manual testing (2-4 players)
+# Terminal 1 (Host):
+python main.py --multiplayer --host
+
+# Terminal 2-4 (Clients):
+python main.py --multiplayer --join <host_ip>
+
+# Test checklist:
+# [ ] Host creates lobby, clients join
+# [ ] AI slot configuration works
+# [ ] Territory selection syncs
+# [ ] Game launches for all players
+# [ ] Orders sync correctly
+# [ ] Battles resolve for all
+# [ ] Client disconnect → AI takeover
+# [ ] Host disconnect → game ends
+# [ ] Reconnection with password works
+```
+
+---
+
+## Simultaneous Mode
+
+**Modules:** `simultaneous/sim_state.py`, `simultaneous/sim_phase_manager.py`, `simultaneous/sim_conflict_resolver.py`, `simultaneous/sim_alliance_handler.py`, `simultaneous/sim_ai.py`
+**Total:** ~1,200 lines
+**Status:** Complete, available in single-player and multiplayer
+
+The simultaneous mode is a separate turn system where all players plan their moves at the same time, then orders execute together.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────┐
+│  PLANNING PHASE                              │
+│  - All players queue orders simultaneously   │
+│  - Orders hidden from other players          │
+│  - Ends when all click End Turn OR timer     │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────┐
+│  EXECUTION PHASE                             │
+│  - All movements animate simultaneously      │
+│  - UI is view-only                           │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────┐
+│  RESOLUTION PHASE                            │
+│  - Resolve crossing army conflicts           │
+│  - Resolve battles                           │
+│  - Handle alliance arrivals                  │
+│  - Apply income/progression                  │
+└─────────────────────────────────────────────┘
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `sim_state.py` | Wraps GameState, adds per-player orders, ready flags, timers |
+| `sim_phase_manager.py` | Phase transitions, order execution |
+| `sim_conflict_resolver.py` | Crossing armies, multi-army battles |
+| `sim_alliance_handler.py` | Allied territory capture, overflow |
+| `sim_ai.py` | AI adapter with simulated delay |
+
+### When to Modify
+
+✅ **Change timer settings:**
+- Modify `BASE_TIMER` and `MASTER_PLANNER_BONUS` in `sim_state.py`
+
+✅ **Change conflict resolution rules:**
+- Modify `SimConflictResolver.resolve_crossing_conflict()` for crossing armies
+- Modify `SimConflictResolver.resolve_multi_army_battle()` for 3+ armies
+
+✅ **Change alliance handling:**
+- Modify `SimAllianceHandler.determine_chooser()` for who picks territory
+- Modify `SimAllianceHandler.calculate_allied_casualties()` for damage distribution
+
+✅ **Change AI behavior:**
+- Modify `SimultaneousAI.THINKING_DELAY` for AI planning time
+- Modify `SimultaneousAI._make_ai_decisions()` for decision logic
+- AI uses `_selected_unit_ids` dict to track units across multiple movement orders
+- Reset at start of each planning session to prevent selecting same unit twice
+
+✅ **Change unit spawn behavior:**
+- `finish_training()` in `game_state.py` spawns units with 'moved' status
+- Called AFTER `start_planning_phase()` in `sim_state.py` to preserve status
+- Haste ability exception handled in `finish_training()`
+
+✅ **Change battle UI sides (attacker/defender):**
+- `battle.attackers` list stored in `sim_phase_manager._create_battle_conflict()`
+- `battle_interface.py` uses this list to determine left (attacker) vs right (defender)
+
+✅ **Change alliance choice UI:**
+- `main.py:draw_alliance_choice_popup()` - Uses IGOptMenuBG.png and GMenuButton.png
+- Player names displayed in their player color via `get_player_name()`
+- Defensive victories skip the popup (original owner retains control)
+
+### Setup Integration
+
+Turn Mode dropdown added to:
+- `integrated_setup.py` - Single-player setup
+- `territory_selector.py` - Multiplayer setup
+
+### Network Messages
+
+Simultaneous-specific messages in `network_config.py`:
+- `SIM_PLAYER_READY` - Player finished planning
+- `SIM_ALL_READY` - All ready, merged orders attached
+- `SIM_TIMER_UPDATE` - Timer sync between host/client
+- `SIM_BATTLE_RESULT` - Battle outcome from resolver
+- `SIM_ALLIANCE_CHOICE` - Territory owner selection
+- `SIM_ROUND_COMPLETE` - Round finished, carries authoritative state
+
+### State Synchronization (Multiplayer Sim Mode)
+
+The host is authoritative. At round end, `SIM_ROUND_COMPLETE` broadcasts state to prevent desync.
+
+**Synced in SIM_ROUND_COMPLETE (main.py `_sim_broadcast_round_complete()`):**
+
+| Data | Purpose | Location |
+|------|---------|----------|
+| `player_gold` | Prevents income calculation drift | Line ~1920 |
+| `territory_owners` | Battle results synchronized | Line ~1922 |
+| `eliminated_players` | Skip income/construction for eliminated | Line ~1924 |
+| `heroes` | Hero passive abilities (Haste, Defiance) | Line ~1926 |
+| `hero_training_queue` | In-progress training with timers | Line ~1928 |
+| `hero_ability_cooldowns` | Ability availability | Line ~1933 |
+| `hero_silence_status` | Vow of Silence effect | Line ~1938 |
+| `player_tech_researched` | Completed technologies | Line ~1944 |
+| `research_in_progress` | Current research timers | Line ~1948 |
+| `player_tech_available` | Unlocked tech tree nodes | Line ~1952 |
+| `tech_effects` | 10 derived bonus arrays | Line ~1956 |
+
+**Tech Effect Arrays (inside `tech_effects`):**
+- `royal_decree_discount` - Royal Decree: 15% off Heroes/Keeps
+- `training_cost_discount` - Improved Training: 20% off Swordsmen/Pikemen
+- `cavalry_cost_discount` - Animal Handling: 25% off Cavalry
+- `archer_keep_strength_bonus` - Battlement Archery: +50% Archer strength at Keeps
+- `farm_destruction_gold_bonus` - Raze the Countryside: +30g on enemy Farm destruction
+- `cavalry_strength_bonus` - Cavalry Tactics: +33% Cavalry strength
+- `divide_conquer_bonus` - Divide and Conquer: +20% Pikemen/Swordsmen strength
+- `barracks_cost_discount` - Makeshift Barracks: 25% off Barracks
+- `barracks_full_refund` - Makeshift Barracks: 100% demolish refund
+- `hero_keep_defense_bonus` - Last Resort: +100% Keep/Castle defense with heroes
+
+✅ **Add new synced state:**
+1. Add to `authoritative_data` dict in `_sim_broadcast_round_complete()` (main.py ~1917)
+2. Add handler in `SIM_ROUND_COMPLETE` receiver (main.py ~1643)
+3. Test with 2-player multiplayer sim mode
+
+✅ **Fix cancel action not syncing:**
+- Cancel handlers must remove queued orders from `sim_state.player_orders[local_player]`
+- Pattern: Filter out orders matching type and relevant IDs
+```python
+if self.sim_state is not None:
+    local_player = self.get_local_player()
+    orders = self.sim_state.player_orders.get(local_player, [])
+    self.sim_state.player_orders[local_player] = [
+        o for o in orders
+        if not (o.get('type') == 'order_type' and o.get('key') == value)
+    ]
+```
+
+### Testing Simultaneous Mode
+
+```bash
+# Test single-player
+# 1. Start new game from Custom Game
+# 2. Select "Simultaneous" in Turn Mode dropdown
+# 3. Play game with AI opponents
+# 4. Verify timer, waiting indicator, and phase transitions
+
+# Test multiplayer
+# 1. Host game with Turn Mode: Simultaneous
+# 2. Join from another machine
+# 3. Verify both players see planning phase
+# 4. Test crossing army conflicts
+# 5. Test alliance arrivals (if allies)
+```
+
+---
+
+## Rendering System
+
+**Modules:** `rendering/map_renderer.py`, `rendering/ui_renderer.py`, `rendering/panel_renderer.py`, `rendering/helpers.py`
+**Total:** 2,983 lines
+**Pure rendering:** No game logic (reads from game_state)
+
+### rendering/map_renderer.py (2,136 lines)
+
+**What it does:** Territory overlays, plots, arrows, battle markers
+
+#### When to Modify
+
+✅ **Add new map visual:**
+1. Add rendering code in appropriate method
+2. Read data from game_state (never modify it)
+3. Use `DrawingHelpers` for common shapes
+4. Test with different zoom levels
+
+✅ **Change territory colors:**
+- Modify color calculation in territory rendering
+- Update player colors in `game_state.py` (not here)
+- Capital territories are darkened by 30% (0.7× RGB) to distinguish them
+- Removed: Previously territories with moved units had dark overlay (50,50,50,40) - removed to avoid confusion with capital highlighting
+
+### rendering/ui_renderer.py (1,906 lines)
+
+**What it does:** UI panels, buttons, info displays
+
+#### When to Modify
+
+✅ **Add new UI panel:**
+1. Define panel layout
+2. Add rendering method
+3. Read game state data
+4. Update panel in `render_panels()`
+
+✅ **Change panel layout:**
+- Modify panel positioning
+- Adjust element sizes
+- Update using `UIScaler` for responsive design
+
+✅ **Top Panel Resource Slots (Lines 329-407):**
+- Visual resource display: Taxation, Command Limit, Gold, Income
+- Location: Centered between Territory Bonus button and right edge
+- Hover tooltips without visual highlighting
+- Always shows LOCAL player's stats (not current turn player in multiplayer/AI games)
+- Icons scale at 65% height, 1.4x wider (rectangular shape)
+- Text uses `small_font`, icons from `assets/mapicons/`
+
+✅ **Action Log Filtering (Lines 1106-1210):**
+- Filters messages to show only LOCAL player's events
+- Uses regex pattern matching for "Player X" references
+- Replaces "Player X" with actual player names (e.g., "Editoreus", "AI (Medium)")
+- Security: Prevents players from naming themselves "Player 2" to see opponent messages
+- Message storage: Plain strings in `game_state.messages[]`
+
+### rendering/helpers.py (383 lines)
+
+**What it does:** Drawing utilities (text, shapes, borders)
+
+#### When to Modify
+
+✅ **Add new drawing utility:**
+1. Add static method to `DrawingHelpers`
+2. Keep it reusable and generic
+3. Document parameters clearly
+
+### Performance Patterns (FPS Optimization)
+
+The codebase uses several performance patterns. Follow these when adding new rendering code:
+
+**Caching:**
+- `_ui_icon_cache` (main.py) - Cache scaled icons/portraits: `cache_key = ("prefix_name", size)`
+- `_text_cache` (main.py) - Cache static text: `self._get_cached_text(text, font, color)`
+- `_rotated_tab_text_cache` (main.py) - Cache rotated text surfaces
+- `text_cache` (ui_renderer.py) - UIRenderer's own text cache: `self._get_cached_text(text, font, color)`
+- `_cached_surface` (production_glow_effect.py) - Reuse temp surfaces per effect instance
+
+**Surface reuse:**
+- `_get_overlay_surface()` (ui_renderer.py) - Reusable full-screen SRCALPHA surface for modals
+- Never create `pygame.Surface((width, height), SRCALPHA)` in a per-frame method without reuse
+
+**Algorithmic:**
+- Pre-index lookups (e.g., `route_first_order` dict in map_renderer.py) instead of nested loops
+- Use bounding box rejection before expensive polygon containment checks
+- `crop_to_circle()` uses BLEND_RGBA_MULT (never per-pixel get_at/set_at)
+
+**Benchmarking:**
+- Run `python -m pytest tests/test_fps_benchmark.py -v -s` to measure FPS
+- Use `tools/stress_test_generator.py` to create worst-case scenarios
+- Thresholds: Idle 60+ FPS, Stress 30+ FPS
+
+### When NOT to Modify Rendering
+
+❌ **Game logic** → Use `game_state.py`
+❌ **Input handling** → Use `input/` modules
+❌ **AI decisions** → Use `ai_*` modules
+
+---
+
+## Input System
+
+**Modules:** `input/mouse_handler.py`, `input/keyboard_handler.py`, `input/camera_handler.py`
+**Total:** 650+ lines
+**Delegator pattern:** Handles input, delegates actions to game_state
+
+### input/mouse_handler.py (211 lines)
+
+**What it does:** Mouse input delegation with click priority
+
+#### When to Modify
+
+✅ **Add new clickable element:**
+1. Add detection in priority order (popup → UI → map)
+2. Delegate action to appropriate module
+3. Return True if handled (prevents lower priority)
+
+✅ **Change click priorities:**
+- Modify priority order in `handle_click()`
+- Current: Popups → UI elements → Map territories
+
+### input/keyboard_handler.py (246 lines)
+
+**What it does:** Keyboard shortcuts and commands
+
+#### When to Modify
+
+✅ **Add new keyboard shortcut:**
+1. Add key detection in `handle_keydown()`
+2. Trigger appropriate game action
+3. Document in `QUICK_REFERENCE.md`
+
+### input/camera_handler.py (399 lines)
+
+**What it does:** Camera pan, zoom, edge scrolling
+
+#### When to Modify
+
+✅ **Change camera behavior:**
+- Modify pan speed, zoom speed
+- Adjust edge scrolling sensitivity
+- Change zoom limits (min/max)
+
+---
+
+## map_data.py
+
+**What it does:** Territory definitions, adjacency graph, polygon geometry
+**Size:** 208 lines
+**Data source:** Loads from JSON files
+
+### When to Modify
+
+✅ **Add new territory:**
+1. Add to `ADJACENCY` dict with neighbors
+2. Add polygon to `territory_polygons.json` (use `Polygon_Tool.py`)
+3. Add economic data to `economic_data.json` (use `Economic_Tool.py`)
+4. Add plots to `plots.json` (use `Plot_Tool.py`)
+5. Update territory count (currently 59)
+
+✅ **Change adjacency:**
+- Modify `ADJACENCY` dict
+- OR use `Adjacency_Tool.py` for visual editing
+- Test pathfinding and movement
+
+### When NOT to Modify
+
+❌ **Edit JSON files manually** → Use the editor tools
+❌ **Game logic** → Use `game_state.py`
+
+### Editor Tools
+
+| Tool | Purpose | Usage |
+|------|---------|-------|
+| `Polygon_Tool.py` | Edit territory shapes | `python Polygon_Tool.py` |
+| `Plot_Tool.py` | Edit building plot positions | `python Plot_Tool.py` |
+| `Economic_Tool.py` | Edit territory income | `python Economic_Tool.py` |
+| `Adjacency_Tool.py` | Edit territory connections | `python Adjacency_Tool.py` |
+
+**Important:** Always use tools, not manual JSON editing. Tools validate data and prevent errors.
+
+---
+
+## Quick Navigation
+
+### "I want to..."
+
+**...add a new unit type**
+→ `game_state.py` lines 171-200, add to `UNIT_TYPES`
+
+**...add a new building**
+→ `game_state.py` line 387, add to `building_types`
+
+**...change unit/building costs**
+→ `game_state.py` `UNIT_TYPES` and `building_types` dicts
+
+**...modify combat mechanics**
+→ `game_state.py` `resolve_battle()` method (~line 2000)
+
+**...change AI behavior**
+→ `ai_strategy.py`, `ai_military.py`, or `ai_economy.py` depending on type
+
+**...add UI element**
+→ `main.py` for simple, `rendering/ui_renderer.py` for complex
+
+**...add campaign features**
+→ `campaign_screen.py` - Campaign screen UI and logic
+→ `campaign_mission_*.py` - Mission modules (see [Campaign System](#campaign-system))
+→ `campaign_data.json` - Mission text data (edit with `Campaign_Text_Tool.py`)
+→ `Campaign_Text_Tool.py` - WYSIWYG editor for campaign mission text
+→ `map_data.py` - Territory filtering (`set_enabled_territories`, `set_territory_display_names`)
+
+**...add visual effect**
+→ `ui/effects/` directory, create new effect class
+
+**...modify camera/zoom**
+→ `input/camera_handler.py`
+
+**...add keyboard shortcut**
+→ `input/keyboard_handler.py`
+
+**...add new territory**
+→ Use `Polygon_Tool.py`, `Economic_Tool.py`, `Plot_Tool.py`
+
+**...change map adjacency**
+→ Use `Adjacency_Tool.py` or edit `map_data.py` `ADJACENCY`
+
+**...add research/tech**
+→ `game_state.py` technology tree, implement effect
+
+**...add logging to a module**
+→ `from utils.logger import get_logger` then `logger = get_logger(__name__)`
+
+**...modify network protocol**
+→ `network/protocol.py`
+
+**...change victory conditions**
+→ `game_state.py` `check_victory()` method
+
+**...balance the economy**
+→ Adjust costs in `game_state.py` and `economic_data.json`
+
+---
+
+## Common Mistakes to Avoid
+
+### ❌ Modifying game logic in rendering code
+**Wrong:** Adding territory ownership logic in `map_renderer.py`
+**Right:** Read ownership from `game_state`, only render visuals
+
+### ❌ Accessing game state directly from UI
+**Wrong:** Clicking territory in `main.py` directly changes `game_state.territory_owners`
+**Right:** Call `game_state.some_method()` that encapsulates the logic
+
+### ❌ Editing JSON files manually
+**Wrong:** Opening `territory_polygons.json` in text editor
+**Right:** Use `Polygon_Tool.py` for visual editing with validation
+
+### ❌ Making AI cheat
+**Wrong:** Giving AI extra gold or removing fog of war
+**Right:** Make AI smarter by improving decision logic
+
+### ❌ Hardcoding values
+**Wrong:** `if cost == 25:` (magic number)
+**Right:** `if cost == UNIT_TYPES['Swordsman']['cost']:`
+
+### ❌ Modifying garrison counts without syncing units list
+**Wrong:** `garrison['unmoved'] -= 1` (count diverges from actual units)
+**Right:** Modify the units list, then call `self._sync_garrison_counts(territory, player_index)` to reconcile counts.
+The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' → unmoved, 'moved' → moved) and corrects any desync.
+
+### ❌ Using print() for output
+**Wrong:** `print(f"Battle resolved: {winner}")`
+**Right:** `logger.info(f"Battle resolved: {winner}")` using `from utils.logger import get_logger`
+
+### ❌ Skipping documentation updates
+**Wrong:** Adding feature without updating `GAME_MECHANICS.md`
+**Right:** Update docs whenever you change game rules/balance
+
+---
+
+## Sound System
+
+**What it does:** Audio playback for UI interactions, game events, and hero voice lines
+**Size:** 281 lines (sound_manager.py) + 127 lines (global_sound.py)
+**Dependencies:** pygame.mixer
+**Used by:** main.py, game_state.py, all menu modules
+
+### Files
+
+- [sound_manager.py](../sound_manager.py) - Core sound system with playback, queuing, volume control
+- [global_sound.py](../global_sound.py) - Global instance and helper functions
+
+### Architecture
+
+**Sound Categories:**
+- `general` - UI clicks, event notifications (CastleCompleted, DefaultMouseClick, ResearchCompleted)
+- `armycomp` - Army composition sounds (7 random files)
+- `seledra` - Hero Seledra voice lines (SeledraRecruit + SeledraSpeech1-5)
+
+**Key Features:**
+- Overlap prevention (same category won't play twice while playing)
+- Queue system for sequential playback (Research → Castle → Hero priority)
+- Anti-repeat logic (prevents same sound twice in a row)
+- Per-category volume control
+- Player-specific sounds (only local player hears their actions)
+
+### When to Modify
+
+#### ✅ Add New Sound Category
+
+**Steps:**
+1. Create folder in `assets/sounds/[category_name]`
+2. Add sound files (.mp3, .wav, .ogg)
+3. In `global_sound.py` `initialize_sounds()`:
+   ```python
+   num_category = sound_manager.load_sounds_from_folder('category', 'assets/sounds/category')
+   print(f"[Sound Manager] Loaded {num_category} category sounds")
+   ```
+4. Create helper function if needed:
+   ```python
+   def play_category_sound(use_queue=False):
+       if use_queue:
+           sound_manager.queue_sound('category', 0)
+       else:
+           return sound_manager.play_specific('category', 0)
+   ```
+
+**Files affected:**
+- `global_sound.py` - Add loading and helper functions
+- Game logic file (e.g., `game_state.py`) - Add trigger points
+
+#### ✅ Add New Hero Voice Lines
+
+**Steps:**
+1. Create folder `assets/sounds/heroes/[heroname]`
+2. Add files: `[HeroName]Recruit.mp3` (index 0) and speech files (indices 1+)
+3. Add to `initialize_sounds()` in `global_sound.py`:
+   ```python
+   num_hero = sound_manager.load_sounds_from_folder('heroname', 'assets/sounds/heroes/heroname')
+   ```
+4. Add recruitment function:
+   ```python
+   def play_hero_recruit_sound(hero_name, use_queue=False):
+       if hero_name == 'Your Hero Name':
+           if use_queue:
+               sound_manager.queue_sound('heroname', 0)
+           else:
+               return sound_manager.play_specific('heroname', 0)
+   ```
+5. Add selection function:
+   ```python
+   def play_hero_select_sound(hero_name):
+       if hero_name == 'Your Hero Name':
+           # Implement anti-repeat logic like Seledra (see lines 108-126)
+   ```
+
+**Files affected:**
+- `global_sound.py` - Add hero loading and functions
+- `game_state.py` `finish_hero_training()` - Add recruitment trigger
+- `main.py` hero selection handler - Add selection trigger
+
+#### ✅ Add Event Sound (Research, Castle, etc.)
+
+**Steps:**
+1. Add sound file to `assets/sounds/general/` folder
+2. Note: Adding files changes alphabetical indices! Update all existing index references.
+3. Add helper function in `global_sound.py`:
+   ```python
+   def play_event_sound(use_queue=False):
+       # EventName.mp3 at index X (check alphabetical order!)
+       if use_queue:
+           sound_manager.queue_sound('general', X)
+       else:
+           return sound_manager.play_specific('general', X)
+   ```
+4. Add trigger in appropriate game logic method (e.g., `game_state.py`):
+   ```python
+   # Play event sound for local player only
+   should_play_sound = (owner == self.current_player)
+   if self.network_mode and should_play_sound:
+       should_play_sound = (self.current_player == self.local_player_index)
+
+   if should_play_sound:
+       from global_sound import play_event_sound, sound_manager
+       # Check if higher priority sound is playing
+       is_sound_playing = any(
+           channel and channel.get_busy()
+           for channel in sound_manager.currently_playing.values()
+       )
+       play_event_sound(use_queue=is_sound_playing)
+   ```
+
+**CRITICAL:** When adding files to `general` folder, update ALL index references:
+- `play_ui_click()` - DefaultMouseClick.mp3 index
+- `play_research_complete_sound()` - ResearchCompleted.mp3 index
+- `play_castle_complete_sound()` - CastleCompleted.mp3 index
+
+**Sound Priority System:**
+Order of execution in `game_state.py` `end_turn()` determines priority:
+```python
+self.finish_research()         # Priority 1 (plays immediately)
+self.finish_castle_upgrades()  # Priority 2 (queues if research playing)
+self.finish_hero_training()    # Priority 3 (queues if anything playing)
+```
+
+#### ✅ Add UI Click Sound to New Menu
+
+**Steps:**
+1. Import sound manager:
+   ```python
+   from global_sound import sound_manager
+   ```
+2. Add to button click handlers:
+   ```python
+   if button_rect.collidepoint(pos):
+       sound_manager.play_ui_click()
+       # ... rest of button logic
+   ```
+
+**Files with UI click sounds:**
+- `main_menu.py` - Main menu buttons
+- `integrated_setup.py` - Setup screen interactions + territory map clicks
+- `multiplayer_setup.py` - Multiplayer setup buttons (host/join/back, exit, join screen)
+- `territory_selector.py` - Launch, return, dropdowns, territory map clicks
+- `main.py` - In-game menu and options
+
+#### ✅ Adjust Sound Volume
+
+**Individual Sound:**
+In `global_sound.py` `initialize_sounds()`:
+```python
+sounds = sound_manager.sound_categories['general']
+sounds[2].set_volume(sound_manager.volume * 2.5)  # 2.5x louder
+```
+
+**Entire Category:**
+```python
+sound_manager.set_category_volume('general', 1.5)  # 1.5x master volume
+```
+
+**Volume Guidelines:**
+- UI clicks: 2.0x (loud and punchy)
+- Event notifications: 2.5x (very loud, celebration sounds)
+- Background/ambient: 0.5-0.8x (subtle)
+- Castle upgrades: 1.5x (moderate celebration)
+
+### Sound Queue System
+
+**How it works:**
+1. `process_sound_queue()` called every frame in main game loop
+2. Checks if any sound is currently playing
+3. If nothing playing, pops first sound from queue and plays it
+4. Sounds use `use_queue=True` parameter to queue instead of playing immediately
+
+**When to use queuing:**
+- Multiple events occurring simultaneously (research + hero finish)
+- Want specific playback order (priority system)
+- Prevent overlap of important sounds
+
+**Example from `game_state.py`:**
+```python
+# Check if a sound is currently playing
+is_sound_playing = any(
+    channel and channel.get_busy()
+    for channel in sound_manager.currently_playing.values()
+)
+# Queue if something is playing, otherwise play immediately
+play_hero_recruit_sound(hero_type, use_queue=is_sound_playing)
+```
+
+### Player-Specific Sound Logic
+
+**Always check ownership in multiplayer:**
+```python
+# Single-player check
+should_play_sound = (owner == self.current_player)
+
+# Multiplayer check (add this)
+if self.network_mode and should_play_sound:
+    should_play_sound = (self.current_player == self.local_player_index)
+
+if should_play_sound:
+    # Play sound
+```
+
+**Why:** In multiplayer, both players run the same game logic. Without this check, both players would hear all sounds (including opponent actions). This ensures only the player who performed the action hears the sound.
+
+### Common Pitfalls
+
+**❌ Not updating indices after adding sounds**
+When adding a file to an existing category, alphabetical order changes! Example:
+```python
+# Before adding CastleCompleted.mp3:
+# Index 0: DefaultMouseClick.mp3
+# Index 1: ResearchCompleted.mp3
+
+# After adding CastleCompleted.mp3:
+# Index 0: CastleCompleted.mp3  ← NEW
+# Index 1: DefaultMouseClick.mp3  ← SHIFTED
+# Index 2: ResearchCompleted.mp3  ← SHIFTED
+
+# Must update ALL existing references!
+```
+
+**❌ Forgetting player-specific checks**
+Without multiplayer checks, opponent actions trigger sounds for local player.
+
+**❌ Wrong priority order**
+If `finish_hero_training()` runs before `finish_research()`, hero sound plays first and research gets skipped. Order matters!
+
+**❌ Playing UI clicks during gameplay**
+UI clicks should only play in menus, not for gameplay actions (selecting territories, moving armies, etc.)
+
+---
+
+## Testing Checklist
+
+When making changes, test:
+
+### Game Logic Changes
+- [ ] Run with AI opponents (all difficulty levels)
+- [ ] Test edge cases (0 armies, full territories, etc.)
+- [ ] Verify no crashes or illegal moves
+- [ ] Check balance (not too easy/hard)
+- [ ] Run `pytest tests/test_ai_strategy.py` if available
+
+### UI Changes
+- [ ] Test at different resolutions (1600x900, 1920x1080)
+- [ ] Test with different zoom levels
+- [ ] Check click detection works correctly
+- [ ] Verify no visual glitches or overlaps
+- [ ] Test with different player counts (2-4)
+
+### Network Changes
+- [ ] Run `pytest tests/test_network_server.py`
+- [ ] Test with two clients on same LAN
+- [ ] Verify state synchronization
+- [ ] Test disconnection/reconnection
+- [ ] Check for race conditions
+
+### Balance Changes
+- [ ] Play 10+ turns with new values
+- [ ] Test with AI at all difficulties
+- [ ] Verify intended strategy is viable
+- [ ] Check no dominant strategy emerged
+- [ ] Update `QUICK_REFERENCE.md` with new values
+
+---
+
+## Campaign System
+
+**What it does:** Scripted single-player campaign missions with cinematic sequences, custom AI behavior, and quest tracking
+**Files:** `campaign_mission_*.py` (one per mission), `campaign_screen.py` (UI)
+**Dependencies:** `game_state.py`, `map_data.py` (territory filtering)
+**Used by:** `main.py` (launch handlers)
+
+### Architecture
+
+Campaign missions are self-contained modules that:
+1. Filter territories to a subset of the map
+2. Override display names for territories
+3. Control AI behavior (dormant/awakened states)
+4. Run cinematic intro sequences with camera animations
+5. Track quest completion and victory conditions
+6. Show narrative transmissions during gameplay
+
+**Key Systems:**
+- **Territory Filtering:** `map_data.set_enabled_territories()` limits visible territories
+- **Display Names:** `map_data.set_territory_display_names()` renames territories for the mission
+- **AI Control:** `block_ai` property prevents normal AI, mission handles turns
+- **Transmissions:** `TransmissionOverlay` class shows narrative text
+- **Camera Animations:** `CameraPanAnimation`, `CameraZoomAnimation` for cinematics
+
+### Files
+
+- [campaign_screen.py](../campaign_screen.py) - Campaign menu UI
+- [tutorial_mission.py](../tutorial_mission.py) - Tutorial mission (Lobardia)
+- [campaign_mission_2.py](../campaign_mission_2.py) - Early Eastern Conquests (9 territories, 4 players)
+- [campaign_mission_3.py](../campaign_mission_3.py) - Storms above the West
+- [campaign_mission_4.py](../campaign_mission_4.py) - Domination (21 territories, 4 factions, hybrid custom AI)
+- `campaign_data.json` - Mission text data (edit with `Campaign_Text_Tool.py`)
+- [cutscene_player.py](../cutscene_player.py) - Cutscene player (Ken Burns camera + crossfade + audio + subtitles)
+- [Cutscene_Tool.py](../Cutscene_Tool.py) - Cutscene editor tool
+- `cutscene_data.json` - Cutscene definitions per mission (edit with `Cutscene_Tool.py`)
+- `assets/cutscenes/` - Cutscene background images and audio files
+
+### Mission 2 Reference (campaign_mission_2.py)
+
+**Territories:** Révia, Venexia, Valeonia, Velognia, The Holy Land, Lobardia, Elland, Lentria, Elletian Isles
+
+**Players:**
+- Player 0: Human (Green) - Lobardia
+- Player 1: Elletic Tribes (Yellow) - 4 territories
+- Player 2: Heilonic Tribes (Blue) - 2 territories
+- Player 3: Chiefdom of Valeonia (Red) - 2 territories
+
+**AI Behavior States:**
+- `dormant` - AI does nothing, 3-second turns
+- `awakened` - AI trains Swordsmen, attacks player 0 only
+
+**Awakening Triggers:**
+| Faction | Trigger |
+|---------|---------|
+| Elletic Tribes | Player has >10 armies in one territory OR attacks their territory |
+| Heilonic Tribes | Elletic defeated OR player attacks their territory |
+| Valeonia | Both Elletic AND Heilonic defeated OR player attacks their territory |
+| All factions | Player attacks Valeonia (special cascade) |
+
+### Mission 4 Reference (campaign_mission_4.py)
+
+**Territories:** 21 territories (Aelatania through Venexia region)
+
+**Players:**
+- Player 0: Human (Blue) - Aelatania, Duchy of Daurels, Courtieux (3 territories)
+- Player 1: Eastern Kingdoms (Green) - 9 territories
+- Player 2: Confederation of the Leuse (Red) - 4 territories
+- Player 3: Ahtep Empire (Yellow) - 5 territories
+
+**AI Behavior:** Hybrid custom AI (not dormant/awakened pattern)
+- All 3 AI factions attack only the human player, never each other
+- **Ramp limit:** Turn N → max N attack orders + N reinforcement orders
+- **Defensive minimums:** Eastern Kingdoms ≥1, Confederation ≥3, Ahtep Empire ≥5 units in border territories
+- Continuously trains troops and builds structures
+- 0.5s fast AI turns
+
+**Special Features:**
+- 7 territory display name overrides
+- Pre-assigned hero: Regnus Aevencourne (Brennhen clone, `trainable: False`)
+- Hero training icons hidden via `should_hide_hero_training()` method
+- Flag remapping: Player 0→Blue, Player 1→Green, Player 2→Red, Player 3→Yellow
+- Starting gold: 200g (human), 100g (EK), 250g (CotL), 5000g (Ahtep)
+
+### When to Modify
+
+#### ✅ Add New Campaign Mission
+
+**Steps:**
+1. Create `campaign_mission_N.py` based on `campaign_mission_2.py` template
+2. Define constants:
+   ```python
+   MISSION_N_TERRITORIES = ["Territory1", "Territory2", ...]
+   MISSION_N_DISPLAY_NAMES = {"InternalName": "DisplayName", ...}
+   TERRITORY_SETUP = {...}  # Initial units/buildings per territory
+   ```
+3. Create `MissionN` class with required methods:
+   - `__init__()` - Setup territory filtering, initial state
+   - `update(delta_time)` - Frame update, returns 'exit_campaign' when done
+   - `update_ai_turn(delta_time)` - AI turn handling
+   - `render(screen)` - Draw mission overlays
+   - `is_action_allowed(action_type, **kwargs)` - Gate player actions
+   - `notify_event(event_type, **kwargs)` - Receive game events
+   - `_cleanup()` - Restore state on exit
+4. Add launch handler in `main.py` (~line 12650):
+   ```python
+   elif launched_mission == 'mission_N':
+       from campaign_mission_N import MissionN, MISSION_N_TERRITORIES, MISSION_N_DISPLAY_NAMES
+       map_data.set_enabled_territories(MISSION_N_TERRITORIES)
+       map_data.set_territory_display_names(MISSION_N_DISPLAY_NAMES)
+       # ... initialize game state
+       game.campaign_mission = MissionN(game.game_state, game)
+   ```
+5. Add mission button to `campaign_screen.py`
+
+#### ✅ Add Cinematic Intro Sequence
+
+**In your mission class:**
+```python
+INTRO_SEQUENCE = [
+    ("zoom_to", "StartTerritory", ""),           # Zoom camera
+    ("wait", 6.0, "Narrative text here"),        # Show text for 6 seconds
+    ("show_timer", 8.0, "Timer explanation"),    # Show timer bar + text
+    ("pan_to", "OtherTerritory", ""),            # Pan camera
+    ("wait", 5.0, "More narrative"),
+    ("start_game", 0, ""),                       # End intro, begin gameplay
+]
+```
+
+#### ✅ Add Pre/Post-Mission Cutscene
+
+**Overview:** Cutscenes play before mission start (intro) and after victory (outro). Authored via `Cutscene_Tool.py`, stored in `cutscene_data.json`.
+
+**Steps:**
+1. Place background images in `assets/cutscenes/` (any resolution, larger = more pan range)
+2. Place audio files in `assets/cutscenes/` (.mp3, .wav, .ogg)
+3. Run `python Cutscene_Tool.py` to open the editor
+4. Select the cutscene ID (e.g. `mission_2_intro`) from the top bar
+5. Click "+" to add slides, "Load Image" to set background
+6. Drag camera rects A (blue) and B (red) to set start/end viewports
+7. Set pan duration, crossfade, easing, audio, subtitle in the right panel
+8. Click "Preview" (or P key) to test
+9. Save with Ctrl+S
+
+**Data format (cutscene_data.json):**
+```json
+{
+  "mission_1_intro": {
+    "slides": [{
+      "image": "assets/cutscenes/bg.png",
+      "camera_a": {"x": 200, "y": 100, "width": 800, "height": 450, "rotation": 0},
+      "camera_b": {"x": 600, "y": 300, "width": 1200, "height": 675, "rotation": 0},
+      "pan_duration": 8.0,
+      "crossfade_duration": 0,
+      "easing": "ease_in_out",
+      "audio": "assets/cutscenes/voice.mp3",
+      "audio_volume": 1.0,
+      "audio_start_delay": 0.5,
+      "music": "assets/cutscenes/bg_music.mp3",
+      "music_volume": 0.4,
+      "music_start_delay": 0.0,
+      "subtitle": "Narration text here..."
+    }]
+  }
+}
+```
+
+**Dual-track audio:** Each slide has independent voice (`audio`) and music (`music`) channels with separate volume and delay. Music persists across slides if the same file path is used (no restart); crossfades when the track changes; fades out if the next slide has no music.
+
+**Integration:** Automatic. `main.py` checks for `{mission_id}_intro` and `{mission_id}_outro` keys. If present, cutscene plays; if absent, no-op.
+
+**Player controls:** ESC or left-click to skip (0.5s fade-to-black).
+
+#### ✅ Add AI Awakening Trigger
+
+**In `_awaken_faction()` method:**
+```python
+def _awaken_faction(self, faction_id, reason):
+    if self.faction_awakened.get(faction_id, False):
+        return
+    self.faction_awakened[faction_id] = True
+
+    # Custom transmission per faction/reason
+    if faction_id == 1 and reason == 'attack':
+        self._queue_transmission("They declared war!", 5.0)
+```
+
+#### ✅ Add Quest Tracking
+
+**In `__init__()`:**
+```python
+self.quest_log = [
+    {'text': 'Defeat Faction A', 'completed': False},
+    {'text': 'Capture Territory X', 'completed': False},
+]
+```
+
+**In event handlers:**
+```python
+def _on_faction_defeated(self, faction_id):
+    self.quest_log[faction_id - 1]['completed'] = True
+```
+
+#### ✅ Gate Player Actions
+
+**In `is_action_allowed()`:**
+```python
+def is_action_allowed(self, action_type, **kwargs):
+    if action_type == 'build' and kwargs.get('building_type') == 'Keep':
+        return False  # Disable Keep building
+    if action_type == 'sidebar_tab' and kwargs.get('tab_name') == 'heroes':
+        return False  # Hide Heroes tab
+    return True
+```
+
+### Campaign Transmission Voice Lines
+
+**Naming:** `T{N}.mp3` for Mission 1, `M{X}T{N}.mp3` for Mission 2+. Placed in `assets/sounds/transmissions/`. Loaded by `global_sound.load_transmission_sounds()` using filename stem as key.
+
+**Global features (main.py / global_sound.py — no per-mission work needed):**
+- `play_transmission_sound(key)` auto-stops any previous voice before playing new one
+- `_pause_game()` calls `pause_transmission_sound()` — voice pauses when game menu opens
+- `_unpause_game()` calls `unpause_transmission_sound()` — voice resumes when game menu closes
+- "Quit to Main Menu" button calls `stop_transmission_sound()` — voice stops on exit
+
+**Per-mission voice requirements checklist:**
+
+1. **Define `INTRO_STEP_TO_VOICE`** — dict mapping intro step indices to voice keys (e.g. `{1: "M3T1", 2: "M3T2"}`)
+2. **`_execute_intro_step()`** — after `_show_transmission(text)`, look up voice key and call `play_transmission_sound(key)`. On `pan_to` steps, call `stop_transmission_sound()`. On `wait` steps with no text, call `stop_transmission_sound()`.
+3. **`__init__`** — add `self._intro_pause_timer = 0.0`
+4. **`update()` intro pause block** — before intro timing, check `_intro_pause_timer > 0`. Decrement by delta_time, advance to next step when expired. Return early during pause (1s silent gap between consecutive voiced intro steps).
+5. **`update()` intro timer expiry** — when intro step timer expires and next step has text: call `stop_transmission_sound()`, clear overlay, set `_intro_pause_timer = 1.0`. Otherwise advance immediately.
+6. **`_queue_transmission(text, duration, voice_key=None)`** — accept optional voice key, store `(text, duration, voice_key)` tuples in queue.
+7. **`_start_pending_transmission()`** — unpack voice_key from tuple, call `play_transmission_sound(key)` if present.
+8. **`update()` gameplay transmission timer expiry** — call `stop_transmission_sound()` when text expires.
+9. **Gameplay transmissions gate on `_is_gameplay_idle()`** — no battle popup, no turn announcement, `turn_phase == 'planning'` or `phase == 'ended'`.
+10. **Victory/defeat** — call `play_transmission_sound()` directly alongside `_show_transmission()` for victory/defeat voice lines.
+11. **`_end_intro_sequence()`** — call `stop_transmission_sound()` to stop any lingering intro voice.
+12. **`_cleanup()`** — call `stop_transmission_sound()` to stop voice on mission exit.
+
+**Implemented in:** All 4 missions — Mission 1 (`tutorial_mission.py`), Mission 2 (`campaign_mission_2.py`), Mission 3 (`campaign_mission_3.py`), Mission 4 (`campaign_mission_4.py`).
+
+### Testing Checklist
+
+- [ ] Territory filtering works (only mission territories visible)
+- [ ] Display names show correctly in tooltips
+- [ ] Intro sequence plays with correct timing
+- [ ] Camera animations smooth
+- [ ] AI starts dormant, awakens on triggers
+- [ ] Awakened AI attacks player only (not other AI)
+- [ ] Transmissions appear at correct times
+- [ ] Transmissions wait for battle report to close
+- [ ] Quests mark complete when conditions met
+- [ ] Victory sequence plays when all quests done
+- [ ] Flag icons match player colors
+- [ ] Defeated AI turns are skipped
+- [ ] Clean exit restores normal game state
+- [ ] Voice plays with each transmission
+- [ ] Voice pauses on game menu open, resumes on close
+- [ ] Voice stops on mission exit / quit to menu
+- [ ] 1s silent gap between consecutive voiced intro steps
+- [ ] Voice stops on camera pan during intro
+
+---
+
+## Achievement System
+
+**Files:** `achievement_manager.py` (definitions, logic), `achievement_panel.py` (UI helper)
+**Integration:** `main_menu.py` (button/panel/profile), `recap_screen.py` (preview popup), `main.py` (post-game hook), `settings_manager.py` (persistence)
+
+**Architecture:** Singleton `AchievementManager` owns all definitions and stat tracking. `AchievementPanel` is a UI helper class created by `MainMenu` to render panel content. Achievement data persisted to `config.json` via `settings_manager`.
+
+**Data flow:** Game ends → `show_recap_if_ended()` → `achievement_manager.record_game_result(game)` → detects mode, increments stats, checks thresholds → returns newly earned list → `RecapScreen` shows preview popups → user returns to main menu → achievement panel shows all achievements. Campaign missions set `gs.winner = 0` and `gs.phase = 'ended'` in their `_start_victory` method to trigger this flow.
+
+**Achievement definitions:** Hardcoded in `ACHIEVEMENTS` list in `achievement_manager.py`. Each has id, name, description, category, icon path, reward_type (None/title/icon), reward_id, stat_key, stat_threshold. Dual-reward achievements use optional `reward_type_2`/`reward_id_2` fields.
+
+**Categories:** general, campaign, training, conquest. Defined in `CATEGORIES` list.
+
+**Reward types:** `'title'` (shown in profile dropdown), `'icon'` (selectable in profile icon grid). `ALL_TITLES` and `ALL_REWARD_ICON_PATHS` lists define all possible rewards. Dual rewards supported via `reward_type_2`/`reward_id_2` — lookups and UI handle both slots automatically.
+
+### When to Modify
+
+- **Add new achievement**: Add dict to `ACHIEVEMENTS` list in `achievement_manager.py`. If it uses a new stat_key, ensure the stat is incremented in `record_game_result()`.
+- **Add new category**: Add to `CATEGORIES` and `CATEGORY_LABELS` in `achievement_manager.py`.
+- **Add new reward icon**: Add icon file to `assets/achievements/RewardsIcons/`, add path to `ALL_REWARD_ICON_PATHS` in `achievement_manager.py`.
+- **Add new stat trigger**: Extend `record_game_result()` in `achievement_manager.py` to increment the new stat based on game conditions.
+- **Add campaign bonus achievement**: Add tracking flag in mission `__init__`, update the flag in existing event handlers (e.g., `_check_attack_awakening`, `_on_faction_defeated`), expose via `get_bonus_conditions()`. Stats are bridged to `achievement_manager` automatically by `record_game_result()`.
+- **Change achievement panel layout**: Modify `achievement_panel.py` draw methods.
+- **Change preview popup**: Modify `_draw_achievement_preview()` / `_update_achievement_preview()` in `recap_screen.py`.
+- **Change profile title/icon UI**: Modify `_draw_profile_panel()` in `main_menu.py`.
+
+## Recap Screen
+
+`recap_screen.py` - Post-game statistics screen shown after every game ends (custom, campaign, multiplayer).
+
+**Architecture:** Modeled on `MissionScreen` in `campaign_screen.py` (same background, tab buttons, content panel).
+
+**Stat Tracking:** `game_state.py` has `player_stats` dict (init in `__init__`), incremented via `_track_stat()` at 13 hook points across training, combat, construction, income, and research methods. `get_end_game_stats()` packages stats with calculated `territories_owned`.
+
+**Integration:** `main.py` calls `show_recap_if_ended(game)` after each `game.run()` at 5 sites (custom, 3 campaign missions, multiplayer).
+
+### When to Modify
+
+- **Add new stat column**: Add to `TAB_COLUMNS` in `recap_screen.py`, add tracking hook in `game_state.py` (init in `player_stats` + increment via `_track_stat`)
+- **Add new tab**: Add to `TABS`, `TAB_LABELS`, `TAB_COLUMNS` in `recap_screen.py`
+- **Change table layout**: Modify `_draw_table()` in `recap_screen.py`
+
+## Version Info
+
+**Last Updated:** February 2026
+**Codebase Size:** ~30,000 lines
+**For questions:** See `DEVELOPMENT_GUIDE.md` or ask in project channel
+
+**Related Documentation:**
+- `GAME_MECHANICS.md` - Detailed game rules
+- `ARCHITECTURE.md` - System design patterns
+- `QUICK_REFERENCE.md` - Values and constants
+- `DEVELOPMENT_GUIDE.md` - Development workflows
+- `USER_STORIES_PROGRESS.md` - Feature status

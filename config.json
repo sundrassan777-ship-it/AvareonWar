@@ -1,0 +1,48 @@
+{
+    "resolution": [
+        1600,
+        900
+    ],
+    "default_resolution": [
+        1600,
+        900
+    ],
+    "fullscreen": true,
+    "edge_scrolling_enabled": true,
+    "edge_scrolling_mode": "window_edge",
+    "tooltips_enabled": true,
+    "tooltip_delay_ms": 300,
+    "camera_pan_speed": 11.326086956521738,
+    "camera_zoom_speed": 0.07797619047619048,
+    "show_fps": true,
+    "player_name": "Editoreus",
+    "player_icon": "assets/achievements/RewardsIcons/regnus.png",
+    "achievement_stats": {
+        "custom_game_ai_wins": 200,
+        "campaign_mission_1_completed": 1,
+        "campaign_missions_completed": 15,
+        "campaign_mission_2_completed": 1,
+        "campaign_mission_2_bonus": 1,
+        "pikemen_trained_total": 167,
+        "swordsmen_trained_total": 188,
+        "archers_trained_total": 291,
+        "cavalry_trained_total": 128,
+        "games_finished": 14,
+        "campaign_mission_3_completed": 1,
+        "campaign_mission_4_completed": 1,
+        "campaign_mission_4_bonus": 1
+    },
+    "earned_achievements": {
+        "apprentice": "2026-02-10T22:01:26.400385",
+        "campaign_mission_1": "2026-02-11T11:11:01.825734",
+        "campaign_mission_2": "2026-02-11T11:29:55.455926",
+        "campaign_mission_2_bonus": "2026-02-11T11:29:55.456654",
+        "campaign_mission_3": "2026-02-11T22:09:01.040070",
+        "campaign_mission_4": "2026-02-15T15:41:06.099978",
+        "campaign_mission_4_bonus": "2026-02-15T15:41:06.100545",
+        "initiate": "2026-02-19T14:09:27.040075",
+        "aspirant_soldier": "2026-02-19T14:09:27.040510",
+        "proven_soldier": "2026-02-19T14:09:59.177090"
+    },
+    "selected_title": "Aspirant Soldier"
+}

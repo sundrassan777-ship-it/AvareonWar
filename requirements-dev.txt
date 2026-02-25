@@ -1,0 +1,12 @@
+# Development dependencies for AvareonWar
+# Install with: pip install -r requirements-dev.txt
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-timeout>=2.0.0
+
+# Game dependencies (also needed for tests)
+pygame>=2.0.0
+Pillow>=9.0.0
+miniupnpc>=2.0.0

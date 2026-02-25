@@ -1,0 +1,964 @@
+{
+  "mission_1_intro": {
+    "slides": [
+      {
+        "image": "../../Downloads/M1C1I1.png",
+        "camera_a": {
+          "x": 31.95187969924808,
+          "y": 117.27857142857152,
+          "width": 1032.6601503759398,
+          "height": 580.8713345864662,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 452.3308270676689,
+          "y": 213.14201127819535,
+          "width": 1074.4075187969925,
+          "height": 604.3542293233083,
+          "rotation": 0
+        },
+        "pan_duration": 10.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M1C1I1V.mp3",
+        "audio_volume": 1.0,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The valleys near the western Euve river have provided a good life for the local tribes for centuries."
+      },
+      {
+        "image": "../../Downloads/M1C1I2.png",
+        "camera_a": {
+          "x": 310.66466165413533,
+          "y": 17.40300751879701,
+          "width": 961.990977443609,
+          "height": 541.1199248120301,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 11.749835706234308,
+          "y": 131.03613920167345,
+          "width": 1505.1667797449195,
+          "height": 846.6563136065173,
+          "rotation": 0
+        },
+        "pan_duration": 12.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M1C1I2V.mp3",
+        "audio_volume": 0.5,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Among the tribes were the Affrancians, a peaceful tribe, that worshipped the god of thunder. However, their peaceful ways would soon change."
+      },
+      {
+        "image": "../../Downloads/M1C1I3.png",
+        "camera_a": {
+          "x": 184.85563909774442,
+          "y": 363.2285714285714,
+          "width": 1190.3037593984964,
+          "height": 669.5458646616543,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 65.33984962406021,
+          "y": 60.587969924812,
+          "width": 1398.1834586466164,
+          "height": 786.4781954887218,
+          "rotation": 0.0
+        },
+        "pan_duration": 12.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M1C1I3V.mp3",
+        "audio_volume": 0.5,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Using the influence of the Thunder priests, the Chief of the Affrancians spread false threats about the surrounding tribes, urging the local populace to prepare for war."
+      },
+      {
+        "image": "../../Downloads/M1C1I4.png",
+        "camera_a": {
+          "x": 605.7308270676692,
+          "y": 5.0842105263158,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 1.1548872180451326,
+          "y": 186.57960526315765,
+          "width": 1465.9368421052632,
+          "height": 824.5894736842106,
+          "rotation": 0
+        },
+        "pan_duration": 13.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M1C1I4V.mp3",
+        "audio_volume": 0.5,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Heeding the call of their priests, the once peaceful Affrancians became pawns in their chief's power hunger. Soon enough, the people became consumed by the new ways."
+      },
+      {
+        "image": "../../Downloads/M1C1I5.png",
+        "camera_a": {
+          "x": 718.13984962406,
+          "y": 97.8529135338344,
+          "width": 725.854135338346,
+          "height": 408.29295112781966,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 18.093233082706774,
+          "y": 88.51043233082714,
+          "width": 1444.378947368421,
+          "height": 812.4631578947368,
+          "rotation": 0.0
+        },
+        "pan_duration": 8.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M1C1I5V.mp3",
+        "audio_volume": 0.5,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Soon, bloodshed would consume the once-peaceful valleys of the Euve."
+      }
+    ]
+  },
+  "mission_1_outro": {
+    "slides": [
+      {
+        "image": "../../Downloads/M1C2I1.png",
+        "camera_a": {
+          "x": 438.0015037593985,
+          "y": 54.3611842105264,
+          "width": 668.1864661654135,
+          "height": 375.8548872180451,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 55.049624060150336,
+          "y": 87.79999999999995,
+          "width": 1440.8285714285714,
+          "height": 810.4660714285715,
+          "rotation": 0
+        },
+        "pan_duration": 11.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M1C2I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The Affrancian chief savored their victory to the fullest. For him and his priests, this meant that the thunder god meant for them to achieve great things."
+      },
+      {
+        "image": "../../Downloads/M1C2I2.png",
+        "camera_a": {
+          "x": 42.14586466165406,
+          "y": 54.3593984962406,
+          "width": 679.6586466165414,
+          "height": 382.3079887218046,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 229.05263157894728,
+          "y": 171.22791353383474,
+          "width": 1318.1112781954887,
+          "height": 741.4375939849624,
+          "rotation": 0
+        },
+        "pan_duration": 11.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M1C2I2V.mp3",
+        "audio_volume": 0.65,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "For the common people, though, war has become a new reality. Every day came with new struggles and new conflicts. And this was not going away."
+      },
+      {
+        "image": "../../Downloads/M1C2I3.png",
+        "camera_a": {
+          "x": 48.30526315789473,
+          "y": 169.8481203007519,
+          "width": 567.2496240601504,
+          "height": 319.0779135338346,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 30.412030075187886,
+          "y": 42.89238721804509,
+          "width": 1482.8751879699248,
+          "height": 834.1172932330827,
+          "rotation": 0
+        },
+        "pan_duration": 6.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M1C2I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "As the chiefs have tasted victory; and they thirst for more."
+      }
+    ]
+  },
+  "mission_2_intro": {
+    "slides": [
+      {
+        "image": "../../Downloads/M2C1I1.png",
+        "camera_a": {
+          "x": 95.9122807017543,
+          "y": 409.35087719298247,
+          "width": 1206.5438596491229,
+          "height": 678.6809210526317,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 2524.0701754385964,
+          "y": 2049.253289473684,
+          "width": 1509.3508771929828,
+          "height": 849.0098684210528,
+          "rotation": 0
+        },
+        "pan_duration": 8.0,
+        "crossfade_duration": 1.0,
+        "easing": "ease_in_out",
+        "audio": "../../Downloads/M2C1I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Far to the southeast of the Affrancian lands, another region was beset by a growing conflict."
+      },
+      {
+        "image": "../../Downloads/M2C1I2.png",
+        "camera_a": {
+          "x": 176.11278195488705,
+          "y": 46.66015037593979,
+          "width": 667.3398496240603,
+          "height": 375.37866541353395,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 142.82105263157882,
+          "y": 125.27434210526303,
+          "width": 1345.8285714285716,
+          "height": 757.0285714285716,
+          "rotation": 0
+        },
+        "pan_duration": 11.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M2C1I2V.mp3",
+        "audio_volume": 0.754,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The lands of the southeastern peninsula were vast, green hills that cultivated all forms of life. They became known for their great abundance of horses."
+      },
+      {
+        "image": "../../Downloads/M2C1I3.png",
+        "camera_a": {
+          "x": 392.2766917293234,
+          "y": 265.874060150376,
+          "width": 774.5443609022557,
+          "height": 435.68120300751883,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 168.99849624060153,
+          "y": 152.85864661654125,
+          "width": 1267.2962406015038,
+          "height": 712.8541353383459,
+          "rotation": 0
+        },
+        "pan_duration": 12.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M2C1I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Lobards, the tribe that was leading in domestication of these animals, were a scattered group, dominated by family politics and pursuit of fortune and glory."
+      },
+      {
+        "image": "../../Downloads/M2C1I4.png",
+        "camera_a": {
+          "x": 17.96491228070181,
+          "y": 364.45029239766063,
+          "width": 910.2222222222222,
+          "height": 512.0,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 383.25146198830396,
+          "y": 78.50877192982446,
+          "width": 546.6315789473687,
+          "height": 307.4802631578949,
+          "rotation": 0
+        },
+        "pan_duration": 15.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M2C1I4V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "One of them, lord Venderfornet, took it upon himself to unify the scattered Lobards. He challenged his brothers one by one and slew them all in combat, finally unifying the tribe under his own rule."
+      },
+      {
+        "image": "../../Downloads/M2C1I5.png",
+        "camera_a": {
+          "x": 265.4240601503759,
+          "y": 37.4210526315789,
+          "width": 759.7308270676692,
+          "height": 427.34859022556395,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 35.03568179708509,
+          "y": 61.39784182678898,
+          "width": 1473.3129119094033,
+          "height": 828.7385129490394,
+          "rotation": 0.0
+        },
+        "pan_duration": 9.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "../../Downloads/M2C1I5V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "His victory, however, was only the first of his house's great feats. For the Lobards would soon become the nightmare of the entire southeast."
+      }
+    ]
+  },
+  "mission_2_outro": {
+    "slides": [
+      {
+        "image": "assets/cutscenes/M2C2I1.png",
+        "camera_a": {
+          "x": 15.968421052631527,
+          "y": 12.78345864661651,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 560.1203007518797,
+          "y": 44.81719924812023,
+          "width": 946.6000000000001,
+          "height": 532.4625000000001,
+          "rotation": 0
+        },
+        "pan_duration": 9.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M2C2I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The Lobards continued to terrorize the southeast for decades... but eventually, their enemies caught up with their skills."
+      },
+      {
+        "image": "assets/cutscenes/M2C2I2.png",
+        "camera_a": {
+          "x": 131.4571428571428,
+          "y": 14.323308270676705,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 286.4120300751879,
+          "y": 28.2511278195488,
+          "width": 1240.372932330827,
+          "height": 697.7097744360902,
+          "rotation": 0
+        },
+        "pan_duration": 8.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M2C2I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "the coalition against the Lobards led by the Valeonians managed to score several critical victories against their foes."
+      },
+      {
+        "image": "assets/cutscenes/M2C2I3.png",
+        "camera_a": {
+          "x": 76.02255639097746,
+          "y": 72.83759398496241,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 90.46616541353387,
+          "y": 52.888721804511306,
+          "width": 1422.821052631579,
+          "height": 800.3368421052633,
+          "rotation": 0
+        },
+        "pan_duration": 13.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M2C2I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Soon, the Lobards were forced to surrender their war-like paths and give up their conquered territories - giving rise to the kingdom of Valeonia as the primary power of the east."
+      }
+    ]
+  },
+  "mission_3_intro": {
+    "slides": [
+      {
+        "image": "assets/cutscenes/M3C1I1.png",
+        "camera_a": {
+          "x": 338.9112781954887,
+          "y": 138.52302631578954,
+          "width": 375.72330827067657,
+          "height": 211.34436090225557,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 59.646616541353524,
+          "y": 80.60601503759403,
+          "width": 1344.2045112781955,
+          "height": 756.115037593985,
+          "rotation": 0.0
+        },
+        "pan_duration": 8.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C1I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "In the centuries following the Affrancian conquest, the kingdom established itself as the prominent power of the west."
+      },
+      {
+        "image": "assets/cutscenes/M3C1I2.png",
+        "camera_a": {
+          "x": 340.8766917293233,
+          "y": 103.63458646616542,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 148.95789473684226,
+          "y": 106.78345864661651,
+          "width": 1299.6556390977444,
+          "height": 731.0562969924813,
+          "rotation": 0
+        },
+        "pan_duration": 12.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C1I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "However, corruption and opulence grew like a tumor within the nobility. The kingdom has become a symbol of royal power, even though its power began to diminish."
+      },
+      {
+        "image": "assets/cutscenes/M3C1I3.png",
+        "camera_a": {
+          "x": 365.51428571428573,
+          "y": 245.3007518796992,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 8.854135338345941,
+          "y": 60.79313909774453,
+          "width": 1513.6721804511278,
+          "height": 851.4406015037595,
+          "rotation": 0.0
+        },
+        "pan_duration": 11.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C1I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "At this time, a popular Affrancian general, Serthus Diarcess, began to rally his many followers to overthrow the corrupt monarchy."
+      },
+      {
+        "image": "assets/cutscenes/M3C1I4.png",
+        "camera_a": {
+          "x": 80.64210526315787,
+          "y": 60.518796992481185,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 23.716791979949676,
+          "y": 36.495343296513056,
+          "width": 1493.7590705157959,
+          "height": 840.2394771651352,
+          "rotation": 0
+        },
+        "pan_duration": 14.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C1I4V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Unable to remove him due to his popularity, the royal family sent Serthus on a mission to conquer the Zjoal islands. Knowing this to be an exile, he called upon his numerous followers to accompany him."
+      },
+      {
+        "image": "assets/cutscenes/M3C1I5.png",
+        "camera_a": {
+          "x": 458.4902255639098,
+          "y": 383.87998120300773,
+          "width": 651.3563909774437,
+          "height": 366.38796992481207,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 96.09356931423213,
+          "y": 202.67484142454924,
+          "width": 1356.0815619295151,
+          "height": 762.7958785853523,
+          "rotation": 0
+        },
+        "pan_duration": 11.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C1I5V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "He swiftly took over the isles and used them as a staging ground for his forces. Then, he set his eyes eastwards - towards the lands of Affrancia and beyond."
+      }
+    ]
+  },
+  "mission_3_outro": {
+    "slides": [
+      {
+        "image": "assets/cutscenes/M3C2I1.png",
+        "camera_a": {
+          "x": 433.2676691729322,
+          "y": 48.19999999999993,
+          "width": 622.6842105263158,
+          "height": 350.25986842105266,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 31.292986314284235,
+          "y": 34.07013685715606,
+          "width": 1460.3393613332728,
+          "height": 821.440890749966,
+          "rotation": 0.0
+        },
+        "pan_duration": 12.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C2I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Serthus Diarcess sat upon the throne of the Zjoal Empire for three decades. He led many conquests and reforms, solidifying the empire's place in the world."
+      },
+      {
+        "image": "assets/cutscenes/M3C2I2.png",
+        "camera_a": {
+          "x": 513.9624060150377,
+          "y": 7.158176691729295,
+          "width": 937.7684210526315,
+          "height": 527.4947368421052,
+          "rotation": 0.0
+        },
+        "camera_b": {
+          "x": 145.93834586466164,
+          "y": 296.1849624060151,
+          "width": 1224.1804511278197,
+          "height": 688.6015037593986,
+          "rotation": 0
+        },
+        "pan_duration": 11.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C2I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "But even great emperors do not live forever. Despite his death, the Zjoal empire grew further; an effort led by the emperor's sons."
+      },
+      {
+        "image": "assets/cutscenes/M3C2I3.png",
+        "camera_a": {
+          "x": 852.6917293233083,
+          "y": 532.867669172932,
+          "width": 645.1969924812032,
+          "height": 362.92330827067684,
+          "rotation": 0.0
+        },
+        "camera_b": {
+          "x": 244.4511278195489,
+          "y": -0.7046052631581006,
+          "width": 1059.4165413533835,
+          "height": 595.9218045112783,
+          "rotation": 0.0
+        },
+        "pan_duration": 13.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C2I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "During the reign of Serthus's grandson, Aertei, the Empire reached its greatest extent, even besieging and conquering the eastern cities of Daurels, Welthorne and Meladar."
+      },
+      {
+        "image": "assets/cutscenes/M3C2I4.png",
+        "camera_a": {
+          "x": 42.01754385964932,
+          "y": 180.29824561403507,
+          "width": 1246.9649122807014,
+          "height": 701.4177631578946,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 8.982456140350678,
+          "y": 310.3059210526312,
+          "width": 4087.0175438596493,
+          "height": 2298.947368421053,
+          "rotation": 0
+        },
+        "pan_duration": 13.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M3C2I4V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "It was the greatest empire in the history of the world. For a time, it seemed to be eternal. But the tides of time were relentless, and the Zjoal twilight was soon to come."
+      }
+    ]
+  },
+  "mission_4_intro": {
+    "slides": [
+      {
+        "image": "assets/cutscenes/M4C1I1.png",
+        "camera_a": {
+          "x": 755.0962406015036,
+          "y": 49.739849624060156,
+          "width": 647.3218045112782,
+          "height": 364.11851503759397,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 28.84962406015029,
+          "y": 19.01203007518808,
+          "width": 1469.039097744361,
+          "height": 826.3344924812031,
+          "rotation": 0
+        },
+        "pan_duration": 21.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M4C1I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Four generations after Aertei, the Zjoal Empire was on the brink of destruction. Conflicts among brothers and nobles created a deep divide in the Empire's politics and split it in two - the Zjoal Empire in the north and the Kerunian empire in the south."
+      },
+      {
+        "image": "assets/cutscenes/M4C1I2.png",
+        "camera_a": {
+          "x": 80.64210526315793,
+          "y": 314.59398496240607,
+          "width": 681.1984962406015,
+          "height": 383.1741541353383,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 267.5488721804511,
+          "y": 137.59313909774437,
+          "width": 1216.4812030075188,
+          "height": 684.2706766917294,
+          "rotation": 0
+        },
+        "pan_duration": 13.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M4C1I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "An all-out civil war erupted between the two sister-empires. The Zjoal heartland, centered around the western coast, became a battlefield. And their colonies were not spared."
+      },
+      {
+        "image": "assets/cutscenes/M4C1I3.png",
+        "camera_a": {
+          "x": 708.9007518796992,
+          "y": 387.6333646616541,
+          "width": 782.8285714285714,
+          "height": 440.34107142857147,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 178.23759398496253,
+          "y": 28.251127819548742,
+          "width": 1331.96992481203,
+          "height": 749.2330827067669,
+          "rotation": 0
+        },
+        "pan_duration": 17.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M4C1I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The massive conflict was quickly seized upon by the oppressed nations, especially in Nordia and the former Uhmayyan lands. Nordia was soon liberated, and the Uhmayyans created a new state in their territories - Ahtep Empire."
+      },
+      {
+        "image": "assets/cutscenes/M4C1I4.png",
+        "camera_a": {
+          "x": 390.1518796992482,
+          "y": 630.063439849624,
+          "width": 611.9052631578946,
+          "height": 344.19671052631577,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 184.39699248120297,
+          "y": 116.02255639097746,
+          "width": 1136.4090225563912,
+          "height": 639.2300751879701,
+          "rotation": 0
+        },
+        "pan_duration": 18.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M4C1I4V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The emergence of independent Nordia and Ahtep severed all communications between the mother empire and the Zjoal Far East province, centered around city of Welthorne - led by the pious zealot of the Gods, Regnus Aevencourne."
+      },
+      {
+        "image": "assets/cutscenes/M4C1I5.png",
+        "camera_a": {
+          "x": 146.85563909774436,
+          "y": 31.261654135338347,
+          "width": 571.8691729323308,
+          "height": 321.6764097744361,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 132.04210526315785,
+          "y": 88.30526315789461,
+          "width": 1361.227067669173,
+          "height": 765.6902255639098,
+          "rotation": 0
+        },
+        "pan_duration": 19.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M4C1I5V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Regnus believed that the mother empire has disintegrated; and that it was the doing of those, that were unfaithful to the Gods. He eyed his neighboring kingdoms and saw, that they too, were nothing but heretics, a stain, that needed to be removed."
+      },
+      {
+        "image": "assets/cutscenes/M4C1I6.png",
+        "camera_a": {
+          "x": 648.8466165413533,
+          "y": 285.33684210526314,
+          "width": 668.8796992481203,
+          "height": 376.2448308270677,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 61.186466165413435,
+          "y": 137.58045112781952,
+          "width": 1432.0827067669175,
+          "height": 805.5465225563911,
+          "rotation": 0
+        },
+        "pan_duration": 10.0,
+        "crossfade_duration": 1.0,
+        "easing": "ease_out",
+        "audio": "assets/cutscenes/M4C1I6V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "He gathered an army of his loyalists and began a crusade to purge the east from the unclean... and to build a new Empire, worthy of the Gods' favor."
+      }
+    ]
+  },
+  "mission_4_outro": {
+    "slides": [
+      {
+        "image": "assets/cutscenes/M4C2I1.png",
+        "camera_a": {
+          "x": 380.91278195488724,
+          "y": 51.27969924812032,
+          "width": 776.6691729323309,
+          "height": 436.8764097744361,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 76.6075187969924,
+          "y": 88.30526315789461,
+          "width": 1402.803007518797,
+          "height": 789.0766917293233,
+          "rotation": 0.0
+        },
+        "pan_duration": 19.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M4C2I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Regnus, standing atop the desecrated remains of the Divine Mother's statue in Neimer, proclaimed himself Emperor. Azincourne Empire was build on the ashes of ten kingdoms. The new emperor declared himself the true heir to legacy of Serthus Diarcess."
+      },
+      {
+        "image": "assets/cutscenes/M4C2I2.png",
+        "camera_a": {
+          "x": 702.7413533834584,
+          "y": 14.323308270676762,
+          "width": 537.9924812030077,
+          "height": 302.62077067669185,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 748.2902255639098,
+          "y": 409.74248120300746,
+          "width": 766.5368421052635,
+          "height": 431.17697368421074,
+          "rotation": 0
+        },
+        "pan_duration": 22.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M4C2I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The regime in the Empire was brutal. Cultural heritage, gods and everything that made its kingdoms unique, vanished almost overnight. Regnus believed, that salvation could be found only in faith in the Azincournean Gods - led by the God of Thunder and his right hand - Regnus himself."
+      },
+      {
+        "image": "assets/cutscenes/M4C2I3.png",
+        "camera_a": {
+          "x": 776.6541353383459,
+          "y": 145.21052631578937,
+          "width": 655.0210526315789,
+          "height": 368.44934210526316,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 61.18646616541355,
+          "y": 31.330827067669134,
+          "width": 1338.151879699248,
+          "height": 752.710432330827,
+          "rotation": 0
+        },
+        "pan_duration": 15.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M4C2I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Many oppressed, however, held out on hope. They prayed to their gods in secret - hoping, that one day, the tyranny of Azincourne would be over. And the judgement day was indeed coming."
+      }
+    ]
+  },
+  "mission_5_intro": {
+    "slides": []
+  },
+  "mission_5_outro": {
+    "slides": []
+  },
+  "mission_6_intro": {
+    "slides": []
+  },
+  "mission_6_outro": {
+    "slides": []
+  }
+}

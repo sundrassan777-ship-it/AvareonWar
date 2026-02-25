@@ -1,0 +1,5 @@
+# Runtime dependencies for AvareonWar
+# Install with: pip install -r requirements.txt
+pygame>=2.0.0
+Pillow>=9.0.0
+miniupnpc>=2.0.0
