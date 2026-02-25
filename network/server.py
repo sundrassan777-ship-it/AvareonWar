@@ -134,7 +134,9 @@ class NetworkServer:
         self.disconnect_reason = ""  # Reason for disconnection
 
         # Lock for thread-safe client dict access
-        self._clients_lock = threading.Lock()
+        # M3→H fix: use RLock (reentrant) — _handle_new_connection holds lock
+        # and calls _get_next_player_index which also acquires it
+        self._clients_lock = threading.RLock()
 
         # Phase 6A: Connection rate limiting (anti-DoS)
         # Tracks recent connection attempts per IP to prevent abuse
@@ -384,8 +386,11 @@ class NetworkServer:
                 self._disconnect_client(player_index)
                 return
 
-            # Add to buffer
-            client.recv_buffer.add_data(data)
+            # H13 fix: check buffer overflow return value and disconnect on overflow
+            if not client.recv_buffer.add_data(data):
+                logger.warning(f"Buffer overflow for Player {player_index + 1}, disconnecting")
+                self._disconnect_client(player_index)
+                return
 
             # Extract and process complete messages
             while True:

@@ -412,7 +412,9 @@ class AIPlayer:
             logger.error(f"Turn execution failed for player {self.player_index + 1}: {e}")
             # Try to end turn anyway to avoid getting stuck
             try:
-                game_state.next_player()
+                # H6 fix: protect exception-path next_player() with lock
+                with self._game_state_lock:
+                    game_state.next_player()
             except Exception:
                 pass  # C3 fix: Last resort recovery to prevent AI from blocking game
 
@@ -666,58 +668,76 @@ class AIPlayer:
                 ability_name = action_data['ability_name']
                 target = action_data.get('target')
 
-                # Execute hero ability (simplified for common abilities)
-                if ability_name == 'Aggressive Diplomacy' and target:
-                    # Claim neutral territory
-                    if game_state.territory_owners.get(target, -1) == -1:
-                        game_state.territory_owners[target] = self.player_index
-                        # Garrison with 5 Swordsmen using garrison system
-                        game_state.add_garrison(
-                            target,
-                            self.player_index,
-                            unmoved=0,  # Newly placed units can't move this turn
-                            moved=5,
-                            units=None  # Will auto-create 5 Swordsmen
-                        )
-                        game_state.sync_legacy_garrison_data(target)
-                        logger.info(f"Used Aggressive Diplomacy to claim {target}")
+                # M1+M2 fix: Route all abilities through proper game_state execute_* methods
+                # instead of duplicating logic inline. This ensures all abilities actually work.
+                ability_success = False
 
+                # Abilities that require a target territory
+                if ability_name == 'Aggressive Diplomacy' and target:
+                    result = game_state.execute_aggressive_diplomacy(target, self.player_index)
+                    ability_success = result[0] if isinstance(result, tuple) else bool(result)
                 elif ability_name == 'Levy':
-                    # Gain armies based on territories
-                    territory_count = sum(
-                        1 for owner in game_state.territory_owners.values()
-                        if owner == self.player_index
-                    )
-                    # H5 fix: Use scored target from planning, fall back to random
-                    owned_terrs = [
-                        t for t, owner in game_state.territory_owners.items()
-                        if owner == self.player_index
-                    ]
+                    # H5 fix: Use scored target from planning, fall back to random owned territory
+                    owned_terrs = [t for t, owner in game_state.territory_owners.items() if owner == self.player_index]
                     if owned_terrs:
                         target_terr = target if target and target in owned_terrs else random.choice(owned_terrs)
-                        bonus_armies = territory_count // 2
-                        # Add to garrison system
-                        game_state.add_garrison(
-                            target_terr,
-                            self.player_index,
-                            unmoved=0,  # Can't move immediately
-                            moved=bonus_armies,
-                            units=None  # Auto-create Swordsmen
-                        )
-                        game_state.sync_legacy_garrison_data(target_terr)
-                        logger.info(f"Used Levy, gained {bonus_armies} armies")
+                        result = game_state.execute_levy(target_terr, self.player_index)
+                        ability_success = result[0] if isinstance(result, tuple) else bool(result)
+                elif ability_name == 'Extort Populace':
+                    # M1 fix: no target needed — gains 50g per Keep/Castle owned
+                    result = game_state.execute_extort_populace(self.player_index)
+                    ability_success = result[0] if isinstance(result, tuple) else bool(result)
+                elif ability_name == 'Reinforce':
+                    result = game_state.execute_reinforce(self.player_index)
+                    ability_success = result[0] if isinstance(result, tuple) else bool(result)
+                elif ability_name == 'Relentless Charge' and target:
+                    result = game_state.execute_relentless_charge(target, self.player_index)
+                    ability_success = result[0] if isinstance(result, tuple) else bool(result)
+                elif ability_name == 'Decisive Strike' and target:
+                    result = game_state.execute_decisive_strike(target, self.player_index)
+                    ability_success = result[0] if isinstance(result, tuple) else bool(result)
+                elif ability_name == 'Valorous Charge' and target:
+                    result = game_state.execute_valorous_charge(target, self.player_index)
+                    ability_success = result[0] if isinstance(result, tuple) else bool(result)
+                elif ability_name == 'Royal Charisma' and target:
+                    result = game_state.execute_royal_charisma(target, self.player_index)
+                    ability_success = result[0] if isinstance(result, tuple) else bool(result)
+                elif ability_name == 'Regicide' and target:
+                    result = game_state.execute_regicide(target, self.player_index)
+                    ability_success = result[0] if isinstance(result, tuple) else bool(result)
+                # Non-targeting abilities (state toggles)
+                elif ability_name == 'Vow of Silence':
+                    # Find the hero name and ability data for _activate_vow_of_silence
+                    hero_info = game_state.HERO_TYPES.get(hero_type, {})
+                    for ab in hero_info.get('abilities', []):
+                        if ab.get('name') == 'Vow of Silence':
+                            game_state._activate_vow_of_silence(hero_type, ab)
+                            ability_success = True
+                            break
+                elif ability_name == 'Embargo':
+                    game_state._activate_embargo(self.player_index)
+                    ability_success = True
+                elif ability_name == 'Master Negotiator':
+                    game_state._activate_master_negotiator(self.player_index)
+                    ability_success = True
 
-                elif ability_name == 'Extort Populace' and target:
-                    # Gain gold from neutral
-                    if game_state.territory_owners.get(target, -1) == -1:
-                        import map_data
-                        gold_gained = map_data.get_territory_income(target) * 2
-                        game_state.player_gold[self.player_index] += gold_gained
-                        logger.info(f"Used Extort Populace, gained {gold_gained} gold")
+                if ability_success:
+                    # Set cooldown (mirrors activate_hero_ability logic)
+                    hero_info = game_state.HERO_TYPES.get(hero_type, {})
+                    for ab in hero_info.get('abilities', []):
+                        if ab.get('name') == ability_name:
+                            cooldown = ab.get('cooldown', 0)
+                            if self.player_index not in game_state.hero_ability_cooldowns:
+                                game_state.hero_ability_cooldowns[self.player_index] = {}
+                            if hero_type not in game_state.hero_ability_cooldowns[self.player_index]:
+                                game_state.hero_ability_cooldowns[self.player_index][hero_type] = {}
+                            game_state.hero_ability_cooldowns[self.player_index][hero_type][ability_name] = cooldown
+                            break
+                    logger.info(f"AI used {ability_name} successfully")
+                else:
+                    logger.debug(f"AI ability {ability_name} failed or had no valid target")
 
-                # Note: Full ability implementation would go through game_state methods
-                # This is a simplified version for essential abilities
-                success = True  # Abilities that reach here are considered successful
+                success = True  # Don't block turn on ability failure
 
         except Exception as e:
             logger.error(f"Failed to execute {action_type}: {e}")

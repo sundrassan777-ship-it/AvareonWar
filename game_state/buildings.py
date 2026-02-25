@@ -384,7 +384,9 @@ class BuildingMixin:
             # Cancel hero training (no refund on demolish)
             if (territory in self.hero_training_queue and
                 plot_index in self.hero_training_queue[territory]):
-                hero_type, _ = self.hero_training_queue[territory][plot_index]
+                # C1 fix: handle 3-tuple (hero_type, time, paid_cost) from Audit #3 H1
+                entry = self.hero_training_queue[territory][plot_index]
+                hero_type = entry[0]
                 del self.hero_training_queue[territory][plot_index]
                 if not self.hero_training_queue[territory]:
                     del self.hero_training_queue[territory]

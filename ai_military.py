@@ -595,8 +595,8 @@ class AttackPlanner:
         # IMPORTANT: Check AI player's garrison specifically
         garrison = game_state.territory_garrisons.get(from_territory, {}).get(player_index)
         if garrison:
-            # Calculate: moved armies will leave, unmoved stay (minus what we're attacking with)
-            remaining_garrison = garrison.get('moved', 0) + 1  # Keep at least 1
+            # H8 fix: unmoved armies stay behind after attack, not moved
+            remaining_garrison = garrison.get('unmoved', 0) + 1  # Keep at least 1
         else:
             remaining_garrison = 0
 
@@ -992,11 +992,12 @@ class TrainingPlanner:
         Returns:
             str: Unit type to train
         """
-        # Check enemy neighbors
+        # Check enemy neighbors (H10 fix: exclude allies)
         neighbors = map_data.get_neighbors(territory)
         enemy_neighbors = [
             n for n in neighbors
             if game_state.territory_owners.get(n, -1) not in [-1, player_index]
+            and not game_state.are_allies(player_index, game_state.territory_owners.get(n, -1))
         ]
 
         if enemy_neighbors:

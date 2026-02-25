@@ -150,7 +150,7 @@ class BuildingPlanner:
             tuple: ('upgrade_castle', territory, plot_index, score) or None
         """
         # Check if Castle upgrade costs are affordable
-        castle_upgrade_cost = 100  # Cost to upgrade Keep to Castle
+        castle_upgrade_cost = 150  # H7 fix: actual Castle upgrade cost is 150, not 100
         if available_gold < castle_upgrade_cost:
             return None
 
@@ -469,9 +469,11 @@ class BuildingPlanner:
     def _mod_enemy_neighbor_bonus(self, score, territory, building_type, game_state, player_index):
         """Barracks score higher with more enemy neighbors"""
         neighbors = map_data.get_neighbors(territory)
+        # H9 fix: exclude allies from enemy neighbor count
         enemy_neighbors = sum(
             1 for n in neighbors
             if game_state.territory_owners.get(n, -1) not in [-1, player_index]
+            and not game_state.are_allies(player_index, game_state.territory_owners.get(n, -1))
         )
         score += enemy_neighbors * 10.0
         return score
@@ -1031,7 +1033,7 @@ class EconomyManager:
             # Check if this is a Castle upgrade (special case)
             if building_action[0] == 'upgrade_castle':
                 _, territory, plot_idx, score = building_action
-                castle_cost = 100  # Castle upgrade cost
+                castle_cost = 150  # H7 fix: actual Castle upgrade cost is 150, not 100
 
                 if remaining_building_budget >= castle_cost:
                     actions.append(('upgrade_castle', {

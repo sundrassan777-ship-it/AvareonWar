@@ -472,7 +472,9 @@ class MilitaryMixin:
                     # Cancel training
                     if (territory in self.hero_training_queue and
                         plot_index in self.hero_training_queue[territory]):
-                        hero_type, _ = self.hero_training_queue[territory][plot_index]
+                        # C1 fix: handle 3-tuple (hero_type, time, paid_cost) from Audit #3 H1
+                        entry = self.hero_training_queue[territory][plot_index]
+                        hero_type = entry[0]
                         del self.hero_training_queue[territory][plot_index]
                         if not self.hero_training_queue[territory]:
                             del self.hero_training_queue[territory]
@@ -989,7 +991,8 @@ class MilitaryMixin:
             dest_owner = self.territory_owners.get(to_terr, -1)
             if dest_owner == order.player:
                 # This is a reinforcement - check army limit with net-aware capacity
-                current_garrison = self.armies.get(to_terr, 0)
+                # Legacy counter fix: use get_territory_total_armies for allied garrisons
+                current_garrison = self.get_territory_total_armies(to_terr)
                 # Subtract armies ordered to leave this destination
                 outgoing_from_dest = sum(
                     o.army_count for o in self.movement_orders
@@ -1837,7 +1840,8 @@ class MilitaryMixin:
                     keep_territory = brennhen_data['keep_territory']
 
                     # Check if Keep territory has room for one more unit
-                    current_keep_armies = self.armies.get(keep_territory, 0)
+                    # Legacy counter fix: use get_territory_total_armies for allied garrisons
+                    current_keep_armies = self.get_territory_total_armies(keep_territory)
                     if current_keep_armies < self.MAX_ARMIES_PER_TERRITORY:
                         # Pick a random unit type from loser's composition
                         import random

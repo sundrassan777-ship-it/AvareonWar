@@ -419,9 +419,12 @@ class HeroMixin:
         # Activate the discount for this turn
         self.player_master_negotiator_active[player_index] = True
 
-        # Record activation time for visual effects
-        import pygame
-        self.master_negotiator_activation_time = pygame.time.get_ticks()
+        # C2 fix: Guard pygame import for headless (test) environments
+        try:
+            import pygame
+            self.master_negotiator_activation_time = pygame.time.get_ticks()
+        except Exception:
+            self.master_negotiator_activation_time = 0
         self.master_negotiator_active_player = player_index
 
         # Add message to action log
@@ -461,7 +464,8 @@ class HeroMixin:
             return (False, "Territory not owned by you!")
 
         # Check army limit (need room for 4 cavalry)
-        current_armies = self.armies.get(target_territory, 0)
+        # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
+        current_armies = self.get_territory_total_armies(target_territory)
         if current_armies > 11:
             return (False, f"Territory has too many units! ({current_armies}/15)\nNeed 11 or fewer to summon 4 Cavalry.")
 
@@ -545,7 +549,8 @@ class HeroMixin:
         keep_territory = hero_data['keep_territory']
 
         # Check army limit (need room for 2 swordsmen)
-        current_armies = self.armies.get(keep_territory, 0)
+        # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
+        current_armies = self.get_territory_total_armies(keep_territory)
         if current_armies > 13:
             return (False, f"Territory has too many units! ({current_armies}/15)\nNeed 13 or fewer to summon 2 Swordsmen.")
 
@@ -622,7 +627,8 @@ class HeroMixin:
             return (False, "Territory is protected by Defiance!")
 
         # Check army count (must have 1 or fewer)
-        current_armies = self.armies.get(target_territory, 0)
+        # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
+        current_armies = self.get_territory_total_armies(target_territory)
         if current_armies > 1:
             return (False, f"Territory has too many armies! ({current_armies})\nNeed 1 or fewer to target.")
 
@@ -805,7 +811,8 @@ class HeroMixin:
             return (False, "Territory is protected by Defiance!")
 
         # Check that territory has at least 2 armies
-        army_count = self.armies.get(target_territory, 0)
+        # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
+        army_count = self.get_territory_total_armies(target_territory)
         if army_count < 2:
             return (False, f"Territory must have at least 2 units! (has {army_count})")
 
@@ -1026,8 +1033,8 @@ class HeroMixin:
         if self.territory_owners.get(narn_keep_territory, -1) != owner:
             return (False, "You no longer own Narn's Keep territory!")
 
-        # Get current unit count in Narn's Keep territory
-        narn_keep_units = self.armies.get(narn_keep_territory, 0)
+        # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
+        narn_keep_units = self.get_territory_total_armies(narn_keep_territory)
 
         # Check if Narn's Keep already has 15 units (cannot use ability)
         if narn_keep_units >= 15:

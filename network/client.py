@@ -247,8 +247,13 @@ class NetworkClient:
                 self._disconnect()
                 return
 
-            # Add to buffer
-            self.recv_buffer.add_data(data)
+            # H13 fix: check buffer overflow and disconnect on overflow
+            if not self.recv_buffer.add_data(data):
+                logger.warning("Buffer overflow from server, disconnecting")
+                self.disconnected = True
+                self.disconnect_reason = "Buffer overflow"
+                self._disconnect()
+                return
 
             # Extract and process complete messages
             while True:

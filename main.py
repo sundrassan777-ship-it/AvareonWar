@@ -2915,9 +2915,14 @@ class Game:
                     for x, y in plots
                 ]
             
-            # Clear caches
+            # Clear caches (H11 fix: also clear icon/text caches to prevent stale entries)
             self.cached_scaled_map = None
             self.cached_zoom_level = None
+            self._ui_icon_cache = {}
+            self._tech_border_cache = {}
+            self._text_cache = {}
+            self._rotated_tab_text_cache = {}
+            self._hero_overlay_cache = {}
             
             # Rescale panel images to new resolution
             # Bottom panel
