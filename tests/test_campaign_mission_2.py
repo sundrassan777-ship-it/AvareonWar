@@ -516,7 +516,6 @@ def run_mission_playthrough():
     return result
 
 
-@pytest.mark.xfail(reason="Known bug: defeat condition not triggered by territory conquest event")
 def test_defeat_condition():
     """Test that player loses when they have 0 territories."""
     print("\n" + "=" * 70)
@@ -548,14 +547,12 @@ def test_defeat_condition():
     # Notify mission of conquest (triggers defeat check)
     mission.notify_event('territory_conquered', territory="Lobardia", new_owner=1)
 
-    # Check if defeat was triggered
-    defeat_triggered = mission._pending_defeat or mission.defeat_sequence_active
+    # Check if defeat was triggered (_defeat_waiting is set immediately;
+    # _pending_defeat only transitions during update() frame loop)
+    defeat_triggered = getattr(mission, '_defeat_waiting', False) or mission._pending_defeat or mission.defeat_sequence_active
     print(f"Defeat sequence triggered: {defeat_triggered}")
 
-    if defeat_triggered:
-        print("[PASS] Defeat condition works correctly!")
-    else:
-        assert False, "Defeat condition did not trigger!"
+    assert defeat_triggered, "Defeat condition did not trigger (checked _defeat_waiting, _pending_defeat, defeat_sequence_active)"
 
 
 if __name__ == '__main__':
