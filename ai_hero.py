@@ -210,7 +210,7 @@ class AbilityExecutor:
         2: 1.0,   # Hard: multiply scores by 1.0 (unchanged)
     }
 
-    def evaluate_ability_usage(self, game_state, player_index, difficulty=2):
+    def evaluate_ability_usage(self, game_state, player_index, difficulty=2, cache=None):
         """
         Evaluate all available hero abilities and select best to use.
 
@@ -225,12 +225,17 @@ class AbilityExecutor:
             game_state: GameState instance
             player_index (int): Player index
             difficulty (int): AI difficulty level (0=Easy, 1=Normal, 2=Hard)
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             tuple: (hero_type, ability_name, target_params) or None
         """
         if player_index not in game_state.heroes:
             return None
+
+        # Store cache on self temporarily so scorer functions can access it
+        # without changing their signatures (dispatched via _ability_scorers dict)
+        self._cache = cache
 
         active_heroes = game_state.heroes[player_index]
         candidates = []
@@ -267,6 +272,8 @@ class AbilityExecutor:
 
                 if score >= self.MIN_ABILITY_THRESHOLD:
                     candidates.append((hero_type, ability_name, target, score))
+
+        self._cache = None  # Clear temporary cache reference
 
         if not candidates:
             return None
@@ -306,12 +313,15 @@ class AbilityExecutor:
         """
         import map_data
 
+        cache = self._cache  # Set by evaluate_ability_usage
+
         # M23 FIX: Use cached scorer instead of creating per call
         scorer = self._scorer
         best_score = 0.0
         best_target = None
 
-        owned_territories = [
+        # FPS OPTIMIZATION 5B: Use cached owned_territories instead of recomputing
+        owned_territories = cache.owned_territories if cache else [
             t for t, owner in game_state.territory_owners.items()
             if owner == player_index
         ]
@@ -329,7 +339,8 @@ class AbilityExecutor:
                 # Check army count (must be ≤1)
                 # H11 FIX: Use get_territory_total_armies() for enemy/neutral defense assessment
                 # This includes all garrisons (owner + allies) which is the true defensive strength
-                armies = game_state.get_territory_total_armies(neighbor)
+                # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
+                armies = cache.territory_armies.get(neighbor, 0) if cache else game_state.get_territory_total_armies(neighbor)
                 if armies > 1:
                     continue
 
@@ -357,7 +368,9 @@ class AbilityExecutor:
         Levy: Collect full income from a territory.
         Always useful - use whenever ready. Find best territory to levy.
         """
-        territory_count = sum(
+        cache = self._cache  # Set by evaluate_ability_usage
+        # FPS OPTIMIZATION 5B: Use cached territory_count instead of recomputing
+        territory_count = cache.territory_count if cache else sum(
             1 for owner in game_state.territory_owners.values()
             if owner == player_index
         )
@@ -389,13 +402,16 @@ class AbilityExecutor:
         """
         import map_data
 
+        cache = self._cache  # Set by evaluate_ability_usage
+
         keep_territory = hero_data.get('keep_territory')
         if not keep_territory:
             return (0.0, None)
 
         # Check if Keep territory has room (must have < 15 units)
         # H11 FIX: Use get_territory_total_armies() to check total capacity (all garrisons)
-        keep_armies = game_state.get_territory_total_armies(keep_territory)
+        # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
+        keep_armies = cache.territory_armies.get(keep_territory, 0) if cache else game_state.get_territory_total_armies(keep_territory)
         if keep_armies >= 15:
             return (0.0, None)  # No room
 
@@ -408,7 +424,8 @@ class AbilityExecutor:
                 continue  # Must be enemy
 
             # H11 FIX: Use get_territory_total_armies() for enemy strength assessment
-            armies = game_state.get_territory_total_armies(territory)
+            # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
+            armies = cache.territory_armies.get(territory, 0) if cache else game_state.get_territory_total_armies(territory)
             if armies <= 0:
                 continue
 
@@ -483,13 +500,16 @@ class AbilityExecutor:
         Reinforce: Summon 2 Swordsmen at Brennhen's Keep (must have ≤13 units).
         Free units - always use when possible.
         """
+        cache = self._cache  # Set by evaluate_ability_usage
+
         keep_territory = hero_data.get('keep_territory')
         if not keep_territory:
             return (0.0, None)
 
         # Check if Keep territory has room (must have ≤13 units)
         # H11 FIX: Use get_territory_total_armies() to check total capacity (all garrisons)
-        keep_armies = game_state.get_territory_total_armies(keep_territory)
+        # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
+        keep_armies = cache.territory_armies.get(keep_territory, 0) if cache else game_state.get_territory_total_armies(keep_territory)
         if keep_armies > 13:
             return (0.0, None)
 
@@ -503,6 +523,8 @@ class AbilityExecutor:
         Decisive Strike: Remove half armies from enemy territory (needs ≥2 units).
         Very powerful for weakening enemy positions before attack.
         """
+        cache = self._cache  # Set by evaluate_ability_usage
+
         best_target = None
         best_value = 0
 
@@ -511,7 +533,8 @@ class AbilityExecutor:
                 continue  # Must be enemy
 
             # H11 FIX: Use get_territory_total_armies() for enemy strength assessment
-            armies = game_state.get_territory_total_armies(territory)
+            # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
+            armies = cache.territory_armies.get(territory, 0) if cache else game_state.get_territory_total_armies(territory)
             if armies < 2:
                 continue  # Needs at least 2 units
 
@@ -533,12 +556,15 @@ class AbilityExecutor:
         """
         import map_data
 
+        cache = self._cache  # Set by evaluate_ability_usage
+
         keep_territory = hero_data.get('keep_territory')
         if not keep_territory:
             return (0.0, None)
 
         # H11 FIX: Use get_territory_total_armies() for capacity/availability checks
-        keep_armies = game_state.get_territory_total_armies(keep_territory)
+        # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
+        keep_armies = cache.territory_armies.get(keep_territory, 0) if cache else game_state.get_territory_total_armies(keep_territory)
         if keep_armies < 5:
             return (0.0, None)  # Not worth moving small amounts
 
@@ -561,7 +587,8 @@ class AbilityExecutor:
                 continue  # Only reinforce front lines
 
             # H11 FIX: Use get_territory_total_armies() for defense assessment
-            current_armies = game_state.get_territory_total_armies(territory)
+            # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
+            current_armies = cache.territory_armies.get(territory, 0) if cache else game_state.get_territory_total_armies(territory)
             if current_armies >= 10:
                 continue  # Already well-defended
 
@@ -655,6 +682,8 @@ class AbilityExecutor:
         """
         import map_data
 
+        cache = self._cache  # Set by evaluate_ability_usage
+
         best_target = None
         best_score = 0
 
@@ -663,7 +692,8 @@ class AbilityExecutor:
                 continue
 
             # H11 FIX: Use get_territory_total_armies() for capacity check (all garrisons)
-            armies = game_state.get_territory_total_armies(territory)
+            # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
+            armies = cache.territory_armies.get(territory, 0) if cache else game_state.get_territory_total_armies(territory)
             if armies > 11:
                 continue  # Must have ≤11 units
 
@@ -699,12 +729,13 @@ class HeroManager:
         self.selector = HeroSelector()
         self.executor = AbilityExecutor()
 
-    def plan_hero_actions(self, game_state):
+    def plan_hero_actions(self, game_state, cache=None):
         """
         Plan all hero-related actions for this turn.
 
         Args:
             game_state: GameState instance
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             list: List of hero actions
@@ -715,7 +746,7 @@ class HeroManager:
         # 1. Hero abilities (always try, apply difficulty after finding good ability)
         # M30 FIX: Pass difficulty so ability scores are scaled by difficulty level
         ability_action = self.executor.evaluate_ability_usage(
-            game_state, player_index, self.ai_player.difficulty
+            game_state, player_index, self.ai_player.difficulty, cache=cache
         )
         if ability_action:
             # Apply usage rate, but with minimum 30% chance even for Easy AI

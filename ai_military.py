@@ -18,6 +18,7 @@ Classes:
 """
 
 import random
+from collections import deque
 import map_data
 
 from utils.logger import get_logger
@@ -159,10 +160,11 @@ class AttackPlanner:
         player_index = self.ai_player.player_index
         reachable = {}  # {territory: distance}
         visited = set()
-        queue = [(from_territory, 0)]  # (territory, distance)
+        # FPS OPTIMIZATION 5B: deque for O(1) popleft instead of O(n) list.pop(0)
+        queue = deque([(from_territory, 0)])  # (territory, distance)
 
         while queue:
-            current, distance = queue.pop(0)
+            current, distance = queue.popleft()
 
             if current in visited:
                 continue
@@ -191,13 +193,14 @@ class AttackPlanner:
 
         return reachable
 
-    def select_attack_targets(self, game_state, max_attacks=3):
+    def select_attack_targets(self, game_state, max_attacks=3, cache=None):
         """
         Select best territories to attack.
 
         Args:
             game_state: GameState instance
             max_attacks (int): Maximum number of attacks to plan
+            cache: Optional TurnCache with pre-computed values for performance
 
         Returns:
             list: [(from_territory, to_territory, army_count), ...]
@@ -257,7 +260,7 @@ class AttackPlanner:
 
                 # Score this attack
                 score = self._score_attack_target(
-                    territory, target_territory, available_army, game_state, player_index
+                    territory, target_territory, available_army, game_state, player_index, cache=cache
                 )
 
                 # Reduce score for distant targets (prefer adjacent over through-ally)
@@ -281,7 +284,8 @@ class AttackPlanner:
         armies_allocated = {}  # {territory: armies_used}
 
         # Check if early game (allows using ALL armies for expansion)
-        territory_count = sum(
+        # TurnCache: use cached territory_count to avoid re-scanning territory_owners
+        territory_count = cache.territory_count if cache else sum(
             1 for owner in game_state.territory_owners.values()
             if owner == player_index
         )
@@ -297,7 +301,8 @@ class AttackPlanner:
             # Check if target is empty neutral
             target_owner = game_state.territory_owners.get(to_terr, -1)
             # IMPORTANT: Use total armies (all garrisons) to check if truly empty
-            target_garrison = game_state.get_territory_total_armies(to_terr)
+            # TurnCache: use cached territory_armies to avoid per-territory garrison scan
+            target_garrison = cache.territory_armies.get(to_terr, 0) if cache else game_state.get_territory_total_armies(to_terr)
             is_empty_neutral = (target_owner == -1 and target_garrison == 0)
 
             # Assess safety of source territory (how many armies to keep)
@@ -445,7 +450,7 @@ class AttackPlanner:
 
         return garrison
 
-    def _score_attack_target(self, from_territory, to_territory, available_army, game_state, player_index):
+    def _score_attack_target(self, from_territory, to_territory, available_army, game_state, player_index, cache=None):
         """
         Score an attack target.
 
@@ -456,13 +461,23 @@ class AttackPlanner:
         - Expansion progress (toward victory)
         - Risk assessment
 
+        Args:
+            cache: Optional TurnCache with pre-computed values for performance
+
         Returns:
             float: Attack score (0-100)
         """
         score = 0.0
 
+        # TurnCache: compute territory_count ONCE at top (was computed twice at ~493 and ~562)
+        territory_count = cache.territory_count if cache else sum(
+            1 for owner in game_state.territory_owners.values()
+            if owner == self.ai_player.player_index
+        )
+
         # Enemy garrison - IMPORTANT: Use total armies (all garrisons)
-        enemy_garrison = game_state.get_territory_total_armies(to_territory)
+        # TurnCache: use cached territory_armies to avoid per-territory garrison scan
+        enemy_garrison = cache.territory_armies.get(to_territory, 0) if cache else game_state.get_territory_total_armies(to_territory)
         has_keep = self._territory_has_keep(to_territory, game_state)
         is_neutral = game_state.territory_owners.get(to_territory, -1) == -1
 
@@ -489,11 +504,7 @@ class AttackPlanner:
                 score += 120.0  # MASSIVE priority - go on a rampage claiming free territories!
 
                 # EARLY GAME BONUS - At game start, neutral conquest is EVERYTHING
-                # Count total territories owned (early game = few territories)
-                territory_count = sum(
-                    1 for owner in game_state.territory_owners.values()
-                    if owner == player_index
-                )
+                # territory_count already computed once at top of method
                 if territory_count < 16:
                     # Early game - add HUGE bonus for neutral expansion
                     # This ensures AI uses ALL armies for expansion until 16 territories
@@ -558,11 +569,7 @@ class AttackPlanner:
             # Medium bonus for decent-sized armies
             score += (available_army - 4) * 2.0
 
-        # Expansion progress bonus
-        territory_count = sum(
-            1 for owner in game_state.territory_owners.values()
-            if owner == player_index
-        )
+        # Expansion progress bonus (territory_count already computed once at top of method)
         if territory_count >= 25:
             score += 30.0  # Victory push bonus
 
@@ -764,7 +771,7 @@ class DefenseCoordinator:
 
         return reinforcement_moves
 
-    def plan_strategic_repositioning(self, game_state, player_index, max_moves=2):
+    def plan_strategic_repositioning(self, game_state, player_index, max_moves=2, cache=None):
         """
         Move armies from deep interior (surrounded by allies) toward the frontier.
         This helps AI unstick armies that are trapped behind allied lines.
@@ -773,6 +780,7 @@ class DefenseCoordinator:
             game_state: GameState instance
             player_index (int): Player index
             max_moves (int): Maximum repositioning moves to plan
+            cache: Optional TurnCache with pre-computed values for performance
 
         Returns:
             list: [(from_territory, to_territory, army_count), ...] repositioning moves
@@ -877,13 +885,14 @@ class TrainingPlanner:
         self.ai_player = ai_player
         self.composer = ArmyComposer()
 
-    def plan_training(self, game_state, available_budget):
+    def plan_training(self, game_state, available_budget, cache=None):
         """
         Plan unit training for all Barracks.
 
         Args:
             game_state: GameState instance
             available_budget (int): Gold available for training
+            cache: Optional TurnCache with pre-computed values for performance
 
         Returns:
             list: [('train', {territory, barracks_plot, unit_type}), ...]
@@ -893,7 +902,8 @@ class TrainingPlanner:
         spent = 0
 
         # Check command limit before planning any training
-        current_command = game_state.get_player_army_count(player_index)
+        # TurnCache: use cached army count to avoid re-scanning all garrisons
+        current_command = cache.player_army_count if cache else game_state.get_player_army_count(player_index)
         command_limit = game_state.player_command_limit[player_index]
         if current_command >= command_limit:
             # Already at command limit, don't plan any training
@@ -904,7 +914,8 @@ class TrainingPlanner:
         available_command = command_limit - current_command
 
         # Find all owned territories with Barracks
-        owned_territories = [
+        # TurnCache: use cached owned_territories list to avoid re-scanning territory_owners
+        owned_territories = cache.owned_territories if cache else [
             t for t, owner in game_state.territory_owners.items()
             if owner == player_index
         ]
@@ -914,7 +925,8 @@ class TrainingPlanner:
                 continue
 
             # Skip territory if already at army cap (units would have nowhere to go)
-            territory_armies = game_state.get_territory_total_armies(territory)
+            # TurnCache: use cached territory_armies to avoid per-territory garrison scan
+            territory_armies = cache.territory_armies.get(territory, 0) if cache else game_state.get_territory_total_armies(territory)
             if territory_armies >= game_state.MAX_ARMIES_PER_TERRITORY:
                 continue
 
@@ -1024,7 +1036,7 @@ class MilitaryCommander:
         self.defense_coordinator = DefenseCoordinator(ai_player)
         self.training_planner = TrainingPlanner(ai_player)
 
-    def plan_military_actions(self, game_state, strategic_priority, budget, threats):
+    def plan_military_actions(self, game_state, strategic_priority, budget, threats, cache=None):
         """
         Plan all military actions for this turn.
 
@@ -1033,6 +1045,7 @@ class MilitaryCommander:
             strategic_priority (str): Strategic mode
             budget (int): Gold available for military spending
             threats (list): Threatened territories
+            cache: Optional TurnCache with pre-computed values for performance
 
         Returns:
             list: List of military actions
@@ -1042,7 +1055,7 @@ class MilitaryCommander:
 
         # 1. Training (allocate ~60% of military budget)
         training_budget = int(budget * 0.6)
-        training_actions = self.training_planner.plan_training(game_state, training_budget)
+        training_actions = self.training_planner.plan_training(game_state, training_budget, cache=cache)
         actions.extend(training_actions)
 
         # 2. Movement orders based on strategy
@@ -1063,14 +1076,15 @@ class MilitaryCommander:
 
         # 3b. Strategic repositioning (move armies stuck behind ally lines toward frontier)
         repositioning_moves = self.defense_coordinator.plan_strategic_repositioning(
-            game_state, player_index, max_moves=2
+            game_state, player_index, max_moves=2, cache=cache
         )
         for from_terr, to_terr, army_count in repositioning_moves:
             actions.append(('move', {'from': from_terr, 'to': to_terr, 'army_count': army_count}))
 
         # 4. Offensive moves (always check, use aggression to scale)
         # Check territory count for early game aggression
-        territory_count = sum(
+        # TurnCache: use cached territory_count to avoid re-scanning territory_owners
+        territory_count = cache.territory_count if cache else sum(
             1 for owner in game_state.territory_owners.values()
             if owner == player_index
         )
@@ -1126,7 +1140,7 @@ class MilitaryCommander:
 
         attack_roll = random.random()
         if attack_roll < attack_chance:
-            attacks = self.attack_planner.select_attack_targets(game_state, max_attacks=max_attacks)
+            attacks = self.attack_planner.select_attack_targets(game_state, max_attacks=max_attacks, cache=cache)
             for from_terr, to_terr, army_count in attacks:
                 actions.append(('move', {'from': from_terr, 'to': to_terr, 'army_count': army_count}))
 

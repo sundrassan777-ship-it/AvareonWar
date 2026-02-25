@@ -30,7 +30,36 @@ class BuildingPlanner:
         self._scorer = TerritoryScorer()
         self._threat_analyzer = ThreatAnalyzer()
 
-    def select_building_action(self, game_state, player_index, available_gold, difficulty_config, exclude_territories=None):
+        # FPS OPTIMIZATION 5B: Pre-built building config (was recreated 75-125x per turn)
+        self._building_configs = {
+            'Farm': {
+                'base_score_fn': self._base_score_income,
+                'modifiers': [self._mod_square_synergy, self._mod_mine_preference, self._mod_income_tech_bonus],
+                'cap': 100.0,
+            },
+            'Mine': {
+                'base_score_fn': self._base_score_income,
+                'modifiers': [self._mod_square_synergy, self._mod_mine_preference, self._mod_income_tech_bonus],
+                'cap': 100.0,
+            },
+            'Barracks': {
+                'base_score_fn': self._base_score_barracks,
+                'modifiers': [self._mod_frontier_bonus, self._mod_enemy_neighbor_bonus, self._mod_nearby_barracks_penalty],
+                'cap': 100.0,
+            },
+            'Keep': {
+                'base_score_fn': self._base_score_keep,
+                'modifiers': [self._mod_keep_high_value_threat, self._mod_keep_capital_assault, self._mod_keep_hero_enabling],
+                'cap': None,  # Keep can exceed 100 when hero enabling is critical
+            },
+            'Square': {
+                'base_score_fn': self._base_score_square,
+                'modifiers': [self._mod_square_income_multiplier],
+                'cap': 100.0,
+            },
+        }
+
+    def select_building_action(self, game_state, player_index, available_gold, difficulty_config, exclude_territories=None, cache=None):
         """
         Select best building to construct this turn.
 
@@ -40,6 +69,7 @@ class BuildingPlanner:
             available_gold (int): Gold available to spend
             difficulty_config (dict): AI difficulty settings
             exclude_territories (set): Territories to exclude from consideration (already planned for building)
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             tuple: (territory, plot_index, building_type, priority_score) or None
@@ -50,14 +80,14 @@ class BuildingPlanner:
 
         candidates = []
 
-        # Find all owned territories
-        owned_territories = [
+        # FPS OPTIMIZATION 5B: Use cached owned_territories instead of recomputing
+        owned_territories = cache.owned_territories if cache else [
             t for t, owner in game_state.territory_owners.items()
             if owner == player_index
         ]
 
         # PRIORITY: Check for Castle upgrades first (if any tech requires Castle)
-        castle_upgrade = self._select_castle_upgrade(game_state, player_index, available_gold)
+        castle_upgrade = self._select_castle_upgrade(game_state, player_index, available_gold, cache=cache)
         if castle_upgrade:
             return castle_upgrade
 
@@ -84,9 +114,9 @@ class BuildingPlanner:
                 if cost > available_gold:
                     continue
 
-                # Score this building placement
+                # Score this building placement (pass cache for FPS optimization)
                 score = self.score_building_placement(
-                    territory, building_type, game_state, player_index
+                    territory, building_type, game_state, player_index, cache=cache
                 )
 
                 if score > 0:
@@ -100,7 +130,7 @@ class BuildingPlanner:
         candidates.sort(key=lambda x: x[3], reverse=True)
         return candidates[0]
 
-    def _select_castle_upgrade(self, game_state, player_index, available_gold):
+    def _select_castle_upgrade(self, game_state, player_index, available_gold, cache=None):
         """
         Select a Keep to upgrade to Castle.
 
@@ -114,6 +144,7 @@ class BuildingPlanner:
             game_state: GameState instance
             player_index (int): Player index
             available_gold (int): Available gold
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             tuple: ('upgrade_castle', territory, plot_index, score) or None
@@ -164,7 +195,8 @@ class BuildingPlanner:
                         column_0_approaching = True  # Economy tech path needs Castle soon
 
         # Check if AI has high income and gold (proactive upgrade)
-        current_income = game_state.calculate_player_income(player_index)
+        # FPS OPTIMIZATION 5B: Use cached income instead of recomputing
+        current_income = cache.player_income if cache else game_state.calculate_player_income(player_index)
         has_strong_economy = current_income >= 230 and available_gold >= 150
 
         # Check tech progress in each column - if invested in any column, prioritize Castle
@@ -206,7 +238,8 @@ class BuildingPlanner:
             logger.debug(f"Castle Priority: Player {player_index + 1} invested in tech paths ({', '.join(invested_cols)})")
 
         # Find Keeps that can be upgraded
-        owned_territories = [
+        # FPS OPTIMIZATION 5B: Use cached owned_territories instead of recomputing
+        owned_territories = cache.owned_territories if cache else [
             t for t, owner in game_state.territory_owners.items()
             if owner == player_index
         ]
@@ -263,7 +296,7 @@ class BuildingPlanner:
 
         return available
 
-    def score_building_placement(self, territory, building_type, game_state, player_index):
+    def score_building_placement(self, territory, building_type, game_state, player_index, cache=None):
         """
         Score a building placement (0-100, except Keep which can exceed 100 for hero enabling).
 
@@ -275,11 +308,12 @@ class BuildingPlanner:
             building_type (str): Building type
             game_state: GameState instance
             player_index (int): Player index
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             float: Placement score (0-100, or higher for Keep hero enabling)
         """
-        return self._score_building(territory, building_type, game_state, player_index)
+        return self._score_building(territory, building_type, game_state, player_index, cache=cache)
 
     # ---- Per-type scoring configuration ----
     # Each building type defines:
@@ -287,7 +321,7 @@ class BuildingPlanner:
     #   'modifiers': list of callable(self, score, territory, building_type, game_state, player_index) -> float
     #   'cap': max score (None = uncapped, e.g. Keep for hero enabling)
 
-    def _score_building(self, territory, building_type, game_state, player_index):
+    def _score_building(self, territory, building_type, game_state, player_index, cache=None):
         """
         Generic building scoring method. Dispatches to per-type config for base score
         computation and modifiers, then applies score cap.
@@ -303,48 +337,25 @@ class BuildingPlanner:
             building_type (str): Building type ('Farm', 'Mine', 'Barracks', 'Keep', 'Square')
             game_state: GameState instance
             player_index (int): Player index
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             float: Placement score
         """
-        # Building type scoring configuration - maps each type to its scoring pipeline
-        building_configs = {
-            'Farm': {
-                'base_score_fn': self._base_score_income,
-                'modifiers': [self._mod_square_synergy, self._mod_mine_preference, self._mod_income_tech_bonus],
-                'cap': 100.0,
-            },
-            'Mine': {
-                'base_score_fn': self._base_score_income,
-                'modifiers': [self._mod_square_synergy, self._mod_mine_preference, self._mod_income_tech_bonus],
-                'cap': 100.0,
-            },
-            'Barracks': {
-                'base_score_fn': self._base_score_barracks,
-                'modifiers': [self._mod_frontier_bonus, self._mod_enemy_neighbor_bonus, self._mod_nearby_barracks_penalty],
-                'cap': 100.0,
-            },
-            'Keep': {
-                'base_score_fn': self._base_score_keep,
-                'modifiers': [self._mod_keep_high_value_threat, self._mod_keep_capital_assault, self._mod_keep_hero_enabling],
-                'cap': None,  # Keep can exceed 100 when hero enabling is critical
-            },
-            'Square': {
-                'base_score_fn': self._base_score_square,
-                'modifiers': [self._mod_square_income_multiplier],
-                'cap': 100.0,
-            },
-        }
-
-        config = building_configs.get(building_type)
+        # FPS OPTIMIZATION 5B: Use pre-built config from __init__ (was recreated 75-125x per turn)
+        config = self._building_configs.get(building_type)
         if not config:
             return 0.0
+
+        # Store cache on self temporarily so modifiers can access it without signature changes
+        self._cache = cache
 
         # Step 1: Compute base score
         score = config['base_score_fn'](territory, building_type, game_state, player_index)
 
         # Early exit if base score is 0 or negative (e.g. Keep already exists)
         if score <= 0.0:
+            self._cache = None
             return score
 
         # Step 2: Apply modifiers in order
@@ -352,12 +363,14 @@ class BuildingPlanner:
             score = modifier_fn(score, territory, building_type, game_state, player_index)
             # Early exit if a modifier zeroes out the score
             if score <= 0.0:
+                self._cache = None
                 return score
 
         # Step 3: Apply cap
         if config['cap'] is not None:
             score = min(score, config['cap'])
 
+        self._cache = None
         return score
 
     # ---- Base score functions (one per building type) ----
@@ -494,33 +507,43 @@ class BuildingPlanner:
         """
         HERO ENABLING: Big bonus if AI has no Keep yet.
         Checks all owned territories for existing/under-construction Keeps.
+        Uses self._cache (set by _score_building) for FPS optimization.
         """
-        # Check if player already has a Keep somewhere (built or under construction)
-        has_keep = False
-        for terr, owner in game_state.territory_owners.items():
-            if owner != player_index:
-                continue
-            # Check built Keeps
-            if terr in game_state.buildings:
-                for bt in game_state.buildings[terr].values():
-                    if bt in ['Keep', 'Castle']:
-                        has_keep = True
-                        break
-            # Check under construction Keeps
-            # Format: under_construction[territory][plot_index] = (building_type, turns_remaining)
-            if not has_keep and terr in game_state.under_construction:
-                for building_type_tuple in game_state.under_construction[terr].values():
-                    if building_type_tuple[0] == 'Keep':
-                        has_keep = True
-                        break
-            if has_keep:
-                break
+        cache = self._cache  # Set by _score_building before calling modifiers
+
+        # FPS OPTIMIZATION 5B: Use cached has_keep check instead of iterating all territories
+        if cache:
+            has_keep = cache.player_has_keep
+        else:
+            # Fallback: check manually (backward-compatible when cache is None)
+            has_keep = False
+            for terr, owner in game_state.territory_owners.items():
+                if owner != player_index:
+                    continue
+                # Check built Keeps
+                if terr in game_state.buildings:
+                    for bt in game_state.buildings[terr].values():
+                        if bt in ['Keep', 'Castle']:
+                            has_keep = True
+                            break
+                # Check under construction Keeps
+                # Format: under_construction[territory][plot_index] = (building_type, turns_remaining)
+                if not has_keep and terr in game_state.under_construction:
+                    for building_type_tuple in game_state.under_construction[terr].values():
+                        if building_type_tuple[0] == 'Keep':
+                            has_keep = True
+                            break
+                if has_keep:
+                    break
 
         if not has_keep:
             # Check if we have enough gold to benefit from heroes after building Keep
             # Keep costs ~150-200, cheapest hero costs 150 (Brennhen)
             player_gold = game_state.player_gold[player_index]
-            territory_count = sum(1 for o in game_state.territory_owners.values() if o == player_index)
+            # FPS OPTIMIZATION 5B: Use cached territory_count instead of recomputing
+            territory_count = cache.territory_count if cache else sum(
+                1 for o in game_state.territory_owners.values() if o == player_index
+            )
 
             # Prioritize Keep if:
             # - Past early game (8+ territories) AND
@@ -557,7 +580,7 @@ class BuildingPlanner:
                 return True
         return False
 
-    def select_buildings_to_demolish(self, game_state, player_index, available_gold, max_demolitions=1):
+    def select_buildings_to_demolish(self, game_state, player_index, available_gold, max_demolitions=1, cache=None):
         """
         Select economy buildings to demolish when AI has excess gold.
 
@@ -571,6 +594,7 @@ class BuildingPlanner:
             player_index (int): Player making decision
             available_gold (int): Gold available
             max_demolitions (int): Max buildings to demolish this turn
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             list: [(territory, plot_index), ...] or empty list
@@ -582,7 +606,8 @@ class BuildingPlanner:
         # Military buildings that should never be demolished
         military_buildings = {'Barracks', 'Keep'}
 
-        owned_territories = [
+        # FPS OPTIMIZATION 5B: Use cached owned_territories instead of recomputing
+        owned_territories = cache.owned_territories if cache else [
             t for t, owner in game_state.territory_owners.items()
             if owner == player_index
         ]
@@ -705,7 +730,7 @@ class TechResearcher:
         }
     }
 
-    def select_research_action(self, game_state, player_index, difficulty):
+    def select_research_action(self, game_state, player_index, difficulty, cache=None):
         """
         Select best technology to research.
 
@@ -713,6 +738,7 @@ class TechResearcher:
             game_state: GameState instance
             player_index (int): Player index
             difficulty (int): AI difficulty level
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             int: Technology ID to research, or None
@@ -746,8 +772,8 @@ class TechResearcher:
             # Get priority (default 50 if not in priority list)
             priority = priorities.get(tech_id, 50)
 
-            # Adjust based on game state
-            adjusted_score = self._adjust_tech_score(tech_id, priority, game_state, player_index)
+            # Adjust based on game state (pass cache for FPS optimization)
+            adjusted_score = self._adjust_tech_score(tech_id, priority, game_state, player_index, cache=cache)
 
             tech_scores.append((tech_id, adjusted_score))
 
@@ -774,7 +800,7 @@ class TechResearcher:
 
         return available
 
-    def _adjust_tech_score(self, tech_id, base_score, game_state, player_index):
+    def _adjust_tech_score(self, tech_id, base_score, game_state, player_index, cache=None):
         """
         Adjust tech score based on current game state.
 
@@ -783,6 +809,13 @@ class TechResearcher:
         - Normal (< 50 command): Column 0 (economy) ≈ Column 1 (military) > Column 2 (command)
         - High command (>= 50): Column 2 (command) > Column 1 (military) > Column 0 (economy)
         - Late game (600+ income): Research nonstop (all techs prioritized)
+
+        Args:
+            tech_id (str): Technology ID (format: tech_COL_ROW)
+            base_score (int): Base priority score
+            game_state: GameState instance
+            player_index (int): Player index
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
         """
         score = base_score
 
@@ -791,14 +824,14 @@ class TechResearcher:
         column = int(parts[1])
         row = int(parts[2])
 
-        # Check current state
-        territory_count = sum(
+        # FPS OPTIMIZATION 5B: Use cached values instead of recomputing per tech evaluation
+        territory_count = cache.territory_count if cache else sum(
             1 for owner in game_state.territory_owners.values()
             if owner == player_index
         )
-        total_armies = game_state.get_player_army_count(player_index)
+        total_armies = cache.player_army_count if cache else game_state.get_player_army_count(player_index)
         command_limit = game_state.player_command_limit[player_index]
-        current_income = game_state.calculate_player_income(player_index)
+        current_income = cache.player_income if cache else game_state.calculate_player_income(player_index)
 
         # LATE GAME: 600+ income = research EVERYTHING aggressively
         if current_income >= 600:
@@ -864,6 +897,16 @@ class TechResearcher:
 class BudgetAllocator:
     """Manages gold allocation across priorities"""
 
+    # FPS OPTIMIZATION 5B: Pre-built budget ratios dict replaces 5-branch if/elif chain
+    # Each mode maps to (buildings_ratio, training_ratio, tech_ratio)
+    _BUDGET_RATIOS = {
+        'economy':       (0.5, 0.2, 0.3),
+        'defense':       (0.3, 0.6, 0.1),
+        'expansion':     (0.3, 0.5, 0.2),
+        'conquest_push': (0.15, 0.75, 0.10),
+        'victory_push':  (0.2, 0.7, 0.1),
+    }
+
     def allocate_budget(self, available_gold, priorities, difficulty_config):
         """
         Allocate budget across different spending categories.
@@ -888,29 +931,14 @@ class BudgetAllocator:
         reserve = min(10, int(available_gold * 0.02))  # Only 2% reserve, max 10 gold
         spendable = available_gold - reserve
 
-        # Allocate based on strategic priority
-        if priorities.get('mode') == 'economy':
-            allocation['buildings'] = int(spendable * 0.5)
-            allocation['tech'] = int(spendable * 0.3)
-            allocation['training'] = int(spendable * 0.2)
-        elif priorities.get('mode') == 'defense':
-            allocation['training'] = int(spendable * 0.6)
-            allocation['buildings'] = int(spendable * 0.3)
-            allocation['tech'] = int(spendable * 0.1)
-        elif priorities.get('mode') == 'expansion':
-            allocation['training'] = int(spendable * 0.5)
-            allocation['buildings'] = int(spendable * 0.3)
-            allocation['tech'] = int(spendable * 0.2)
-        elif priorities.get('mode') == 'conquest_push':
-            # Conquest mode: heavy military spending, minimal economy
-            # AI has excess gold and should focus on army building for attacks
-            allocation['training'] = int(spendable * 0.75)  # 75% to army
-            allocation['buildings'] = int(spendable * 0.15)  # 15% to buildings
-            allocation['tech'] = int(spendable * 0.10)       # 10% to tech
-        else:  # victory_push
-            allocation['training'] = int(spendable * 0.7)
-            allocation['buildings'] = int(spendable * 0.2)
-            allocation['tech'] = int(spendable * 0.1)
+        # Allocate based on strategic priority using dispatch dict
+        mode = priorities.get('mode', 'victory_push')
+        buildings_ratio, training_ratio, tech_ratio = self._BUDGET_RATIOS.get(
+            mode, self._BUDGET_RATIOS['victory_push']
+        )
+        allocation['buildings'] = int(spendable * buildings_ratio)
+        allocation['training'] = int(spendable * training_ratio)
+        allocation['tech'] = int(spendable * tech_ratio)
 
         return allocation
 
@@ -930,13 +958,14 @@ class EconomyManager:
         self.tech_researcher = TechResearcher()
         self.budget_allocator = BudgetAllocator()
 
-    def plan_economic_actions(self, game_state, strategic_priority):
+    def plan_economic_actions(self, game_state, strategic_priority, cache=None):
         """
         Plan all economic actions for this turn.
 
         Args:
             game_state: GameState instance
             strategic_priority (str): Strategic mode ('economy', 'defense', etc.)
+            cache: TurnCache with pre-computed values (optional, for FPS optimization)
 
         Returns:
             list: List of economic actions to take
@@ -972,7 +1001,7 @@ class EconomyManager:
             # Tier 1: demolish 1, Tier 2: up to 2, Tier 3: up to 4 (aggressive)
             max_demolitions = {1: 1, 2: 2, 3: 4}[gold_tier]
             demolition_targets = self.building_planner.select_buildings_to_demolish(
-                game_state, player_index, available_gold, max_demolitions
+                game_state, player_index, available_gold, max_demolitions, cache=cache
             )
             for territory, plot_idx in demolition_targets:
                 actions.append(('demolish', {
@@ -992,7 +1021,7 @@ class EconomyManager:
             building_attempts += 1
             building_action = self.building_planner.select_building_action(
                 game_state, player_index, remaining_building_budget, self.ai_player.config,
-                exclude_territories=territories_planned_for_building
+                exclude_territories=territories_planned_for_building, cache=cache
             )
             if not building_action:
                 break  # No more valid buildings to place
@@ -1039,13 +1068,14 @@ class EconomyManager:
         # War economy tiers 2+: Force research to spend gold
         # Late game (600+ income): Research nonstop
         # Normal game: Try if budget allows
-        current_income = game_state.calculate_player_income(player_index)
+        # FPS OPTIMIZATION 5B: Use cached income instead of recomputing
+        current_income = cache.player_income if cache else game_state.calculate_player_income(player_index)
         is_late_game = current_income >= 600
 
         if gold_tier >= 2 or is_late_game:
             # HIGH GOLD or LATE GAME: Always research if we can afford ANY tech
             tech_id = self.tech_researcher.select_research_action(
-                game_state, player_index, self.ai_player.difficulty
+                game_state, player_index, self.ai_player.difficulty, cache=cache
             )
             if tech_id is not None:
                 tech = next((t for t in game_state.technologies if t['id'] == tech_id), None)
@@ -1057,7 +1087,7 @@ class EconomyManager:
                         logger.debug(f"Late game research: {tech['name']} (income: {current_income})")
         elif budget['tech'] >= 80:  # Normal game threshold
             tech_id = self.tech_researcher.select_research_action(
-                game_state, player_index, self.ai_player.difficulty
+                game_state, player_index, self.ai_player.difficulty, cache=cache
             )
             if tech_id is not None:
                 # Apply difficulty check, but still research 60% of the time if it fails

@@ -74,7 +74,21 @@ class UIRenderer:
         # Avoids creating full-screen SRCALPHA surfaces (5.44MB each) every frame
         self._reusable_overlay = None
         self._reusable_overlay_size = (0, 0)
-    
+
+        # FPS OPTIMIZATION 5A: Cache scaled resource slot surfaces
+        # Slot background and icons only change on window resize, not per-frame
+        self._cached_scaled_slot = None
+        self._cached_scaled_slot_size = (0, 0)
+        self._cached_scaled_icons = {}  # keyed by id(icon)
+        self._cached_scaled_icon_size = (0, 0)
+
+        # FPS OPTIMIZATION 5A: Cache scaled menu background surfaces
+        # Menu backgrounds only change on window resize
+        self._cached_game_menu_bg = None
+        self._cached_game_menu_bg_size = (0, 0)
+        self._cached_options_menu_bg = None
+        self._cached_options_menu_bg_size = (0, 0)
+
     def update_layout(self, layout_values):
         """
         Update layout values (called when resolution changes).
@@ -93,6 +107,16 @@ class UIRenderer:
         # (fonts may be different sizes at different resolutions)
         if hasattr(self, 'text_cache'):
             self.clear_text_cache()
+
+        # FPS OPTIMIZATION 5A: Invalidate scale caches on resize
+        # Scaled surfaces depend on window dimensions, must be regenerated
+        if hasattr(self, '_cached_scaled_slot'):
+            self._cached_scaled_slot = None
+            self._cached_scaled_icons = {}
+        if hasattr(self, '_cached_game_menu_bg'):
+            self._cached_game_menu_bg = None
+        if hasattr(self, '_cached_options_menu_bg'):
+            self._cached_options_menu_bg = None
 
     def get_cached_text(self, text, font, color, font_id="default"):
         """
@@ -520,12 +544,20 @@ class UIRenderer:
                     current_hover = ('resource_slot', slot_name)
                     self.game.update_button_hover(current_hover, 'resource_slot')
 
-                # Scale and draw slot background
-                scaled_slot = pygame.transform.scale(self.game.resource_slot_img, (slot_width, slot_height))
-                self.game.screen.blit(scaled_slot, (slot_x, slots_y))
+                # FPS OPTIMIZATION 5A: Cache scaled slot background (only changes on resize)
+                target_slot_size = (slot_width, slot_height)
+                if self._cached_scaled_slot is None or self._cached_scaled_slot_size != target_slot_size:
+                    self._cached_scaled_slot = pygame.transform.scale(self.game.resource_slot_img, target_slot_size)
+                    self._cached_scaled_slot_size = target_slot_size
+                self.game.screen.blit(self._cached_scaled_slot, (slot_x, slots_y))
 
-                # Scale and draw icon (left side) - wider rectangular shape
-                scaled_icon = pygame.transform.scale(icon, (icon_width, icon_height))
+                # FPS OPTIMIZATION 5A: Cache scaled icons (only change on resize)
+                icon_id = id(icon)
+                target_icon_size = (icon_width, icon_height)
+                if icon_id not in self._cached_scaled_icons or self._cached_scaled_icon_size != target_icon_size:
+                    self._cached_scaled_icons[icon_id] = pygame.transform.scale(icon, target_icon_size)
+                    self._cached_scaled_icon_size = target_icon_size
+                scaled_icon = self._cached_scaled_icons[icon_id]
                 icon_x = slot_x + left_padding
                 icon_y = slots_y + (slot_height - icon_height) // 2
                 self.game.screen.blit(scaled_icon, (icon_x, icon_y))
@@ -626,9 +658,13 @@ class UIRenderer:
 
         menu_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
 
-        # Draw InGameMenuBG.png scaled to menu size
-        scaled_menu_bg = pygame.transform.scale(self.game.ingame_menu_bg, (menu_width, menu_height))
-        self.game.screen.blit(scaled_menu_bg, (menu_x, menu_y))
+        # FPS OPTIMIZATION 5A: Cache scaled game menu background
+        # Only re-scales when menu dimensions change (i.e., on window resize)
+        menu_size = (menu_width, menu_height)
+        if self._cached_game_menu_bg is None or self._cached_game_menu_bg_size != menu_size:
+            self._cached_game_menu_bg = pygame.transform.scale(self.game.ingame_menu_bg, menu_size)
+            self._cached_game_menu_bg_size = menu_size
+        self.game.screen.blit(self._cached_game_menu_bg, (menu_x, menu_y))
 
         # Title - moved down a few pixels (FPS OPTIMIZATION 4.1: cached)
         title_text = self.get_cached_text("Game Menu", self.game.large_font, WHITE, "large")
@@ -710,9 +746,13 @@ class UIRenderer:
 
         menu_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
 
-        # Draw IGOptMenuBG.png scaled to menu size
-        scaled_options_menu_bg = pygame.transform.scale(self.game.ingame_options_menu_bg, (menu_width, menu_height))
-        self.game.screen.blit(scaled_options_menu_bg, (menu_x, menu_y))
+        # FPS OPTIMIZATION 5A: Cache scaled options menu background
+        # Only re-scales when menu dimensions change (i.e., on window resize)
+        options_menu_size = (menu_width, menu_height)
+        if self._cached_options_menu_bg is None or self._cached_options_menu_bg_size != options_menu_size:
+            self._cached_options_menu_bg = pygame.transform.scale(self.game.ingame_options_menu_bg, options_menu_size)
+            self._cached_options_menu_bg_size = options_menu_size
+        self.game.screen.blit(self._cached_options_menu_bg, (menu_x, menu_y))
 
         # Border padding - adjust content area to fit within the decorative border
         # Increased padding to ensure content fits nicely within the border

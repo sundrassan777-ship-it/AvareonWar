@@ -28,6 +28,48 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+class TurnCache:
+    """
+    Per-turn cache of commonly recomputed values.
+    Built once at start of _plan_turn_actions() and passed to all subsystems.
+    Values are immutable during planning (game state isn't mutated during AI planning).
+    """
+    __slots__ = ('territory_count', 'owned_territories', 'territory_armies',
+                 'player_income', 'player_army_count', 'player_has_keep',
+                 'threats')
+
+    def __init__(self, game_state, player_index):
+        # Owned territories list and count
+        self.owned_territories = [
+            t for t, owner in game_state.territory_owners.items()
+            if owner == player_index
+        ]
+        self.territory_count = len(self.owned_territories)
+
+        # Pre-compute army counts for ALL territories (avoids 500+ repeated lookups)
+        self.territory_armies = {}
+        for territory in game_state.territory_owners:
+            self.territory_armies[territory] = game_state.get_territory_total_armies(territory)
+
+        # Scalar values
+        self.player_income = game_state.calculate_player_income(player_index)
+        self.player_army_count = game_state.get_player_army_count(player_index)
+
+        # Check if player has a Keep or Castle anywhere
+        self.player_has_keep = False
+        for terr in self.owned_territories:
+            if terr in game_state.buildings:
+                for bt in game_state.buildings[terr].values():
+                    if bt in ('Keep', 'Castle'):
+                        self.player_has_keep = True
+                        break
+                if self.player_has_keep:
+                    break
+
+        # Threats (computed once with lowest threshold, filtered for higher thresholds)
+        self.threats = None  # Set after construction by strategy module
+
+
 class AIPlayer:
     """
     Main AI player controller that orchestrates decision-making and action execution.
@@ -381,9 +423,14 @@ class AIPlayer:
         self.actions_taken = []
 
         try:
-            # Analyze current game state
-            analysis = self.strategy.analyze_game_state(game_state)
-            strategic_priority = self.strategy.get_strategic_priority(game_state)
+            # FPS OPTIMIZATION 5B: Build per-turn cache of commonly recomputed values
+            # (territory count, owned territories, army counts, income, etc.)
+            # This avoids hundreds of redundant lookups across subsystem calls.
+            cache = TurnCache(game_state, self.player_index)
+
+            # Analyze current game state (uses cache to avoid redundant computation)
+            analysis = self.strategy.analyze_game_state(game_state, cache)
+            strategic_priority = self.strategy.get_strategic_priority(game_state, cache)
 
             logger.info(f"Player {self.player_index + 1} analysis: "
                        f"Territories: {analysis['territory_count']}, "
@@ -394,12 +441,12 @@ class AIPlayer:
                         f"opportunities: {len(analysis['opportunities'])}")
 
             # 1. Hero actions (abilities + training)
-            hero_actions = self.hero_manager.plan_hero_actions(game_state)
+            hero_actions = self.hero_manager.plan_hero_actions(game_state, cache)
             self.actions_taken.extend(hero_actions)
 
             # 2. Economic actions (buildings + tech)
             economic_actions = self.economy.plan_economic_actions(
-                game_state, strategic_priority
+                game_state, strategic_priority, cache
             )
             self.actions_taken.extend(economic_actions)
 
@@ -414,12 +461,14 @@ class AIPlayer:
                 game_state,
                 strategic_priority,
                 military_budget,
-                analysis['threats']
+                analysis['threats'],
+                cache
             )
             self.actions_taken.extend(military_actions)
 
             # 4. Leftover gold tech research - invest remaining gold in tech
             # This happens AFTER training/building to ensure surplus gold goes to research
+            # (no cache needed - just picks a random affordable tech)
             leftover_tech = self._try_leftover_tech_research(game_state, analysis['available_gold'])
             if leftover_tech:
                 self.actions_taken.append(leftover_tech)

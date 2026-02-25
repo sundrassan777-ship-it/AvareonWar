@@ -18,6 +18,9 @@ import map_data
 from utils.logger import get_logger
 logger = get_logger(__name__)
 
+# FPS OPTIMIZATION 5B: Dispatch dict replaces if/elif chain in _evaluate_buildings
+_BUILDING_VALUES = {'Farm': 3.0, 'Mine': 4.0, 'Barracks': 5.0, 'Keep': 7.0, 'Square': 6.0}
+
 
 class TerritoryScorer:
     """Evaluates territory strategic value (0-100 score)"""
@@ -83,16 +86,8 @@ class TerritoryScorer:
         buildings = game_state.buildings[territory]
 
         for plot_idx, building_type in buildings.items():
-            if building_type == 'Farm':
-                value += 3.0
-            elif building_type == 'Mine':
-                value += 4.0
-            elif building_type == 'Barracks':
-                value += 5.0
-            elif building_type == 'Keep':
-                value += 7.0
-            elif building_type == 'Square':
-                value += 6.0
+            # FPS OPTIMIZATION 5B: Dict lookup replaces if/elif chain
+            value += _BUILDING_VALUES.get(building_type, 0.0)
 
         return min(value, 30.0)
 
@@ -120,7 +115,7 @@ class TerritoryScorer:
 class ThreatAnalyzer:
     """Analyzes military threats to territories"""
 
-    def calculate_territory_threat(self, territory, game_state, player_index):
+    def calculate_territory_threat(self, territory, game_state, player_index, cache=None):
         """
         Calculate threat level to a territory.
 
@@ -134,6 +129,7 @@ class ThreatAnalyzer:
             territory (str): Territory name
             game_state: GameState instance
             player_index (int): Player evaluating threat
+            cache: Optional TurnCache with pre-computed values
 
         Returns:
             float: Threat level (0-100)
@@ -141,8 +137,9 @@ class ThreatAnalyzer:
         threat = 0.0
 
         owner = game_state.territory_owners.get(territory, -1)
+        # FPS OPTIMIZATION 5B: Use cached territory armies when available
         # IMPORTANT: Use total armies (all garrisons) for threat assessment
-        garrison = game_state.get_territory_total_armies(territory)
+        garrison = cache.territory_armies[territory] if cache else game_state.get_territory_total_armies(territory)
         neighbors = map_data.get_neighbors(territory)
 
         # M15 FIX: Account for keep defense bonus in threat calculation
@@ -156,8 +153,9 @@ class ThreatAnalyzer:
 
             # Enemy neighbor increases threat
             if neighbor_owner != owner and neighbor_owner != -1 and neighbor_owner != player_index:
+                # FPS OPTIMIZATION 5B: Use cached territory armies when available
                 # IMPORTANT: Use total armies (all garrisons) for threat assessment
-                enemy_army = game_state.get_territory_total_armies(neighbor)
+                enemy_army = cache.territory_armies[neighbor] if cache else game_state.get_territory_total_armies(neighbor)
 
                 # Undefended territory at enemy border = HIGH threat
                 if effective_garrison == 0:
@@ -172,7 +170,7 @@ class ThreatAnalyzer:
 
         return min(threat, 100.0)
 
-    def find_threatened_territories(self, game_state, player_index, threshold=30.0):
+    def find_threatened_territories(self, game_state, player_index, threshold=30.0, cache=None):
         """
         Find all owned territories under threat.
 
@@ -180,17 +178,26 @@ class ThreatAnalyzer:
             game_state: GameState instance
             player_index (int): Player to check
             threshold (float): Minimum threat level to include
+            cache: Optional TurnCache with pre-computed values
 
         Returns:
             list: [(territory, threat_level), ...] sorted by threat (highest first)
         """
         threatened = []
 
-        for territory, owner in game_state.territory_owners.items():
-            if owner == player_index:
-                threat = self.calculate_territory_threat(territory, game_state, player_index)
-                if threat >= threshold:
-                    threatened.append((territory, threat))
+        # FPS OPTIMIZATION 5B: Use cached owned territories when available
+        if cache:
+            owned_territories = cache.owned_territories
+        else:
+            owned_territories = [
+                t for t, owner in game_state.territory_owners.items()
+                if owner == player_index
+            ]
+
+        for territory in owned_territories:
+            threat = self.calculate_territory_threat(territory, game_state, player_index, cache=cache)
+            if threat >= threshold:
+                threatened.append((territory, threat))
 
         # Sort by threat level (highest first)
         threatened.sort(key=lambda x: x[1], reverse=True)
@@ -235,7 +242,7 @@ class OpportunityDetector:
         # M23 FIX: Cache TerritoryScorer to avoid per-call instantiation
         self._scorer = TerritoryScorer()
 
-    def find_expansion_targets(self, game_state, player_index):
+    def find_expansion_targets(self, game_state, player_index, cache=None):
         """
         Find territories that are good expansion targets.
 
@@ -248,6 +255,7 @@ class OpportunityDetector:
         Args:
             game_state: GameState instance
             player_index (int): Player evaluating opportunities
+            cache: Optional TurnCache with pre-computed values
 
         Returns:
             list: [(territory, score), ...] sorted by score (best first)
@@ -256,11 +264,14 @@ class OpportunityDetector:
         scorer = self._scorer
         targets = []
 
-        # Find all owned territories
-        owned_territories = [
+        # FPS OPTIMIZATION 5B: Use cached owned territories when available
+        owned_territories = cache.owned_territories if cache else [
             t for t, owner in game_state.territory_owners.items()
             if owner == player_index
         ]
+
+        # FPS OPTIMIZATION 5B: Use set for O(1) duplicate check instead of O(n) linear scan
+        seen_targets = set()
 
         # Check neighbors of owned territories
         for owned_terr in owned_territories:
@@ -270,22 +281,23 @@ class OpportunityDetector:
                 neighbor_owner = game_state.territory_owners.get(neighbor, -1)
 
                 # Skip if friendly (owned by self or ally)
-                # Note: We import ai_player to access the evaluator's ai_player reference
                 if neighbor_owner == player_index:
                     continue  # Own territory
                 if neighbor_owner >= 0 and game_state.are_allies(player_index, neighbor_owner):
                     continue  # Ally territory
 
-                # Already in targets list?
-                if any(t[0] == neighbor for t in targets):
+                # FPS OPTIMIZATION 5B: O(1) set lookup instead of O(n) list scan
+                if neighbor in seen_targets:
                     continue
+                seen_targets.add(neighbor)
 
                 # Evaluate as target
                 value_score = scorer.calculate_territory_value(
                     neighbor, game_state, player_index
                 )
+                # FPS OPTIMIZATION 5B: Use cached territory armies when available
                 # IMPORTANT: Use total armies (all garrisons) to evaluate enemy strength
-                enemy_garrison = game_state.get_territory_total_armies(neighbor)
+                enemy_garrison = cache.territory_armies[neighbor] if cache else game_state.get_territory_total_armies(neighbor)
 
                 # CRITICAL: Check AI player's garrison, not owner's legacy array
                 garrison = game_state.territory_garrisons.get(owned_terr, {}).get(player_index)
@@ -306,13 +318,14 @@ class OpportunityDetector:
         targets.sort(key=lambda x: x[1], reverse=True)
         return targets
 
-    def find_weak_enemy_territories(self, game_state, player_index):
+    def find_weak_enemy_territories(self, game_state, player_index, cache=None):
         """
         Find enemy territories that are vulnerable to attack.
 
         Args:
             game_state: GameState instance
             player_index (int): Player evaluating targets
+            cache: Optional TurnCache with pre-computed values
 
         Returns:
             list: [(territory, weakness_score), ...] sorted by weakness
@@ -336,9 +349,10 @@ class OpportunityDetector:
             if not adjacent_to_us:
                 continue
 
+            # FPS OPTIMIZATION 5B: Use cached territory armies when available
             # Calculate weakness (low garrison = more weak)
             # IMPORTANT: Use total armies (all garrisons) to assess enemy strength
-            garrison = game_state.get_territory_total_armies(territory)
+            garrison = cache.territory_armies[territory] if cache else game_state.get_territory_total_armies(territory)
             weakness = max(0, 20 - garrison)  # Weaker if fewer armies
 
             if weakness > 0:
@@ -363,9 +377,13 @@ class StrategyEvaluator:
         self.threat_analyzer = ThreatAnalyzer()
         self.opportunity_detector = OpportunityDetector()
 
-    def analyze_game_state(self, game_state):
+    def analyze_game_state(self, game_state, cache=None):
         """
         Perform complete strategic analysis of game state.
+
+        Args:
+            game_state: GameState instance
+            cache: Optional TurnCache with pre-computed values
 
         Returns:
             dict: Analysis results with keys:
@@ -378,19 +396,27 @@ class StrategyEvaluator:
         """
         player_index = self.ai_player.player_index
 
-        # Basic state
-        owned_territories = [
-            t for t, owner in game_state.territory_owners.items()
-            if owner == player_index
-        ]
-
-        total_income = game_state.calculate_player_income(player_index)
-        total_armies = game_state.get_player_army_count(player_index)
+        # FPS OPTIMIZATION 5B: Use cached values when available
+        if cache:
+            owned_territories = cache.owned_territories
+            total_income = cache.player_income
+            total_armies = cache.player_army_count
+        else:
+            owned_territories = [
+                t for t, owner in game_state.territory_owners.items()
+                if owner == player_index
+            ]
+            total_income = game_state.calculate_player_income(player_index)
+            total_armies = game_state.get_player_army_count(player_index)
 
         # Strategic analysis
-        threats = self.threat_analyzer.find_threatened_territories(game_state, player_index)
-        opportunities = self.opportunity_detector.find_expansion_targets(game_state, player_index)
-        weak_enemies = self.opportunity_detector.find_weak_enemy_territories(game_state, player_index)
+        threats = self.threat_analyzer.find_threatened_territories(game_state, player_index, cache=cache)
+        opportunities = self.opportunity_detector.find_expansion_targets(game_state, player_index, cache=cache)
+        weak_enemies = self.opportunity_detector.find_weak_enemy_territories(game_state, player_index, cache=cache)
+
+        # Store threats in cache for reuse by get_strategic_priority
+        if cache and cache.threats is None:
+            cache.threats = threats
 
         return {
             'owned_territories': owned_territories,
@@ -403,25 +429,35 @@ class StrategyEvaluator:
             'available_gold': game_state.player_gold[player_index]
         }
 
-    def get_strategic_priority(self, game_state):
+    def get_strategic_priority(self, game_state, cache=None):
         """
         Determine strategic priority for this turn.
+
+        Args:
+            game_state: GameState instance
+            cache: Optional TurnCache with pre-computed values
 
         Returns:
             str: Priority mode - 'defense', 'economy', 'expansion', 'conquest_push', 'victory_push'
         """
         player_index = self.ai_player.player_index
 
-        # Count territories
-        territory_count = sum(
-            1 for owner in game_state.territory_owners.values()
-            if owner == player_index
-        )
+        # FPS OPTIMIZATION 5B: Use cached territory count
+        if cache:
+            territory_count = cache.territory_count
+        else:
+            territory_count = sum(
+                1 for owner in game_state.territory_owners.values()
+                if owner == player_index
+            )
 
-        # Check threats
-        threats = self.threat_analyzer.find_threatened_territories(
-            game_state, player_index, threshold=40.0
-        )
+        # FPS OPTIMIZATION 5B: Reuse threats from cache, filter by threshold
+        if cache and cache.threats is not None:
+            threats = [(t, s) for t, s in cache.threats if s >= 40.0]
+        else:
+            threats = self.threat_analyzer.find_threatened_territories(
+                game_state, player_index, threshold=40.0
+            )
 
         # Victory push (near 45 territories)
         if territory_count >= 40:
@@ -435,11 +471,15 @@ class StrategyEvaluator:
         # IMPORTANT: Check this BEFORE economy mode so excess gold triggers attacks
         # even in "early game" scenarios. This fixes late-game stagnation.
         player_gold = game_state.player_gold[player_index]
-        total_armies = sum(
-            g.get('unmoved', 0) + g.get('moved', 0)
-            for garrisons in game_state.territory_garrisons.values()
-            for p, g in garrisons.items() if p == player_index
-        )
+        # FPS OPTIMIZATION 5B: Use cached army count
+        if cache:
+            total_armies = cache.player_army_count
+        else:
+            total_armies = sum(
+                g.get('unmoved', 0) + g.get('moved', 0)
+                for garrisons in game_state.territory_garrisons.values()
+                for p, g in garrisons.items() if p == player_index
+            )
         # Trigger conquest mode with excess gold and 25+ armies, or very high gold regardless
         # Thresholds scaled to 10/15/20 income tiers
         if (player_gold >= 2400 and total_armies >= 25) or player_gold >= 4000:

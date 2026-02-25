@@ -18,6 +18,7 @@ import pygame
 import json
 import sys
 import os
+from utils.surface_utils import crop_to_opaque
 
 # Initialize Pygame
 pygame.init()
@@ -83,7 +84,7 @@ class CampaignTextTool:
 
         # Crop campaign button image for selectors
         raw_btn = pygame.image.load("assets/CampaignBTN.png").convert_alpha()
-        self.btn_image = self._crop_to_opaque(raw_btn)
+        self.btn_image = crop_to_opaque(raw_btn)
 
         # UI scale based on window height (matching MissionScreen's approach)
         self.ui_scale = WINDOW_HEIGHT / 1080.0
@@ -157,21 +158,6 @@ class CampaignTextTool:
             w = max(100, self.ui_font.size(label)[0] + 30)
             self.tab_buttons[tab] = {'rect': pygame.Rect(x, btn_y, w, btn_h), 'label': label}
             x += w + 8
-
-    @staticmethod
-    def _crop_to_opaque(surface, threshold=128):
-        """Crop surface to opaque content"""
-        w, h = surface.get_size()
-        top, bottom, left, right = h, 0, w, 0
-        for y in range(h):
-            for x in range(w):
-                if surface.get_at((x, y)).a > threshold:
-                    top = min(top, y)
-                    bottom = max(bottom, y)
-                    left = min(left, x)
-                    right = max(right, x)
-        crop_rect = pygame.Rect(left, top, right - left + 1, bottom - top + 1)
-        return surface.subsurface(crop_rect).copy()
 
     def _load_data(self):
         """Load campaign data from JSON"""

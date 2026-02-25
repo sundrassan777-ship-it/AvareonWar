@@ -19,6 +19,7 @@ import random
 import math
 from config.constants import WHITE, BLACK, PLAYER_COLORS
 from global_sound import sound_manager
+from utils.surface_utils import crop_to_opaque
 
 # Brass gold color for headers (matching campaign_screen)
 BRASS_COLOR = (181, 166, 66)
@@ -119,7 +120,7 @@ class RecapScreen:
         self.bg_image = pygame.transform.smoothscale(self.bg_image, (self.width, self.height))
 
         raw_btn_image = pygame.image.load("assets/CampaignBTN.png").convert_alpha()
-        self.btn_image = self._crop_to_opaque(raw_btn_image, threshold=128)
+        self.btn_image = crop_to_opaque(raw_btn_image, threshold=128)
 
         self.panel_image = pygame.image.load("assets/OptionsMenuBG.png").convert_alpha()
 
@@ -232,21 +233,6 @@ class RecapScreen:
                     'assets/mapicons/IconBorder.png').convert_alpha()
             except Exception:
                 self.achievement_icon_border = None
-
-    @staticmethod
-    def _crop_to_opaque(surface, threshold=128):
-        """Crop a surface to its opaque content, ignoring semi-transparent padding."""
-        w, h = surface.get_size()
-        top, bottom, left, right = h, 0, w, 0
-        for y in range(h):
-            for x in range(w):
-                if surface.get_at((x, y)).a > threshold:
-                    top = min(top, y)
-                    bottom = max(bottom, y)
-                    left = min(left, x)
-                    right = max(right, x)
-        crop_rect = pygame.Rect(left, top, right - left + 1, bottom - top + 1)
-        return surface.subsurface(crop_rect).copy()
 
     def run(self):
         """Main loop - blocks until user clicks Main Menu."""

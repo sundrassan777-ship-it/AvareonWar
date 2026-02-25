@@ -1375,6 +1375,23 @@ The codebase uses several performance patterns. Follow these when adding new ren
 
 ---
 
+## Shared Utilities
+
+### Surface Utilities (`utils/surface_utils.py`)
+
+**What it does:** Shared pygame surface manipulation functions used across multiple UI modules.
+
+**Functions:**
+- `crop_to_opaque(surface, threshold=128)` - Crops a surface to its opaque bounding box (removes transparent padding). Used during asset loading for CampaignBTN.png and similar button images.
+
+**Used by:** `achievement_panel.py`, `campaign_screen.py`, `recap_screen.py`, `ui/effects/battle_interface.py`, `Campaign_Text_Tool.py`
+
+**When to modify:**
+- Adding a new UI module that loads button/icon images with transparent padding - import and use `crop_to_opaque`
+- Adding new surface manipulation helpers - add them here rather than as local methods
+
+---
+
 ## Quick Navigation
 
 ### "I want to..."

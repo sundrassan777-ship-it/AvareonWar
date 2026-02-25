@@ -13,6 +13,7 @@ and a Return to Main Menu button at the bottom.
 import pygame
 import sys
 import json
+from utils.surface_utils import crop_to_opaque
 import os
 from config.constants import WHITE, BLACK, GRAY
 from global_sound import sound_manager
@@ -66,7 +67,7 @@ class CampaignScreen:
 
         # Layout for campaign buttons - preserve CampaignBTN.png visible aspect ratio
         # The PNG has large transparent padding; crop to opaque content (alpha > 128)
-        self.campaign_btn_image = self._crop_to_opaque(self.campaign_btn_image, threshold=128)
+        self.campaign_btn_image = crop_to_opaque(self.campaign_btn_image, threshold=128)
         img_w, img_h = self.campaign_btn_image.get_size()
         self.campaign_btn_width = int(750 * self.ui_scale)
         self.campaign_btn_height = int(self.campaign_btn_width * img_h / img_w)
@@ -120,21 +121,6 @@ class CampaignScreen:
         # Font for return button (matching integrated_setup: Cinzel-Regular, size 29 scaled)
         font_size = max(16, int(29 * self.ui_scale))
         self.button_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', font_size)
-
-    @staticmethod
-    def _crop_to_opaque(surface, threshold=128):
-        """Crop a surface to its opaque content, ignoring semi-transparent padding"""
-        w, h = surface.get_size()
-        top, bottom, left, right = h, 0, w, 0
-        for y in range(h):
-            for x in range(w):
-                if surface.get_at((x, y)).a > threshold:
-                    top = min(top, y)
-                    bottom = max(bottom, y)
-                    left = min(left, x)
-                    right = max(right, x)
-        crop_rect = pygame.Rect(left, top, right - left + 1, bottom - top + 1)
-        return surface.subsurface(crop_rect).copy()
 
     def _update_visible_buttons(self):
         """Recalculate which mission buttons are visible on the current page and assign rects"""
@@ -375,7 +361,7 @@ class MissionScreen:
         self.bg_image = pygame.transform.smoothscale(self.bg_image, (self.width, self.height))
 
         raw_btn_image = pygame.image.load("assets/CampaignBTN.png").convert_alpha()
-        self.btn_image = CampaignScreen._crop_to_opaque(raw_btn_image, threshold=128)
+        self.btn_image = crop_to_opaque(raw_btn_image, threshold=128)
 
         self.panel_image = pygame.image.load("assets/OptionsMenuBG.png").convert_alpha()
 

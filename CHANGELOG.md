@@ -2,6 +2,44 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-25 - Phase 5: Rendering & AI Optimization
+
+### Performance - Rendering (5A)
+- **UIRenderer smoothscale caching** - Cached 9 per-frame `pygame.transform.scale()` calls in `draw_top_panel()` (4 slot backgrounds + 4 icons), `draw_game_menu()`, and `draw_options_menu()`. Surfaces only re-scale on window resize.
+- **AchievementPanel smoothscale caching** - Cached ~27 per-frame `smoothscale()` calls (category buttons, achievement backgrounds, icons, icon borders). Only re-scales when panel dimensions change.
+- **Extracted `utils/surface_utils.py`** - `crop_to_opaque()` function was duplicated in 5 files; unified with complete guard clause. ~75 lines eliminated.
+
+### Performance - AI System (5B)
+- **TurnCache** - New `TurnCache` class pre-computes commonly reused values once per AI turn: `owned_territories`, `territory_count`, `territory_armies` (dict for all 57 territories), `player_income`, `player_army_count`, `player_has_keep`, `threats`. Eliminates ~580+ redundant computations per AI turn (territory_count recomputed 9x, owned_territories 7x, get_territory_total_armies 500+x, find_threatened_territories 2x, calculate_player_income 3-10x, get_player_army_count 5-10x).
+- **BFS deque** - Replaced `list.pop(0)` O(n) with `collections.deque.popleft()` O(1) in `find_reachable_enemies()`.
+- **Expansion targets set** - Replaced O(n) linear scan `any(t[0] == neighbor for t in targets)` with O(1) `seen_targets` set in `find_expansion_targets()`.
+- **Building config to __init__** - Moved `building_configs` dict from `_score_building()` body to `BuildingPlanner.__init__()`. Was recreated 75-125x per turn.
+- **Dispatch dicts** - Replaced if/elif chains: building values (5-branch), budget allocation (5-branch).
+- **Consolidated duplicate computations** - `territory_count` computed once per method instead of 2x in `_score_attack_target()`. `find_threatened_territories()` called once (at threshold 30), filtered for threshold 40 reuse.
+
+## 2026-02-25 - Phase 5A: Extract `crop_to_opaque` to shared utility
+
+### Refactoring
+- **Extracted `utils/surface_utils.py`** - New shared module containing `crop_to_opaque()` function that was duplicated across 5 files:
+  - `achievement_panel.py` - static method removed, now imports from shared utility
+  - `campaign_screen.py` - static method removed, now imports from shared utility
+  - `recap_screen.py` - static method removed, now imports from shared utility
+  - `ui/effects/battle_interface.py` - static method removed, now imports from shared utility
+  - `Campaign_Text_Tool.py` - static method removed, now imports from shared utility
+- **Unified guard clause** - Some copies had `if bottom < top` only, others had `if bottom < top or right < left`. Shared version uses the complete guard and returns `surface.copy()` (safe fallback).
+- **Net reduction:** ~75 lines of duplicated code eliminated
+
+### New Files
+- `utils/surface_utils.py` - Shared surface manipulation utilities
+
+### Modified Files
+- `achievement_panel.py` - Replaced local `_crop_to_opaque` with import from `utils.surface_utils`
+- `campaign_screen.py` - Replaced local `_crop_to_opaque` with import from `utils.surface_utils`
+- `recap_screen.py` - Replaced local `_crop_to_opaque` with import from `utils.surface_utils`
+- `ui/effects/battle_interface.py` - Replaced local `_crop_to_opaque` with import from `utils.surface_utils`
+- `Campaign_Text_Tool.py` - Replaced local `_crop_to_opaque` with import from `utils.surface_utils`
+- `docs/CODE_GUIDE.md` - Added Shared Utilities section documenting `utils/surface_utils.py`
+
 ## 2026-02-25 - Phase 2C: Extract Shared Campaign Utilities
 
 ### Refactoring

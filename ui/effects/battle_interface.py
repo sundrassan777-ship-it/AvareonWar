@@ -23,6 +23,7 @@ from enum import Enum, auto
 
 from config.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WHITE, BLACK
 from utils.logger import get_logger
+from utils.surface_utils import crop_to_opaque
 
 logger = get_logger(__name__)
 
@@ -616,7 +617,7 @@ class EnhancedBattleInterface:
             # Button background
             btn_full = pygame.image.load("assets/CampaignBTN.png").convert_alpha()
             # Crop to opaque content
-            self.button_bg = self._crop_to_opaque(btn_full, threshold=128)
+            self.button_bg = crop_to_opaque(btn_full, threshold=128)
         except (pygame.error, FileNotFoundError) as e:
             logger.warning(f"Could not load CampaignBTN.png: {e}")
             self.button_bg = None
@@ -645,23 +646,6 @@ class EnhancedBattleInterface:
         self.text_font = self.font_manager.get_font(int(16 * ui_scale))
         self.small_font = self.font_manager.get_font(int(14 * ui_scale))
         self.button_font = self.font_manager.get_font(int(14 * ui_scale))  # Smaller button text
-
-    @staticmethod
-    def _crop_to_opaque(surface, threshold=128):
-        """Crop a surface to its opaque content, ignoring semi-transparent padding."""
-        w, h = surface.get_size()
-        top, bottom, left, right = h, 0, w, 0
-        for y in range(h):
-            for x in range(w):
-                if surface.get_at((x, y)).a > threshold:
-                    top = min(top, y)
-                    bottom = max(bottom, y)
-                    left = min(left, x)
-                    right = max(right, x)
-        if bottom < top or right < left:
-            return surface  # No opaque content found
-        crop_rect = pygame.Rect(left, top, right - left + 1, bottom - top + 1)
-        return surface.subsurface(crop_rect).copy()
 
     def _calculate_layout(self):
         """Calculate positions and sizes for all UI elements.

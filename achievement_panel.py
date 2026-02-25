@@ -16,6 +16,7 @@ from config.constants import WHITE
 from achievement_manager import achievement_manager, CATEGORIES, CATEGORY_LABELS
 from global_sound import sound_manager
 from utils.logger import get_logger
+from utils.surface_utils import crop_to_opaque
 
 logger = get_logger(__name__)
 
@@ -80,6 +81,15 @@ class AchievementPanel:
         # Load and cache assets
         self._load_assets()
 
+        # FPS OPTIMIZATION 5A: Cache scaled surfaces (only change on resize)
+        self._cached_category_btn_bg = None
+        self._cached_category_btn_bg_size = (0, 0)
+        self._cached_achievement_bg = None
+        self._cached_achievement_bg_size = (0, 0)
+        self._cached_icon_border = None
+        self._cached_icon_border_size = 0
+        self._cached_scaled_icons = {}  # keyed by (icon_path, icon_size)
+
     def _load_assets(self):
         """Load and pre-cache all achievement panel assets."""
         # AchievementFull.png background for each list item
@@ -92,7 +102,7 @@ class AchievementPanel:
         # CampaignBTN.png for category filter buttons
         try:
             raw_btn = pygame.image.load('assets/CampaignBTN.png').convert_alpha()
-            self.category_btn_image = self._crop_to_opaque(raw_btn, threshold=128)
+            self.category_btn_image = crop_to_opaque(raw_btn, threshold=128)
         except Exception:
             self.category_btn_image = None
 
@@ -111,23 +121,6 @@ class AchievementPanel:
                     self._icon_cache[path] = pygame.image.load(path).convert_alpha()
                 except Exception:
                     self._icon_cache[path] = None
-
-    @staticmethod
-    def _crop_to_opaque(surface, threshold=128):
-        """Crop a surface to its opaque content."""
-        w, h = surface.get_size()
-        top, bottom, left, right = h, 0, w, 0
-        for y in range(h):
-            for x in range(w):
-                if surface.get_at((x, y)).a > threshold:
-                    top = min(top, y)
-                    bottom = max(bottom, y)
-                    left = min(left, x)
-                    right = max(right, x)
-        if bottom < top:
-            return surface.copy()
-        crop_rect = pygame.Rect(left, top, right - left + 1, bottom - top + 1)
-        return surface.subsurface(crop_rect).copy()
 
     def reset(self):
         """Reset panel state when opened."""
@@ -292,8 +285,13 @@ class AchievementPanel:
             is_hovered = (hovered_element == f'cat_{cat_id}')
 
             if self.category_btn_image:
-                scaled_bg = pygame.transform.smoothscale(
-                    self.category_btn_image, (btn_width, btn_height))
+                # FPS OPTIMIZATION 5A: Cache scaled category button background
+                btn_size = (btn_width, btn_height)
+                if self._cached_category_btn_bg is None or self._cached_category_btn_bg_size != btn_size:
+                    self._cached_category_btn_bg = pygame.transform.smoothscale(
+                        self.category_btn_image, btn_size)
+                    self._cached_category_btn_bg_size = btn_size
+                scaled_bg = self._cached_category_btn_bg
                 button_surface = scaled_bg.copy()
 
                 if is_selected:
@@ -444,7 +442,12 @@ class AchievementPanel:
         item_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
 
         if self.achievement_bg:
-            bg = pygame.transform.smoothscale(self.achievement_bg, (rect.width, rect.height))
+            # FPS OPTIMIZATION 5A: Cache scaled achievement background (same size for all items)
+            ach_bg_size = (rect.width, rect.height)
+            if self._cached_achievement_bg is None or self._cached_achievement_bg_size != ach_bg_size:
+                self._cached_achievement_bg = pygame.transform.smoothscale(self.achievement_bg, ach_bg_size)
+                self._cached_achievement_bg_size = ach_bg_size
+            bg = self._cached_achievement_bg.copy()
             item_surface.blit(bg, (0, 0))
         else:
             item_surface.fill((40, 40, 55, 200))
@@ -467,7 +470,11 @@ class AchievementPanel:
 
         icon_img = self._icon_cache.get(ach['icon'])
         if icon_img:
-            scaled_icon = pygame.transform.smoothscale(icon_img, (icon_size, icon_size))
+            # FPS OPTIMIZATION 5A: Cache scaled achievement icons (keyed by icon path + size)
+            icon_cache_key = (ach['icon'], icon_size)
+            if icon_cache_key not in self._cached_scaled_icons:
+                self._cached_scaled_icons[icon_cache_key] = pygame.transform.smoothscale(icon_img, (icon_size, icon_size))
+            scaled_icon = self._cached_scaled_icons[icon_cache_key].copy()
             if not is_earned:
                 # Darken the icon too
                 scaled_icon.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
@@ -475,7 +482,11 @@ class AchievementPanel:
 
         # Icon border
         if self.icon_border:
-            border = pygame.transform.smoothscale(self.icon_border, (icon_size, icon_size))
+            # FPS OPTIMIZATION 5A: Cache scaled icon border (same size for all items)
+            if self._cached_icon_border is None or self._cached_icon_border_size != icon_size:
+                self._cached_icon_border = pygame.transform.smoothscale(self.icon_border, (icon_size, icon_size))
+                self._cached_icon_border_size = icon_size
+            border = self._cached_icon_border.copy()
             if not is_earned:
                 border.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
             screen.blit(border, (icon_x, icon_y))
