@@ -316,17 +316,18 @@ class TestAICodeQuality:
 
 class TestGameStateRefactor:
     def test_execute_all_orders_exists(self):
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state', '__init__.py')
+        # Phase 7: military methods moved to game_state/military.py
+        gs_path = os.path.join(PROJECT_ROOT, 'game_state', 'military.py')
         content = read_file_contents(gs_path)
         assert 'def execute_all_orders' in content
 
     def test_execute_all_orders_has_helper_methods(self):
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state', '__init__.py')
+        gs_path = os.path.join(PROJECT_ROOT, 'game_state', 'military.py')
         content = read_file_contents(gs_path)
         assert 'def _process_arrivals' in content
 
     def test_format_unit_composition_helper_exists(self):
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state', '__init__.py')
+        gs_path = os.path.join(PROJECT_ROOT, 'game_state', 'military.py')
         content = read_file_contents(gs_path)
         assert 'def _format_unit_composition' in content
 

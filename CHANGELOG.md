@@ -2,6 +2,21 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-25 - Phase 7: game_state.py Decomposition
+
+### Architecture
+- **Decomposed `game_state.py` (8,719 lines) into `game_state/` package (8 files)**
+  - `__init__.py` (1,064 lines) — Core: `__init__`, turn management, coordinates, chat, diplomacy, `MovementOrder`/`ArmyAnimation`/`Battle` classes
+  - `data_definitions.py` (683 lines) — `HERO_TYPES`, `BUILDING_TYPES`, `BONUS_TYPES`, `build_technologies()`
+  - `garrison.py` (796 lines) — `GarrisonMixin`: multi-garrison system, legacy sync, unit movement
+  - `heroes.py` (1,467 lines) — `HeroMixin`: training, 9 ability executions, hero queries, cooldowns
+  - `buildings.py` (1,070 lines) — `BuildingMixin`: construction, training, castle upgrades, tech research
+  - `economy.py` (390 lines) — `EconomyMixin`: income, costs, taxation, territorial bonuses
+  - `military.py` (3,162 lines) — `MilitaryMixin`: armies, movement orders, battle resolution, arrivals
+  - `victory.py` (284 lines) — `VictoryMixin`: victory checks, player elimination
+- **Mixin pattern** — GameState inherits from all 6 mixins. All `self.xxx` cross-domain calls work unchanged. Zero import changes needed for 31+ external files.
+- **`from game_state import GameState`** still works — package `__init__.py` exports everything.
+
 ## 2026-02-25 - Phase 6: Network Hardening & Best Practices
 
 ### Security (6A)
