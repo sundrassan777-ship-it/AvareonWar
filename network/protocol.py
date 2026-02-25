@@ -13,6 +13,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from network_config import MessageType, ErrorCode, MESSAGE_HEADER_SIZE, MAX_MESSAGE_SIZE
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class NetworkProtocol:
@@ -452,6 +455,9 @@ class NetworkProtocol:
         """
         Validate message structure and required fields.
 
+        Checks that the message is a dict with 'type', 'seq', and 'data' keys,
+        and that 'type' is a recognized MessageType enum value.
+
         Args:
             message: Decoded message dict
 
@@ -467,6 +473,14 @@ class NetworkProtocol:
         if 'seq' not in message:
             return False
         if 'data' not in message:
+            return False
+
+        # Phase 6A: Also validate that type is a known MessageType
+        # Rejects messages with fabricated or unknown type strings
+        try:
+            MessageType(message.get('type'))
+        except ValueError:
+            logger.warning(f"Unknown message type: {message.get('type')}")
             return False
 
         return True

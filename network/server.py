@@ -136,6 +136,12 @@ class NetworkServer:
         # Lock for thread-safe client dict access
         self._clients_lock = threading.Lock()
 
+        # Phase 6A: Connection rate limiting (anti-DoS)
+        # Tracks recent connection attempts per IP to prevent abuse
+        self._connection_attempts = {}  # {ip: [timestamp, ...]}
+        self._rate_limit_window = 10.0  # seconds
+        self._rate_limit_max = 5  # max connections per window per IP
+
         # UPnP port forwarding manager (created on demand via setup_upnp())
         self.upnp_manager = None
 
@@ -250,19 +256,40 @@ class NetworkServer:
     def _accept_client(self):
         """Accept incoming client connection"""
         try:
+            # Accept connection first, then validate
+            client_socket, client_address = self.socket.accept()
+
+            # Phase 6A: Rate limit connections per IP
+            # Prevents a single IP from flooding the server with connection attempts
+            client_ip = client_address[0]
+            now = time.monotonic()
+            attempts = self._connection_attempts.get(client_ip, [])
+            # Remove expired attempts outside the rate limit window
+            attempts = [t for t in attempts if now - t < self._rate_limit_window]
+            if len(attempts) >= self._rate_limit_max:
+                logger.warning(f"Rate limited connection from {client_ip} "
+                               f"({len(attempts)} attempts in {self._rate_limit_window}s)")
+                try:
+                    reject_msg = self.protocol.create_connect_reject(
+                        "Too many connection attempts")
+                    client_socket.sendall(reject_msg)
+                    client_socket.close()
+                except Exception:
+                    pass
+                return
+            attempts.append(now)
+            self._connection_attempts[client_ip] = attempts
+
             # Check if we have room for more clients
             with self._clients_lock:
                 if len(self.clients) >= MAX_CLIENTS:
                     # Reject - lobby full
-                    client_socket, client_address = self.socket.accept()
                     reject_msg = self.protocol.create_connect_reject("Lobby is full")
                     client_socket.sendall(reject_msg)
                     client_socket.close()
                     logger.warning(f"Rejected connection from {client_address} - lobby full")
                     return
 
-            # Accept connection
-            client_socket, client_address = self.socket.accept()
             client_socket.setblocking(False)
 
             # Find next available player index
@@ -437,6 +464,13 @@ class NetworkServer:
             message: Decoded message dict
             from_player_index: Player index who sent the message
         """
+        # Phase 6A: Validate message schema before processing
+        # Ensures message has required fields (type, seq, data) and known type
+        if not self.protocol.validate_message(message):
+            logger.warning(f"Received invalid message from player {from_player_index}, "
+                           f"ignoring")
+            return
+
         msg_type = message.get('type')
 
         # Handle connection messages

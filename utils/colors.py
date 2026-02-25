@@ -52,35 +52,9 @@ def lighten_color(color, amount=0.2):
 
 def brighten_color(color, amount=0.4):
     """
-    Brighten a color for click flash effects.
-    
-    More aggressive than lighten - adds brightness for visibility.
-    
-    Args:
-        color: (r, g, b) or (r, g, b, a) tuple (0-255 values)
-        amount: float, percentage to brighten (0.4 = 40% brighter)
-    
-    Returns:
-        (r, g, b) or (r, g, b, a) tuple with brightened color
-    
-    Example:
-        >>> click_color = brighten_color((100, 200, 100), 0.4)
-        >>> click_color
-        (140, 240, 140)  # Each component increased by 40%
-    
-    Performance:
-        O(1) - just 3-4 multiplications and clamps
-        Negligible CPU cost (~0.00001ms)
+    Brighten a color by a percentage (default 40%).
+    Convenience wrapper around lighten_color with higher default amount.
+    Used for click/press visual feedback.
     """
-    if len(color) == 3:
-        r, g, b = color
-        r = min(255, int(r * (1 + amount)))
-        g = min(255, int(g * (1 + amount)))
-        b = min(255, int(b * (1 + amount)))
-        return (r, g, b)
-    else:  # RGBA
-        r, g, b, a = color
-        r = min(255, int(r * (1 + amount)))
-        g = min(255, int(g * (1 + amount)))
-        b = min(255, int(b * (1 + amount)))
-        return (r, g, b, a)
+    # Phase 6C: Delegate to lighten_color to remove duplicated implementation
+    return lighten_color(color, amount)

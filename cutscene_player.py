@@ -29,6 +29,9 @@ import json
 import os
 import math
 
+from utils.logger import get_logger
+logger = get_logger(__name__)
+
 
 # ========================================================================
 # EASING FUNCTIONS
@@ -218,7 +221,7 @@ class CutscenePlayer:
                     img = pygame.image.load(image_path).convert_alpha()
                     self._images[i] = img
                 except pygame.error as e:
-                    print(f"CutscenePlayer: Could not load image {image_path}: {e}")
+                    logger.warning(f"Could not load image {image_path}: {e}")
 
             # Load voiceover audio
             audio_path = slide.get('audio')
@@ -229,7 +232,7 @@ class CutscenePlayer:
                     sound.set_volume(slide.get('audio_volume', 1.0))
                     self._voices[i] = sound
                 except pygame.error as e:
-                    print(f"CutscenePlayer: Could not load voiceover {audio_path}: {e}")
+                    logger.warning(f"Could not load voiceover {audio_path}: {e}")
 
             # Load music track
             music_path = slide.get('music')
@@ -240,7 +243,7 @@ class CutscenePlayer:
                     music.set_volume(slide.get('music_volume', 0.4))
                     self._music[i] = music
                 except pygame.error as e:
-                    print(f"CutscenePlayer: Could not load music {music_path}: {e}")
+                    logger.warning(f"Could not load music {music_path}: {e}")
 
     # ========================================================================
     # TIMELINE COMPUTATION

@@ -2,6 +2,18 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-25 - Phase 6: Network Hardening & Best Practices
+
+### Security (6A)
+- **Connection rate limiting** - Added per-IP rate limiting to server (max 5 connections per 10s window). Prevents connection spam/DoS.
+- **Message schema validation** - Enabled existing `validate_message()` in the server's receive path. Validates required fields (`type`, `seq`, `data`) and that message type is a known `MessageType` enum value. Unknown/malformed messages are logged and dropped.
+
+### Best Practices (6C)
+- **Deduplicated `brighten_color()`** - Was identical implementation to `lighten_color()` with different default amount. Now delegates to `lighten_color()` (~26 lines saved).
+- **`cutscene_player.py` print→logger** - Replaced 3 `print()` statements with `logger.warning()`. Added logger import.
+- **Keyboard dispatch dicts** - Replaced building (5-branch) and training (4-branch) if/elif chains with `_BUILDING_SHORTCUTS` and `_TRAINING_SHORTCUTS` module-level dicts.
+- **`sim_ai.py` init fix** - Initialized `_selected_unit_ids` in `__init__` and removed `hasattr` guard.
+
 ## 2026-02-25 - Phase 5: Rendering & AI Optimization
 
 ### Performance - Rendering (5A)

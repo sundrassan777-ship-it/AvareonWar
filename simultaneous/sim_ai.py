@@ -76,6 +76,9 @@ class SimultaneousAI:
         # Planning complete flags
         self.ai_ready = {}  # {player_id: bool}
 
+        # Phase 6C: Initialize _selected_unit_ids in __init__ (removes hasattr guard later)
+        self._selected_unit_ids = {}  # {territory: set of unit IDs already selected}
+
         sim_log.detail(f"SimultaneousAI initialized for {self.gs.num_players} players")
 
     def start_planning_phase(self):
@@ -301,8 +304,7 @@ class SimultaneousAI:
 
             # Get set of already-selected unit IDs for this territory
             # (prevents selecting same unit for multiple movements in one planning session)
-            if not hasattr(self, '_selected_unit_ids'):
-                self._selected_unit_ids = {}
+            # Phase 6C: _selected_unit_ids always exists (initialized in __init__, reset per session)
             already_selected = self._selected_unit_ids.get(from_territory, set())
 
             # Select units that are ready to move AND not already selected for another order

@@ -21,6 +21,22 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Phase 6C: Dispatch dicts for keyboard shortcuts (replaces if/elif chains)
+_BUILDING_SHORTCUTS = {
+    pygame.K_f: 'Farm',
+    pygame.K_m: 'Mine',
+    pygame.K_b: 'Barracks',
+    pygame.K_k: 'Keep',
+    pygame.K_q: 'Square',
+}
+
+_TRAINING_SHORTCUTS = {
+    pygame.K_s: 'Swordsman',
+    pygame.K_a: 'Archer',
+    pygame.K_p: 'Pikeman',
+    pygame.K_c: 'Cavalry',
+}
+
 
 class KeyboardHandler:
     """
@@ -219,18 +235,8 @@ class KeyboardHandler:
 
             territory, plot_index = selected_plot
 
-            # F = Farm, M = Mine, B = Barracks, K = Keep, Q = Square
-            building_name = None
-            if event.key == pygame.K_f:
-                building_name = 'Farm'
-            elif event.key == pygame.K_m:
-                building_name = 'Mine'
-            elif event.key == pygame.K_b:
-                building_name = 'Barracks'
-            elif event.key == pygame.K_k:
-                building_name = 'Keep'
-            elif event.key == pygame.K_q:
-                building_name = 'Square'
+            # Phase 6C: Use dispatch dict for building shortcuts
+            building_name = _BUILDING_SHORTCUTS.get(event.key)
 
             if building_name:
                 if game_state.start_construction(territory, plot_index, building_name):
@@ -255,16 +261,8 @@ class KeyboardHandler:
 
             territory, barracks_plot_index = selected_barracks
 
-            # S = Swordsman, A = Archer, P = Pikeman, C = Cavalry
-            unit_type = None
-            if event.key == pygame.K_s:
-                unit_type = 'Swordsman'
-            elif event.key == pygame.K_a:
-                unit_type = 'Archer'
-            elif event.key == pygame.K_p:
-                unit_type = 'Pikeman'
-            elif event.key == pygame.K_c:
-                unit_type = 'Cavalry'
+            # Phase 6C: Use dispatch dict for training shortcuts
+            unit_type = _TRAINING_SHORTCUTS.get(event.key)
 
             if unit_type:
                 game_state.start_training(territory, barracks_plot_index, unit_type)
