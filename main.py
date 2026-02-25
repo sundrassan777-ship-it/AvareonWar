@@ -631,8 +631,9 @@ class Game:
         # AI player instances (initialized later when needed)
         self.ai_players = {}
 
-        # Turn announcement effect
-        self.turn_announcement_effect = None  # Active turn announcement animation
+        # Turn announcement effect (Bug 1 fix: only init to None if not already set by sim mode above)
+        if not hasattr(self, 'turn_announcement_effect') or self.turn_announcement_effect is None:
+            self.turn_announcement_effect = None  # Active turn announcement animation
 
         # Hero images and ability images already loaded above (lines 397-427)
         # DO NOT reset them here or they will be wiped out!
@@ -1290,7 +1291,7 @@ class Game:
             logger.info("[NETWORK] Remote player resolved battle")
             territory = data.get('territory')
             winner = data.get('winner')
-            surviving_armies = data.get('surviving_armies')
+            surviving_armies = data.get('surviving_armies', 0)  # Bug 3 fix: default 0 prevents None < 0 TypeError
             new_owner = data.get('new_owner')
             alliance_marker = data.get('alliance_marker')  # For simultaneous mode
             surviving_units = data.get('surviving_units')  # Unit composition from host
@@ -5965,6 +5966,8 @@ class Game:
                             base_icon, is_clicking, is_hovering)
 
                         # Apply slight transparency to indicate construction
+                        # Bug 2 fix: copy before set_alpha to avoid corrupting the cached surface
+                        scaled_icon = scaled_icon.copy()
                         scaled_icon.set_alpha(180)
 
                         icon_rect = scaled_icon.get_rect(center=(plot_center_x, plot_center_y))
@@ -6515,9 +6518,9 @@ class Game:
                 instruction = self.font.render("Click on a battlefield to resolve battle", True, BLACK)
                 instruction_rect = instruction.get_rect(center=(WINDOW_WIDTH // 2, BOTTOM_UI_Y + BOTTOM_UI_HEIGHT // 2))
                 self.screen.blit(instruction, instruction_rect)
-            self.train_button = None
+            self.train_buttons = {}  # Bug 5 fix: clear plural train_buttons dict, not dead singular
             return True  # Handled
-        
+
         # Default instructions when nothing selected
         elif self.game_state.phase != 'playing' or (not self.selected_plot and not self.selected_barracks and not self.selected_keep and not self.selected_hero and not self.game_state.selected_army):
             if self.game_state.phase == 'playing':
@@ -6531,10 +6534,10 @@ class Game:
                     instruction = self.large_font.render(f"SETUP: Claim {chosen}/{max_territories} territories", True, BLACK)
             else:
                 instruction = self.font.render("", True, BLACK)
-            
+
             instruction_rect = instruction.get_rect(center=(WINDOW_WIDTH // 2, BOTTOM_UI_Y + BOTTOM_UI_HEIGHT // 2))
             self.screen.blit(instruction, instruction_rect)
-            self.train_button = None
+            self.train_buttons = {}  # Bug 5 fix: clear plural train_buttons dict, not dead singular
             return True  # Handled
         
         return False  # Not handled
@@ -7287,7 +7290,8 @@ class Game:
         
         # Store training buttons for click detection
         self.train_buttons = {}
-        
+        any_affordable = False  # Bug 4 fix: track if ANY unit is affordable
+
         # Draw 4 training buttons (one for each unit type)
         for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']:
             unit_info = self.game_state.UNIT_TYPES[unit_type]
@@ -7296,6 +7300,8 @@ class Game:
             unit_letter = unit_info['letter']
 
             can_afford = current_gold >= unit_cost
+            if can_afford:
+                any_affordable = True  # Bug 4 fix: track across all unit types
             is_available = can_afford and can_queue and not at_army_limit
 
             # Tutorial hook: override training button availability
@@ -7393,7 +7399,7 @@ class Game:
         if at_army_limit:
             status_text = self.small_font.render(f"ARMY LIMIT REACHED", True, (180, 0, 0))
             self.screen.blit(status_text, (status_x, panel_y))
-        elif not can_afford:
+        elif not any_affordable:  # Bug 4 fix: check if ANY unit is affordable, not just last one
             status_text = self.small_font.render("Not enough gold", True, (150, 0, 0))
             self.screen.blit(status_text, (status_x, panel_y))
         elif not can_queue:
@@ -8430,21 +8436,6 @@ class Game:
         self.screen.blit(menu_button_text, text_rect)
 
         self.main_menu_button = menu_button_rect
-    
-    def restart_game(self):
-        """Restart the game with a fresh state, preserving player count"""
-        # Preserve the number of players from the current game
-        num_players = self.game_state.num_players
-        self.game_state = GameState(num_players=num_players)
-        # Reconnect map_renderer to the new game_state
-        self.game_state.map_renderer = self.map_renderer
-        # Reconnect game reference
-        self.game_state.game = self
-        # Clear any active castle upgrade effects
-        self.map_renderer.castle_upgrade_effects.clear()
-        # Clear any active production glow effects
-        self.map_renderer.production_glow_effects.clear()
-        logger.info(f"Game restarted with {num_players} players!")
     
     def draw(self):
         """Render a single frame (core rendering pipeline extracted from run() for benchmarking)."""
