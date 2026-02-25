@@ -316,17 +316,17 @@ class TestAICodeQuality:
 
 class TestGameStateRefactor:
     def test_execute_all_orders_exists(self):
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state.py')
+        gs_path = os.path.join(PROJECT_ROOT, 'game_state', '__init__.py')
         content = read_file_contents(gs_path)
         assert 'def execute_all_orders' in content
 
     def test_execute_all_orders_has_helper_methods(self):
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state.py')
+        gs_path = os.path.join(PROJECT_ROOT, 'game_state', '__init__.py')
         content = read_file_contents(gs_path)
         assert 'def _process_arrivals' in content
 
     def test_format_unit_composition_helper_exists(self):
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state.py')
+        gs_path = os.path.join(PROJECT_ROOT, 'game_state', '__init__.py')
         content = read_file_contents(gs_path)
         assert 'def _format_unit_composition' in content
 
@@ -521,7 +521,7 @@ class TestCodeQualityMeta:
 
     def test_key_modules_import_logger(self):
         modules_needing_logger = [
-            'game_state.py',
+            os.path.join('game_state', '__init__.py'),
             'ai_player.py',
             'ai_strategy.py',
             'ai_economy.py',
