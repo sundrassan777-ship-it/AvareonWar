@@ -124,7 +124,8 @@ class HeroSelector:
         training_types = set()
         for territory, keeps_dict in game_state.hero_training_queue.items():
             if game_state.territory_owners.get(territory) == player_index:
-                for plot_idx, (hero_type, _) in keeps_dict.items():
+                for plot_idx, entry in keeps_dict.items():
+                    hero_type = entry[0]  # H5 fix: handle 3-tuple
                     training_types.add(hero_type)
         return training_types
 

@@ -473,19 +473,22 @@ class SimultaneousGameState:
         # so we temporarily set it for each player
         # IMPORTANT: finish_training is called AFTER start_planning_phase to ensure
         # newly trained units keep their 'moved' status (can't move on turn they spawn)
+        # M8 fix: use try/finally to restore current_player on exception
         original_player = self.gs.current_player
-        for player_id in range(self.gs.num_players):
-            if player_id not in self.eliminated_players:
-                self.gs.collect_income(player_id)
-                # Temporarily set current_player for methods that depend on it
-                self.gs.current_player = player_id
-                self.gs.last_completed_buildings = self.gs.finish_constructions()
-                self.gs.finish_research()
-                self.gs.finish_castle_upgrades()
-                # Award XP to Farms/Mines (veterancy system)
-                self.gs._tick_building_xp()
-        # Restore original current_player
-        self.gs.current_player = original_player
+        try:
+            for player_id in range(self.gs.num_players):
+                if player_id not in self.eliminated_players:
+                    self.gs.collect_income(player_id)
+                    # Temporarily set current_player for methods that depend on it
+                    self.gs.current_player = player_id
+                    self.gs.last_completed_buildings = self.gs.finish_constructions()
+                    self.gs.finish_research()
+                    self.gs.finish_castle_upgrades()
+                    # Award XP to Farms/Mines (veterancy system)
+                    self.gs._tick_building_xp()
+        finally:
+            # Restore original current_player
+            self.gs.current_player = original_player
 
         # Decrement cooldowns
         if hasattr(self.gs, '_decrement_hero_cooldowns_and_silence'):
@@ -509,15 +512,18 @@ class SimultaneousGameState:
         # NOW finish training for all players - units spawn with 'moved' status
         # and won't be reset since start_planning_phase already ran
         # Also finish hero training (decrement timers and complete heroes)
+        # M8 fix: use try/finally to restore current_player on exception
         original_player = self.gs.current_player
-        for player_id in range(self.gs.num_players):
-            if player_id not in self.eliminated_players:
-                self.gs.current_player = player_id
-                self.gs.finish_training()
-                # Hero training completion - decrements timer and completes hero when ready
-                if hasattr(self.gs, 'finish_hero_training'):
-                    self.gs.finish_hero_training()
-        self.gs.current_player = original_player
+        try:
+            for player_id in range(self.gs.num_players):
+                if player_id not in self.eliminated_players:
+                    self.gs.current_player = player_id
+                    self.gs.finish_training()
+                    # Hero training completion - decrements timer and completes hero when ready
+                    if hasattr(self.gs, 'finish_hero_training'):
+                        self.gs.finish_hero_training()
+        finally:
+            self.gs.current_player = original_player
 
         # Callback for multiplayer host to broadcast round completion
         if self.is_multiplayer_host and self.on_round_complete_callback:
@@ -579,7 +585,14 @@ class SimultaneousGameState:
                 from_unmoved = min(unmoved, to_remove)
                 player_garrison['unmoved'] -= from_unmoved
 
-                excess -= (from_moved + from_unmoved)
+                # M5 fix: also remove units from the units list to stay in sync
+                total_removed = from_moved + from_unmoved
+                units = player_garrison.get('units', [])
+                if units and total_removed > 0:
+                    for _ in range(min(total_removed, len(units))):
+                        units.pop()
+
+                excess -= total_removed
 
                 if excess <= 0:
                     break
@@ -597,6 +610,13 @@ class SimultaneousGameState:
 
             from_unmoved = min(unmoved, to_remove)
             owner_garrison['unmoved'] -= from_unmoved
+
+            # M5 fix: also remove units from the units list
+            total_removed = from_moved + from_unmoved
+            units = owner_garrison.get('units', [])
+            if units and total_removed > 0:
+                for _ in range(min(total_removed, len(units))):
+                    units.pop()
 
     def mark_overflow_territory(self, territory: str):
         """

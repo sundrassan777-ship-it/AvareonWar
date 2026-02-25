@@ -1806,7 +1806,9 @@ class UIRenderer:
                 if owner != current_player:
                     continue
 
-                for keep_plot, (hero_type, turns_remaining) in keeps_dict.items():
+                for keep_plot, entry in keeps_dict.items():
+                    # H4 fix: handle 3-tuple (hero_type, turns, paid_cost)
+                    hero_type, turns_remaining = entry[0], entry[1]
                     # Training box
                     training_rect = pygame.Rect(sidebar_x + 30, hero_y, sidebar_width - 60, 60)
                     pygame.draw.rect(self.game.screen, (60, 50, 50), training_rect, border_radius=5)

@@ -254,7 +254,7 @@ AI_HARD_BUILDING_EFFICIENCY = 1.0
 # These control when the AI decides to upgrade, demolish, or prioritize buildings.
 
 # Castle upgrade cost threshold (gold required to upgrade Keep -> Castle)
-AI_CASTLE_UPGRADE_COST = 100
+AI_CASTLE_UPGRADE_COST = 150  # L2 fix: actual Castle upgrade cost is 150
 
 # Strong economy thresholds for proactive Castle upgrade (scaled to 10/15/20 income tiers)
 AI_STRONG_ECONOMY_INCOME_THRESHOLD = 230   # Min income to consider economy "strong"

@@ -783,7 +783,7 @@ class AIPlayer:
                 # Hero training cost is ~200
                 estimated_spending += 200
             elif action_type == 'upgrade_castle':
-                estimated_spending += 100  # Castle upgrade cost
+                estimated_spending += 150  # M3 fix: actual Castle upgrade cost is 150
 
         leftover_gold = available_gold - estimated_spending
 

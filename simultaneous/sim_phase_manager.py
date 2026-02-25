@@ -1164,9 +1164,12 @@ class SimPhaseManager:
                 self.sim_state.eliminate_player(player_id)
 
         # If no more battles, check alliance markers
+        # H6 fix: gate behind is_multiplayer_client check (matches _on_animations_complete
+        # and resolve_alliance_marker) to prevent client desync
         if not self.pending_battles:
             if not self.pending_alliance_markers:
-                self.sim_state.complete_round()
+                if not self.sim_state.is_multiplayer_client:
+                    self.sim_state.complete_round()
 
     def _is_player_eliminated(self, player_id: int) -> bool:
         """Check if a player has been eliminated (no territories or capital lost in Capital Assault)."""
@@ -1509,23 +1512,45 @@ class SimPhaseManager:
             original_total = sum(original_comp.values())
 
             if original_total > 0 and surviving > 0:
-                # Proportionally reduce units
+                # M4 fix: preserve XP/veterancy from existing units instead of resetting
+                # Build list of surviving units by proportionally reducing each type
                 ratio = surviving / original_total
+                existing_units = winner_garrison.get('units', [])
+
+                # Group existing units by type, preserving XP data
+                units_by_type = {}
+                for unit in existing_units:
+                    ut = unit.get('type', 'Swordsman')
+                    if ut not in units_by_type:
+                        units_by_type[ut] = []
+                    units_by_type[ut].append(unit)
+
                 new_units = []
                 remaining = surviving
 
                 for unit_type, count in original_comp.items():
                     kept = min(remaining, max(1 if count > 0 and remaining > 0 else 0,
                                             int(count * ratio)))
-                    for _ in range(kept):
-                        new_units.append({
-                            'id': len(new_units),
-                            'type': unit_type,
-                            'status': 'moved',
-                            'order': None,
-                            'xp': 0,
-                            'level': 0
-                        })
+                    # Reuse existing units (with their XP) if available
+                    available = units_by_type.get(unit_type, [])
+                    for i in range(kept):
+                        if i < len(available):
+                            # Preserve veteran unit
+                            unit = available[i].copy()
+                            unit['id'] = len(new_units)
+                            unit['status'] = 'moved'
+                            unit['order'] = None
+                        else:
+                            # Fallback: create new unit (shouldn't happen normally)
+                            unit = {
+                                'id': len(new_units),
+                                'type': unit_type,
+                                'status': 'moved',
+                                'order': None,
+                                'xp': 0,
+                                'level': 0
+                            }
+                        new_units.append(unit)
                         remaining -= 1
 
                 winner_garrison['units'] = new_units

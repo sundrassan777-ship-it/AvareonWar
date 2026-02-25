@@ -1785,8 +1785,8 @@ class Game:
                     self.game_state.hero_training_queue.clear()
                     for territory, plots in data['hero_training_queue'].items():
                         self.game_state.hero_training_queue[territory] = {
-                            int(plot): (hero_type, turns)
-                            for plot, (hero_type, turns) in plots.items()
+                            int(plot): tuple(entry)
+                            for plot, entry in plots.items()
                         }
                     logger.debug(f"[NETWORK] Sync: hero_training_queue for {len(data['hero_training_queue'])} territories")
 
@@ -2124,7 +2124,7 @@ class Game:
             'heroes': {str(k): v for k, v in self.game_state.heroes.items()},
             # Hero training queue - in-progress training with timers
             'hero_training_queue': {
-                territory: {str(plot): (hero_type, turns) for plot, (hero_type, turns) in plots.items()}
+                territory: {str(plot): list(entry) for plot, entry in plots.items()}
                 for territory, plots in self.game_state.hero_training_queue.items()
             },
             # Hero ability cooldowns - for ability availability sync
@@ -7910,7 +7910,9 @@ class Game:
 
         # Display training hero
         if is_training:
-            hero_type, turns_remaining = self.game_state.hero_training_queue[territory][keep_plot_index]
+            # H3 fix: handle 3-tuple (hero_type, turns, paid_cost) from Audit #3 H1
+            entry = self.game_state.hero_training_queue[territory][keep_plot_index]
+            hero_type, turns_remaining = entry[0], entry[1]
 
             # Hero box
             item_rect = pygame.Rect(queue_x, queue_y, 280, 30)

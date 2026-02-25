@@ -707,8 +707,8 @@ class Mission3:
         stop_transmission_sound()  # Stop any lingering intro voice
 
         self.game_state.turn_timer_enabled = True
-        # Use monotonic clock: immune to NTP/DST adjustments
-        self.game_state.planning_phase_start_time = time.monotonic()
+        # M6 fix: use time.time() to match game_state/__init__.py which reads with time.time()
+        self.game_state.planning_phase_start_time = time.time()
 
     def _show_transmission(self, text, speaker="Serthus Diarcess"):
         """Show or update the transmission overlay with speaker name."""

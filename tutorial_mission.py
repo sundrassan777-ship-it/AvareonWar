@@ -1756,3 +1756,20 @@ class TutorialMission:
         if not self.active:
             return None
         return self.steps[self.current_step_index].highlight_territory
+
+    def _cleanup(self):
+        """L4 fix: Clean up mission state when exiting (matches other campaign missions)."""
+        from global_sound import stop_transmission_sound
+        logger.info("Cleaning up tutorial mission")
+        stop_transmission_sound()
+
+        # Restore swapped flag icons
+        game = self.main_game
+        if hasattr(game, 'army_flag_icons') and 0 in game.army_flag_icons and 1 in game.army_flag_icons:
+            game.army_flag_icons[0], game.army_flag_icons[1] = game.army_flag_icons[1], game.army_flag_icons[0]
+
+        self.active = False
+
+    def deactivate(self):
+        """Deactivate the mission (called on exit)."""
+        self._cleanup()

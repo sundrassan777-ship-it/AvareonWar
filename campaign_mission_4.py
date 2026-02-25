@@ -659,7 +659,7 @@ class Mission4:
             if not self.transmission_overlay and not self.transmission_queue:
                 self._victory_waiting = False
                 self._pending_victory = True
-                self.game_frozen = True
+                self.game_paused = True  # L1 fix: use game_paused (matches missions 2/3, checked by main.py)
 
                 text = "The Gods have delivered us victory! Long may their reign shine upon the glory of our new Empire!"
                 self._show_transmission(text)
@@ -674,7 +674,7 @@ class Mission4:
             if not self.transmission_overlay and not self.transmission_queue:
                 self._defeat_waiting = False
                 self._pending_defeat = True
-                self.game_frozen = True
+                self.game_paused = True  # L1 fix: use game_paused (matches missions 2/3, checked by main.py)
 
                 text = "Regnus has been slain! Without his leadership, the favour of the Gods is lost!"
                 self._show_transmission(text, speaker="Nobleman")
@@ -872,11 +872,13 @@ class Mission4:
 
                 cost = gs.get_building_cost(building_type, player=player_id)
                 if gs.player_gold[player_id] >= cost:
-                    # Temporarily set current_player for the building call
+                    # M7 fix: use try/finally to restore current_player on exception
                     original_player = gs.current_player
-                    gs.current_player = player_id
-                    gs.start_construction(territory, plot_idx, building_type)
-                    gs.current_player = original_player
+                    try:
+                        gs.current_player = player_id
+                        gs.start_construction(territory, plot_idx, building_type)
+                    finally:
+                        gs.current_player = original_player
                     break  # One building per territory per turn
 
     def _ai_train(self, player_id, my_territories):

@@ -458,7 +458,8 @@ class BuildingMixin:
             return False
 
         # Check army limit - prevent training if at max
-        current_armies = self.armies.get(territory, 0)
+        # M1 fix: use get_territory_total_armies to include allied garrisons
+        current_armies = self.get_territory_total_armies(territory)
         if current_armies >= self.MAX_ARMIES_PER_TERRITORY:
             self.add_message(f"Army limit reached in {territory}! (Max {self.MAX_ARMIES_PER_TERRITORY} per territory)")
             return False
@@ -598,7 +599,8 @@ class BuildingMixin:
 
                     if turns_remaining <= 0:
                         # Check army limit before spawning
-                        current_armies = self.armies.get(territory, 0)
+                        # M2 fix: use get_territory_total_armies to include allied garrisons
+                        current_armies = self.get_territory_total_armies(territory)
                         if current_armies >= self.MAX_ARMIES_PER_TERRITORY:
                             # At army limit - pause training (don't spawn, don't remove from queue)
                             self.add_message(f"{territory}: Training paused - army limit reached ({self.MAX_ARMIES_PER_TERRITORY}/{self.MAX_ARMIES_PER_TERRITORY})")

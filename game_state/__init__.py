@@ -372,7 +372,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Active heroes: {player_index: {hero_type: hero_data}}
         self.heroes = {i: {} for i in range(num_players)}
 
-        # Hero training queue: {territory: {keep_plot_index: (hero_type, turns_remaining)}}
+        # Hero training queue: {territory: {keep_plot_index: (hero_type, turns_remaining, paid_cost)}}
         # Single tuple per Keep (not list) - only ONE hero trains per Keep
         self.hero_training_queue = {}
 
