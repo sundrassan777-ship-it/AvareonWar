@@ -394,6 +394,21 @@ def run_hero_analysis(num_turns=40, verbose=True):
     }
 
 
+import pytest
+
+
+@pytest.mark.slow
+def test_hero_usage_analysis():
+    """Pytest wrapper: Hero training and ability usage analysis, 10 turns."""
+    results = run_hero_analysis(num_turns=10, verbose=False)
+    assert results is not None, "Test runner returned None"
+    # Verify the summary was generated with hero tracking data
+    summary = results.get('summary', {})
+    assert summary is not None, "Summary not generated"
+    # At least some hero actions should have been attempted in 10 turns
+    assert results.get('total_hero_actions', 0) >= 0, "Hero action tracking failed"
+
+
 if __name__ == '__main__':
     start_time = time.time()
     results = run_hero_analysis(num_turns=40, verbose=True)

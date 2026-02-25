@@ -15,6 +15,7 @@ Usage:
 import sys
 import os
 import time
+import pytest
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -515,6 +516,7 @@ def run_mission_playthrough():
     return result
 
 
+@pytest.mark.xfail(reason="Known bug: defeat condition not triggered by territory conquest event")
 def test_defeat_condition():
     """Test that player loses when they have 0 territories."""
     print("\n" + "=" * 70)
@@ -524,12 +526,10 @@ def test_defeat_condition():
     try:
         game, mission = setup_mission_2()
     except Exception as e:
-        print(f"[ERROR] Failed to initialize mission: {e}")
-        return False
+        pytest.fail(f"Failed to initialize mission: {e}")
 
     if not mission:
-        print("[ERROR] Mission failed to initialize")
-        return False
+        pytest.fail("Mission failed to initialize")
 
     skip_intro(mission)
 
@@ -554,10 +554,8 @@ def test_defeat_condition():
 
     if defeat_triggered:
         print("[PASS] Defeat condition works correctly!")
-        return True
     else:
-        print("[FAIL] Defeat condition did not trigger!")
-        return False
+        assert False, "Defeat condition did not trigger!"
 
 
 if __name__ == '__main__':

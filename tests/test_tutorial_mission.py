@@ -15,6 +15,7 @@ Usage:
 import sys
 import os
 import time
+import pytest
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -507,12 +508,10 @@ def test_initial_setup():
     try:
         game, mission = setup_tutorial_mission()
     except Exception as e:
-        print(f"[ERROR] Failed to initialize mission: {e}")
-        return False
+        pytest.fail(f"Failed to initialize mission: {e}")
 
     if not mission:
-        print("[ERROR] Mission failed to initialize")
-        return False
+        pytest.fail("Mission failed to initialize")
 
     # Verify initial state
     checks_passed = True
@@ -545,12 +544,7 @@ def test_initial_setup():
         print(f"[FAIL] Tutorial should have 30+ steps, has {len(mission.steps)}")
         checks_passed = False
 
-    if checks_passed:
-        print("[PASS] Initial setup validated correctly!")
-        return True
-    else:
-        print("[FAIL] Initial setup validation failed!")
-        return False
+    assert checks_passed, "Initial setup validation failed!"
 
 
 if __name__ == '__main__':

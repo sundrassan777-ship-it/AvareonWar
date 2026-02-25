@@ -469,6 +469,17 @@ def run_sequential_test(num_turns=40, verbose=True):
     }
 
 
+import pytest
+
+
+@pytest.mark.slow
+def test_ffa_sequential_40turn():
+    """Pytest wrapper: 4-player FFA sequential mode with state validation, 10 turns."""
+    results = run_sequential_test(num_turns=10, verbose=False)
+    assert results is not None, "Test runner returned None"
+    assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
+
+
 if __name__ == '__main__':
     # Run with verbose output
     start_time = time.time()

@@ -225,6 +225,17 @@ def run_fixed_test(num_turns=40, verbose=True):
     }
 
 
+import pytest
+
+
+@pytest.mark.slow
+def test_ffa_sequential_fixed():
+    """Pytest wrapper: 4-player FFA sequential mode (fixed animation), 10 turns."""
+    results = run_fixed_test(num_turns=10, verbose=False)
+    assert results is not None, "Test runner returned None"
+    assert results['turns'] > 0, "No turns were completed"
+
+
 if __name__ == '__main__':
     start_time = time.time()
     results = run_fixed_test(num_turns=40, verbose=True)

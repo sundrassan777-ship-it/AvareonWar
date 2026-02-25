@@ -644,6 +644,17 @@ def run_2v2_simultaneous_test(num_rounds=40, verbose=True):
     }
 
 
+import pytest
+
+
+@pytest.mark.slow
+def test_2v2_simultaneous_40turn():
+    """Pytest wrapper: 4-player 2v2 simultaneous mode with state validation, 10 rounds."""
+    results = run_2v2_simultaneous_test(num_rounds=10, verbose=False)
+    assert results is not None, "Test runner returned None"
+    assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
+
+
 if __name__ == '__main__':
     # Run with verbose output
     start_time = time.time()
