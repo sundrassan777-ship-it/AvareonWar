@@ -397,6 +397,62 @@ class Game:
         # Created in initialize_game() for Custom Game and Multiplayer modes
         self.start_camera_animation = None
 
+        # Phase 4A: Initialize all attributes to defaults so hasattr() guards are unnecessary.
+        # These are set properly in initialize_game() or by rendering methods, but need
+        # safe defaults here to prevent AttributeError if accessed before those methods run.
+
+        # Feature-related (set in initialize_game or campaign launcher)
+        self.tutorial_mission = None
+        self.sim_state = None
+        self.sim_ai = None
+        self.last_sim_round = 0
+        self.game_start_time = None
+
+        # UI button rects (set by draw methods and ui_renderer.py)
+        self.end_turn_button = None
+        self.main_menu_button = None
+        self.disconnect_exit_button = None
+        self.train_buttons = {}
+        self.queue_cancel_buttons = []
+        self.demolish_barracks_button = None
+        self.hero_train_buttons = {}
+        self.hero_cancel_button = None
+        self.demolish_keep_button = None
+        self.building_buttons = {}
+        self.cancel_button = None
+        self.demolish_button = None
+        self.territory_info_plot_buttons = []
+        self.select_all_button = None
+        self.deselect_all_button = None
+        self.castle_upgrade_button = None
+        self.castle_upgrade_cancel_button = None
+        self.bonuses_button_rect = None
+        self.sidebar_tab_buttons = {}
+        self.hero_selection_buttons = {}
+        self.technology_buttons = {}
+
+        # Options panel UI elements (set by ui_renderer.py)
+        self.gameplay_edge_scrolling_checkbox = None
+        self.gameplay_edge_scroll_mode_dropdown = None
+        self.gameplay_tooltips_checkbox = None
+        self.gameplay_tooltip_delay_dropdown = None
+        self.gameplay_pan_speed_slider = None
+        self.gameplay_zoom_speed_slider = None
+        self.gameplay_fps_checkbox = None
+
+        # State flags and timers (set lazily in run loop)
+        self.castle_button_is_hovering = False
+        self._sim_last_timer_sync = 0
+        self._ai_battle_delay_timer = 0.0
+        self._ai_battle_territory = None
+        self._ai_alliance_delay_timer = 0.0
+        self._ai_alliance_territory = None
+
+        # Performance caches (created lazily on first use)
+        self._ai_indicator_overlay = None
+        self._ai_indicator_title_font = None
+        self._ai_indicator_subtitle_font = None
+
     def scale(self, value):
         """
         Scale a UI dimension based on current resolution.
@@ -1156,7 +1212,7 @@ class Game:
 
         # Check for disconnection
         if hasattr(self.network_connection, 'disconnected') and self.network_connection.disconnected:
-            if not hasattr(self, 'disconnect_dialog_shown') or not self.disconnect_dialog_shown:
+            if not self.disconnect_dialog_shown:
                 self.disconnect_dialog_shown = True
                 reason = getattr(self.network_connection, 'disconnect_reason', 'Unknown reason')
                 logger.info(f"[NETWORK] Connection lost: {reason}")
@@ -3395,18 +3451,6 @@ class Game:
     
     # ========================================
     
-    def draw_territory_overlay(self, territory, color, alpha=100, outline=False):
-        """
-        Draw a colored overlay on a territory - delegates to MapRenderer.
-
-        Args:
-            territory: Name of territory
-            color: RGB tuple
-            alpha: Transparency (0-255)
-            outline: Whether to draw border
-        """
-        self.map_renderer.draw_territory_overlay(territory, color, alpha, outline)
-
     def draw_silence_fog_overlay(self):
         """
         Draw a dark red fog overlay on the entire map when silence is active.
@@ -3694,8 +3738,7 @@ class Game:
 
         Replaces the repeated 3-condition guard: hasattr + truthy + .active.
         """
-        return (hasattr(self, 'tutorial_mission')
-                and self.tutorial_mission
+        return (self.tutorial_mission
                 and self.tutorial_mission.active)
 
     def _is_tutorial_blocking(self, action):
@@ -3966,10 +4009,6 @@ class Game:
     # PHASE 4: EXTRACTED PLOT RENDERING METHODS
     # ========================================
     
-    def draw_plots_original(self):
-        """Draw building plots - delegates to MapRenderer"""
-        self.map_renderer.draw_plots_original()
-
     def handle_map_area_click(self, pos):
         """
         Handle mouse click on map area (Phase 2A extraction, Phase 2D camera update).
@@ -4310,7 +4349,7 @@ class Game:
 
                 if has_barracks:
                     # Tutorial hook: check if barracks click is allowed
-                    if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                    if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('click_barracks')):
                         return True  # Silently block
@@ -4342,7 +4381,7 @@ class Game:
                     play_structure_sound('Keep')
                 else:
                     # Tutorial hook: check if plot clicking is allowed
-                    if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                    if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('click_plots')):
                         return  # Silently block
@@ -4367,7 +4406,7 @@ class Game:
         # Not clicking on a plot - handle territory click
         territory = self.get_territory_at_pos(world_pos)
         # Tutorial hook: filter out non-interactive territories
-        if (territory and hasattr(self, 'tutorial_mission') and self.tutorial_mission
+        if (territory and self.tutorial_mission
                 and self.tutorial_mission.active
                 and not self.tutorial_mission.is_territory_interactive(territory)):
             territory = None
@@ -4438,7 +4477,7 @@ class Game:
         # Get the territory clicked
         territory = self.get_territory_at_pos(world_pos)
         # Tutorial hook: filter out non-interactive territories
-        if (territory and hasattr(self, 'tutorial_mission') and self.tutorial_mission
+        if (territory and self.tutorial_mission
                 and self.tutorial_mission.active
                 and not self.tutorial_mission.is_territory_interactive(territory)):
             territory = None
@@ -4518,26 +4557,6 @@ class Game:
                             'player_index': self.local_player_index  # Include player for 4-player support
                         })
     
-    def draw_territories(self):
-        """Draw territory overlays, markers and ownership colors - delegates to MapRenderer"""
-        self.map_renderer.draw_territories()
-    
-    def draw_movement_arrows(self):
-        """Draw arrows showing planned movement orders - delegates to MapRenderer"""
-        self.map_renderer.draw_movement_arrows()
-    
-    def draw_battle_markers(self):
-        """Draw battle markers for territories with pending battles - delegates to MapRenderer"""
-        self.map_renderer.draw_battle_markers()
-
-    def draw_alliance_markers(self):
-        """Draw alliance markers for simultaneous mode - delegates to MapRenderer"""
-        self.map_renderer.draw_alliance_markers()
-
-    def draw_overflow_indicators(self):
-        """Draw overflow indicators for territories with excess armies - delegates to MapRenderer"""
-        self.map_renderer.draw_overflow_indicators()
-
     def _draw_battle_popup_initial(self, battle, modal_x, modal_y, modal_height, y_pos):
         """
         Draw initial battle popup state.
@@ -4858,22 +4877,6 @@ class Game:
         # Fallback to legacy popup (should not be reached with new system)
         self.ui_renderer.draw_battle_popup()
 
-    def draw_chat_input(self):
-        """Delegates to UIRenderer"""
-        self.ui_renderer.draw_chat_input()
-
-    def draw_top_panel(self):
-        """Delegates to UIRenderer"""
-        self.ui_renderer.draw_top_panel()
-
-    def draw_game_menu(self):
-        """Delegates to UIRenderer"""
-        self.ui_renderer.draw_game_menu()
-
-    def draw_options_menu(self):
-        """Delegates to UIRenderer"""
-        self.ui_renderer.draw_options_menu()
-
     def draw_disconnect_dialog(self):
         """Draw disconnect dialog overlay"""
         # Semi-transparent overlay
@@ -5014,24 +5017,24 @@ class Game:
         # No collapse button - sidebar is always expanded
         self.sidebar_toggle_button = None
         
-        # Draw tab buttons on left side and get content start position
-        content_start_y = self._draw_sidebar_tab_buttons(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
-        
-        # Draw content based on active tab
+        # Draw tab buttons on left side and get content start position (Phase 4D: inlined delegates)
+        content_start_y = self.ui_renderer._draw_sidebar_tab_buttons(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
+
+        # Draw content based on active tab (Phase 4D: inlined delegates)
         active_tab = self.game_state.active_sidebar_tab
-        
+
         if active_tab == 'action_queue':
-            self._draw_action_queue_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
+            self.ui_renderer._draw_action_queue_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
         elif active_tab == 'technology':
-            self._draw_technology_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
+            self.ui_renderer._draw_technology_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
         elif active_tab == 'heroes':
-            self._draw_heroes_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
+            self.ui_renderer._draw_heroes_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
         elif active_tab == 'action_log':
-            self._draw_action_log_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
+            self.ui_renderer._draw_action_log_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
         elif active_tab == 'quests':
             self.ui_renderer._draw_quests_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
         elif active_tab == 'chat':
-            self._draw_chat_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
+            self.ui_renderer._draw_chat_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
 
         # Cancel All button at bottom (only show in Action Queue tab)
         if active_tab == 'action_queue' and len(self.game_state.movement_orders) > 0:
@@ -5046,34 +5049,6 @@ class Game:
             self.cancel_all_button = None
     
 
-    def _draw_sidebar_tab_buttons(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height):
-        """Delegates to UIRenderer"""
-        return self.ui_renderer._draw_sidebar_tab_buttons(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
-    
-    def _draw_action_queue_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Delegates to UIRenderer"""
-        self.ui_renderer._draw_action_queue_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
-    
-    def _draw_action_log_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Delegates to UIRenderer"""
-        self.ui_renderer._draw_action_log_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
-    
-    def _draw_chat_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Delegates to UIRenderer"""
-        self.ui_renderer._draw_chat_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
-
-    def _draw_heroes_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Delegates to UIRenderer"""
-        self.ui_renderer._draw_heroes_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
-
-    def _draw_technology_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Delegates to UIRenderer"""
-        self.ui_renderer._draw_technology_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
-
-    def _draw_placeholder_tab_content(self, sidebar_x, sidebar_width, content_start_y, tab_name):
-        """Delegates to UIRenderer"""
-        self.ui_renderer._draw_placeholder_tab_content(sidebar_x, sidebar_width, content_start_y, tab_name)
-    
     def draw_territory_hover_tooltip(self, mouse_pos):
         """Draw comprehensive tooltip when hovering over a territory (Phase 2: Using helper)"""
         # Check if tooltips are enabled
@@ -5823,8 +5798,6 @@ class Game:
             plots_per_row = 5  # Adjusted for new size
 
             # Clear plot button storage
-            if not hasattr(self, 'territory_info_plot_buttons'):
-                self.territory_info_plot_buttons = []
             self.territory_info_plot_buttons = []
 
             for plot_index in range(plot_count):  # Use actual plot count
@@ -6108,7 +6081,7 @@ class Game:
         self.screen.blit(limit_text, (army_info_x, army_info_y))
         
         # Track button hover for plot tooltips (will be drawn with delay in main loop)
-        if owner == self.game_state.current_player and hasattr(self, 'territory_info_plot_buttons'):
+        if owner == self.game_state.current_player and self.territory_info_plot_buttons:
             mouse_pos = pygame.mouse.get_pos()
             current_hover = None
             for plot_rect, terr, plot_idx in self.territory_info_plot_buttons:
@@ -6295,7 +6268,7 @@ class Game:
                 time_limit = self.game_state.player_planning_time_limit[self.game_state.current_player]
 
                 # During mission intro, show full timer bar (static, not counting down)
-                if hasattr(self, 'tutorial_mission') and self.tutorial_mission:
+                if self.tutorial_mission:
                     if hasattr(self.tutorial_mission, 'intro_active') and self.tutorial_mission.intro_active:
                         remaining_time = time_limit  # Show full bar during intro
 
@@ -6303,7 +6276,7 @@ class Game:
                     self._draw_planning_timer(ui_x, ui_y, button_width, remaining_time, time_limit)
 
             # Elapsed game time display (below End Turn button or timer)
-            if hasattr(self, 'game_start_time'):
+            if self.game_start_time is not None:
                 elapsed_seconds = int(time.time() - self.game_start_time)
                 hours = elapsed_seconds // 3600
                 minutes = (elapsed_seconds % 3600) // 60
@@ -6674,7 +6647,7 @@ class Game:
             demolish_rect = pygame.Rect(build_ui_x, build_ui_y, 180, 30)
 
             # Tutorial hook: grey out demolish button during tutorial unless allowed
-            _tutorial_demolish_locked = (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+            _tutorial_demolish_locked = (self.tutorial_mission
                                          and self.tutorial_mission.active
                                          and not self.tutorial_mission.is_action_allowed('demolish'))
 
@@ -6736,7 +6709,7 @@ class Game:
             cancel_rect = pygame.Rect(build_ui_x, build_ui_y, 180, 30)
 
             # Tutorial hook: grey out cancel button during tutorial unless allowed
-            _tutorial_cancel_locked = (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+            _tutorial_cancel_locked = (self.tutorial_mission
                                        and self.tutorial_mission.active
                                        and not self.tutorial_mission.is_action_allowed('cancel_construction'))
 
@@ -7417,8 +7390,6 @@ class Game:
         queue_y += 30
         
         # Initialize queue cancel buttons
-        if not hasattr(self, 'queue_cancel_buttons'):
-            self.queue_cancel_buttons = []
         self.queue_cancel_buttons = []
         
         # Display queue items
@@ -7450,7 +7421,7 @@ class Game:
 
                 # Base color
                 # Tutorial hook: grey out cancel button during tutorial unless allowed
-                _tutorial_cancel_locked = (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                _tutorial_cancel_locked = (self.tutorial_mission
                                            and self.tutorial_mission.active
                                            and not self.tutorial_mission.is_action_allowed('cancel_training'))
                 if _tutorial_cancel_locked:
@@ -7522,7 +7493,7 @@ class Game:
         refund_percent = "100%" if self.game_state.player_barracks_full_refund[self.game_state.current_player] else "50%"
         demolish_rect = pygame.Rect(tips_x, tips_y, 180, 30)
         # Tutorial hook: grey out demolish during tutorial unless allowed
-        _tutorial_demolish_locked = (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+        _tutorial_demolish_locked = (self.tutorial_mission
                                      and self.tutorial_mission.active
                                      and not self.tutorial_mission.is_action_allowed('demolish'))
         if _tutorial_demolish_locked:
@@ -7992,7 +7963,7 @@ class Game:
         demolish_rect = pygame.Rect(tips_x, tips_y, 180, 30)
         _, display_name = self.game_state.get_keep_display_info(territory, keep_plot_index)
         # Tutorial hook: grey out demolish during tutorial
-        _tutorial_demolish_locked = (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+        _tutorial_demolish_locked = (self.tutorial_mission
                                      and self.tutorial_mission.active)
         if _tutorial_demolish_locked:
             self.draw_feedback_button(demolish_rect, (80, 80, 80),
@@ -8021,7 +7992,7 @@ class Game:
         self.update_button_hover(current_hover, 'hero_training')
 
         # Castle upgrade button hover tracking (must come AFTER hero_training to take precedence)
-        castle_hovering = hasattr(self, 'castle_button_is_hovering') and self.castle_button_is_hovering
+        castle_hovering = self.castle_button_is_hovering
         if castle_hovering:
             self.update_button_hover(('castle', 'castle_upgrade'), 'castle')
         else:
@@ -8464,15 +8435,15 @@ class Game:
         map_y = int(-self.camera_offset[1] * self.camera_zoom) + TOP_PANEL_HEIGHT
         self.screen.blit(self.cached_scaled_map, (map_x, map_y))
 
-        # Draw map elements
-        self.draw_territories()
-        self.draw_movement_arrows()
-        self.draw_battle_markers()
-        self.draw_alliance_markers()
-        self.draw_overflow_indicators()
+        # Draw map elements (Phase 4D: inlined from delegate methods)
+        self.map_renderer.draw_territories()
+        self.map_renderer.draw_movement_arrows()
+        self.map_renderer.draw_battle_markers()
+        self.map_renderer.draw_alliance_markers()
+        self.map_renderer.draw_overflow_indicators()
 
-        # Draw UI panels
-        self.draw_top_panel()
+        # Draw UI panels (Phase 4D: inlined from delegate method)
+        self.ui_renderer.draw_top_panel()
         self.draw_order_sidebar()
         self.draw_bottom_ui()
 
@@ -8612,7 +8583,7 @@ class Game:
             # Victory/defeat cinematic sequence detection and update
             # Runs outside is_game_paused check so the cinematic plays even when paused
             # Skip for campaign missions (they have their own victory system)
-            _is_campaign = hasattr(self, 'tutorial_mission') and self.tutorial_mission and getattr(self.tutorial_mission, 'active', False)
+            _is_campaign = self.tutorial_mission and getattr(self.tutorial_mission, 'active', False)
             if not _is_campaign:
                 if self.game_state.phase == 'ended' and not self.victory_sequence_active:
                     if not self.victory_sequence_pending:
@@ -8638,7 +8609,7 @@ class Game:
             # Check if planning timer has expired (sequential mode only)
             # Skip during mission intro when game is paused
             _timer_check_allowed = True
-            if hasattr(self, 'tutorial_mission') and self.tutorial_mission:
+            if self.tutorial_mission:
                 if hasattr(self.tutorial_mission, 'game_paused') and self.tutorial_mission.game_paused:
                     _timer_check_allowed = False
             if self.game_state.game_mode == 'sequential' and _timer_check_allowed and not self.is_game_paused:
@@ -8685,7 +8656,7 @@ class Game:
 
                 # MULTIPLAYER: Host sends periodic timer sync to client (every 2 seconds)
                 if self.multiplayer_mode and self.local_player_index == 0:
-                    if not hasattr(self, '_sim_last_timer_sync'):
+                    if self._sim_last_timer_sync is None:
                         self._sim_last_timer_sync = 0
                     self._sim_last_timer_sync += delta_time
                     if self._sim_last_timer_sync >= 2.0:
@@ -8703,7 +8674,7 @@ class Game:
                 resolver = getattr(next_battle, 'resolver', None)
                 if resolver is not None and self.game_state.player_is_ai[resolver]:
                     # Track when this AI battle was first detected (for 2-second delay)
-                    if not hasattr(self, '_ai_battle_delay_timer'):
+                    if self._ai_battle_delay_timer is None:
                         self._ai_battle_delay_timer = 0.0
                         self._ai_battle_territory = next_battle.territory
                         logger.info(f"[SIM] AI battle detected at {next_battle.territory} - showing grey marker for 2 seconds")
@@ -8790,7 +8761,7 @@ class Game:
                                 self.sim_state.complete_round()
                 else:
                     # Not an AI battle, reset the timer tracking
-                    if hasattr(self, '_ai_battle_delay_timer'):
+                    if self._ai_battle_delay_timer is not None:
                         self._ai_battle_delay_timer = 0.0
                         self._ai_battle_territory = None
 
@@ -8806,7 +8777,7 @@ class Game:
                 chooser = next_marker.get('chooser')
                 if chooser is not None and self.game_state.player_is_ai[chooser]:
                     # Track when this AI alliance marker was first detected (for 2-second delay)
-                    if not hasattr(self, '_ai_alliance_delay_timer'):
+                    if self._ai_alliance_delay_timer is None:
                         self._ai_alliance_delay_timer = 0.0
                         self._ai_alliance_territory = next_marker['territory']
                         logger.info(f"[SIM] AI alliance marker detected at {next_marker['territory']} - showing grey marker for 2 seconds")
@@ -8864,14 +8835,14 @@ class Game:
                             self.sim_state.complete_round()
                 else:
                     # Not an AI alliance marker, reset the timer tracking
-                    if hasattr(self, '_ai_alliance_delay_timer'):
+                    if self._ai_alliance_delay_timer is not None:
                         self._ai_alliance_delay_timer = 0.0
                         self._ai_alliance_territory = None
 
             # SIMULTANEOUS MODE: Check if a new round started and trigger AI planning
             # Skip if game has ended - no new rounds after victory/defeat
             if (not self.is_game_paused and self.sim_state is not None
-                    and hasattr(self, 'last_sim_round') and self.game_state.phase != 'ended'):
+                    and self.last_sim_round is not None and self.game_state.phase != 'ended'):
                 current_round = self.sim_state.round_number
                 if current_round != self.last_sim_round:
                     logger.info(f"[SIMULTANEOUS] New round detected: {self.last_sim_round} -> {current_round}")
@@ -8939,7 +8910,7 @@ class Game:
                     continue  # No interaction during cinematic animation
 
                 # Tutorial mission: selectively block input based on current step
-                elif (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                elif (self.tutorial_mission
                       and self.tutorial_mission.active
                       and not self.tutorial_mission.is_action_allowed('camera')):
                     # When camera is locked, block almost everything except ESC for menu
@@ -9051,7 +9022,7 @@ class Game:
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
                         # Handle disconnect dialog click (highest priority)
-                        if self.show_disconnect_dialog and hasattr(self, 'disconnect_exit_button'):
+                        if self.show_disconnect_dialog and self.disconnect_exit_button:
                             if self.disconnect_exit_button.collidepoint(event.pos):
                                 # Exit to main menu
                                 self.return_to_main_menu = True
@@ -9103,7 +9074,7 @@ class Game:
                     if self.dragging_slider and self.options_menu_visible:
                         mouse_x = event.pos[0]
                         
-                        if self.dragging_slider == 'pan_speed' and hasattr(self, 'gameplay_pan_speed_slider'):
+                        if self.dragging_slider == 'pan_speed' and self.gameplay_pan_speed_slider:
                             slider_track, min_speed, max_speed, thumb_rect = self.gameplay_pan_speed_slider
                             # Calculate position accounting for drag offset
                             adjusted_x = mouse_x - self.drag_offset
@@ -9111,7 +9082,7 @@ class Game:
                             slider_pos = max(0, min(1, rel_x / slider_track.width))
                             self.temp_camera_pan_speed = min_speed + slider_pos * (max_speed - min_speed)
                         
-                        elif self.dragging_slider == 'zoom_speed' and hasattr(self, 'gameplay_zoom_speed_slider'):
+                        elif self.dragging_slider == 'zoom_speed' and self.gameplay_zoom_speed_slider:
                             slider_track, min_zoom_speed, max_zoom_speed, thumb_rect = self.gameplay_zoom_speed_slider
                             # Calculate position accounting for drag offset
                             adjusted_x = mouse_x - self.drag_offset
@@ -9134,7 +9105,7 @@ class Game:
                     # Camera zoom (Phase 2D: mouse wheel)
                     # Block mouse wheel when menus are open or tutorial camera locked
                     elif not self.game_menu_visible:
-                        if not (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                        if not (self.tutorial_mission
                                 and self.tutorial_mission.active
                                 and not self.tutorial_mission.is_action_allowed('camera')):
                             self.handle_camera_zoom(event.y)
@@ -9225,8 +9196,8 @@ class Game:
             # Draw scaled and positioned map
             self.screen.blit(scaled_map, (map_x, map_y))
             
-            # Draw territories
-            self.draw_territories()
+            # Draw territories (Phase 4D: inlined from delegate methods)
+            self.map_renderer.draw_territories()
 
             # Draw silence fog overlay if any player is silenced
             self.draw_silence_fog_overlay()
@@ -9235,21 +9206,21 @@ class Game:
             for effect_key in self._bubble_configs:
                 self._draw_hero_bubbles(effect_key)
 
-            # Draw movement arrows (orders)
-            self.draw_movement_arrows()
+            # Draw movement arrows (orders) (Phase 4D: inlined)
+            self.map_renderer.draw_movement_arrows()
 
-            # Draw battle markers
-            self.draw_battle_markers()
+            # Draw battle markers (Phase 4D: inlined)
+            self.map_renderer.draw_battle_markers()
 
-            # SIMULTANEOUS MODE: Draw alliance markers and overflow indicators
-            self.draw_alliance_markers()
-            self.draw_overflow_indicators()
+            # SIMULTANEOUS MODE: Draw alliance markers and overflow indicators (Phase 4D: inlined)
+            self.map_renderer.draw_alliance_markers()
+            self.map_renderer.draw_overflow_indicators()
 
             # Draw castle upgrade particle effects (after battle markers, before UI)
             self.map_renderer.render_castle_upgrade_effects()
 
-            # Draw top panel (Phase A: UI Redesign)
-            self.draw_top_panel()
+            # Draw top panel (Phase 4D: inlined from delegate method)
+            self.ui_renderer.draw_top_panel()
 
             # Always draw order sidebar and bottom UI panels
             # During AI turns, draw empty panels (just backgrounds, no interactive content)
@@ -9266,8 +9237,8 @@ class Game:
                 self.draw_order_sidebar()
                 self.draw_bottom_ui()
             
-            # Draw chat input box (appears above bottom UI when active)
-            self.draw_chat_input()
+            # Draw chat input box (appears above bottom UI when active) (Phase 4D: inlined)
+            self.ui_renderer.draw_chat_input()
             
             # Track building button hover (must happen after draw_bottom_ui every frame)
             # This ensures hover state is always properly managed
@@ -9275,7 +9246,7 @@ class Game:
                 mouse_pos = pygame.mouse.get_pos()
                 current_hover = None
                 # Only track if we're showing building buttons (plot is empty)
-                if hasattr(self, 'building_buttons') and self.building_buttons:
+                if self.building_buttons:
                     for building_name, button_rect in self.building_buttons.items():
                         if button_rect.collidepoint(mouse_pos):
                             current_hover = ('building', building_name)
@@ -9307,13 +9278,13 @@ class Game:
             if self.victory_sequence_active:
                 self._render_victory_sequence()
 
-            # Draw game menu (on top of everything, if visible)
+            # Draw game menu (on top of everything, if visible) (Phase 4D: inlined)
             if self.game_menu_visible:
-                self.draw_game_menu()
-            
-            # Draw options menu (on top of game menu, if visible)
+                self.ui_renderer.draw_game_menu()
+
+            # Draw options menu (on top of game menu, if visible) (Phase 4D: inlined)
             if self.options_menu_visible:
-                self.draw_options_menu()
+                self.ui_renderer.draw_options_menu()
 
             # Draw disconnect dialog (multiplayer only, on top of everything)
             if self.show_disconnect_dialog:
@@ -9346,7 +9317,7 @@ class Game:
             if (self.game_state.is_ai_player() and
                 self.game_state.phase == 'playing' and
                 self.game_state.turn_phase == 'planning' and
-                not (hasattr(self, 'sim_state') and self.sim_state is not None)):
+                self.sim_state is None):
                 self.render_ai_thinking_indicator()
 
             # (Tutorial update moved to before rendering for camera animation sync)
@@ -9411,7 +9382,7 @@ class Game:
             return (False, False)
 
         # Resume Game button
-        if hasattr(self, 'menu_resume_button') and self.menu_resume_button:
+        if self.menu_resume_button:
             if self.menu_resume_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('menu_button', 'resume')
@@ -9420,7 +9391,7 @@ class Game:
                 return (True, False)
         
         # Options button
-        if hasattr(self, 'menu_options_button') and self.menu_options_button:
+        if self.menu_options_button:
             if self.menu_options_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('menu_button', 'options')
@@ -9443,7 +9414,7 @@ class Game:
                 return (True, False)
         
         # Quit to Main Menu button
-        if hasattr(self, 'menu_quit_button') and self.menu_quit_button:
+        if self.menu_quit_button:
             if self.menu_quit_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('menu_button', 'quit')
@@ -9512,7 +9483,7 @@ class Game:
             return (False, False)
         
         # Resolution dropdown button
-        if hasattr(self, 'resolution_dropdown_button') and self.resolution_dropdown_button:
+        if self.resolution_dropdown_button:
             if self.resolution_dropdown_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('options_control', 'resolution_dropdown')
@@ -9521,7 +9492,7 @@ class Game:
                 return (True, False)
         
         # Resolution dropdown options (if open)
-        if self.resolution_dropdown_open and hasattr(self, 'resolution_option_buttons'):
+        if self.resolution_dropdown_open and self.resolution_option_buttons:
             for option_rect, resolution in self.resolution_option_buttons:
                 if option_rect.collidepoint(pos):
                     self.sound_manager.play_ui_click()
@@ -9533,7 +9504,7 @@ class Game:
                     return (True, False)
         
         # Fullscreen checkbox
-        if hasattr(self, 'fullscreen_checkbox') and self.fullscreen_checkbox:
+        if self.fullscreen_checkbox:
             if self.fullscreen_checkbox.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('options_control', 'fullscreen_checkbox')
@@ -9547,14 +9518,14 @@ class Game:
         # ===== GAMEPLAY CONTROLS =====
         
         # Edge Scrolling checkbox
-        if hasattr(self, 'gameplay_edge_scrolling_checkbox') and self.gameplay_edge_scrolling_checkbox:
+        if self.gameplay_edge_scrolling_checkbox:
             if self.gameplay_edge_scrolling_checkbox.collidepoint(pos):
                 self.trigger_click_flash('gameplay_control', 'edge_scrolling')
                 self.temp_edge_scrolling_enabled = not self.temp_edge_scrolling_enabled
                 return (True, False)
         
         # Edge Scrolling Mode dropdown
-        if hasattr(self, 'gameplay_edge_scroll_mode_dropdown') and self.gameplay_edge_scroll_mode_dropdown:
+        if self.gameplay_edge_scroll_mode_dropdown:
             if self.gameplay_edge_scroll_mode_dropdown.collidepoint(pos):
                 self.trigger_click_flash('gameplay_control', 'edge_scroll_mode')
                 # Toggle between modes
@@ -9565,14 +9536,14 @@ class Game:
                 return (True, False)
         
         # Tooltips checkbox
-        if hasattr(self, 'gameplay_tooltips_checkbox') and self.gameplay_tooltips_checkbox:
+        if self.gameplay_tooltips_checkbox:
             if self.gameplay_tooltips_checkbox.collidepoint(pos):
                 self.trigger_click_flash('gameplay_control', 'tooltips')
                 self.temp_tooltips_enabled = not self.temp_tooltips_enabled
                 return (True, False)
         
         # Tooltip Delay dropdown
-        if hasattr(self, 'gameplay_tooltip_delay_dropdown') and self.gameplay_tooltip_delay_dropdown:
+        if self.gameplay_tooltip_delay_dropdown:
             if self.gameplay_tooltip_delay_dropdown.collidepoint(pos):
                 self.trigger_click_flash('gameplay_control', 'tooltip_delay')
                 # Cycle through delays: 300ms -> 500ms -> 700ms -> 1000ms -> Never -> 300ms
@@ -9589,7 +9560,7 @@ class Game:
                 return (True, False)
         
         # Camera Pan Speed slider
-        if hasattr(self, 'gameplay_pan_speed_slider') and self.gameplay_pan_speed_slider:
+        if self.gameplay_pan_speed_slider:
             slider_track, min_speed, max_speed, thumb_rect = self.gameplay_pan_speed_slider
             
             # Check if click is on thumb (start dragging)
@@ -9609,7 +9580,7 @@ class Game:
                 return (True, False)
         
         # Camera Zoom Speed slider
-        if hasattr(self, 'gameplay_zoom_speed_slider') and self.gameplay_zoom_speed_slider:
+        if self.gameplay_zoom_speed_slider:
             slider_track, min_zoom_speed, max_zoom_speed, thumb_rect = self.gameplay_zoom_speed_slider
             
             # Check if click is on thumb (start dragging)
@@ -9629,7 +9600,7 @@ class Game:
                 return (True, False)
         
         # Show FPS checkbox
-        if hasattr(self, 'gameplay_fps_checkbox') and self.gameplay_fps_checkbox:
+        if self.gameplay_fps_checkbox:
             if self.gameplay_fps_checkbox.collidepoint(pos):
                 self.trigger_click_flash('gameplay_control', 'show_fps')
                 self.temp_show_fps = not self.temp_show_fps
@@ -9638,7 +9609,7 @@ class Game:
         # ===== END GAMEPLAY CONTROLS =====
         
         # Apply button
-        if hasattr(self, 'options_apply_button') and self.options_apply_button:
+        if self.options_apply_button:
             if self.options_apply_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('options_button', 'apply')
@@ -9672,7 +9643,7 @@ class Game:
                 return (True, False)
         
         # Reset to Defaults button
-        if hasattr(self, 'options_reset_button') and self.options_reset_button:
+        if self.options_reset_button:
             if self.options_reset_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('options_button', 'reset')
@@ -9681,7 +9652,7 @@ class Game:
                 return (True, False)
         
         # Back button
-        if hasattr(self, 'options_back_button') and self.options_back_button:
+        if self.options_back_button:
             if self.options_back_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('options_button', 'back')
@@ -9711,10 +9682,10 @@ class Game:
         if self.resolution_dropdown_open:
             # Check if click was outside dropdown area
             click_outside_dropdown = True
-            if hasattr(self, 'resolution_dropdown_button') and self.resolution_dropdown_button:
+            if self.resolution_dropdown_button:
                 # Create a rect that encompasses dropdown button and options
                 dropdown_area = self.resolution_dropdown_button.copy()
-                if hasattr(self, 'resolution_option_buttons') and self.resolution_option_buttons:
+                if self.resolution_option_buttons:
                     # Extend to include all options
                     for option_rect, _ in self.resolution_option_buttons:
                         dropdown_area = dropdown_area.union(option_rect)
@@ -9747,7 +9718,7 @@ class Game:
             return False
         
         # Menu button
-        if hasattr(self, 'menu_button') and self.menu_button:
+        if self.menu_button:
             if self.menu_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('top_button', 'menu')
@@ -9782,7 +9753,7 @@ class Game:
             return False, False
 
         # Check main menu button - set flag to return to main menu and exit game loop
-        if hasattr(self, 'main_menu_button') and self.main_menu_button.collidepoint(pos):
+        if self.main_menu_button and self.main_menu_button.collidepoint(pos):
             self.return_to_main_menu = True
             return True, True
 
@@ -9882,7 +9853,7 @@ class Game:
         # LEGACY FALLBACK: Old popup system (kept for safety, should not be reached)
         # Check resolve button (in initial state)
         if self.battle_popup_state == 'initial':
-            if hasattr(self, 'resolve_battle_button') and self.resolve_battle_button:
+            if self.resolve_battle_button:
                 if self.resolve_battle_button.collidepoint(pos):
                     # Store battle info before resolving (will be removed from list)
                     battle = self.game_state.pending_battles[self.selected_battle_index]
@@ -9958,7 +9929,7 @@ class Game:
         
         # Check close button (in result state)
         elif self.battle_popup_state == 'result':
-            if hasattr(self, 'close_popup_button') and self.close_popup_button:
+            if self.close_popup_button:
                 if self.close_popup_button.collidepoint(pos):
                     # Close popup
                     self.battle_popup_visible = False
@@ -10028,7 +9999,7 @@ class Game:
             return
 
         # Get battle info from stored resolved battle (battle was already resolved on FIGHT click)
-        if not hasattr(self, '_resolved_battle_info') or self._resolved_battle_info is None:
+        if self._resolved_battle_info is None:
             logger.warning("[WARNING] _finalize_enhanced_battle called but no resolved battle info found")
             self.enhanced_battle_ui = None
             self.battle_popup_visible = False
@@ -10256,9 +10227,9 @@ class Game:
             return False
 
         # End Turn button
-        if hasattr(self, 'end_turn_button') and self.end_turn_button.collidepoint(pos):
+        if self.end_turn_button and self.end_turn_button.collidepoint(pos):
                 # Tutorial hook: block End Turn if not allowed
-                if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                if (self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('end_turn')):
                     return True  # Silently consume the click
@@ -10360,7 +10331,7 @@ class Game:
                 return True
         
         # Training buttons (only when Barracks is actually selected)
-        if self.selected_barracks and hasattr(self, 'train_buttons') and self.train_buttons:
+        if self.selected_barracks and self.train_buttons:
             for unit_type, button_rect in self.train_buttons.items():
                 if button_rect.collidepoint(pos):
                     self.trigger_click_flash('training', unit_type)
@@ -10371,11 +10342,11 @@ class Game:
                     return True
 
         # Queue cancel buttons (only when Barracks is actually selected)
-        if self.selected_barracks and hasattr(self, 'queue_cancel_buttons'):
+        if self.selected_barracks and self.queue_cancel_buttons:
             for cancel_rect, queue_index in self.queue_cancel_buttons:
                 if cancel_rect.collidepoint(pos):
                     # Tutorial hook: block cancel training during tutorial unless allowed
-                    if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                    if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('cancel_training')):
                         return True  # Silently block
@@ -10404,10 +10375,10 @@ class Game:
                     return True
 
         # Demolish Barracks button (only when Barracks is actually selected)
-        if self.selected_barracks and hasattr(self, 'demolish_barracks_button') and self.demolish_barracks_button is not None:
+        if self.selected_barracks and self.demolish_barracks_button is not None:
             if self.demolish_barracks_button.collidepoint(pos):
                 # Tutorial hook: block demolish during tutorial unless allowed
-                if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                if (self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('demolish')):
                     return True  # Silently block
@@ -10436,7 +10407,7 @@ class Game:
                 return True
 
         # Castle upgrade button (only when Keep is actually selected)
-        if self.selected_keep and hasattr(self, 'castle_upgrade_button') and self.castle_upgrade_button:
+        if self.selected_keep and self.castle_upgrade_button:
             if self.castle_upgrade_button.collidepoint(pos):
                 self.trigger_click_flash('upgrade_castle', None)
                 territory, keep_plot_index = self.selected_keep
@@ -10461,7 +10432,7 @@ class Game:
                 return True
 
         # Castle upgrade cancel button (only when Keep is actually selected)
-        if self.selected_keep and hasattr(self, 'castle_upgrade_cancel_button') and self.castle_upgrade_cancel_button:
+        if self.selected_keep and self.castle_upgrade_cancel_button:
             if self.castle_upgrade_cancel_button.collidepoint(pos):
                 self.trigger_click_flash('cancel_castle_upgrade', None)
                 territory, keep_plot_index = self.selected_keep
@@ -10485,7 +10456,7 @@ class Game:
                 return True
 
         # Hero cancel button (only when Keep is actually selected, check BEFORE training buttons)
-        if self.selected_keep and hasattr(self, 'hero_cancel_button') and self.hero_cancel_button:
+        if self.selected_keep and self.hero_cancel_button:
             if self.hero_cancel_button.collidepoint(pos):
                 self.trigger_click_flash('hero_cancel', 'training')
                 territory, keep_plot_index = self.selected_keep
@@ -10509,7 +10480,7 @@ class Game:
                 return True
 
         # Hero training buttons (only when Keep is actually selected)
-        if self.selected_keep and hasattr(self, 'hero_train_buttons') and self.hero_train_buttons:
+        if self.selected_keep and self.hero_train_buttons:
             for hero_type, button_rect in self.hero_train_buttons.items():
                 if button_rect.collidepoint(pos):
                     self.trigger_click_flash('hero_training', hero_type)
@@ -10538,10 +10509,10 @@ class Game:
                     return True
 
         # Demolish Keep button (only when Keep is actually selected)
-        if self.selected_keep and hasattr(self, 'demolish_keep_button') and self.demolish_keep_button:
+        if self.selected_keep and self.demolish_keep_button:
             if self.demolish_keep_button.collidepoint(pos):
                 # Tutorial hook: block demolish during tutorial unless allowed
-                if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                if (self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('demolish')):
                     return True  # Silently block
@@ -10569,9 +10540,9 @@ class Game:
                 return True
 
         # Army composition buttons (when army composition UI visible)
-        if self.show_army_composition and hasattr(self, 'army_composition_buttons'):
+        if self.show_army_composition and self.army_composition_buttons:
             # Select All button
-            if hasattr(self, 'select_all_button') and self.select_all_button:
+            if self.select_all_button:
                 if self.select_all_button.collidepoint(pos):
                     self.trigger_click_flash('army_comp', 'select_all')
                     if self.army_composition_territory:
@@ -10584,7 +10555,7 @@ class Game:
                     return True
             
             # Deselect All button
-            if hasattr(self, 'deselect_all_button') and self.deselect_all_button:
+            if self.deselect_all_button:
                 if self.deselect_all_button.collidepoint(pos):
                     self.trigger_click_flash('army_comp', 'deselect_all')
                     self.selected_army_units = []
@@ -10607,7 +10578,7 @@ class Game:
                     return True
         
         # Territory info plot buttons (only if no Keep or Barracks is already selected)
-        if self.selected_territory_info and not self.selected_keep and not self.selected_barracks and hasattr(self, 'territory_info_plot_buttons'):
+        if self.selected_territory_info and not self.selected_keep and not self.selected_barracks and self.territory_info_plot_buttons:
             for plot_rect, territory, plot_index in self.territory_info_plot_buttons:
                 # Circular collision detection
                 plot_center_x = plot_rect.centerx
@@ -10628,7 +10599,7 @@ class Game:
 
                         if has_barracks:
                             # Tutorial hook: block barracks click in bottom UI when not allowed
-                            if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                            if (self.tutorial_mission
                                     and self.tutorial_mission.active
                                     and not self.tutorial_mission.is_action_allowed('click_barracks')):
                                 return True  # Silently block
@@ -10641,7 +10612,7 @@ class Game:
                             play_structure_sound('Barracks')
                         elif has_keep:
                             # Tutorial hook: block keep click in bottom UI when not allowed
-                            if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                            if (self.tutorial_mission
                                     and self.tutorial_mission.active
                                     and not self.tutorial_mission.is_action_allowed('click_keep')):
                                 return True  # Silently block
@@ -10654,7 +10625,7 @@ class Game:
                             play_structure_sound('Keep')
                         else:
                             # Tutorial hook: block plot selection in bottom UI when not allowed
-                            if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                            if (self.tutorial_mission
                                     and self.tutorial_mission.active
                                     and not self.tutorial_mission.is_action_allowed('click_plots')):
                                 return True  # Silently block
@@ -10675,7 +10646,7 @@ class Game:
         # Building-related buttons (when plot is selected)
         if self.selected_plot:
             # Building buttons
-            if hasattr(self, 'building_buttons'):
+            if self.building_buttons:
                 try:
                     if self.building_buttons:
                         for building_name, button_rect in self.building_buttons.items():
@@ -10699,10 +10670,10 @@ class Game:
                     logger.error(f"Error in building buttons: {e}")
             
             # Cancel construction button
-            if hasattr(self, 'cancel_button') and self.cancel_button is not None:
+            if self.cancel_button is not None:
                 if self.cancel_button.collidepoint(pos):
                     # Tutorial hook: block cancel construction during tutorial unless allowed
-                    if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                    if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('cancel_construction')):
                         return True  # Silently block
@@ -10731,10 +10702,10 @@ class Game:
                     return True
 
             # Demolish building button
-            if hasattr(self, 'demolish_button') and self.demolish_button is not None:
+            if self.demolish_button is not None:
                 if self.demolish_button.collidepoint(pos):
                     # Tutorial hook: block demolish during tutorial unless allowed
-                    if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                    if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('demolish')):
                         return True  # Silently block
@@ -10747,7 +10718,7 @@ class Game:
                     return True
 
         # Hero ability buttons (when hero is selected)
-        if self.selected_hero and hasattr(self, 'hero_ability_buttons'):
+        if self.selected_hero and self.hero_ability_buttons:
             for (hero_name, ability_index), button_rect in self.hero_ability_buttons.items():
                 if button_rect.collidepoint(pos):
                     # Check if this hero is the selected one
@@ -10842,11 +10813,11 @@ class Game:
         # Sidebar is always expanded - no collapse functionality
         
         # Check tab buttons (Phase B: only if expanded)
-        if self.game_state.sidebar_expanded and hasattr(self, 'sidebar_tab_buttons'):
+        if self.game_state.sidebar_expanded and self.sidebar_tab_buttons:
             for tab_id, tab_rect in self.sidebar_tab_buttons.items():
                 if tab_rect.collidepoint(pos):
                     # Tutorial gate: block tabs not in allowed list
-                    if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                    if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('sidebar_tab', tab_name=tab_id)):
                         return True  # Silently consume click
@@ -10860,11 +10831,11 @@ class Game:
                     return True
         
         # Check individual order cancel buttons (only if expanded)
-        if self.game_state.sidebar_expanded and hasattr(self, 'order_cancel_buttons'):
+        if self.game_state.sidebar_expanded and self.order_cancel_buttons:
             for button_rect, order_index in self.order_cancel_buttons:
                 if button_rect.collidepoint(pos):
                     # Tutorial hook: block order cancellation during tutorial unless allowed
-                    if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                    if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('cancel_order')):
                         return True  # Silently block
@@ -10872,10 +10843,10 @@ class Game:
                     return True
 
         # Check cancel all button (only if expanded)
-        if self.game_state.sidebar_expanded and hasattr(self, 'cancel_all_button') and self.cancel_all_button:
+        if self.game_state.sidebar_expanded and self.cancel_all_button:
             if self.cancel_all_button.collidepoint(pos):
                 # Tutorial hook: block cancel all orders during tutorial unless allowed
-                if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                if (self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('cancel_all_orders')):
                     return True  # Silently block
@@ -10920,7 +10891,7 @@ class Game:
         if self.game_state.phase == 'playing':
             if self.game_state.turn_phase == 'battles':
                 in_battle_phase = True
-            elif hasattr(self, 'sim_state') and self.sim_state is not None:
+            elif self.sim_state is not None:
                 if self.sim_state.sim_phase == 'resolving':
                     in_battle_phase = True
 
@@ -10932,7 +10903,7 @@ class Game:
             return False
 
         # Check battle markers
-        if hasattr(self, 'battle_markers'):
+        if self.battle_markers:
             for i, marker_rect in enumerate(self.battle_markers):
                 if marker_rect and marker_rect.collidepoint(pos):
                     if i < len(self.game_state.pending_battles):
@@ -10940,7 +10911,7 @@ class Game:
 
                         # In simultaneous mode, only the resolver can click the battle marker
                         # The resolver is the player with highest effective strength
-                        if hasattr(self, 'sim_state') and self.sim_state is not None:
+                        if self.sim_state is not None:
                             resolver = getattr(battle, 'resolver', None)
                             local_player = self.get_local_player()
                             if resolver is not None and resolver != local_player:
@@ -10994,7 +10965,7 @@ class Game:
             bool: True if click was handled, False otherwise
         """
         # Only in simultaneous mode during resolution phase
-        if not hasattr(self, 'sim_state') or self.sim_state is None:
+        if self.sim_state is None:
             return False
 
         if self.sim_state.sim_phase != 'resolving':
@@ -11145,13 +11116,13 @@ class Game:
             return False
 
         # Check if click is outside popup (dismiss)
-        if hasattr(self, 'alliance_choice_popup_rect'):
+        if self.alliance_choice_popup_rect:
             if not self.alliance_choice_popup_rect.collidepoint(pos):
                 self.alliance_choice_popup_visible = False
                 return True
 
         # Check player option buttons
-        if hasattr(self, 'alliance_choice_buttons'):
+        if self.alliance_choice_buttons:
             for button_rect, player_id in self.alliance_choice_buttons:
                 if button_rect.collidepoint(pos):
                     # Assign territory to chosen player
@@ -11368,7 +11339,7 @@ class Game:
             - Clears other UI selections (territory, plot, barracks, keep)
         """
         # Check if we have hero selection buttons stored
-        if not hasattr(self, 'hero_selection_buttons'):
+        if not self.hero_selection_buttons:
             return False
 
         # Check each hero button
@@ -11419,7 +11390,7 @@ class Game:
             return False
 
         # Check if we have technology buttons stored
-        if not hasattr(self, 'technology_buttons'):
+        if not self.technology_buttons:
             return False
 
         # Check each technology button
@@ -11460,7 +11431,7 @@ class Game:
                 # Handle left-click to start research
                 if not right_click:
                     # Tutorial gating: check if research is allowed for this tech
-                    if (hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                    if (self.tutorial_mission
                             and self.tutorial_mission.active):
                         if not self.tutorial_mission.is_action_allowed('research', tech_id=tech_id):
                             logger.info(f"[TUTORIAL] Research blocked: {tech['name']}")
@@ -11639,7 +11610,7 @@ class Game:
             if not army_at_pos:
                 territory_at_pos = self.get_territory_at_pos(world_pos)
                 # Tutorial hook: filter out non-interactive territories
-                if (territory_at_pos and hasattr(self, 'tutorial_mission') and self.tutorial_mission
+                if (territory_at_pos and self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_territory_interactive(territory_at_pos)):
                     territory_at_pos = None
@@ -11782,7 +11753,7 @@ class Game:
             mouse_pos = pygame.mouse.get_pos()
             current_hover = None
             # Only track if we're showing building buttons (plot is empty)
-            if hasattr(self, 'building_buttons') and self.building_buttons:
+            if self.building_buttons:
                 for building_name, button_rect in self.building_buttons.items():
                     if button_rect.collidepoint(mouse_pos):
                         current_hover = ('building', building_name)
@@ -11798,7 +11769,7 @@ class Game:
                 self.hover_start_time_button = None
 
         # Track territorial bonuses button hover (top panel)
-        if hasattr(self, 'bonuses_button_rect') and self.bonuses_button_rect:
+        if self.bonuses_button_rect:
             if self.bonuses_button_rect.collidepoint(self.mouse_pos):
                 self.update_button_hover(('territorial_bonuses', None), 'territorial_bonuses')
             else:
@@ -12345,14 +12316,14 @@ class Game:
         indicator_y = BOTTOM_UI_Y - indicator_height
 
         # PERFORMANCE: Cache the overlay surface instead of creating every frame
-        if not hasattr(self, '_ai_indicator_overlay'):
+        if self._ai_indicator_overlay is None:
             self._ai_indicator_overlay = pygame.Surface((WINDOW_WIDTH, indicator_height), pygame.SRCALPHA)
             self._ai_indicator_overlay.fill((0, 0, 0, 120))
         self.screen.blit(self._ai_indicator_overlay, (0, indicator_y))
 
         # PERFORMANCE: Cache fonts instead of creating every frame
         # Phase 7: AI indicator uses Cinzel Bold 38px for title, SemiBold 26px for subtitle (20% smaller)
-        if not hasattr(self, '_ai_indicator_title_font'):
+        if self._ai_indicator_title_font is None:
             self._ai_indicator_title_font = self.font_manager.get_bold_font(38)
             self._ai_indicator_subtitle_font = self.font_manager.get_font(26)
 
@@ -12423,7 +12394,7 @@ class Game:
         4. End the turn automatically
         """
         # Initialize AI players if not already done
-        if not hasattr(self, 'ai_players') or not self.ai_players:
+        if not self.ai_players:
             self.initialize_ai_players()
 
         current_player = self.game_state.current_player
