@@ -54,8 +54,10 @@ import math
 import json
 import os
 import time
+import random
 import map_data
 from game_state import GameState
+from network_config import MessageType
 
 # Import refactored modules
 from config.constants import *
@@ -768,6 +770,24 @@ class Game:
         # Key: tab_name -> rotated Surface (pygame.transform.rotate is expensive)
         self._rotated_tab_text_cache = {}
 
+        # PERFORMANCE: Cached overlay surfaces to avoid per-frame SRCALPHA allocations
+        # Each full-screen SRCALPHA surface is ~5.44MB — reuse instead of recreating
+        self._cached_silence_fog = None          # Silence fog overlay (WINDOW_WIDTH x MAP_HEIGHT)
+        self._cached_negotiator_surface = None   # Master Negotiator particles (full-screen)
+        self._cached_targeting_cursor = None     # Targeting cursor circle (60x60)
+        self._cached_targeting_text_bg = None    # Targeting cursor text background
+        self._cached_targeting_text = None       # Cached targeting instruction text
+        self._cached_spectator_banner = None     # Spectator banner surface (500x50)
+        self._cached_spectator_text = None       # Last spectator banner text rendered
+        self._cached_action_log_surface = None   # Action log overlay (300x400)
+        self._cached_victory_overlay = None      # Victory screen overlay (full-screen)
+        self._cached_victory_scale = None        # Last victory image scale factor
+        self._cached_victory_scaled_img = None   # Cached smoothscaled victory image
+        self._cached_alliance_overlay = None     # Alliance popup dimming overlay (full-screen)
+        self._cached_alliance_bg = None          # Cached scaled alliance popup background
+        self._cached_alliance_bg_size = None     # Size the alliance bg was scaled to
+        self._cached_building_overlays = {}      # Building icon overlays keyed by size
+
         # Ability targeting system
         self.ability_targeting_active = False  # Is player currently targeting with an ability?
         self.ability_targeting_hero = None  # Which hero's ability is being targeted
@@ -1097,7 +1117,7 @@ class Game:
         if self.game_state.current_player != self.local_player_index:
             return  # It's remote player's turn, they'll see their own units locally
 
-        from network_config import MessageType
+
 
         # Send unit completion notifications (units just spawned at turn start)
         if hasattr(self.game_state, 'last_completed_units') and self.game_state.last_completed_units:
@@ -1155,7 +1175,7 @@ class Game:
             return
 
         # Import message types
-        from network_config import MessageType
+
 
         if msg_type == MessageType.MOVEMENT_ORDER:
             # Remote player issued a movement order
@@ -1934,7 +1954,7 @@ class Game:
         if not self.network_connection:
             return
 
-        from network_config import MessageType
+
         from network.protocol import NetworkProtocol
 
         protocol = NetworkProtocol()
@@ -1980,7 +2000,7 @@ class Game:
 
         # Step 3: Send SIM_ALL_READY to clients with filtered orders
         if self.multiplayer_mode:
-            from network_config import MessageType
+    
             self._send_action_to_remote(MessageType.SIM_ALL_READY, {
                 'orders': merged_orders,
                 'forced_defenders': [
@@ -2093,7 +2113,7 @@ class Game:
             },
         }
 
-        from network_config import MessageType
+
         self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, authoritative_data)
 
     def _sim_broadcast_forced_defend(self, forced_defenders: list):
@@ -2111,7 +2131,7 @@ class Game:
 
         logger.info(f"[HOST] Broadcasting SIM_FORCED_DEFEND for {len(forced_defenders)} forced defenders")
 
-        from network_config import MessageType
+
         for fd in forced_defenders:
             self._send_action_to_remote(MessageType.SIM_FORCED_DEFEND, {
                 'player_id': fd.get('player_id'),
@@ -2231,7 +2251,7 @@ class Game:
         if self.sim_state is None or self.sim_state.sim_phase != 'planning':
             return
 
-        from network_config import MessageType
+
 
         # Convert timer dict to string keys for JSON serialization
         timers = {str(k): v for k, v in self.sim_state.player_timers.items()}
@@ -2250,7 +2270,7 @@ class Game:
         if not self.multiplayer_mode or self.local_player_index != 0:
             return  # Only host sends this
 
-        from network_config import MessageType
+
         self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, {
             'round_number': round_number
         })
@@ -2398,11 +2418,12 @@ class Game:
         """Render the victory/defeat cinematic overlay and image."""
         screen_width, screen_height = self.screen.get_size()
 
-        # Black overlay with current fade alpha
-        overlay = pygame.Surface((screen_width, screen_height))
-        overlay.fill((0, 0, 0))
-        overlay.set_alpha(self.victory_fade_alpha)
-        self.screen.blit(overlay, (0, 0))
+        # PERFORMANCE: Reuse cached overlay instead of allocating every frame
+        if self._cached_victory_overlay is None or self._cached_victory_overlay.get_size() != (screen_width, screen_height):
+            self._cached_victory_overlay = pygame.Surface((screen_width, screen_height))
+        self._cached_victory_overlay.fill((0, 0, 0))
+        self._cached_victory_overlay.set_alpha(self.victory_fade_alpha)
+        self.screen.blit(self._cached_victory_overlay, (0, 0))
 
         # Victory/defeat image (during image_grow and image_hold phases)
         if self.victory_image and self.victory_phase in ('image_grow', 'image_hold'):
@@ -2412,12 +2433,15 @@ class Game:
             if scale > 0:
                 scaled_width = int(img_width * scale)
                 scaled_height = int(img_height * scale)
-                scaled_img = pygame.transform.smoothscale(
-                    self.victory_image, (scaled_width, scaled_height)
-                )
+                # PERFORMANCE: Cache smoothscale result when scale factor unchanged
+                if self._cached_victory_scale != scale:
+                    self._cached_victory_scaled_img = pygame.transform.smoothscale(
+                        self.victory_image, (scaled_width, scaled_height)
+                    )
+                    self._cached_victory_scale = scale
                 x = (screen_width - scaled_width) // 2
                 y = (screen_height - scaled_height) // 2
-                self.screen.blit(scaled_img, (x, y))
+                self.screen.blit(self._cached_victory_scaled_img, (x, y))
 
     def get_territory_at_pos(self, pos):
         """
@@ -3046,16 +3070,16 @@ class Game:
         if border_width > 0:
             pygame.draw.rect(self.screen, border_color, rect, border_width)
         
-        # Draw text if provided
+        # PERFORMANCE: Use text cache to avoid font.render() every frame for static button labels
         if text:
             if font is None:
                 font = self.font
-            text_surf = font.render(text, True, text_color)
+            text_surf = self._get_cached_text(text, font, text_color)
             text_rect = text_surf.get_rect(center=rect.center)
             self.screen.blit(text_surf, text_rect)
-        
+
         return (final_color, is_hovering, is_clicking)
-    
+
     def draw_tooltip_box(self, pos, lines, max_width=None, bg_color=(255, 255, 220),
                         border_color=BLACK, padding=8, line_spacing=2, use_transparency=False):
         """
@@ -3446,13 +3470,13 @@ class Game:
         target_alpha = 70
         current_alpha = (target_alpha + shimmer_offset) * fade_progress
 
-        # Create fog surface and fill with gradually darkening fog
-        fog_surface = pygame.Surface((WINDOW_WIDTH, MAP_HEIGHT), pygame.SRCALPHA)
-        fog_color = (120, 0, 0, int(current_alpha))
-        fog_surface.fill(fog_color)
+        # PERFORMANCE: Reuse cached fog surface instead of allocating 5.44MB SRCALPHA every frame
+        if self._cached_silence_fog is None or self._cached_silence_fog.get_size() != (WINDOW_WIDTH, MAP_HEIGHT):
+            self._cached_silence_fog = pygame.Surface((WINDOW_WIDTH, MAP_HEIGHT), pygame.SRCALPHA)
+        self._cached_silence_fog.fill((120, 0, 0, int(current_alpha)))
 
         # Blit the fog over the map area (below top panel)
-        self.screen.blit(fog_surface, (0, TOP_PANEL_HEIGHT))
+        self.screen.blit(self._cached_silence_fog, (0, TOP_PANEL_HEIGHT))
 
     def _point_in_polygon(self, x, y, polygon):
         """
@@ -3775,18 +3799,17 @@ class Game:
             self.defiance_bubble_spawn_timer = 0
 
             # Spawn bubbles on random positions within protected territories
-            import random
             for territory in protected_territories:
                 # Get territory polygon from scaled_polygons
                 territory_polygon = self.scaled_polygons.get(territory)
                 if not territory_polygon:
                     continue
 
-                # Get bounding box of territory
-                xs = [point[0] for point in territory_polygon]
-                ys = [point[1] for point in territory_polygon]
-                min_x, max_x = min(xs), max(xs)
-                min_y, max_y = min(ys), max(ys)
+                # PERFORMANCE: Use precomputed bounding boxes instead of recomputing from polygon
+                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
+                if not bbox:
+                    continue
+                min_x, min_y, max_x, max_y = bbox
 
                 # Try to spawn a bubble inside the territory (max 10 attempts for better coverage)
                 for attempt in range(10):
@@ -3911,18 +3934,17 @@ class Game:
             self.haste_bubble_spawn_timer = 0
 
             # Spawn bubbles on random positions within affected territories
-            import random
             for territory in affected_territories:
                 # Get territory polygon from scaled_polygons
                 territory_polygon = self.scaled_polygons.get(territory)
                 if not territory_polygon:
                     continue
 
-                # Get bounding box of territory
-                xs = [point[0] for point in territory_polygon]
-                ys = [point[1] for point in territory_polygon]
-                min_x, max_x = min(xs), max(xs)
-                min_y, max_y = min(ys), max(ys)
+                # PERFORMANCE: Use precomputed bounding boxes instead of recomputing from polygon
+                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
+                if not bbox:
+                    continue
+                min_x, min_y, max_x, max_y = bbox
 
                 # Try to spawn a bubble inside the territory (max 10 attempts)
                 for attempt in range(10):
@@ -4042,17 +4064,16 @@ class Game:
             self.safe_haven_bubble_spawn_timer = 0
 
             # Spawn bubbles on random positions within affected territories
-            import random
             for territory in affected_territories:
                 # Get territory polygon from scaled_polygons
                 if territory in self.scaled_polygons:
                     polygon = self.scaled_polygons[territory]
 
-                    # Get bounding box
-                    min_x = min(p[0] for p in polygon)
-                    max_x = max(p[0] for p in polygon)
-                    min_y = min(p[1] for p in polygon)
-                    max_y = max(p[1] for p in polygon)
+                    # PERFORMANCE: Use precomputed bounding boxes instead of recomputing from polygon
+                    bbox = self.map_renderer.territory_bounding_boxes.get(territory)
+                    if not bbox:
+                        continue
+                    min_x, min_y, max_x, max_y = bbox
 
                     # Try to spawn bubble inside territory polygon
                     for attempt in range(10):
@@ -4118,55 +4139,49 @@ class Game:
 
         # Draw targeting circle at mouse position
         circle_radius = 30
-        circle_color = (255, 255, 0)  # Yellow
-        circle_alpha = 150
 
-        # Create surface for the targeting circle
-        circle_surface = pygame.Surface((circle_radius * 2, circle_radius * 2), pygame.SRCALPHA)
+        # PERFORMANCE: Cache the targeting cursor surface (static, same every frame)
+        if self._cached_targeting_cursor is None:
+            circle_color = (255, 255, 0)  # Yellow
+            circle_alpha = 150
+            self._cached_targeting_cursor = pygame.Surface((circle_radius * 2, circle_radius * 2), pygame.SRCALPHA)
+            color_with_alpha = circle_color + (circle_alpha,)
+            pygame.draw.circle(self._cached_targeting_cursor, color_with_alpha,
+                             (circle_radius, circle_radius), circle_radius)
+            border_color = (255, 200, 0, 255)  # Solid orange
+            pygame.draw.circle(self._cached_targeting_cursor, border_color,
+                             (circle_radius, circle_radius), circle_radius, 2)
+            # Draw crosshair
+            pygame.draw.line(self._cached_targeting_cursor, border_color,
+                            (circle_radius - 10, circle_radius),
+                            (circle_radius + 10, circle_radius), 2)
+            pygame.draw.line(self._cached_targeting_cursor, border_color,
+                            (circle_radius, circle_radius - 10),
+                            (circle_radius, circle_radius + 10), 2)
 
-        # Draw filled circle with alpha
-        color_with_alpha = circle_color + (circle_alpha,)
-        pygame.draw.circle(circle_surface, color_with_alpha,
-                         (circle_radius, circle_radius), circle_radius)
-
-        # Draw border for better visibility
-        border_color = (255, 200, 0) + (255,)  # Solid orange
-        pygame.draw.circle(circle_surface, border_color,
-                         (circle_radius, circle_radius), circle_radius, 2)
-
-        # Draw crosshair
-        pygame.draw.line(circle_surface, border_color,
-                        (circle_radius - 10, circle_radius),
-                        (circle_radius + 10, circle_radius), 2)
-        pygame.draw.line(circle_surface, border_color,
-                        (circle_radius, circle_radius - 10),
-                        (circle_radius, circle_radius + 10), 2)
-
-        # Blit to screen
-        self.screen.blit(circle_surface,
+        # Blit cached cursor to screen
+        self.screen.blit(self._cached_targeting_cursor,
                        (mouse_pos[0] - circle_radius, mouse_pos[1] - circle_radius))
 
-        # Draw instruction text below cursor
-        instruction_text = "Click territory to target | ESC to cancel"
-        text_surface = self.small_font.render(instruction_text, True, (255, 255, 255))
-        text_rect = text_surface.get_rect(center=(mouse_pos[0], mouse_pos[1] + circle_radius + 20))
+        # PERFORMANCE: Cache instruction text and background (static content)
+        if self._cached_targeting_text is None:
+            instruction_text = "Click territory to target | ESC to cancel"
+            self._cached_targeting_text = self.small_font.render(instruction_text, True, (255, 255, 255))
+            bg_rect = self._cached_targeting_text.get_rect().inflate(10, 5)
+            self._cached_targeting_text_bg = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(self._cached_targeting_text_bg, (0, 0, 0, 180),
+                           self._cached_targeting_text_bg.get_rect(), border_radius=5)
 
-        # Draw background for text
+        text_rect = self._cached_targeting_text.get_rect(center=(mouse_pos[0], mouse_pos[1] + circle_radius + 20))
         bg_rect = text_rect.inflate(10, 5)
-        bg_surface = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
-        pygame.draw.rect(bg_surface, (0, 0, 0, 180), bg_surface.get_rect(), border_radius=5)
-        self.screen.blit(bg_surface, bg_rect)
-
-        # Draw text
-        self.screen.blit(text_surface, text_rect)
+        self.screen.blit(self._cached_targeting_text_bg, bg_rect)
+        self.screen.blit(self._cached_targeting_text, text_rect)
 
     def draw_invalid_target_popup(self):
         """
         Draw a popup message in the center of the screen showing invalid target error.
         Auto-dismisses after 1 second.
         """
-        import pygame
-
         # Check if message should be dismissed
         current_time = pygame.time.get_ticks()
         if current_time - self.invalid_target_message_time > 1000:  # 1 second
@@ -4316,7 +4331,7 @@ class Game:
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
                         if self.multiplayer_mode and self.sim_state is not None:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
@@ -4334,7 +4349,6 @@ class Game:
                     else:
                         # Invalid target - show error message
                         self.invalid_target_message = error_msg
-                        import pygame
                         self.invalid_target_message_time = pygame.time.get_ticks()
 
                 elif self.ability_targeting_ability_name == 'Aggressive Diplomacy':
@@ -4359,7 +4373,7 @@ class Game:
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
                         if self.multiplayer_mode and self.sim_state is not None:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
@@ -4377,7 +4391,6 @@ class Game:
                     else:
                         # Invalid target - show error message
                         self.invalid_target_message = error_msg
-                        import pygame
                         self.invalid_target_message_time = pygame.time.get_ticks()
 
                 elif self.ability_targeting_ability_name == 'Levy':
@@ -4402,7 +4415,7 @@ class Game:
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
                         if self.multiplayer_mode and self.sim_state is not None:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
@@ -4420,7 +4433,6 @@ class Game:
                     else:
                         # Invalid target - show error message
                         self.invalid_target_message = error_msg
-                        import pygame
                         self.invalid_target_message_time = pygame.time.get_ticks()
 
                 elif self.ability_targeting_ability_name == 'Decisive Strike':
@@ -4445,7 +4457,7 @@ class Game:
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
                         if self.multiplayer_mode and self.sim_state is not None:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
@@ -4463,7 +4475,6 @@ class Game:
                     else:
                         # Invalid target - show error message
                         self.invalid_target_message = error_msg
-                        import pygame
                         self.invalid_target_message_time = pygame.time.get_ticks()
 
                 elif self.ability_targeting_ability_name == 'Valorous Charge':
@@ -4488,7 +4499,7 @@ class Game:
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
                         if self.multiplayer_mode and self.sim_state is not None:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
@@ -4506,7 +4517,6 @@ class Game:
                     else:
                         # Invalid target - show error message
                         self.invalid_target_message = error_msg
-                        import pygame
                         self.invalid_target_message_time = pygame.time.get_ticks()
 
                 elif self.ability_targeting_ability_name == 'Royal Charisma':
@@ -4531,7 +4541,7 @@ class Game:
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
                         if self.multiplayer_mode and self.sim_state is not None:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
@@ -4549,7 +4559,6 @@ class Game:
                     else:
                         # Invalid target - show error message
                         self.invalid_target_message = error_msg
-                        import pygame
                         self.invalid_target_message_time = pygame.time.get_ticks()
 
                 elif self.ability_targeting_ability_name == 'Regicide':
@@ -4574,7 +4583,7 @@ class Game:
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
                         if self.multiplayer_mode and self.sim_state is not None:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
@@ -4592,7 +4601,6 @@ class Game:
                     else:
                         # Invalid target - show error message
                         self.invalid_target_message = error_msg
-                        import pygame
                         self.invalid_target_message_time = pygame.time.get_ticks()
 
             return  # Don't process normal map clicks while targeting
@@ -4637,8 +4645,7 @@ class Game:
                     ui_scale = self.get_ui_scale_factor()
                     scaled_building_icon_radius = int(BUILDING_ICON_RADIUS * ui_scale)
                     scaled_icon_click_radius = int(ICON_CLICK_RADIUS * ui_scale)
-                    
-                    import math
+
                     for i, building_name in enumerate(building_list):
                         angle = (i / num_buildings) * 2 * math.pi - math.pi / 2
                         # Icon position in screen coordinates (same as rendering, with scaling!)
@@ -4675,7 +4682,7 @@ class Game:
                                 if self.game_state.start_construction(territory, plot_index, building_name):
                                     # MULTIPLAYER: Send building start notification
                                     if self.multiplayer_mode:
-                                        from network_config import MessageType
+                                
                                         self._send_action_to_remote(MessageType.BUILDING_ORDER, {
                                             'territory': territory,
                                             'plot_index': plot_index,
@@ -4710,8 +4717,7 @@ class Game:
                 ui_scale = self.get_ui_scale_factor()
                 scaled_building_icon_radius = int(BUILDING_ICON_RADIUS * ui_scale)
                 scaled_icon_click_radius = int(ICON_CLICK_RADIUS * ui_scale)
-                
-                import math
+
                 for i, unit_type in enumerate(unit_types):
                     angle = (i / num_units) * 2 * math.pi - math.pi / 2
                     # Icon position in screen coordinates (same as rendering, with scaling!)
@@ -5016,7 +5022,7 @@ class Game:
             if self.game_state.add_movement_order(from_territory, territory):
                 # Send to remote player (multiplayer)
                 if self.multiplayer_mode:
-                    from network_config import MessageType
+            
                     # Get unit IDs from the order that was just created
                     if self.game_state.movement_orders:
                         last_order = self.game_state.movement_orders[-1]
@@ -7373,21 +7379,26 @@ class Game:
                     if not (can_build and can_afford and can_build_this_building) or is_clicking or is_hovering:
                         display_icon = cached_icon.copy()  # Only copy when we need to apply effects
 
+                        # PERFORMANCE: Cache building overlay surfaces by size to avoid per-frame allocation
+                        if icon_size not in self._cached_building_overlays:
+                            red = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+                            red.fill((255, 100, 100, 128))
+                            bright = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+                            bright.fill((100, 100, 100, 100))
+                            light = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+                            light.fill((50, 50, 50, 50))
+                            self._cached_building_overlays[icon_size] = {'red': red, 'bright': bright, 'light': light}
+                        overlays = self._cached_building_overlays[icon_size]
+
                         # Apply red tint overlay if building is unavailable
                         if not (can_build and can_afford and can_build_this_building):
-                            red_overlay = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                            red_overlay.fill((255, 100, 100, 128))
-                            display_icon.blit(red_overlay, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+                            display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGB_MULT)
 
                         # Apply hover/click brightness effects
                         if is_clicking:
-                            bright_overlay = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                            bright_overlay.fill((100, 100, 100, 100))
-                            display_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                            display_icon.blit(overlays['bright'], (0, 0), special_flags=pygame.BLEND_RGB_ADD)
                         elif is_hovering:
-                            light_overlay = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                            light_overlay.fill((50, 50, 50, 50))
-                            display_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                            display_icon.blit(overlays['light'], (0, 0), special_flags=pygame.BLEND_RGB_ADD)
 
                     # Blit final icon
                     icon_rect = display_icon.get_rect(center=(button_center_x, button_center_y))
@@ -8844,8 +8855,8 @@ class Game:
         instructions_x = instructions_separator_x + 15
         instructions_y = grid_y
 
-        # Header for instructions
-        header_text = self.font_bold.render("Unit Selection Info:", True, WHITE)
+        # PERFORMANCE: Cache static instruction text renders
+        header_text = self._get_cached_text("Unit Selection Info:", self.font_bold, WHITE)
         self.screen.blit(header_text, (instructions_x, instructions_y))
         instructions_y += 30  # Space after header
 
@@ -8859,9 +8870,9 @@ class Game:
         ]
 
         for line in instruction_lines:
-            inst_text = self.small_font.render(line, True, BROWN_TEXT_SECONDARY)
+            inst_text = self._get_cached_text(line, self.small_font, BROWN_TEXT_SECONDARY)
             self.screen.blit(inst_text, (instructions_x, instructions_y))
-            instructions_y += 22  # Increased spacing from 18 to 22
+            instructions_y += 22
     
     def draw_action_log_overlay(self):
         """Draw action log as an overlay on the right side of the screen"""
@@ -8874,21 +8885,22 @@ class Game:
         overlay_x = WINDOW_WIDTH - overlay_width - 20
         overlay_y = 50
         
-        # Draw semi-transparent background
-        overlay_surface = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
-        pygame.draw.rect(overlay_surface, (40, 40, 40, 230), (0, 0, overlay_width, overlay_height))
-        pygame.draw.rect(overlay_surface, WHITE, (0, 0, overlay_width, overlay_height), 2)
-        self.screen.blit(overlay_surface, (overlay_x, overlay_y))
+        # PERFORMANCE: Reuse cached action log background surface
+        if self._cached_action_log_surface is None or self._cached_action_log_surface.get_size() != (overlay_width, overlay_height):
+            self._cached_action_log_surface = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
+            pygame.draw.rect(self._cached_action_log_surface, (40, 40, 40, 230), (0, 0, overlay_width, overlay_height))
+            pygame.draw.rect(self._cached_action_log_surface, WHITE, (0, 0, overlay_width, overlay_height), 2)
+        self.screen.blit(self._cached_action_log_surface, (overlay_x, overlay_y))
         
-        # Title
-        title_text = self.font.render("Action Log", True, WHITE)
+        # PERFORMANCE: Cache static title and close button text
+        title_text = self._get_cached_text("Action Log", self.font, WHITE)
         self.screen.blit(title_text, (overlay_x + 10, overlay_y + 10))
-        
+
         # Close button
         close_rect = pygame.Rect(overlay_x + overlay_width - 30, overlay_y + 5, 25, 25)
         pygame.draw.rect(self.screen, (200, 100, 100), close_rect)
         pygame.draw.rect(self.screen, WHITE, close_rect, 1)
-        close_text = self.font.render("X", True, WHITE)
+        close_text = self._get_cached_text("X", self.font, WHITE)
         close_text_rect = close_text.get_rect(center=close_rect.center)
         self.screen.blit(close_text, close_text_rect)
         self.action_log_close_button = close_rect
@@ -8903,27 +8915,28 @@ class Game:
                 for word in words:
                     test_line = line + " " + word if line else word
                     if len(test_line) > 35:
-                        msg_text = self.small_font.render(line, True, WHITE)
+                        msg_text = self._get_cached_text(line, self.small_font, WHITE)
                         self.screen.blit(msg_text, (overlay_x + 10, msg_y))
                         msg_y += 20
                         line = word
                     else:
                         line = test_line
                 if line:
-                    msg_text = self.small_font.render(line, True, WHITE)
+                    msg_text = self._get_cached_text(line, self.small_font, WHITE)
                     self.screen.blit(msg_text, (overlay_x + 10, msg_y))
                     msg_y += 20
             else:
-                msg_text = self.small_font.render(message, True, WHITE)
+                msg_text = self._get_cached_text(message, self.small_font, WHITE)
                 self.screen.blit(msg_text, (overlay_x + 10, msg_y))
                 msg_y += 20
     
     def draw_victory_screen(self):
         """Draw the victory screen overlay"""
-        # Create semi-transparent overlay
-        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        pygame.draw.rect(overlay, (0, 0, 0, 180), (0, 0, WINDOW_WIDTH, WINDOW_HEIGHT))
-        self.screen.blit(overlay, (0, 0))
+        # PERFORMANCE: Reuse cached overlay instead of allocating full-screen SRCALPHA every frame
+        if self._cached_victory_overlay is None or self._cached_victory_overlay.get_size() != (WINDOW_WIDTH, WINDOW_HEIGHT):
+            self._cached_victory_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            pygame.draw.rect(self._cached_victory_overlay, (0, 0, 0, 180), (0, 0, WINDOW_WIDTH, WINDOW_HEIGHT))
+        self.screen.blit(self._cached_victory_overlay, (0, 0))
         
         # Victory text
         # Phase 7: Victory message uses Cinzel SemiBold 72px for entire message
@@ -9286,7 +9299,7 @@ class Game:
 
                         # MULTIPLAYER: Send battle result to clients
                         if self.multiplayer_mode and self.local_player_index == 0:
-                            from network_config import MessageType
+                    
                             battle_data = {
                                 'territory': territory,
                                 'winner': battle.winner if battle.resolved else -1,
@@ -9361,7 +9374,6 @@ class Game:
                         min_territories = min(territory_counts.values())
                         candidates = [p for p, c in territory_counts.items() if c == min_territories]
 
-                        import random
                         chosen_owner = random.choice(candidates)
                         logger.info(f"[SIM] AI chose player {chosen_owner} (had {territory_counts[chosen_owner]} territories, candidates: {candidates})")
 
@@ -9370,7 +9382,7 @@ class Game:
 
                         # MULTIPLAYER: Broadcast alliance choice to clients
                         if self.multiplayer_mode and self.local_player_index == 0:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.SIM_ALLIANCE_CHOICE, {
                                 'territory': territory,
                                 'new_owner': chosen_owner
@@ -9884,99 +9896,6 @@ class Game:
 
             # (Tutorial update moved to before rendering for camera animation sync)
 
-#             # ========================================
-#             # CAMERA DEBUG OVERLAY (Phase 2D: temporary for testing)
-#             # Shows camera offset and zoom values on screen
-#             # TODO: Remove this after camera rendering is fully implemented
-#             # ========================================
-#             debug_y = 10
-#             debug_x = 10
-#             
-#             # Camera offset
-#             offset_text = self.small_font.render(
-#                 f"Camera Offset: ({self.camera_offset[0]:.1f}, {self.camera_offset[1]:.1f})",
-#                 True, RED
-#             )
-#             self.screen.blit(offset_text, (debug_x, debug_y))
-#             debug_y += 20
-#             
-#             # Map size vs visible size (shows why camera might not move!)
-#             visible_w = WINDOW_WIDTH / self.camera_zoom
-#             visible_h = MAP_HEIGHT / self.camera_zoom
-#             map_bounds_text = self.small_font.render(
-#                 f"Map: {self.map_width}x{self.map_height} | Visible: {int(visible_w)}x{int(visible_h)}",
-#                 True, RED
-#             )
-#             self.screen.blit(map_bounds_text, (debug_x, debug_y))
-#             debug_y += 20
-#             
-#             # Camera bounds (max scrollable distance)
-#             max_x = max(0, self.map_width - visible_w)
-#             max_y = max(0, self.map_height - visible_h)
-#             bounds_text = self.small_font.render(
-#                 f"Max Offset: ({int(max_x)}, {int(max_y)}) - {'CAN SCROLL' if max_x > 0 or max_y > 0 else 'MAP FITS IN WINDOW!'}",
-#                 True, YELLOW if max_x > 0 or max_y > 0 else RED
-#             )
-#             self.screen.blit(bounds_text, (debug_x, debug_y))
-#             debug_y += 20
-#             
-#             # Camera zoom (with limit indicators)
-#             zoom_color = RED
-#             zoom_suffix = ""
-#             if self.camera_zoom >= self.camera_max_zoom:
-#                 zoom_color = YELLOW
-#                 zoom_suffix = " - MAX ZOOM"
-#             elif self.camera_zoom <= self.camera_min_zoom:
-#                 zoom_color = YELLOW
-#                 zoom_suffix = " - MIN ZOOM"
-#             
-#             zoom_text = self.small_font.render(
-#                 f"Camera Zoom: {self.camera_zoom:.2f}x ({int(self.camera_zoom * 100)}%){zoom_suffix}",
-#                 True, zoom_color
-#             )
-#             self.screen.blit(zoom_text, (debug_x, debug_y))
-#             debug_y += 20
-#             
-#             # Drag state
-#             if self.camera_drag_start is not None:
-#                 drag_text = self.small_font.render("DRAGGING (middle mouse)", True, GREEN)
-#             else:
-#                 drag_text = self.small_font.render("Not dragging", True, GRAY)
-#             self.screen.blit(drag_text, (debug_x, debug_y))
-#             debug_y += 20
-#             
-#             # Edge scroll state
-#             if self.debug_edge_scroll:
-#                 edge_text = self.small_font.render(self.debug_edge_scroll, True, GREEN)
-#             else:
-#                 edge_text = self.small_font.render("Edge scroll: inactive", True, GRAY)
-#             self.screen.blit(edge_text, (debug_x, debug_y))
-#             debug_y += 20
-#             
-#             # Keyboard scroll state
-#             if self.debug_keyboard_scroll:
-#                 kb_text = self.small_font.render(self.debug_keyboard_scroll, True, GREEN)
-#             else:
-#                 kb_text = self.small_font.render("Keyboard: inactive", True, GRAY)
-#             self.screen.blit(kb_text, (debug_x, debug_y))
-#             debug_y += 20
-#             
-#             # Instructions
-#             instructions = self.small_font.render(
-#                 "Camera: Middle-drag | Edge scroll | Arrows | Mouse wheel zoom",
-#                 True, YELLOW
-#             )
-#             self.screen.blit(instructions, (debug_x, debug_y))
-#             debug_y += 20
-#             
-#             # Map fit warning (only if zoomed out completely)
-#             if max_x <= 0 and max_y <= 0:
-#                 warning = self.small_font.render(
-#                     "Map fits in window! Zoom in (wheel up) to test camera movement!",
-#                     True, RED
-#                 )
-#                 self.screen.blit(warning, (debug_x, debug_y))
-            
             # Update click flash timer (decrement if active)
             if self.click_flash_timer > 0:
                 dt = self.clock.get_time()  # Milliseconds since last frame
@@ -10540,7 +10459,7 @@ class Game:
 
                     # MULTIPLAYER: Send battle result to remote player
                     if self.multiplayer_mode:
-                        from network_config import MessageType
+                
                         battle_data = {
                             'territory': territory,
                             'winner': battle.winner if battle.resolved else -1,
@@ -10599,7 +10518,7 @@ class Game:
 
                         # MULTIPLAYER: Send TURN_END to remote player
                         if self.multiplayer_mode:
-                            from network_config import MessageType
+                    
                             self._send_action_to_remote(MessageType.TURN_END, {})
 
                             # Send state checksum for desync detection (client to host)
@@ -10625,7 +10544,7 @@ class Game:
 
                 # MULTIPLAYER: Send TURN_END to remote player
                 if self.multiplayer_mode:
-                    from network_config import MessageType
+            
                     self._send_action_to_remote(MessageType.TURN_END, {})
 
                     # Send state checksum for desync detection (client to host)
@@ -10704,7 +10623,7 @@ class Game:
 
         # MULTIPLAYER: Send battle result to remote player
         if self.multiplayer_mode:
-            from network_config import MessageType
+    
             battle_data = {
                 'territory': territory,
                 'winner': battle.winner if battle.resolved else -1,
@@ -10758,7 +10677,7 @@ class Game:
 
             # MULTIPLAYER: Send TURN_END to remote player
             if self.multiplayer_mode:
-                from network_config import MessageType
+        
                 self._send_action_to_remote(MessageType.TURN_END, {})
 
                 # Send state checksum for desync detection (client to host)
@@ -10938,7 +10857,7 @@ class Game:
 
                     # MULTIPLAYER: Send SIM_PLAYER_READY with orders to host
                     if self.multiplayer_mode:
-                        from network_config import MessageType
+                
                         # Include orders in the ready message so host can merge them
                         orders_to_send = []
                         for order in self.sim_state.player_orders.get(local_player, []):
@@ -10951,7 +10870,7 @@ class Game:
 
                 # SEQUENTIAL MODE: Normal turn advancement
                 elif self.multiplayer_mode:
-                    from network_config import MessageType
+            
                     if self.game_state.turn_phase == 'planning' and len(self.game_state.movement_orders) > 0:
                         # Serialize all movement orders to send to remote player
                         orders_data = []
@@ -11311,7 +11230,7 @@ class Game:
                                 if self.game_state.start_construction(territory, plot_index, building_name):
                                     # MULTIPLAYER: Send building start notification
                                     if self.multiplayer_mode:
-                                        from network_config import MessageType
+                                
                                         self._send_action_to_remote(MessageType.BUILDING_ORDER, {
                                             'territory': territory,
                                             'plot_index': plot_index,
@@ -11416,7 +11335,7 @@ class Game:
                                     elif result is True:
                                         # Immediate ability executed - broadcast to other players in multiplayer
                                         if self.multiplayer_mode and self.sim_state is not None:
-                                            from network_config import MessageType
+                                    
                                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                                 'player_id': current_player,
                                                 'hero_name': hero_name,
@@ -11685,14 +11604,18 @@ class Game:
         # Store popup rect for click handling
         self.alliance_choice_popup_rect = pygame.Rect(popup_x, popup_y, popup_width, popup_height)
 
-        # Draw semi-transparent overlay behind popup
-        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 120))
-        self.screen.blit(overlay, (0, 0))
+        # PERFORMANCE: Reuse cached overlay instead of allocating full-screen SRCALPHA every frame
+        if self._cached_alliance_overlay is None or self._cached_alliance_overlay.get_size() != (WINDOW_WIDTH, WINDOW_HEIGHT):
+            self._cached_alliance_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            self._cached_alliance_overlay.fill((0, 0, 0, 120))
+        self.screen.blit(self._cached_alliance_overlay, (0, 0))
 
-        # Draw IGOptMenuBG.png as background (scaled to popup size)
-        scaled_bg = pygame.transform.scale(self.ingame_options_menu_bg, (popup_width, popup_height))
-        self.screen.blit(scaled_bg, (popup_x, popup_y))
+        # PERFORMANCE: Cache scaled background — only rescale when popup size changes
+        target_size = (popup_width, popup_height)
+        if self._cached_alliance_bg_size != target_size:
+            self._cached_alliance_bg = pygame.transform.scale(self.ingame_options_menu_bg, target_size)
+            self._cached_alliance_bg_size = target_size
+        self.screen.blit(self._cached_alliance_bg, (popup_x, popup_y))
 
         # Draw title "Choose the Territory Owner"
         title_font = self.font_manager.get_font(int(20 * scale), 'bold')
@@ -11786,7 +11709,7 @@ class Game:
                     # Send alliance choice to other players in multiplayer
                     # Both host and client need to send - host broadcasts to clients, client sends to host
                     if self.multiplayer_mode:
-                        from network_config import MessageType
+                
                         self._send_action_to_remote(MessageType.SIM_ALLIANCE_CHOICE, {
                             'territory': territory,
                             'new_owner': player_id
@@ -11971,42 +11894,6 @@ class Game:
 
         return True  # Consume clicks inside popup
 
-    def handle_action_log_click(self, pos):
-        """
-        Handle click on action log close button (Phase 2B extraction).
-        
-#         The action log is an overlay that displays game events and messages.
-#         It has an X button in the top-right corner to close it.
-#         
-#         Only works when:
-#         - Action log is visible (self.action_log_visible = True)
-#         - Close button exists
-#         
-#         Args:
-#             pos: (x, y) tuple of click position in screen coordinates
-#         
-#         Returns:
-#             bool: True if click was handled, False otherwise
-#         
-#         Side Effects:
-#             - Sets self.action_log_visible = False
-#         
-#         Phase Context:
-#             Active in any phase when action log is open.
-#             Part of Phase 2B to complete event handler extraction.
-#         """
-#         # Only if action log is visible
-#         if not self.action_log_visible:
-#             return False
-#         
-#         # Check close button
-#         if hasattr(self, 'action_log_close_button'):
-#             if self.action_log_close_button.collidepoint(pos):
-#                 self.action_log_visible = False
-#                 return True
-#         
-#         return False
-#
     def handle_heroes_tab_click(self, pos):
         """
         Handle clicks on hero selection buttons in the Heroes sidebar tab.
@@ -12869,7 +12756,6 @@ class Game:
         particles_to_spawn = int(self.master_negotiator_particle_spawn_accumulator * PARTICLES_PER_SECOND)
         self.master_negotiator_particle_spawn_accumulator -= particles_to_spawn / PARTICLES_PER_SECOND
 
-        import random
         for _ in range(particles_to_spawn):
             # Randomly choose an edge: 0=top, 1=right, 2=bottom, 3=left
             edge = random.randint(0, 3)
@@ -12925,8 +12811,11 @@ class Game:
         if not self.master_negotiator_particles:
             return
 
-        # Create a temporary surface with per-pixel alpha for transparency
-        temp_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        # PERFORMANCE: Reuse cached surface instead of allocating full-screen SRCALPHA every frame
+        if self._cached_negotiator_surface is None or self._cached_negotiator_surface.get_size() != (WINDOW_WIDTH, WINDOW_HEIGHT):
+            self._cached_negotiator_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        self._cached_negotiator_surface.fill((0, 0, 0, 0))  # Clear with transparent
+        temp_surface = self._cached_negotiator_surface
 
         # Draw all particles
         for particle in self.master_negotiator_particles:
@@ -12972,20 +12861,25 @@ class Game:
         banner_x = (WINDOW_WIDTH - banner_width) // 2
         banner_y = TOP_PANEL_HEIGHT + 20  # Just below top panel
 
-        # Semi-transparent background
-        banner_surface = pygame.Surface((banner_width, banner_height), pygame.SRCALPHA)
-        pygame.draw.rect(banner_surface, (0, 0, 0, 180), banner_surface.get_rect(), border_radius=10)
-        self.screen.blit(banner_surface, (banner_x, banner_y))
+        # PERFORMANCE: Cache banner background surface (static shape)
+        if self._cached_spectator_banner is None or self._cached_spectator_banner.get_size() != (banner_width, banner_height):
+            self._cached_spectator_banner = pygame.Surface((banner_width, banner_height), pygame.SRCALPHA)
+            pygame.draw.rect(self._cached_spectator_banner, (0, 0, 0, 180),
+                           self._cached_spectator_banner.get_rect(), border_radius=10)
+        self.screen.blit(self._cached_spectator_banner, (banner_x, banner_y))
 
         # Border
         pygame.draw.rect(self.screen, (200, 200, 200),
                         (banner_x, banner_y, banner_width, banner_height),
                         2, border_radius=10)
 
-        # Text: "Player X's Turn - Spectating..."
+        # PERFORMANCE: Cache text surface — only re-render when player changes
         current_player_num = self.game_state.current_player + 1
         banner_text = f"Player {current_player_num}'s Turn - Spectating..."
-        text_surface = self.large_font.render(banner_text, True, (255, 255, 100))
+        if self._cached_spectator_text is None or self._cached_spectator_text[0] != banner_text:
+            text_surface = self.large_font.render(banner_text, True, (255, 255, 100))
+            self._cached_spectator_text = (banner_text, text_surface)
+        text_surface = self._cached_spectator_text[1]
         text_rect = text_surface.get_rect(center=(banner_x + banner_width // 2, banner_y + banner_height // 2))
         self.screen.blit(text_surface, text_rect)
 
@@ -13042,35 +12936,6 @@ class Game:
 
         # Draw top border line
         pygame.draw.line(self.screen, (100, 100, 100), (0, BOTTOM_UI_Y), (WINDOW_WIDTH, BOTTOM_UI_Y), 2)
-
-    def draw_empty_ui_panels(self):
-        """
-        DEPRECATED: Use draw_empty_bottom_ui_panel() instead.
-        Draw empty UI panels during AI turns (backgrounds only, no interactive content).
-        Kept for backwards compatibility.
-        """
-        # Draw bottom UI background
-        bottom_rect = pygame.Rect(0, BOTTOM_UI_Y, WINDOW_WIDTH, BOTTOM_UI_HEIGHT)
-
-        if self.bottom_panel_image:
-            self.screen.blit(self.bottom_panel_image, (0, BOTTOM_UI_Y))
-        else:
-            pygame.draw.rect(self.screen, (220, 220, 220), bottom_rect)
-
-        # Draw top border line
-        pygame.draw.line(self.screen, (100, 100, 100), (0, BOTTOM_UI_Y), (WINDOW_WIDTH, BOTTOM_UI_Y), 2)
-
-        # Draw right sidebar background
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        sidebar_rect = pygame.Rect(sidebar_x, TOP_PANEL_HEIGHT, UIConstants.SIDEBAR_WIDTH, WINDOW_HEIGHT - TOP_PANEL_HEIGHT - BOTTOM_UI_HEIGHT)
-
-        if self.right_panel_image:
-            self.screen.blit(self.right_panel_image, (sidebar_x, TOP_PANEL_HEIGHT))
-        else:
-            pygame.draw.rect(self.screen, (240, 240, 240), sidebar_rect)
-
-        # Draw left border line for sidebar
-        pygame.draw.line(self.screen, (100, 100, 100), (sidebar_x, TOP_PANEL_HEIGHT), (sidebar_x, WINDOW_HEIGHT - BOTTOM_UI_HEIGHT), 2)
 
     def initialize_ai_players(self):
         """

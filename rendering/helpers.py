@@ -51,6 +51,10 @@ class DrawingHelpers:
         # Cache for scaled+darkened button background images to avoid recreating every frame
         # Key: (id(bg_image), width, height) -> pre-darkened pygame.Surface
         self._button_bg_cache = {}
+        # PERFORMANCE: Text rendering cache for button labels (avoids font.render() every frame)
+        # Key: (text, id(font), color) -> pygame.Surface
+        self.text_cache = {}
+        self._text_cache_max_size = 200
     
     def update_separator(self, separator_image, separator_width):
         """Update separator image and width (for resolution changes)."""
@@ -146,10 +150,18 @@ class DrawingHelpers:
                 pygame.draw.rect(self.screen, border_color, rect, border_width)
 
         # Draw text if provided (drawn on top of everything)
+        # PERFORMANCE: Use text cache to avoid font.render() every frame for static button labels
         if text:
             if font is None:
                 font = self.font
-            text_surf = font.render(text, True, text_color)
+            cache_key = (text, id(font), text_color)
+            text_surf = self.text_cache.get(cache_key)
+            if text_surf is None:
+                if len(self.text_cache) >= self._text_cache_max_size:
+                    oldest_key = next(iter(self.text_cache))
+                    del self.text_cache[oldest_key]
+                text_surf = font.render(text, True, text_color)
+                self.text_cache[cache_key] = text_surf
             text_rect = text_surf.get_rect(center=rect.center)
             self.screen.blit(text_surf, text_rect)
 

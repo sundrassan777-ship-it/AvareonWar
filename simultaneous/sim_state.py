@@ -179,10 +179,12 @@ class SimultaneousGameState:
 
         # Reset timers
         self._initialize_timers()
-        self.timer_start_time = time.time()
+        # Use monotonic clock to avoid inaccuracies from NTP/DST adjustments
+        self.timer_start_time = time.monotonic()
 
         # Record planning phase start for safety timeout
-        self.planning_phase_start_time = time.time()
+        # monotonic() is used so DST/NTP changes don't affect elapsed time calculations
+        self.planning_phase_start_time = time.monotonic()
 
         # Clear previous round's data
         self.crossing_conflicts.clear()
@@ -406,7 +408,8 @@ class SimultaneousGameState:
         # Safety timeout: force-mark all unresponsive players as ready after 120s
         # This prevents indefinite stalling if a player disconnects or becomes unresponsive
         if self.planning_phase_start_time is not None:
-            elapsed = time.time() - self.planning_phase_start_time
+            # Use monotonic() to avoid NTP/DST skew in elapsed time calculation
+            elapsed = time.monotonic() - self.planning_phase_start_time
             if elapsed >= self.READY_SAFETY_TIMEOUT:
                 waiting = self.get_waiting_players()
                 if waiting:

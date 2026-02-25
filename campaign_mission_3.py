@@ -866,7 +866,8 @@ class Mission3:
             self.timer_visible = True
             self.intro_timer = 0.0
             import time
-            self.timer_highlight_start_time = time.time()
+            # Use monotonic clock: immune to NTP/DST adjustments
+            self.timer_highlight_start_time = time.monotonic()
             if text:
                 self._show_transmission(text)
                 # Play voice line for this intro step
@@ -936,7 +937,8 @@ class Mission3:
         stop_transmission_sound()  # Stop any lingering intro voice
 
         self.game_state.turn_timer_enabled = True
-        self.game_state.planning_phase_start_time = time.time()
+        # Use monotonic clock: immune to NTP/DST adjustments
+        self.game_state.planning_phase_start_time = time.monotonic()
 
     def _show_transmission(self, text, speaker="Serthus Diarcess"):
         """Show or update the transmission overlay with speaker name."""
@@ -1652,7 +1654,8 @@ class Mission3:
     def should_highlight_timer(self):
         import time
         if self.timer_highlight_start_time is not None:
-            elapsed = time.time() - self.timer_highlight_start_time
+            # Use monotonic clock: immune to NTP/DST adjustments
+            elapsed = time.monotonic() - self.timer_highlight_start_time
             if elapsed < self.timer_highlight_duration:
                 return int(elapsed * 2) % 2 == 0
         return False

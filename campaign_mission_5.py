@@ -72,7 +72,13 @@ class Mission5:
         logger.info("Mission 5 initialized (placeholder)")
 
     def _setup_initial_state(self):
-        """Configure initial territory ownership, armies, gold, and colors"""
+        """Configure initial territory ownership, armies, gold, and colors.
+
+        NOTE: This is a placeholder stub. Territory ownership uses the correct
+        GameState API (gs.territory_owners) and gold uses gs.player_gold,
+        matching the pattern established in campaign_mission_2.py and
+        campaign_mission_4.py.
+        """
         gs = self.game_state
 
         # Set faction colors
@@ -85,17 +91,20 @@ class Mission5:
             if name and player_idx < gs.num_players:
                 gs.player_names[player_idx] = name
 
-        # Assign territories to factions
+        # Assign territories to factions using the correct GameState API:
+        # gs.territory_owners[territory_name] = player_idx
+        # (NOT gs.territories[territory_name]['owner'], which is the wrong API)
         for player_idx, territories in FACTION_TERRITORIES.items():
             if player_idx < gs.num_players:
                 for territory_name in territories:
-                    if territory_name in gs.territories:
-                        gs.territories[territory_name]['owner'] = player_idx
+                    if territory_name in gs.territory_owners:
+                        gs.territory_owners[territory_name] = player_idx
 
-        # Set starting gold
+        # Set starting gold using the correct GameState API: gs.player_gold[idx]
+        # (NOT gs.gold[idx], which does not exist)
         for player_idx, gold in STARTING_GOLD.items():
             if player_idx < gs.num_players:
-                gs.gold[player_idx] = gold
+                gs.player_gold[player_idx] = gold
 
     # ========================================================================
     # Frame update / render (called from main.py game loop)

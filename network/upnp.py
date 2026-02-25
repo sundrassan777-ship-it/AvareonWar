@@ -19,6 +19,20 @@ from network_config import DEFAULT_PORT, UPNP_DISCOVERY_TIMEOUT, UPNP_DESCRIPTIO
 
 logger = get_logger(__name__)
 
+# Check for miniupnpc at import time. Auto-installing packages at runtime was
+# removed because it runs pip inside the game process without user consent,
+# performs no integrity verification, and is unexpected behaviour for a game.
+# Install miniupnpc manually if internet play is desired: pip install miniupnpc
+try:
+    import miniupnpc
+    UPNP_AVAILABLE = True
+except ImportError:
+    UPNP_AVAILABLE = False
+    logger.warning(
+        "miniupnpc is not installed — UPnP port forwarding won't be available. "
+        "Install it manually with: pip install miniupnpc"
+    )
+
 # UPnP status constants — polled by UI each frame
 UPNP_STATUS_IDLE = "idle"
 UPNP_STATUS_DISCOVERING = "discovering"
@@ -75,26 +89,13 @@ class UPnPManager:
 
     def _setup_worker(self) -> None:
         """Background worker: discover IGD, create mapping, detect public IP."""
-        try:
-            import miniupnpc
-        except ImportError:
-            # Auto-install miniupnpc if missing
-            logger.info("miniupnpc not found — attempting auto-install...")
-            try:
-                import subprocess
-                import sys
-                subprocess.check_call(
-                    [sys.executable, '-m', 'pip', 'install', 'miniupnpc'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
-                import miniupnpc
-                logger.info("miniupnpc auto-installed successfully")
-            except Exception as install_err:
-                logger.warning(f"Could not auto-install miniupnpc: {install_err}")
-                self.status = UPNP_STATUS_FAILED
-                self.error_message = "UPnP library not available"
-                self._detect_public_ip()
-                return
+        # Guard against miniupnpc being absent — UPNP_AVAILABLE is set at module
+        # load time. We do not attempt to install packages at runtime (security).
+        if not UPNP_AVAILABLE:
+            self.status = UPNP_STATUS_FAILED
+            self.error_message = "UPnP library not available"
+            self._detect_public_ip()
+            return
 
         try:
             # Phase 1: Discover UPnP IGD device
