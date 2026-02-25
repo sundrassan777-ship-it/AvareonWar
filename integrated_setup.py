@@ -126,14 +126,18 @@ class SetupConfig:
         """Legacy property: list of territories for active players"""
         return [slot['territory'] for slot in self.player_slots if slot['active']]
 
-    # Legacy properties for backwards compatibility with 2-player setup
+    # S1 fix: Legacy property setters now write to underlying player_slots data
+    # instead of writing to a temporary list from the getter (which was silently discarded).
+    # Note: these setters are currently unused but kept for API compatibility.
     @property
     def player1_is_ai(self):
         return self.player_is_ai[0]
 
     @player1_is_ai.setter
     def player1_is_ai(self, value):
-        self.player_is_ai[0] = value
+        active_slots = [s for s in self.player_slots if s['active']]
+        if active_slots:
+            active_slots[0]['type'] = 'AI' if value else 'Human'
 
     @property
     def player2_is_ai(self):
@@ -141,7 +145,9 @@ class SetupConfig:
 
     @player2_is_ai.setter
     def player2_is_ai(self, value):
-        self.player_is_ai[1] = value
+        active_slots = [s for s in self.player_slots if s['active']]
+        if len(active_slots) > 1:
+            active_slots[1]['type'] = 'AI' if value else 'Human'
 
     @property
     def player1_difficulty(self):
@@ -149,7 +155,9 @@ class SetupConfig:
 
     @player1_difficulty.setter
     def player1_difficulty(self, value):
-        self.player_difficulty[0] = value
+        active_slots = [s for s in self.player_slots if s['active']]
+        if active_slots:
+            active_slots[0]['difficulty'] = value
 
     @property
     def player2_difficulty(self):
@@ -157,7 +165,9 @@ class SetupConfig:
 
     @player2_difficulty.setter
     def player2_difficulty(self, value):
-        self.player_difficulty[1] = value
+        active_slots = [s for s in self.player_slots if s['active']]
+        if len(active_slots) > 1:
+            active_slots[1]['difficulty'] = value
 
     @property
     def player1_territory(self):
@@ -165,7 +175,9 @@ class SetupConfig:
 
     @player1_territory.setter
     def player1_territory(self, value):
-        self.player_territory[0] = value
+        active_slots = [s for s in self.player_slots if s['active']]
+        if active_slots:
+            active_slots[0]['territory'] = value
 
     @property
     def player2_territory(self):
@@ -173,7 +185,9 @@ class SetupConfig:
 
     @player2_territory.setter
     def player2_territory(self, value):
-        self.player_territory[1] = value
+        active_slots = [s for s in self.player_slots if s['active']]
+        if len(active_slots) > 1:
+            active_slots[1]['territory'] = value
 
     def get_active_slot_index(self, slot_index):
         """Convert slot index to active player index (skipping inactive slots)"""

@@ -260,13 +260,17 @@ class DrawingHelpers:
         # Smart positioning to keep tooltip on screen
         tooltip_x, tooltip_y = pos
 
+        # R2 fix: use actual screen dimensions instead of hardcoded constants
+        screen_w = self.screen.get_width()
+        screen_h = self.screen.get_height()
+
         # Adjust if tooltip goes off right edge
-        if tooltip_x + tooltip_width > WINDOW_WIDTH:
-            tooltip_x = WINDOW_WIDTH - tooltip_width - 5
+        if tooltip_x + tooltip_width > screen_w:
+            tooltip_x = screen_w - tooltip_width - 5
 
         # Adjust if tooltip goes off bottom edge
         # Use bottom_ui_y as the boundary if provided (to avoid hiding under bottom UI panel)
-        max_bottom = bottom_ui_y if bottom_ui_y is not None else WINDOW_HEIGHT
+        max_bottom = bottom_ui_y if bottom_ui_y is not None else screen_h
         if tooltip_y + tooltip_height > max_bottom:
             tooltip_y = max_bottom - tooltip_height - 10
 

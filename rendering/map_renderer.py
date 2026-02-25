@@ -269,6 +269,8 @@ class MapRenderer:
 
         # Clear the surface for reuse
         surface.fill((0, 0, 0, 0))
+        # R1 fix: reset per-surface alpha to prevent set_alpha(180) leaking into pool
+        surface.set_alpha(255)
         return surface
 
     def return_surface_to_pool(self, surface):

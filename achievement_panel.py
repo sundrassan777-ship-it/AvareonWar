@@ -356,7 +356,8 @@ class AchievementPanel:
 
         # Calculate total content height
         item_spacing = int(8 * self.ui_scale)
-        total_content_height = len(achievements) * (self.item_height + item_spacing) - item_spacing
+        # A4 fix: clamp to 0 to avoid negative height when achievement list is empty
+        total_content_height = max(0, len(achievements) * (self.item_height + item_spacing) - item_spacing)
         max_scroll = max(0, total_content_height - height)
 
         # Clamp scroll
@@ -588,10 +589,11 @@ class AchievementPanel:
 
         # Draw track
         track_rect = pygame.Rect(x, y, width, height)
-        pygame.draw.rect(screen, (60, 60, 80, 100), track_rect, border_radius=2)
+        # A3 fix: use RGB only — alpha in RGBA is ignored on non-SRCALPHA screen surface
+        pygame.draw.rect(screen, (60, 60, 80), track_rect, border_radius=2)
         # Draw indicator
         indicator_rect = pygame.Rect(x, indicator_y, width, indicator_height)
-        pygame.draw.rect(screen, (150, 150, 170, 180), indicator_rect, border_radius=2)
+        pygame.draw.rect(screen, (150, 150, 170), indicator_rect, border_radius=2)
 
     def get_element_at(self, pos):
         """Get the UI element ID at the given position (for hover detection)."""

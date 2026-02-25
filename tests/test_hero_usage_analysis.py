@@ -300,13 +300,13 @@ def run_hero_analysis(num_turns=40, verbose=True):
             if active_heroes:
                 print(f"  Active Heroes: {' | '.join(active_heroes)}")
 
-            # Show training queue
+            # Show training queue (keyed by territory name, not player index)
             training = []
-            for p in range(4):
-                if p in game.hero_training_queue:
-                    for terr, keeps in game.hero_training_queue[p].items():
-                        for plot, (hero_type, turns) in keeps.items():
-                            training.append(f"P{p+1}: {hero_type} ({turns}t)")
+            for terr, keeps in game.hero_training_queue.items():
+                terr_owner = game.territory_owners.get(terr, -1)
+                for plot, entry in keeps.items():
+                    hero_type, turns = entry[0], entry[1]
+                    training.append(f"P{terr_owner+1}: {hero_type} ({turns}t)")
             if training:
                 print(f"  Training: {', '.join(training)}")
 

@@ -227,27 +227,27 @@ class SettingsManager:
         non-Windows platforms or if locking fails.
         """
         try:
-            # L9: File-locked save to prevent concurrent overwrites
-            if sys.platform == 'win32':
-                import msvcrt
-                f = open(self.config_file, 'w')
-                try:
-                    # Lock the entire file (LK_NBLCK = non-blocking exclusive lock)
-                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            # A1+A2 fix: write to temp file first, then rename atomically.
+            # Previous approach truncated config.json before lock was acquired,
+            # risking data loss on lock failure or crash.
+            import tempfile
+            config_dir = os.path.dirname(os.path.abspath(self.config_file))
+            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix='.tmp')
+            try:
+                with os.fdopen(fd, 'w') as f:
                     json.dump(self.settings, f, indent=4)
                     f.flush()
-                finally:
-                    try:
-                        # Unlock before closing
-                        f.seek(0)
-                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-                    except Exception:
-                        pass  # Unlock may fail if lock wasn't acquired; safe to ignore
-                    f.close()
-            else:
-                # Non-Windows: standard write (no msvcrt available)
-                with open(self.config_file, 'w') as f:
-                    json.dump(self.settings, f, indent=4)
+                    os.fsync(f.fileno())
+                # Atomic rename (on Windows, need to remove target first)
+                if os.path.exists(self.config_file):
+                    os.replace(tmp_path, self.config_file)
+                else:
+                    os.rename(tmp_path, self.config_file)
+            except Exception:
+                # Clean up temp file on failure; original config.json is untouched
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise
 
             logger.info(f"Settings saved to {self.config_file}")
             return True

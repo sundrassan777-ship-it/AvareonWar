@@ -2526,9 +2526,11 @@ class UIRenderer:
                 pygame.draw.rect(glow_surface, (100, 255, 100, glow_alpha), glow_surface.get_rect(), 3)
                 self.game.screen.blit(glow_surface, glow_rect.topleft)
 
-            # Draw rotated tab name (90 degrees clockwise - read with head tilted right)
-            tab_text = self.game.small_font.render(tab_names[tab_id], True, WHITE)
-            rotated_text = pygame.transform.rotate(tab_text, -90)  # Clockwise rotation
+            # R3 fix: cache rotated tab text (font.render + rotate are expensive per-frame)
+            if tab_id not in self.game._rotated_tab_text_cache:
+                tab_text = self.game.small_font.render(tab_names[tab_id], True, WHITE)
+                self.game._rotated_tab_text_cache[tab_id] = pygame.transform.rotate(tab_text, -90)
+            rotated_text = self.game._rotated_tab_text_cache[tab_id]
             text_rect = rotated_text.get_rect(center=(tab_x + tab_width // 2, current_y + actual_tab_height // 2))
             self.game.screen.blit(rotated_text, text_rect)
 

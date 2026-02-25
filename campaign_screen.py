@@ -161,8 +161,9 @@ class CampaignScreen:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                # S3 fix: graceful exit instead of hard sys.exit() — let caller handle cleanup
+                self.cancelled = True
+                return
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -495,8 +496,10 @@ class MissionScreen:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                # S3 fix: graceful exit instead of hard sys.exit()
+                self.result = 'return'
+                self.done = True
+                return
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:

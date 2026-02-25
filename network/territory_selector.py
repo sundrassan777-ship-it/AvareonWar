@@ -847,6 +847,8 @@ class TerritorySelector:
         n = len(polygon)
         inside = False
 
+        # S2 fix: initialize xinters to avoid UnboundLocalError on horizontal edges
+        xinters = 0
         p1x, p1y = polygon[0]
         for i in range(1, n + 1):
             p2x, p2y = polygon[i % n]
@@ -1414,9 +1416,13 @@ class TerritorySelector:
             alpha = 100
 
             # Determine color based on selection (check all players)
+            # S4 fix: use lobby slot color instead of hardcoded PLAYER_COLORS[index]
             for player_index, selection in enumerate(self.player_selections):
                 if territory == selection:
-                    color = PLAYER_COLORS[player_index]
+                    if hasattr(self, 'lobby_state') and player_index < len(self.lobby_state.slots):
+                        color = PLAYER_COLORS[self.lobby_state.slots[player_index].color]
+                    else:
+                        color = PLAYER_COLORS[player_index]
                     break
 
             # If not selected by any player, check if hovered
@@ -1488,6 +1494,8 @@ class TerritorySelector:
 
         The [!] warning indicator is shown for AI slots without territories (host only).
         """
+        # S6 fix: clear stale kick button rects each frame
+        self.kick_button_rects = {}
         mouse_pos = pygame.mouse.get_pos()
 
         # Track warning indicator rects for hover detection
