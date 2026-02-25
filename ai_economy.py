@@ -449,11 +449,13 @@ class BuildingPlanner:
 
     def _mod_income_tech_bonus(self, score, territory, building_type, game_state, player_index):
         """Boost score if relevant farming/mining tech is researched"""
+        # H2 fix: Use string tech IDs (not integers) and .get() for safety
+        researched = game_state.player_tech_researched.get(player_index, set())
         if building_type == 'Farm':
-            if 6 in game_state.player_tech_researched[player_index]:  # Efficient Farming I
+            if 'tech_0_0' in researched:  # Efficient Farming I
                 score *= 1.1
         elif building_type == 'Mine':
-            if 8 in game_state.player_tech_researched[player_index]:  # Efficient Mining I
+            if 'tech_0_1' in researched:  # Efficient Mining I
                 score *= 1.1
         return score
 

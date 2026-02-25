@@ -10,9 +10,7 @@ sync to the legacy army tracking arrays.
 """
 
 import math
-import random
 import time
-import map_data
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

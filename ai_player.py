@@ -328,9 +328,12 @@ class AIPlayer:
             logger.info(f"Player {self.player_index + 1} thinking... ({delay:.1f}s)")
             time.sleep(delay)
 
-            # Plan all actions for this turn
-            self.actions_taken = []
-            self._plan_turn_actions(game_state)
+            # C2 fix: Snapshot game state under lock before planning to avoid
+            # reading game_state while the main thread may be modifying it.
+            # Planning reads many game_state fields; lock ensures consistent snapshot.
+            with self._game_state_lock:
+                self.actions_taken = []
+                self._plan_turn_actions(game_state)
 
             logger.info(f"Player {self.player_index + 1} planned {len(self.actions_taken)} actions")
 
@@ -415,7 +418,9 @@ class AIPlayer:
                 pass  # C3 fix: Last resort recovery to prevent AI from blocking game
 
         finally:
-            self.turn_in_progress = False
+            # C1 fix: Reset flag under lock to prevent race with execute_turn() check-and-set
+            with self._turn_lock:
+                self.turn_in_progress = False
 
     def _plan_turn_actions(self, game_state):
         """
@@ -463,10 +468,21 @@ class AIPlayer:
             self.actions_taken.extend(economic_actions)
 
             # 3. Military actions (training + movement)
-            # Calculate remaining budget after economic spending
-            spent_on_economy = sum(
-                30 for action_type, _ in economic_actions if action_type == 'build'
-            )
+            # Calculate remaining budget after economic spending (use actual costs, not hardcoded)
+            spent_on_economy = 0
+            for action_type, action_data in economic_actions:
+                if action_type == 'build':
+                    building_type = action_data.get('building', '')
+                    base_cost = game_state.building_types.get(building_type, {}).get('cost', 30)
+                    spent_on_economy += game_state.get_effective_cost(
+                        building_type, base_cost, self.player_index)
+                elif action_type == 'upgrade_castle':
+                    spent_on_economy += 100
+                elif action_type == 'research':
+                    tech_id = action_data.get('tech_id')
+                    tech = next((t for t in game_state.technologies if t['id'] == tech_id), None)
+                    if tech:
+                        spent_on_economy += tech.get('cost', 0)
             military_budget = max(0, analysis['available_gold'] - spent_on_economy)
 
             military_actions = self.military.plan_military_actions(

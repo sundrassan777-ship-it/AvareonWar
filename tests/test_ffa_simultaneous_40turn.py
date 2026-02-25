@@ -85,6 +85,7 @@ class StateValidator:
 def distribute_territories_ffa(game, num_players=4):
     """Distribute 57 territories evenly among 4 players for balanced FFA start."""
     all_territories = list(map_data.get_all_territories())
+    random.seed(42)  # Deterministic territory distribution for reproducible tests
     random.shuffle(all_territories)
 
     print(f"Distributing {len(all_territories)} territories among {num_players} players...")
@@ -614,6 +615,8 @@ def test_ffa_simultaneous_40turn():
     results = run_simultaneous_test(num_rounds=10, verbose=False)
     assert results is not None, "Test runner returned None"
     assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
+    assert results['rounds_completed'] > 0, "No rounds were completed"
+    assert sum(results['final_territories']) == 57, f"Territory sum != 57: {results['final_territories']}"
 
 
 if __name__ == '__main__':

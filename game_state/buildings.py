@@ -401,23 +401,6 @@ class BuildingMixin:
         self.add_message(f"{building_type} destroyed, {refund} gold refunded")
         return True
 
-    def destroy_all_buildings(self, territory):
-        """Destroy all buildings in a territory (when conquered)"""
-        # Remove completed buildings
-        if territory in self.buildings:
-            del self.buildings[territory]
-
-        # Veterancy: Remove all building XP data
-        if territory in self.building_xp:
-            del self.building_xp[territory]
-
-        # Cancel constructions (no refund for enemy)
-        if territory in self.under_construction:
-            del self.under_construction[territory]
-
-        # Clear all training queues (no refund for enemy)
-        self.clear_training_queue(territory)
-
     def has_barracks(self, territory):
         """Check if territory has a completed Barracks building and return plot indices"""
         barracks_plots = []

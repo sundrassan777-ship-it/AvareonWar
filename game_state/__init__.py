@@ -116,6 +116,9 @@ from game_state.economy import EconomyMixin
 from game_state.military import MilitaryMixin
 from game_state.victory import VictoryMixin
 
+# Public API of the game_state package
+__all__ = ['GameState', 'MovementOrder', 'ArmyAnimation', 'Battle']
+
 logger = get_logger(__name__)
 
 class MovementOrder:
@@ -599,28 +602,6 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Check if both players are on the same team
         return self.player_teams[player1_index] == self.player_teams[player2_index]
 
-    def safe_get_territory_data(self, territory, data_dict, data_name, default=None):
-        """
-        Safely get territory data with error handling.
-        
-        Args:
-            territory: Territory name
-            data_dict: Dictionary to access
-            data_name: Name of data (for error message)
-            default: Default value if not found
-            
-        Returns:
-            Value from dictionary, or default if not found
-        """
-        try:
-            return data_dict[territory]
-        except KeyError:
-            self.log_error(f"Territory '{territory}' not found in {data_name}")
-            return default
-        except Exception as e:
-            self.log_error(f"Unexpected error accessing {data_name} for territory '{territory}'", e)
-            return default
-    
     def get_player_color(self, player_index):
         """Get the color for a specific player"""
         if player_index == -1:

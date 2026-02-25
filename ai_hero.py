@@ -61,8 +61,9 @@ class HeroSelector:
         Returns:
             tuple: (hero_type, territory, keep_plot) or None
         """
-        # Check hero limit
-        current_heroes = len(game_state.heroes[player_index])
+        # H1 fix: Use .get() to guard against missing player_index key
+        player_heroes = game_state.heroes.get(player_index, {})
+        current_heroes = len(player_heroes)
         training_heroes = self._count_training_heroes(game_state, player_index)
         hero_limit = game_state.player_hero_limit[player_index]
 
@@ -70,7 +71,7 @@ class HeroSelector:
             return None
 
         # Find available heroes
-        owned_heroes = set(game_state.heroes[player_index].keys())
+        owned_heroes = set(player_heroes.keys())
         training_hero_types = self._get_training_hero_types(game_state, player_index)
 
         available_heroes = []

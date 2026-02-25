@@ -76,8 +76,9 @@ class ArmyComposer:
         total_enemy = sum(enemy_composition.values())
         strongest_type = max(enemy_composition.items(), key=lambda x: x[1])[0]
 
-        # Get counter unit
-        counter_unit = self.COUNTERS.get(strongest_type, 'Swordsman')
+        # Get counter unit: use COUNTERED_BY to find what beats the enemy's strongest
+        # (COUNTERS maps unit -> what_it_beats, COUNTERED_BY maps unit -> what_beats_it)
+        counter_unit = self.COUNTERED_BY.get(strongest_type, 'Swordsman')
 
         # Build composition: 60% counter, ~13.33% each for the other 3 unit types
         # This ensures the total sums to exactly 1.0 (100%)

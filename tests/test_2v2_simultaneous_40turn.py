@@ -89,6 +89,7 @@ def distribute_territories_2v2(game, num_players=4):
     Team 0 (P1+P2) gets half, Team 1 (P3+P4) gets the other half.
     """
     all_territories = list(map_data.get_all_territories())
+    random.seed(42)  # Deterministic territory distribution for reproducible tests
     random.shuffle(all_territories)
 
     print(f"Distributing {len(all_territories)} territories for 2v2 (Team 0: P1+P2 vs Team 1: P3+P4)...")
@@ -653,6 +654,8 @@ def test_2v2_simultaneous_40turn():
     results = run_2v2_simultaneous_test(num_rounds=10, verbose=False)
     assert results is not None, "Test runner returned None"
     assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
+    assert results['rounds_completed'] > 0, "No rounds were completed"
+    assert sum(results['final_territories']) == 57, f"Territory sum != 57: {results['final_territories']}"
 
 
 if __name__ == '__main__':

@@ -9,7 +9,6 @@ hero presence queries, and cooldown management.
 """
 
 import random
-import time
 import map_data
 from utils.logger import get_logger
 

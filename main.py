@@ -858,6 +858,9 @@ class Game:
         self._cached_alliance_bg = None          # Cached scaled alliance popup background
         self._cached_alliance_bg_size = None     # Size the alliance bg was scaled to
         self._cached_building_overlays = {}      # Building icon overlays keyed by size
+        self._cached_disconnect_overlay = None   # Disconnect dialog overlay (full-screen SRCALPHA)
+        self._cached_defend_overlay = None       # Forced defend popup overlay (full-screen SRCALPHA)
+        self._cached_training_overlays = {}      # Training icon overlays keyed by size
 
         # Ability targeting system
         self.ability_targeting_active = False  # Is player currently targeting with an ability?
@@ -3390,8 +3393,8 @@ class Game:
         # Draw border circle
         pygame.draw.circle(self.screen, border_color, pos, radius, 2)
         
-        # Draw centered text
-        text_surf = self.small_font.render(str(text), True, text_color)
+        # Draw centered text (cached to avoid per-frame font.render)
+        text_surf = self._get_cached_text(str(text), self.small_font, text_color)
         text_rect = text_surf.get_rect(center=pos)
         self.screen.blit(text_surf, text_rect)
     
@@ -4879,9 +4882,12 @@ class Game:
 
     def draw_disconnect_dialog(self):
         """Draw disconnect dialog overlay"""
-        # Semi-transparent overlay
-        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 180))
+        # Semi-transparent overlay (cached to avoid 5.44MB SRCALPHA alloc per frame)
+        size = (WINDOW_WIDTH, WINDOW_HEIGHT)
+        if self._cached_disconnect_overlay is None or self._cached_disconnect_overlay.get_size() != size:
+            self._cached_disconnect_overlay = pygame.Surface(size, pygame.SRCALPHA)
+            self._cached_disconnect_overlay.fill((0, 0, 0, 180))
+        overlay = self._cached_disconnect_overlay
         self.screen.blit(overlay, (0, 0))
 
         # Dialog box
@@ -7315,21 +7321,36 @@ class Game:
                 if not is_available or is_clicking or is_hovering:
                     display_icon = cached_icon.copy()  # Only copy when we need to apply effects
 
-                    # Apply red tint overlay if unavailable
+                    # Apply red tint overlay if unavailable (cached by icon_size)
                     if not is_available:
-                        red_overlay = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                        red_overlay.fill((255, 100, 100, 128))
-                        display_icon.blit(red_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                        if icon_size not in self._cached_training_overlays:
+                            self._cached_training_overlays[icon_size] = {}
+                        overlays = self._cached_training_overlays[icon_size]
+                        if 'red' not in overlays:
+                            s = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+                            s.fill((255, 100, 100, 128))
+                            overlays['red'] = s
+                        display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
-                    # Apply hover/click brightness effects
+                    # Apply hover/click brightness effects (cached by icon_size)
                     if is_clicking:
-                        bright_overlay = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                        bright_overlay.fill((100, 100, 100, 100))
-                        display_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                        if icon_size not in self._cached_training_overlays:
+                            self._cached_training_overlays[icon_size] = {}
+                        overlays = self._cached_training_overlays[icon_size]
+                        if 'bright' not in overlays:
+                            s = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+                            s.fill((100, 100, 100, 100))
+                            overlays['bright'] = s
+                        display_icon.blit(overlays['bright'], (0, 0), special_flags=pygame.BLEND_RGB_ADD)
                     elif is_hovering:
-                        light_overlay = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                        light_overlay.fill((50, 50, 50, 50))
-                        display_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                        if icon_size not in self._cached_training_overlays:
+                            self._cached_training_overlays[icon_size] = {}
+                        overlays = self._cached_training_overlays[icon_size]
+                        if 'light' not in overlays:
+                            s = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+                            s.fill((50, 50, 50, 50))
+                            overlays['light'] = s
+                        display_icon.blit(overlays['light'], (0, 0), special_flags=pygame.BLEND_RGB_ADD)
 
                 # Blit final icon
                 icon_rect = display_icon.get_rect(center=train_button_rect.center)
@@ -11241,9 +11262,12 @@ class Game:
 
         self.forced_defend_popup_rect = pygame.Rect(popup_x, popup_y, popup_width, popup_height)
 
-        # Draw semi-transparent overlay
-        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 150))
+        # Draw semi-transparent overlay (cached to avoid 5.44MB SRCALPHA alloc per frame)
+        size = (WINDOW_WIDTH, WINDOW_HEIGHT)
+        if self._cached_defend_overlay is None or self._cached_defend_overlay.get_size() != size:
+            self._cached_defend_overlay = pygame.Surface(size, pygame.SRCALPHA)
+            self._cached_defend_overlay.fill((0, 0, 0, 150))
+        overlay = self._cached_defend_overlay
         self.screen.blit(overlay, (0, 0))
 
         # Draw popup background

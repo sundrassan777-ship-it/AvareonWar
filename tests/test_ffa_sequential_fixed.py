@@ -19,6 +19,7 @@ import traceback
 def distribute_territories_ffa(game, num_players=4):
     """Distribute 57 territories evenly among 4 players for balanced FFA start."""
     all_territories = list(map_data.get_all_territories())
+    random.seed(42)  # Deterministic territory distribution for reproducible tests
     random.shuffle(all_territories)
 
     print(f"Distributing {len(all_territories)} territories among {num_players} players...")
@@ -234,6 +235,9 @@ def test_ffa_sequential_fixed():
     results = run_fixed_test(num_turns=10, verbose=False)
     assert results is not None, "Test runner returned None"
     assert results['turns'] > 0, "No turns were completed"
+    # Territory counts should sum to 57 (total map territories)
+    assert sum(results['territories']) == 57, f"Territory sum != 57: {results['territories']}"
+    assert all(t >= 0 for t in results['territories']), f"Negative territory count: {results['territories']}"
 
 
 if __name__ == '__main__':

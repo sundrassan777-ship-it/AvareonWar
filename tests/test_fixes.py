@@ -286,31 +286,31 @@ class TestAtomicTurnFlag:
         assert ai.turn_in_progress is True
 
     def test_concurrent_execute_turn_calls(self):
-        """Test that concurrent calls don't both start execution"""
+        """Test that concurrent calls don't both start execution.
+
+        Verifies the _turn_lock gate: when two threads call execute_turn()
+        simultaneously, only one should set turn_in_progress and submit
+        async work. The other should return immediately.
+        """
         from ai_player import AIPlayer
 
         ai = AIPlayer(player_index=0, difficulty=0)
 
-        # Mock game_state
+        # Track how many times _thread_pool.submit is called (the gate metric)
+        submit_count = [0]
+
+        def counting_submit(*args, **kwargs):
+            submit_count[0] += 1
+            # Don't actually run async to keep test fast
+
+        ai._thread_pool.submit = counting_submit
+
+        # Mock game_state with tutorial_mission to bypass tutorial check
         game_state = Mock()
-        game_state.territory_owners = {'T1': 0}
-        game_state.armies = {'T1': 5}
-        game_state.armies_unmoved = {'T1': 5}
-        game_state.player_gold = {0: 100}
-        game_state.buildings = {}
-        game_state.pending_battles = []
-        game_state.calculate_player_income = Mock(return_value=50)
-        game_state.get_player_army_count = Mock(return_value=5)
-        game_state.next_player = Mock()
+        game_state.tutorial_mission = None
 
-        execution_count = [0]
-        original_plan = ai._plan_turn_actions
-
-        def counting_plan(gs):
-            execution_count[0] += 1
-            # Don't actually plan to keep test fast
-
-        ai._plan_turn_actions = counting_plan
+        # Reset state
+        ai.turn_in_progress = False
 
         # Simulate race condition - two threads trying to execute simultaneously
         results = []
@@ -319,24 +319,22 @@ class TestAtomicTurnFlag:
             ai.execute_turn(game_state)
             results.append(True)
 
-        # Reset state
-        ai.turn_in_progress = False
-
-        # Start two threads simultaneously
         t1 = threading.Thread(target=try_execute)
         t2 = threading.Thread(target=try_execute)
 
         t1.start()
         t2.start()
 
-        t1.join(timeout=1.0)
-        t2.join(timeout=1.0)
+        t1.join(timeout=2.0)
+        t2.join(timeout=2.0)
 
-        # Wait a bit for async execution to start
-        time.sleep(0.5)
-
-        # After fix with atomic flag, only one should have executed
-        # (Note: Before fix, both might start due to race condition)
+        # Both threads should have returned (one executed, one was rejected)
+        assert len(results) == 2, f"Expected both threads to complete, got {len(results)}"
+        # Only one should have submitted async work past the _turn_lock gate
+        assert submit_count[0] == 1, (
+            f"Expected exactly 1 thread pool submission but got {submit_count[0]} - "
+            f"race condition allowed double execution"
+        )
 
 
 # ============================================================================

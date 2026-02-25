@@ -516,8 +516,15 @@ class MessageBuffer:
     def __init__(self) -> None:
         self.buffer: bytes = b''
 
+    # Maximum total buffer size to prevent memory exhaustion from partial messages
+    MAX_BUFFER_SIZE = 2 * MAX_MESSAGE_SIZE  # 2 MB
+
     def add_data(self, data: bytes) -> None:
-        """Add received data to buffer"""
+        """Add received data to buffer, with overflow protection."""
+        if len(self.buffer) + len(data) > self.MAX_BUFFER_SIZE:
+            logger.warning(f"Buffer overflow: {len(self.buffer) + len(data)} > {self.MAX_BUFFER_SIZE}, clearing")
+            self.buffer = b''
+            return
         self.buffer += data
 
     def extract_message(self) -> Optional[bytes]:

@@ -256,9 +256,9 @@ class NetworkClient:
                 if not message_bytes:
                     break
 
-                # Decode message
+                # Decode and validate message (mirror server-side validation)
                 message = self.protocol.decode_message(message_bytes)
-                if message:
+                if message and self.protocol.validate_message(message):
                     self._handle_received_message(message)
 
         except BlockingIOError:
@@ -463,6 +463,12 @@ class NetworkClient:
         Returns:
             True if reconnection request was sent, False if unable to connect
         """
+        # Guard against concurrent reconnection attempts
+        with self._state_lock:
+            if self.connected:
+                logger.warning("Already connected, skipping reconnection")
+                return False
+
         # Use stored values if not specified
         if host is None or port is None:
             if self.last_server_address:

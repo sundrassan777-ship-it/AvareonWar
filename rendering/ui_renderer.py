@@ -642,12 +642,15 @@ class UIRenderer:
         All buttons have hover highlighting and click flash feedback.
         Background is semi-transparent overlay that disables other UI.
         """
-        # Semi-transparent overlay
-        overlay = pygame.Surface((self.WINDOW_WIDTH, self.WINDOW_HEIGHT))
-        overlay.set_alpha(180)  # Semi-transparent
-        overlay.fill((0, 0, 0))
-        self.game.screen.blit(overlay, (0, 0))
-        
+        # Semi-transparent overlay (cached to avoid per-frame allocation)
+        size = (self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
+        if self._reusable_overlay is None or self._reusable_overlay_size != size:
+            self._reusable_overlay = pygame.Surface(size)
+            self._reusable_overlay.set_alpha(180)
+            self._reusable_overlay.fill((0, 0, 0))
+            self._reusable_overlay_size = size
+        self.game.screen.blit(self._reusable_overlay, (0, 0))
+
         # Menu panel (centered) - Scaled based on 1600×900 reference resolution
         # Uses InGameMenuBG.png as background image
         scale = self.WINDOW_WIDTH / 1600.0
@@ -730,12 +733,15 @@ class UIRenderer:
         All controls have hover highlighting and click flash feedback.
         Background is semi-transparent overlay that disables other UI.
         """
-        # Semi-transparent overlay
-        overlay = pygame.Surface((self.WINDOW_WIDTH, self.WINDOW_HEIGHT))
-        overlay.set_alpha(180)  # Semi-transparent
-        overlay.fill((0, 0, 0))
-        self.game.screen.blit(overlay, (0, 0))
-        
+        # Semi-transparent overlay (reuse cached overlay from draw_game_menu)
+        size = (self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
+        if self._reusable_overlay is None or self._reusable_overlay_size != size:
+            self._reusable_overlay = pygame.Surface(size)
+            self._reusable_overlay.set_alpha(180)
+            self._reusable_overlay.fill((0, 0, 0))
+            self._reusable_overlay_size = size
+        self.game.screen.blit(self._reusable_overlay, (0, 0))
+
         # Menu panel (centered, 3x size of main menu) - Scaled based on 1600×900 reference
         # Uses IGOptMenuBG.png as background image
         scale = self.WINDOW_WIDTH / 1600.0

@@ -85,6 +85,7 @@ def distribute_territories_2v2(game, num_players=4):
     Territories are distributed to create frontlines between teams.
     """
     all_territories = list(map_data.get_all_territories())
+    random.seed(42)  # Deterministic territory distribution for reproducible tests
     random.shuffle(all_territories)
 
     print(f"Distributing {len(all_territories)} territories for 2v2 (Team 0: P1+P2 vs Team 1: P3+P4)...")
@@ -521,6 +522,8 @@ def test_2v2_sequential_40turn():
     results = run_2v2_sequential_test(num_turns=10, verbose=False)
     assert results is not None, "Test runner returned None"
     assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
+    assert results['turns_completed'] > 0, "No turns were completed"
+    assert sum(results['final_territories']) == 57, f"Territory sum != 57: {results['final_territories']}"
 
 
 if __name__ == '__main__':
