@@ -462,7 +462,6 @@ class Game:
                     self.sim_state.is_multiplayer_host = True
                     self.sim_state.on_all_ready_callback = self._sim_start_execution_phase
                     self.sim_state.on_round_complete_callback = self._sim_broadcast_round_complete
-                    self.sim_state.on_forced_defend_callback = self._sim_broadcast_forced_defend
                     logger.info("[SIM] Configured as multiplayer HOST with callbacks")
         # Set reference to game instance for accessing scaled_centers, etc.
         self.game_state.game = self
@@ -1265,10 +1264,8 @@ class Game:
                 # Set winner's garrison (just fought, can't move)
                 # If host sent surviving_units, use them to preserve unit composition
                 # Otherwise fallback to auto-created Swordsmen (legacy/single-player)
+                # set_garrison_armies() auto-syncs to legacy arrays via sync_legacy_garrison_data()
                 self.game_state.set_garrison_armies(territory, new_owner, unmoved=0, moved=surviving_armies, units=surviving_units)
-
-                # Also update legacy armies dict for compatibility
-                self.game_state.armies[territory] = surviving_armies
 
                 # Remove this battle from pending_battles list
                 for i, battle in enumerate(self.game_state.pending_battles):
@@ -1518,17 +1515,6 @@ class Game:
                 for player_id_str, remaining in timers.items():
                     player_id = int(player_id_str)
                     self.sim_state.player_timers[player_id] = remaining
-
-        elif msg_type == MessageType.SIM_FORCED_DEFEND:
-            # Legacy handler - forced defenders are now included in SIM_ALL_READY
-            # This handler exists for backwards compatibility with older hosts
-            # The popup/message is already shown when processing SIM_ALL_READY
-            player_id = data.get('player_id')
-            territory = data.get('territory')
-            intended_target = data.get('intended_target')
-
-            if player_id == self.local_player_index:
-                logger.info(f"[NETWORK] (Legacy) Forced to defend in {territory} (was attacking {intended_target})")
 
         elif msg_type == MessageType.SIM_BATTLE_RESULT:
             # Battle result from the player who resolved it
@@ -2131,30 +2117,6 @@ class Game:
 
 
         self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, authoritative_data)
-
-    def _sim_broadcast_forced_defend(self, forced_defenders: list):
-        """
-        Host broadcasts forced defend notifications to clients.
-
-        Called when crossing army conflicts force some armies to defend
-        instead of attack. Clients need this info for display purposes.
-
-        Args:
-            forced_defenders: List of forced defender dicts with player_id, territory, etc.
-        """
-        if not self.multiplayer_mode or self.local_player_index != 0:
-            return
-
-        logger.info(f"[HOST] Broadcasting SIM_FORCED_DEFEND for {len(forced_defenders)} forced defenders")
-
-
-        for fd in forced_defenders:
-            self._send_action_to_remote(MessageType.SIM_FORCED_DEFEND, {
-                'player_id': fd.get('player_id'),
-                'territory': fd.get('territory'),
-                'intended_target': fd.get('intended_target'),
-                'forced_by': fd.get('forced_by')
-            })
 
     def _sim_execute_merged_orders(self, orders: list):
         """

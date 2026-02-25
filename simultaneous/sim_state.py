@@ -128,10 +128,6 @@ class SimultaneousGameState:
         # Set by main.py to broadcast SIM_ROUND_COMPLETE to clients
         self.on_round_complete_callback = None
 
-        # Callback for multiplayer host when armies are forced to defend
-        # Set by main.py to broadcast SIM_FORCED_DEFEND to clients
-        self.on_forced_defend_callback = None
-
     def _initialize_timers(self):
         """Initialize planning timers for all players based on research levels."""
         for player_id in range(self.gs.num_players):
@@ -215,13 +211,7 @@ class SimultaneousGameState:
                     if unit.get('status') == 'moved':
                         unit['status'] = 'ready'
 
-        # Also update legacy armies_unmoved/armies_moved if they exist
-        if hasattr(self.gs, 'armies_unmoved') and hasattr(self.gs, 'armies_moved'):
-            for territory in self.gs.armies_moved:
-                moved = self.gs.armies_moved.get(territory, 0)
-                self.gs.armies_unmoved[territory] = self.gs.armies_unmoved.get(territory, 0) + moved
-                self.gs.armies_moved[territory] = 0
-
+        # Legacy arrays are auto-synced via sync_legacy_garrison_data() in reset_garrison_moved_status()
         sim_log.detail("Reset all units to unmoved status for new round")
 
     def _check_auto_ready(self):

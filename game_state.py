@@ -1134,8 +1134,6 @@ class GameState:
         # research_in_progress: {player_id: {'tech_id': tech_id, 'turns_remaining': turns}}
         self.research_in_progress = {}
 
-        # Testing mode - allows controlling all players for testing
-        self.testing_mode = False  # Disabled for normal gameplay
         
         # Error tracking (Phase 1B: Error Handling)
         self.errors = []  # List of error messages for debugging
@@ -2294,17 +2292,8 @@ class GameState:
         garrison = self.territory_garrisons.get(territory, {}).get(self.current_player)
 
         if not garrison or garrison.get('unmoved', 0) <= 0:
-            # In testing mode, allow selecting even without garrison
-            if self.testing_mode and self.territory_owners.get(territory, -1) == self.current_player:
-                # Use legacy system for testing mode
-                if self.armies_unmoved.get(territory, 0) <= 0:
-                    self.add_message("No armies available to move in this territory")
-                    return False
-                self.selected_army = (territory, self.armies_unmoved.get(territory, 0))
-                return True
-            else:
-                self.add_message("No armies available to move in this territory")
-                return False
+            self.add_message("No armies available to move in this territory")
+            return False
 
         # Select the army (works for own territory OR allied territory with garrison)
         army_count = garrison['unmoved']
@@ -3057,8 +3046,7 @@ class GameState:
                 break
         
         # Create the order
-        # In testing mode, use the actual owner of the territory
-        order_player = self.territory_owners[from_territory] if self.testing_mode else self.current_player
+        order_player = self.current_player
         
         order = MovementOrder(
             from_territory=from_territory,
@@ -5708,11 +5696,9 @@ class GameState:
         if self.phase != 'playing':
             return False
         
-        # In testing mode, allow moving any player's armies
-        if not self.testing_mode:
-            # Must own the source territory
-            if self.territory_owners[from_territory] != self.current_player:
-                return False
+        # Must own the source territory
+        if self.territory_owners[from_territory] != self.current_player:
+            return False
         
         # Must have at least 1 unmoved army
         if self.armies_unmoved[from_territory] < 1:

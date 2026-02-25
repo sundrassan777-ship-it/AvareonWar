@@ -419,18 +419,6 @@ class NetworkProtocol:
             "timers": player_timers
         })
 
-    def create_sim_forced_defend(self, player_id: int, territory: str,
-                                  intended_target: str) -> bytes:
-        """Create a forced-to-defend notification.
-
-        Sent to player whose crossing army was weaker.
-        """
-        return self.encode_message(MessageType.SIM_FORCED_DEFEND, {
-            "player_id": player_id,
-            "territory": territory,
-            "intended_target": intended_target
-        })
-
     def create_sim_battle_result(self, territory: str, result: Dict[str, Any]) -> bytes:
         """Create a battle result message for simultaneous mode.
 

@@ -84,14 +84,6 @@ class SimPhaseManager:
             player_orders, crossing_conflicts
         )
 
-        # Notify players who were forced to defend (multiplayer sync)
-        # M19: Null check before calling callback to prevent AttributeError
-        forced_defenders = self.conflict_resolver.get_forced_defenders()
-        if forced_defenders:
-            callback = getattr(self.sim_state, 'on_forced_defend_callback', None)
-            if callback is not None:
-                callback(forced_defenders)
-
         # Continue with resolved orders
         self._execute_resolved_orders(resolved_orders)
 

@@ -37,10 +37,6 @@ logger = get_logger(__name__)
 # L3: PLAYER_COLORS and NEUTRAL_COLOR now imported from config/constants.py
 # (eliminates duplication with game_state.py)
 
-# Legacy aliases for backwards compatibility
-PLAYER_1_COLOR = PLAYER_COLORS[0]
-PLAYER_2_COLOR = PLAYER_COLORS[1]
-
 # UI colors
 PANEL_BG = (40, 40, 50)          # Dark Gray
 TEXT_COLOR = (255, 255, 255)      # White

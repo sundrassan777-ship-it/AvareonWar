@@ -526,9 +526,6 @@ class AchievementManager:
                 self.stats[completion_key] = 1
                 logger.info(f"Campaign mission completed: {mission_id} (stat: {completion_key})")
 
-                # Legacy counter for general tracking
-                self.stats['campaign_missions_completed'] = self.stats.get('campaign_missions_completed', 0) + 1
-
                 # Bridge bonus conditions from mission to stats
                 if hasattr(mission, 'get_bonus_conditions'):
                     bonus_conditions = mission.get_bonus_conditions()
