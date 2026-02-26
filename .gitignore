@@ -31,6 +31,9 @@ logs/
 # Backups
 *.zip
 
+# Game save data
+config.json
+
 # Claude
 .claude/
 
