@@ -548,6 +548,9 @@ self._resolved_battle_info = {
 - Battle bar combat (particles) → `ui/effects/battle_interface.py` (BattleBarParticleEffect) — 600 circle particles
 - Sparkle particles → `ui/effects/sparkle_effect.py`
 - Turn announcements → `ui/effects/turn_announcement_sparkle.py`
+- Hero ability bursts (explode/implode) → `ui/effects/ability_burst_effect.py` — configurable particles + phase durations
+- Hero ability arcs (territory-to-territory) → `ui/effects/ability_arc_effect.py` — 80 particles along bezier curve
+- Hero ability polygon bubbles (territory fill) → `ui/effects/ability_polygon_burst_effect.py` — rising circles in polygon
 
 **Key techniques used across effects:**
 - `pygame.draw.circle` for particle rendering (1-4px sizes)

@@ -32,6 +32,9 @@ from ui.effects.battleeffect import BattleHurricaneEffect
 from ui.effects.castle_upgrade_effect import CastleUpgradeEffect
 from ui.effects.alliance_marker_effect import AllianceMarkerEffect
 from ui.effects.production_glow_effect import ProductionGlowEffect
+from ui.effects.ability_burst_effect import AbilityBurstEffect
+from ui.effects.ability_arc_effect import AbilityArcEffect
+from ui.effects.ability_polygon_burst_effect import AbilityPolygonBurstEffect
 
 logger = get_logger(__name__)
 
@@ -67,6 +70,8 @@ class MapRenderer:
         # Dictionary to store active production glow effects: {(territory, plot_index): ProductionGlowEffect}
         # Tracks Barracks with units in training queue, and Keep/Castle with hero in training
         self.production_glow_effects = {}
+        # List to store active hero ability visual effects (burst + arc particles)
+        self.ability_effects = []
 
         # Image caching system to avoid expensive transformations every frame
         # Cache rotated ring images: key = (angle_rounded, size, color_tuple)
@@ -1910,6 +1915,12 @@ class MapRenderer:
                     local_player = self.game.get_local_player()
                     if resolver is not None and resolver != local_player:
                         greyed_out = True
+                else:
+                    # Sequential mode: grey out battles during AI turns
+                    # (player can't click to resolve these)
+                    current = self.game.game_state.current_player
+                    if self.game.game_state.player_is_ai[current]:
+                        greyed_out = True
 
                 # Create new hurricane effect at battle location
                 self.battle_effects[territory] = BattleHurricaneEffect(
@@ -2130,6 +2141,215 @@ class MapRenderer:
         """Render all active castle upgrade effects on screen."""
         for effect in self.castle_upgrade_effects:
             effect.render(self.game.screen, world_to_screen_func=self.game.world_to_screen)
+
+    # ========================================
+    # HERO ABILITY VISUAL EFFECTS
+    # ========================================
+
+    # Color palettes for each targeted hero ability (5 shades each)
+    ABILITY_PALETTES = {
+        # Decisive Strike: blue shades (explosion only, no swirl)
+        'Decisive Strike': [
+            (30, 60, 150), (50, 100, 200), (80, 140, 255), (120, 170, 255), (170, 200, 255)
+        ],
+        # Regicide: dark purple shades (inward implosion, ominous)
+        'Regicide': [
+            (80, 0, 120), (120, 0, 180), (40, 0, 60), (150, 0, 200), (60, 0, 90)
+        ],
+        # Levy: gold shades (same as CastleUpgradeEffect, 5 random polygon explosions)
+        'Levy': [
+            (184, 134, 11), (218, 165, 32), (255, 215, 0), (255, 223, 77), (255, 236, 139)
+        ],
+        # Relentless Charge: dust/brown shades (cavalry dust cloud)
+        'Relentless Charge': [
+            (160, 120, 60), (200, 170, 100), (140, 100, 40), (180, 150, 80), (120, 90, 30)
+        ],
+        # Royal Charisma: blue arc (units stolen from target to Narn's Keep)
+        'Royal Charisma': [
+            (30, 60, 150), (50, 100, 200), (80, 140, 255), (120, 170, 255), (170, 200, 255)
+        ],
+        # Valorous Charge: light blue/white arc (troops from Keep to target)
+        'Valorous Charge': [
+            (200, 220, 255), (150, 180, 220), (255, 255, 255), (170, 200, 240), (220, 235, 255)
+        ],
+    }
+
+    # Aggressive Diplomacy bubble color (fire orange, polygon-filling bubble burst)
+    AGGRESSIVE_DIPLOMACY_COLOR = (255, 120, 30)
+
+    def trigger_ability_effect(self, ability_name, target_territory,
+                               player_index, source_territory=None):
+        """
+        Trigger a visual effect for a hero ability activation.
+
+        Effect types per ability:
+        - Aggressive Diplomacy: polygon-filling rising bubbles (like Defiance aura, one-shot ~1s)
+        - Decisive Strike: blue explosion only (burst + quick fade)
+        - Regicide: dark purple inward implosion
+        - Levy: 5 small gold explosions at random polygon points (explosion only, no swirl)
+        - Relentless Charge: dust/brown outward explosion
+        - Royal Charisma: gold particle arc from target to Narn's Keep
+        - Valorous Charge: blue/white particle arc from Keep to target
+
+        Args:
+            ability_name: Name of the ability
+            target_territory: Territory where ability lands
+            player_index: Player who activated the ability
+            source_territory: Source territory for arc effects (Royal Charisma, Valorous Charge)
+        """
+        # --- Aggressive Diplomacy: polygon-filling bubble burst ---
+        if ability_name == 'Aggressive Diplomacy':
+            polygon = self.game.scaled_polygons.get(target_territory)
+            if not polygon:
+                return
+            effect = AbilityPolygonBurstEffect(
+                polygon=polygon,
+                color=self.AGGRESSIVE_DIPLOMACY_COLOR,
+                num_bubbles=60,
+                world_coords=True
+            )
+            self.ability_effects.append(effect)
+            return
+
+        # --- Levy: 5 small gold explosions at random points within polygon ---
+        if ability_name == 'Levy':
+            palette = self.ABILITY_PALETTES['Levy']
+            polygon = self.game.scaled_polygons.get(target_territory)
+            if not polygon:
+                return
+            # Pick 5 random points inside the territory polygon
+            points = self._random_points_in_polygon(polygon, count=5)
+            for point in points:
+                # Small explosion at each point: burst only, quick fade, no swirl
+                effect = AbilityBurstEffect(
+                    center_pos=point,
+                    color_palette=palette,
+                    num_particles=28,
+                    behavior='explode',
+                    world_coords=True,
+                    swirl_duration=0,       # No swirl phase
+                    float_duration=0.5      # Quick fade after explosion
+                )
+                self.ability_effects.append(effect)
+            return
+
+        # --- Arc abilities: Royal Charisma and Valorous Charge ---
+        if ability_name in ('Royal Charisma', 'Valorous Charge') and source_territory:
+            palette = self.ABILITY_PALETTES.get(ability_name)
+            if not palette:
+                return
+            if source_territory not in self.game.scaled_centers:
+                return
+            if target_territory not in self.game.scaled_centers:
+                return
+            source_pos = self.game.scaled_centers[source_territory]
+            target_pos = self.game.scaled_centers[target_territory]
+            effect = AbilityArcEffect(
+                source_pos=source_pos,
+                dest_pos=target_pos,
+                color_palette=palette,
+                num_particles=80,
+                world_coords=True
+            )
+            self.ability_effects.append(effect)
+            return
+
+        # --- Decisive Strike: blue explosion only (burst + quick fade, no swirl) ---
+        if ability_name == 'Decisive Strike':
+            palette = self.ABILITY_PALETTES['Decisive Strike']
+            if target_territory not in self.game.scaled_centers:
+                return
+            target_pos = self.game.scaled_centers[target_territory]
+            effect = AbilityBurstEffect(
+                center_pos=target_pos,
+                color_palette=palette,
+                num_particles=140,
+                behavior='explode',
+                world_coords=True,
+                swirl_duration=0,       # No swirl, explosion only
+                float_duration=0.5      # Quick fade after explosion
+            )
+            self.ability_effects.append(effect)
+            return
+
+        # --- Default burst abilities: Regicide (implode), Relentless Charge (explode) ---
+        palette = self.ABILITY_PALETTES.get(ability_name)
+        if not palette:
+            return
+        if target_territory not in self.game.scaled_centers:
+            return
+        target_pos = self.game.scaled_centers[target_territory]
+        # Regicide uses 'implode', everything else defaults to 'explode'
+        behavior = 'implode' if ability_name == 'Regicide' else 'explode'
+        effect = AbilityBurstEffect(
+            center_pos=target_pos,
+            color_palette=palette,
+            num_particles=120,
+            behavior=behavior,
+            world_coords=True
+        )
+        self.ability_effects.append(effect)
+
+    @staticmethod
+    def _point_in_polygon(x, y, polygon):
+        """Ray-casting point-in-polygon test for random point sampling."""
+        inside = False
+        n = len(polygon)
+        p1x, p1y = polygon[0]
+        for i in range(1, n + 1):
+            p2x, p2y = polygon[i % n]
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = ((y - p1y) * (p2x - p1x)
+                                       / (p2y - p1y) + p1x)
+                        if p1x == p2x or x <= xinters:
+                            inside = not inside
+            p1x, p1y = p2x, p2y
+        return inside
+
+    def _random_points_in_polygon(self, polygon, count=5, max_attempts=20):
+        """
+        Generate random points inside a polygon via rejection sampling.
+
+        Used by Levy to spawn explosion effects at random territory locations.
+
+        Args:
+            polygon: List of (x, y) tuples defining polygon vertices
+            count: Number of points to generate
+            max_attempts: Max rejection sampling attempts per point
+        Returns:
+            List of (x, y) tuples inside the polygon
+        """
+        xs = [p[0] for p in polygon]
+        ys = [p[1] for p in polygon]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
+        import random
+        points = []
+        for _ in range(count):
+            for _ in range(max_attempts):
+                x = random.uniform(min_x, max_x)
+                y = random.uniform(min_y, max_y)
+                if self._point_in_polygon(x, y, polygon):
+                    points.append((x, y))
+                    break
+        return points
+
+    def update_ability_effects(self, delta_time):
+        """Update all active hero ability visual effects."""
+        for effect in self.ability_effects[:]:
+            effect.update(delta_time)
+            if effect.is_finished():
+                self.ability_effects.remove(effect)
+
+    def render_ability_effects(self):
+        """Render all active hero ability visual effects on screen."""
+        for effect in self.ability_effects:
+            effect.render(self.game.screen,
+                          world_to_screen_func=self.game.world_to_screen)
 
     def sync_production_glow_effects(self):
         """

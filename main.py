@@ -1659,6 +1659,24 @@ class Game:
                         elif ability_name == 'Valorous Charge':
                             self.game_state.execute_valorous_charge(target, player_id)
 
+                        # Trigger visual particle effect for the ability (network replay)
+                        source_territory = None
+                        if ability_name in ('Royal Charisma', 'Valorous Charge'):
+                            hero_data = self.game_state.heroes.get(player_id, {}).get(hero_name)
+                            if hero_data:
+                                keep_terr = hero_data.get('keep_territory')
+                                if ability_name == 'Royal Charisma':
+                                    self.map_renderer.trigger_ability_effect(
+                                        ability_name, keep_terr, player_id,
+                                        source_territory=target)
+                                else:
+                                    self.map_renderer.trigger_ability_effect(
+                                        ability_name, target, player_id,
+                                        source_territory=keep_terr)
+                        else:
+                            self.map_renderer.trigger_ability_effect(
+                                ability_name, target, player_id)
+
                         # Set cooldown for targeted abilities (immediate abilities set their own via activate_hero_ability)
                         hero_info = self.game_state.HERO_TYPES.get(hero_name)
                         if hero_info and ability_index is not None:
@@ -4159,6 +4177,30 @@ class Game:
                         hero_info = self.game_state.HERO_TYPES[hero_name]
                         ability = hero_info['abilities'][ability_index]
                         cooldown = ability.get('cooldown', 0)
+
+                        # Trigger visual particle effect for the ability
+                        source_territory = None
+                        if ability_name in ('Royal Charisma', 'Valorous Charge'):
+                            # Arc abilities need the hero's Keep territory as source/dest
+                            hero_data = self.game_state.heroes.get(current_player, {}).get(hero_name)
+                            if hero_data:
+                                keep_terr = hero_data.get('keep_territory')
+                                if ability_name == 'Royal Charisma':
+                                    # Particles arc from target to Narn's Keep (units stolen)
+                                    source_territory = clicked_territory
+                                    self.map_renderer.trigger_ability_effect(
+                                        ability_name, keep_terr, current_player,
+                                        source_territory=source_territory)
+                                else:
+                                    # Valorous Charge: particles arc from Keep to target
+                                    source_territory = keep_terr
+                                    self.map_renderer.trigger_ability_effect(
+                                        ability_name, clicked_territory, current_player,
+                                        source_territory=source_territory)
+                        else:
+                            # Burst abilities: effect at target territory
+                            self.map_renderer.trigger_ability_effect(
+                                ability_name, clicked_territory, current_player)
 
                         # Put on cooldown
                         if current_player not in self.game_state.hero_ability_cooldowns:
@@ -8620,6 +8662,9 @@ class Game:
                 # Update castle upgrade particle effects
                 self.map_renderer.update_castle_upgrade_effects(delta_time)
 
+                # Update hero ability visual effects (burst + arc particles)
+                self.map_renderer.update_ability_effects(delta_time)
+
                 # Sync and update production glow effects (for buildings with active training)
                 self.map_renderer.sync_production_glow_effects()
                 self.map_renderer.update_production_glow_effects(delta_time)
@@ -9316,6 +9361,9 @@ class Game:
 
             # Draw castle upgrade particle effects (after battle markers, before UI)
             self.map_renderer.render_castle_upgrade_effects()
+
+            # Draw hero ability visual effects (burst + arc particles, same layer as castle upgrades)
+            self.map_renderer.render_ability_effects()
 
             # Draw top panel (Phase 4D: inlined from delegate method)
             self.ui_renderer.draw_top_panel()

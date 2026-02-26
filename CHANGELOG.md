@@ -2,6 +2,20 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-26 - Hero Ability Visual Effects (Phase 1: Targeted Abilities)
+
+- **New feature:** Added particle visual effects for all 7 targeted hero abilities
+- **Aggressive Diplomacy:** Fire-orange polygon-filling bubble burst (Defiance-style rising circles, one-shot ~1s)
+- **Decisive Strike:** Blue castle-upgrade-style explosion (140 particles, explode + swirl + float, 3.5s)
+- **Regicide:** Dark purple inward implosion (particles spiral toward center)
+- **Levy:** 5 small gold explosions at random territory polygon points (explosion only, no swirl)
+- **Relentless Charge:** Dust/brown outward explosion
+- **Royal Charisma:** Gold particle arc from target territory to Narn's Keep (bezier curve)
+- **Valorous Charge:** Blue/white particle arc from Keep to target territory
+- New effect classes: `ui/effects/ability_burst_effect.py`, `ui/effects/ability_arc_effect.py`, `ui/effects/ability_polygon_burst_effect.py`
+- Effects triggered on both local execution and network replay paths
+- World-coordinate based (tracks camera zoom/pan), cached SRCALPHA surfaces, consistent with existing art style
+
 ## 2026-02-26 - ESC to Skip Campaign Transmissions
 
 - **New feature:** Pressing ESC during a visible campaign transmission now skips it (hides overlay, stops voice audio). If no transmission is visible, ESC opens the game menu as usual.
