@@ -131,7 +131,8 @@ class BuildingMixin:
                 return False
             # Check Keeps under construction
             if territory in self.under_construction:
-                for plot_idx, (bldg_type, _) in self.under_construction[territory].items():
+                for plot_idx, entry in self.under_construction[territory].items():
+                    bldg_type = entry[0]  # under_construction entry is (building_type, turns_remaining, cost)
                     if bldg_type == 'Keep':
                         self.add_message("Already building a Fortress in this territory!")
                         return False

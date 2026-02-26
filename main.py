@@ -1340,6 +1340,18 @@ class Game:
                         self.sim_state.phase_manager.pending_alliance_markers.append(alliance_marker)
                         logger.info(f"[NETWORK] Added alliance marker for {territory}, chooser: {alliance_marker.get('chooser')}")
 
+                # Capital Assault: run full elimination on client for battle-captured capitals
+                if (self.sim_state is not None and
+                    self.game_state.victory_condition == "Capital Assault" and
+                    hasattr(self.game_state, 'player_starting_territories')):
+                    for player_index, capital in self.game_state.player_starting_territories.items():
+                        if (capital == territory and player_index != new_owner and
+                            player_index not in self.sim_state.eliminated_players and
+                            not self.game_state.are_allies(new_owner, player_index)):
+                            self.game_state.eliminate_player(player_index)
+                            self.sim_state.eliminate_player(player_index)
+                            logger.info(f"[NETWORK] Capital Assault: eliminated Player {player_index + 1} on client")
+
                 # Check if all battles resolved
                 if len(self.game_state.pending_battles) == 0:
                     if self.sim_state is not None:
@@ -5952,8 +5964,9 @@ class Game:
 
                 elif under_construction_data:
                     # Under construction - draw icon with CircleBorder
-                    # under_construction_data is a tuple: (building_type, turns_remaining)
-                    building_type, turns_remaining = under_construction_data
+                    # under_construction_data is a tuple: (building_type, turns_remaining, cost)
+                    building_type = under_construction_data[0]
+                    turns_remaining = under_construction_data[1]
 
                     if building_type in self.building_icons and self.building_icons[building_type]:
                         building_icon = self.building_icons[building_type]
@@ -6696,7 +6709,8 @@ class Game:
             
         elif under_construction:
             # Show construction info - polished format matching completed buildings
-            building_type, turns_remaining = under_construction
+            building_type = under_construction[0]  # entry is (building_type, turns_remaining, cost)
+            turns_remaining = under_construction[1]
             building_info = self.game_state.building_types[building_type]
 
             # Large building name with "Under Construction" suffix
@@ -6773,8 +6787,8 @@ class Game:
                         can_build_this_building = False
                     # Check if Keep is under construction
                     if territory in self.game_state.under_construction:
-                        for plot_idx, (bldg_type, _) in self.game_state.under_construction[territory].items():
-                            if bldg_type == 'Keep':
+                        for plot_idx, entry in self.game_state.under_construction[territory].items():
+                            if entry[0] == 'Keep':  # entry is (building_type, turns_remaining, cost)
                                 can_build_this_building = False
                                 break
                 
@@ -8773,6 +8787,16 @@ class Game:
                             self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
                             logger.info(f"[HOST] Broadcast AI battle result: {territory} -> player {new_owner}")
 
+                        # Capital Assault: sync battle-based eliminations to sim_state
+                        # game_state.eliminate_player() runs inside resolve_battle(), but
+                        # sim_state.eliminate_player() is not called from that path
+                        if self.game_state.victory_condition == "Capital Assault":
+                            for pid in range(self.game_state.num_players):
+                                if (pid not in self.sim_state.eliminated_players and
+                                    all(owner != pid for owner in self.game_state.territory_owners.values())):
+                                    self.sim_state.eliminate_player(pid)
+                                    logger.info(f"[SIM] Synced elimination of Player {pid + 1} to sim_state after AI battle")
+
                         # Check if all battles resolved
                         if not self.game_state.pending_battles:
                             logger.info(f"[SIM] All battles resolved. Alliance markers: {len(self.sim_state.phase_manager.pending_alliance_markers)}")
@@ -10104,6 +10128,16 @@ class Game:
 
         # SIMULTANEOUS MODE: Check if all battles resolved
         if self.sim_state is not None:
+            # Capital Assault: sync battle-based eliminations to sim_state
+            # game_state.eliminate_player() runs inside resolve_battle(), but
+            # sim_state.eliminate_player() is not called from that path
+            if self.game_state.victory_condition == "Capital Assault":
+                for pid in range(self.game_state.num_players):
+                    if (pid not in self.sim_state.eliminated_players and
+                        all(owner != pid for owner in self.game_state.territory_owners.values())):
+                        self.sim_state.eliminate_player(pid)
+                        logger.info(f"[SIM] Synced elimination of Player {pid + 1} to sim_state after battle")
+
             if len(self.game_state.pending_battles) == 0:
                 logger.info(f"[SIM] All battles resolved. Alliance markers: {len(self.sim_state.phase_manager.pending_alliance_markers)}")
                 # Check for alliance markers - if any, don't complete round yet

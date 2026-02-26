@@ -397,7 +397,7 @@ class BuildingPlanner:
                     return 0.0  # Already has a Keep
 
         # Check if Keep is under construction in this territory
-        # Format: under_construction[territory][plot_index] = (building_type, turns_remaining)
+        # Format: under_construction[territory][plot_index] = (building_type, turns_remaining, cost)
         if territory in game_state.under_construction:
             for building_type_tuple in game_state.under_construction[territory].values():
                 if building_type_tuple[0] == 'Keep':
@@ -531,7 +531,7 @@ class BuildingPlanner:
                             has_keep = True
                             break
                 # Check under construction Keeps
-                # Format: under_construction[territory][plot_index] = (building_type, turns_remaining)
+                # Format: under_construction[territory][plot_index] = (building_type, turns_remaining, cost)
                 if not has_keep and terr in game_state.under_construction:
                     for building_type_tuple in game_state.under_construction[terr].values():
                         if building_type_tuple[0] == 'Keep':

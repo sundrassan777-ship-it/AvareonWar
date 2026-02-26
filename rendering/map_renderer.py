@@ -2428,10 +2428,11 @@ class MapRenderer:
                                   is_hovering, is_clicking, current_player):
         """Render an under-construction plot (helper for unified loop)."""
         try:
-            building_type, turns_remaining = under_construction
+            building_type = under_construction[0]  # entry is (building_type, turns_remaining, cost)
+            turns_remaining = under_construction[1]
             building_info = self.game.game_state.building_types[building_type]
             letter = building_info['letter']
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, IndexError):
             return
 
         plot_surface = self.get_reusable_surface(scaled_plot_surface_size, scaled_plot_surface_size)
@@ -2815,10 +2816,11 @@ class MapRenderer:
 
                 # Get building info (with error handling)
                 try:
-                    building_type, turns_remaining = under_construction
+                    building_type = under_construction[0]  # entry is (building_type, turns_remaining, cost)
+                    turns_remaining = under_construction[1]
                     building_info = self.game.game_state.building_types[building_type]
                     letter = building_info['letter']
-                except (KeyError, TypeError, ValueError) as e:
+                except (KeyError, TypeError, ValueError, IndexError) as e:
                     logger.warning(f"Invalid under_construction data in {territory}: {e}")
                     continue
 
@@ -3182,8 +3184,8 @@ class MapRenderer:
                                 can_build_keep = False
                             # Check if Keep is under construction
                             if territory in self.game.game_state.under_construction:
-                                for plot_idx, (bldg_type, _) in self.game.game_state.under_construction[territory].items():
-                                    if bldg_type == 'Keep':
+                                for plot_idx, entry in self.game.game_state.under_construction[territory].items():
+                                    if entry[0] == 'Keep':  # entry is (building_type, turns_remaining, cost)
                                         can_build_keep = False
                                         break
                         

@@ -347,7 +347,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Building system
         # buildings: {territory: {plot_index: building_type}} or {plot_index: None} for empty
         self.buildings = {}  # Completed buildings
-        # under_construction: {territory: {plot_index: (building_type, turns_remaining)}}
+        # under_construction: {territory: {plot_index: (building_type, turns_remaining, cost)}}
         self.under_construction = {}  # Buildings being built
         
         # Track buildings started this turn (one per territory per turn limit)
