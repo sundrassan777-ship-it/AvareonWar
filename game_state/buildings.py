@@ -505,8 +505,10 @@ class BuildingMixin:
         if unit_type in _unit_stat_map:
             self._track_stat(self.current_player, _unit_stat_map[unit_type])
 
-        # Add to queue (unit_type, turns_remaining)
-        self.training_queue[territory][barracks_plot_index].append((unit_type, 1))
+        # Add to queue (unit_type, turns_remaining, cost_paid)
+        # M1 fix: Store actual cost paid so cancel_training refunds the correct amount
+        # (bonuses may change between training start and cancellation)
+        self.training_queue[territory][barracks_plot_index].append((unit_type, 1, unit_cost))
 
         self.add_message(f"Player {self.current_player + 1} started training {unit_type} in {territory} ({unit_cost} gold, 1 turn)")
 
@@ -525,13 +527,17 @@ class BuildingMixin:
         if queue_index >= len(self.training_queue[territory][barracks_plot_index]):
             return False
 
-        # Get unit info
-        unit_type, turns_remaining = self.training_queue[territory][barracks_plot_index][queue_index]
-
-        # Get correct cost for this unit type (apply discounts)
-        base_cost = self.UNIT_TYPES.get(unit_type, {}).get('cost', 25)
-        owner = self.territory_owners[territory]
-        unit_cost = self.get_effective_cost(unit_type, base_cost, owner)
+        # Get unit info — queue entries are (unit_type, turns_remaining, cost_paid)
+        # M1 fix: Use stored cost_paid for accurate refund (bonuses may have changed
+        # since training started). Fall back to recalculating if legacy tuple format.
+        entry = self.training_queue[territory][barracks_plot_index][queue_index]
+        if len(entry) >= 3:
+            unit_type, turns_remaining, unit_cost = entry
+        else:
+            unit_type, turns_remaining = entry[:2]
+            base_cost = self.UNIT_TYPES.get(unit_type, {}).get('cost', 25)
+            owner = self.territory_owners[territory]
+            unit_cost = self.get_effective_cost(unit_type, base_cost, owner)
 
         # Refund gold
         self.player_gold[owner] += unit_cost
@@ -594,9 +600,11 @@ class BuildingMixin:
                     continue
 
                 # Process first unit in queue
+                # M1 fix: entries are (unit_type, turns_remaining[, cost_paid])
                 if queue:
-                    unit_type, turns_remaining = queue[0]
-                    turns_remaining -= 1
+                    unit_type = queue[0][0]
+                    turns_remaining = queue[0][1] - 1
+                    cost_paid = queue[0][2] if len(queue[0]) >= 3 else None
 
                     if turns_remaining <= 0:
                         # Check army limit before spawning
@@ -606,7 +614,7 @@ class BuildingMixin:
                             # At army limit - pause training (don't spawn, don't remove from queue)
                             self.add_message(f"{territory}: Training paused - army limit reached ({self.MAX_ARMIES_PER_TERRITORY}/{self.MAX_ARMIES_PER_TERRITORY})")
                             # Keep unit in queue with 0 turns (will check again next turn)
-                            queue[0] = (unit_type, 0)
+                            queue[0] = (unit_type, 0) if cost_paid is None else (unit_type, 0, cost_paid)
                             continue  # Skip to next Barracks
 
                         # Training complete! Spawn unit
@@ -677,8 +685,8 @@ class BuildingMixin:
                         # Update remaining items in queue (decrement their timers too if needed)
                         # Actually, only first item trains, others wait
                     else:
-                        # Update timer
-                        queue[0] = (unit_type, turns_remaining)
+                        # Update timer (preserve cost_paid if stored)
+                        queue[0] = (unit_type, turns_remaining) if cost_paid is None else (unit_type, turns_remaining, cost_paid)
 
                 # Clean up empty queue
                 if not queue:
@@ -928,9 +936,11 @@ class BuildingMixin:
         # Apply Ruthless Ingenuity (Erec Silvyr): -1 turn (minimum 1)
         if self.player_has_silvyr(self.current_player):
             turns = max(1, turns - 1)
+        # M2 fix: Store cost_paid so cancel_research refunds exact amount paid
         self.research_in_progress[self.current_player] = {
             'tech_id': tech_id,
-            'turns_remaining': turns
+            'turns_remaining': turns,
+            'cost_paid': cost
         }
 
         self.add_message(f"Started research: {tech['name']} ({cost} gold, {turns} turns)")
@@ -963,19 +973,22 @@ class BuildingMixin:
         research = self.research_in_progress[player_id]
         tech_id = research['tech_id']
 
-        # Find the technology to get cost
+        # Look up tech name for message
         tech = None
         for t in self.technologies:
             if t['id'] == tech_id:
                 tech = t
                 break
+        tech_name = tech['name'] if tech else tech_id
 
-        if not tech:
-            return False
-
-        # Refund the cost (must match what was actually paid, including all modifiers)
-        base_cost = tech.get('cost', 0)
-        cost = self.get_effective_tech_cost(base_cost, player_id)
+        # M2 fix: Use stored cost_paid for accurate refund (bonuses may have changed).
+        # Fall back to recalculating if legacy format without cost_paid.
+        cost = research.get('cost_paid')
+        if cost is None:
+            if not tech:
+                return False
+            base_cost = tech.get('cost', 0)
+            cost = self.get_effective_tech_cost(base_cost, player_id)
 
         if cost > 0:
             self.player_gold[player_id] += cost
@@ -983,7 +996,7 @@ class BuildingMixin:
         # Remove from research tracking
         del self.research_in_progress[player_id]
 
-        self.add_message(f"Research cancelled: {tech['name']}, {cost} gold refunded (100%)")
+        self.add_message(f"Research cancelled: {tech_name}, {cost} gold refunded (100%)")
         return True
 
     def finish_research(self):

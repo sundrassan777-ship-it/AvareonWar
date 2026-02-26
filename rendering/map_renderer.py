@@ -541,9 +541,11 @@ class MapRenderer:
         # Convert world coords to screen coords
         screen_x, screen_y = self.game.world_to_screen((world_x, world_y))
 
-        # Check if within screen bounds (with margin for elements that extend beyond their center)
-        return (-margin <= screen_x <= WINDOW_WIDTH + margin and
-                -margin <= screen_y <= WINDOW_HEIGHT + margin)
+        # H9 fix: use actual screen dimensions instead of hardcoded constants
+        screen_w = self.game.screen.get_width()
+        screen_h = self.game.screen.get_height()
+        return (-margin <= screen_x <= screen_w + margin and
+                -margin <= screen_y <= screen_h + margin)
 
     def is_territory_on_screen(self, territory):
         """
@@ -569,12 +571,14 @@ class MapRenderer:
         screen_min = self.game.world_to_screen((min_x, min_y))
         screen_max = self.game.world_to_screen((max_x, max_y))
 
-        # Check if bounding box intersects with screen viewport (with margin)
+        # H9 fix: use actual screen dimensions instead of hardcoded constants
         margin = 100
+        screen_w = self.game.screen.get_width()
+        screen_h = self.game.screen.get_height()
         screen_left = -margin
-        screen_right = WINDOW_WIDTH + margin
+        screen_right = screen_w + margin
         screen_top = -margin
-        screen_bottom = WINDOW_HEIGHT + margin
+        screen_bottom = screen_h + margin
 
         # Bounding box intersection test
         # Territory is on screen if its bbox overlaps with screen rect
@@ -1027,9 +1031,9 @@ class MapRenderer:
                             # PERFORMANCE: Reduce glow layers when zoomed out (same as selection glow)
                             glow_layers = 1 if ui_scale < 1.5 else 3  # FPS OPTIMIZATION: More aggressive threshold
 
-                            # Draw cyan glow rings
+                            # Draw cyan glow rings (M6 fix: scale with zoom like red glow)
                             for i in range(glow_layers):
-                                glow_radius = 20 + i * 4
+                                glow_radius = int((20 + i * 4) * ui_scale)
                                 # PERFORMANCE: Use reusable surface from pool
                                 glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
                                 pygame.draw.circle(glow_surface, (0, 200, 200, glow_alpha // (i + 1)),

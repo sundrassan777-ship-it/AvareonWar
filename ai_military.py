@@ -607,7 +607,8 @@ class AttackPlanner:
                 continue
 
             owner = game_state.territory_owners.get(neighbor, -1)
-            if owner != player_index and owner != -1:
+            # H5 fix: exclude allies from counterattack risk assessment
+            if owner != player_index and owner != -1 and not game_state.are_allies(player_index, owner):
                 # IMPORTANT: Use total armies (all garrisons) for threat assessment
                 enemy_army = game_state.get_territory_total_armies(neighbor)
                 if enemy_army > remaining_garrison * 1.5:

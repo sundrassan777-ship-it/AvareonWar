@@ -478,7 +478,8 @@ class AIPlayer:
                     spent_on_economy += game_state.get_effective_cost(
                         building_type, base_cost, self.player_index)
                 elif action_type == 'upgrade_castle':
-                    spent_on_economy += 100
+                    # H3 fix: actual Castle upgrade cost is 150, not 100
+                    spent_on_economy += 150
                 elif action_type == 'research':
                     tech_id = action_data.get('tech_id')
                     tech = next((t for t in game_state.technologies if t['id'] == tech_id), None)

@@ -1431,10 +1431,14 @@ class TerritorySelector:
                 alpha = 50
 
             # Draw overlay
+            # P4 fix: reuse cached SRCALPHA surface instead of creating new one per territory
             if color:
-                surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-                pygame.draw.polygon(surface, (*color, alpha), self.scaled_polygons[territory])
-                self.screen.blit(surface, (0, 0))
+                if not hasattr(self, '_cached_overlay') or self._cached_overlay is None or self._cached_overlay.get_size() != (self.width, self.height):
+                    self._cached_overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+                else:
+                    self._cached_overlay.fill((0, 0, 0, 0))
+                pygame.draw.polygon(self._cached_overlay, (*color, alpha), self.scaled_polygons[territory])
+                self.screen.blit(self._cached_overlay, (0, 0))
 
                 # Draw border
                 pygame.draw.polygon(self.screen, color, self.scaled_polygons[territory], 3)

@@ -2468,12 +2468,13 @@ class Game:
         """Render the victory/defeat cinematic overlay and image."""
         screen_width, screen_height = self.screen.get_size()
 
-        # PERFORMANCE: Reuse cached overlay instead of allocating every frame
-        if self._cached_victory_overlay is None or self._cached_victory_overlay.get_size() != (screen_width, screen_height):
-            self._cached_victory_overlay = pygame.Surface((screen_width, screen_height))
-        self._cached_victory_overlay.fill((0, 0, 0))
-        self._cached_victory_overlay.set_alpha(self.victory_fade_alpha)
-        self.screen.blit(self._cached_victory_overlay, (0, 0))
+        # M5 fix: Use separate cache from draw_victory_screen (which needs SRCALPHA)
+        # This one uses per-surface alpha (set_alpha) on a non-SRCALPHA surface
+        if not hasattr(self, '_cached_victory_seq_overlay') or self._cached_victory_seq_overlay is None or self._cached_victory_seq_overlay.get_size() != (screen_width, screen_height):
+            self._cached_victory_seq_overlay = pygame.Surface((screen_width, screen_height))
+        self._cached_victory_seq_overlay.fill((0, 0, 0))
+        self._cached_victory_seq_overlay.set_alpha(self.victory_fade_alpha)
+        self.screen.blit(self._cached_victory_seq_overlay, (0, 0))
 
         # Victory/defeat image (during image_grow and image_hold phases)
         if self.victory_image and self.victory_phase in ('image_grow', 'image_hold'):
@@ -3315,8 +3316,13 @@ class Game:
         
         # Draw with transparency if requested
         if use_transparency:
-            # Create semi-transparent surface
-            tooltip_surface = pygame.Surface((tooltip_width, tooltip_height), pygame.SRCALPHA)
+            # MP2 fix: Reuse cached tooltip surface when size matches to avoid per-frame allocation
+            tooltip_size = (tooltip_width, tooltip_height)
+            if not hasattr(self, '_cached_tooltip_surface') or self._cached_tooltip_surface is None or self._cached_tooltip_surface.get_size() != tooltip_size:
+                self._cached_tooltip_surface = pygame.Surface(tooltip_size, pygame.SRCALPHA)
+            else:
+                self._cached_tooltip_surface.fill((0, 0, 0, 0))
+            tooltip_surface = self._cached_tooltip_surface
             # Background with alpha
             bg_alpha = bg_color + (240,) if len(bg_color) == 3 else bg_color
             pygame.draw.rect(tooltip_surface, bg_alpha, (0, 0, tooltip_width, tooltip_height))
@@ -7470,7 +7476,8 @@ class Game:
             barracks_plot_index in self.game_state.training_queue[territory]):
             queue = self.game_state.training_queue[territory][barracks_plot_index]
             
-            for i, (unit_type, turns_remaining) in enumerate(queue):
+            for i, entry in enumerate(queue):
+                unit_type, turns_remaining = entry[0], entry[1]
                 # Queue item background
                 item_rect = pygame.Rect(queue_x, queue_y, 280, 30)
                 pygame.draw.rect(self.screen, (220, 220, 220), item_rect)
@@ -8418,9 +8425,12 @@ class Game:
         self.screen.blit(close_text, close_text_rect)
         self.action_log_close_button = close_rect
         
-        # Messages
+        # Messages — M4 fix: stop rendering past overlay bottom
         msg_y = overlay_y + 45
+        max_msg_y = overlay_y + overlay_height - 10
         for message in self.game_state.messages:
+            if msg_y >= max_msg_y:
+                break
             # Wrap long messages
             if len(message) > 35:
                 words = message.split()
@@ -8428,13 +8438,15 @@ class Game:
                 for word in words:
                     test_line = line + " " + word if line else word
                     if len(test_line) > 35:
+                        if msg_y >= max_msg_y:
+                            break
                         msg_text = self._get_cached_text(line, self.small_font, WHITE)
                         self.screen.blit(msg_text, (overlay_x + 10, msg_y))
                         msg_y += 20
                         line = word
                     else:
                         line = test_line
-                if line:
+                if line and msg_y < max_msg_y:
                     msg_text = self._get_cached_text(line, self.small_font, WHITE)
                     self.screen.blit(msg_text, (overlay_x + 10, msg_y))
                     msg_y += 20
@@ -9310,27 +9322,9 @@ class Game:
             # Draw chat input box (appears above bottom UI when active) (Phase 4D: inlined)
             self.ui_renderer.draw_chat_input()
             
-            # Track building button hover (must happen after draw_bottom_ui every frame)
-            # This ensures hover state is always properly managed
-            if self.selected_plot:
-                mouse_pos = pygame.mouse.get_pos()
-                current_hover = None
-                # Only track if we're showing building buttons (plot is empty)
-                if self.building_buttons:
-                    for building_name, button_rect in self.building_buttons.items():
-                        if button_rect.collidepoint(mouse_pos):
-                            current_hover = ('building', building_name)
-                            break
-                
-                # Update hover tracking using helper (Phase 1D)
-                self.update_button_hover(current_hover, 'building')
-            else:
-                # No plot selected - clear building button hover if that's what was set
-                if self.hover_target_button and self.hover_target_button[0] == 'building':
-                    self.hover_target_button = None
-                    self.show_tooltip_button = None
-                    self.hover_start_time_button = None
-            
+            # P7 fix: removed duplicate building button hover tracking here —
+            # already handled in update_frame_tooltips() called at line 9373
+
             # Tutorial mission: render overlay (below menus so Menu renders on top)
             if self._is_tutorial_active():
                 self.tutorial_mission.render(self.screen)
@@ -12295,18 +12289,15 @@ class Game:
             self.master_negotiator_particles.append(particle)
 
         # Update existing particles
-        particles_to_remove = []
         for particle in self.master_negotiator_particles:
             particle['age'] += delta_time
             particle['y'] += particle['vy'] * delta_time  # Drift upward
 
-            # Remove particles that exceeded their lifetime
-            if particle['age'] >= particle['lifetime']:
-                particles_to_remove.append(particle)
-
-        # Remove dead particles
-        for particle in particles_to_remove:
-            self.master_negotiator_particles.remove(particle)
+        # P9 fix: O(n) list comprehension instead of O(n*k) list.remove() loop
+        self.master_negotiator_particles = [
+            p for p in self.master_negotiator_particles
+            if p['age'] < p['lifetime']
+        ]
 
     def render_master_negotiator_particles(self):
         """

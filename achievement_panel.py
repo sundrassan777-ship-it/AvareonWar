@@ -448,8 +448,8 @@ class AchievementPanel:
             if self._cached_achievement_bg is None or self._cached_achievement_bg_size != ach_bg_size:
                 self._cached_achievement_bg = pygame.transform.smoothscale(self.achievement_bg, ach_bg_size)
                 self._cached_achievement_bg_size = ach_bg_size
-            bg = self._cached_achievement_bg.copy()
-            item_surface.blit(bg, (0, 0))
+            # MP5 fix: Blit directly instead of copy() — modifications happen on item_surface
+            item_surface.blit(self._cached_achievement_bg, (0, 0))
         else:
             item_surface.fill((40, 40, 55, 200))
             pygame.draw.rect(item_surface, BRASS_COLOR, (0, 0, rect.width, rect.height), 1)
@@ -475,10 +475,12 @@ class AchievementPanel:
             icon_cache_key = (ach['icon'], icon_size)
             if icon_cache_key not in self._cached_scaled_icons:
                 self._cached_scaled_icons[icon_cache_key] = pygame.transform.smoothscale(icon_img, (icon_size, icon_size))
-            scaled_icon = self._cached_scaled_icons[icon_cache_key].copy()
+            # MP5 fix: Only copy() when we need to modify (darken unearned icons)
             if not is_earned:
-                # Darken the icon too
+                scaled_icon = self._cached_scaled_icons[icon_cache_key].copy()
                 scaled_icon.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            else:
+                scaled_icon = self._cached_scaled_icons[icon_cache_key]
             screen.blit(scaled_icon, (icon_x, icon_y))
 
         # Icon border
@@ -487,9 +489,12 @@ class AchievementPanel:
             if self._cached_icon_border is None or self._cached_icon_border_size != icon_size:
                 self._cached_icon_border = pygame.transform.smoothscale(self.icon_border, (icon_size, icon_size))
                 self._cached_icon_border_size = icon_size
-            border = self._cached_icon_border.copy()
+            # MP5 fix: Only copy() when we need to modify (darken unearned borders)
             if not is_earned:
+                border = self._cached_icon_border.copy()
                 border.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            else:
+                border = self._cached_icon_border
             screen.blit(border, (icon_x, icon_y))
 
         # Text area (to the right of icon)

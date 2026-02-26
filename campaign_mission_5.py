@@ -225,4 +225,6 @@ class Mission5:
     def deactivate(self):
         """Clean up mission state"""
         self.active = False
+        # H8 fix: clear territory filtering to prevent leaking to next session
+        map_data.clear_enabled_territories()
         logger.info("Mission 5 deactivated")

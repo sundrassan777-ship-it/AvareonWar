@@ -256,8 +256,13 @@ class UIRenderer:
         input_x = 10
         input_width = self.WINDOW_WIDTH - 20
 
-        # Draw background with slight transparency
-        input_surface = pygame.Surface((input_width, input_height), pygame.SRCALPHA)
+        # MP4 fix: Reuse cached surface instead of allocating SRCALPHA every frame
+        chat_size = (input_width, input_height)
+        if not hasattr(self, '_cached_chat_input_surface') or self._cached_chat_input_surface is None or self._cached_chat_input_surface.get_size() != chat_size:
+            self._cached_chat_input_surface = pygame.Surface(chat_size, pygame.SRCALPHA)
+        else:
+            self._cached_chat_input_surface.fill((0, 0, 0, 0))
+        input_surface = self._cached_chat_input_surface
         pygame.draw.rect(input_surface, (40, 40, 40, 240), (0, 0, input_width, input_height))
 
         # Border color based on channel: blue for ALL, green for TEAM

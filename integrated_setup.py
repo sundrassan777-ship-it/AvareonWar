@@ -453,10 +453,14 @@ class MapPreview:
 
     def _draw_territory_overlay(self, polygon, color, alpha=100, outline=False):
         """Draw semi-transparent overlay on territory"""
-        # Create temporary surface with per-pixel alpha - full screen size
+        # P4 fix: reuse cached SRCALPHA overlay surface instead of creating new one each call
         screen_width = self.screen.get_width()
         screen_height = self.screen.get_height()
-        overlay = pygame.Surface((screen_width, screen_height), pygame.SRCALPHA)
+        if not hasattr(self, '_cached_overlay') or self._cached_overlay is None or self._cached_overlay.get_size() != (screen_width, screen_height):
+            self._cached_overlay = pygame.Surface((screen_width, screen_height), pygame.SRCALPHA)
+        else:
+            self._cached_overlay.fill((0, 0, 0, 0))
+        overlay = self._cached_overlay
 
         # Draw filled polygon
         pygame.draw.polygon(overlay, (*color, alpha), polygon)

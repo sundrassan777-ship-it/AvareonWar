@@ -424,6 +424,9 @@ class AbilityExecutor:
         for territory, owner in game_state.territory_owners.items():
             if owner == player_index or owner == -1:
                 continue  # Must be enemy
+            # H6 fix: don't steal from allies
+            if game_state.are_allies(player_index, owner):
+                continue
 
             # H11 FIX: Use get_territory_total_armies() for enemy strength assessment
             # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
@@ -450,6 +453,9 @@ class AbilityExecutor:
         # Find enemy Keeps with heroes
         for enemy_player in range(game_state.num_players):
             if enemy_player == player_index:
+                continue
+            # H6 fix: don't target ally heroes
+            if game_state.are_allies(player_index, enemy_player):
                 continue
 
             # Check if enemy has heroes
@@ -533,6 +539,9 @@ class AbilityExecutor:
         for territory, owner in game_state.territory_owners.items():
             if owner == player_index or owner == -1:
                 continue  # Must be enemy
+            # H6 fix: don't target ally territories
+            if game_state.are_allies(player_index, owner):
+                continue
 
             # H11 FIX: Use get_territory_total_armies() for enemy strength assessment
             # FPS OPTIMIZATION 5B: Use cached territory_armies instead of per-call computation
@@ -580,8 +589,10 @@ class AbilityExecutor:
 
             # Check if territory is on the front line
             neighbors = map_data.get_neighbors(territory)
+            # H6 fix: exclude allies from enemy-adjacent check
             enemy_adjacent = any(
                 game_state.territory_owners.get(n, -1) not in [-1, player_index]
+                and not game_state.are_allies(player_index, game_state.territory_owners.get(n, -1))
                 for n in neighbors
             )
 
@@ -615,6 +626,9 @@ class AbilityExecutor:
         for enemy_player in range(game_state.num_players):
             if enemy_player == player_index:
                 continue
+            # H6 fix: don't count ally heroes as threats
+            if game_state.are_allies(player_index, enemy_player):
+                continue
 
             enemy_heroes = game_state.heroes.get(enemy_player, {})
             enemy_hero_threat += len(enemy_heroes)
@@ -638,6 +652,9 @@ class AbilityExecutor:
         for enemy_player in range(game_state.num_players):
             if enemy_player == player_index:
                 continue
+            # H6 fix: don't count ally income as enemy income
+            if game_state.are_allies(player_index, enemy_player):
+                continue
             total_enemy_income += game_state.calculate_player_income(enemy_player)
 
         if total_enemy_income < 100:
@@ -657,16 +674,18 @@ class AbilityExecutor:
         if player_gold < 100:
             return (0.0, None)  # Not enough to benefit
 
-        # Check if there are open building plots
+        # M7 fix: Use actual plot count from map_data instead of hardcoding 3
+        import map_data
         open_plots = 0
         for territory, owner in game_state.territory_owners.items():
             if owner != player_index:
                 continue
+            total_plots = len(map_data.get_plots(territory))
             if territory not in game_state.buildings:
-                open_plots += 3  # Assume 3 plots per territory
+                open_plots += total_plots
             else:
                 built = len(game_state.buildings[territory])
-                open_plots += max(0, 3 - built)
+                open_plots += max(0, total_plots - built)
 
         if open_plots < 2:
             return (0.0, None)  # No space to build
@@ -700,10 +719,12 @@ class AbilityExecutor:
                 continue  # Must have ≤11 units
 
             # Prefer front-line territories
+            # H6 fix: exclude allies from enemy-adjacent count
             neighbors = map_data.get_neighbors(territory)
             enemy_adjacent = sum(
                 1 for n in neighbors
                 if game_state.territory_owners.get(n, -1) not in [-1, player_index]
+                and not game_state.are_allies(player_index, game_state.territory_owners.get(n, -1))
             )
 
             value = 50.0 + enemy_adjacent * 10.0

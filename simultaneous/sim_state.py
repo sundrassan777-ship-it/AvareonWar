@@ -649,10 +649,12 @@ class SimultaneousGameState:
             return True  # Player is always allied with themselves
 
         # Check if game_state has player_teams
+        # C1 fix: player_teams is a list, not dict — use index access with bounds check
         if hasattr(self.gs, 'player_teams') and self.gs.player_teams:
-            team1 = self.gs.player_teams.get(player1, player1)
-            team2 = self.gs.player_teams.get(player2, player2)
-            return team1 == team2
+            if player1 < len(self.gs.player_teams) and player2 < len(self.gs.player_teams):
+                team1 = self.gs.player_teams[player1]
+                team2 = self.gs.player_teams[player2]
+                return team1 == team2
 
         # Fallback: No alliance system, players are not allies
         return False

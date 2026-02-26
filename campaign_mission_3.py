@@ -997,16 +997,10 @@ class Mission3:
             if self.alliance_formed and not self.betrayal_triggered:
                 # Allied Uhmayya: don't attack the player (remove 0 from enemies)
                 enemy_players = []
-                # Focus on Nordia; ignore Affrancia while Affrancia is still active
-                # (avoids splitting forces across two fronts)
-                if not self.faction_defeated.get(1, False):
-                    # Affrancia alive — only fight Nordia
-                    if not self.faction_defeated.get(2, False):
-                        enemy_players.append(2)
-                else:
-                    # Affrancia eliminated — fight Nordia too
-                    if not self.faction_defeated.get(2, False):
-                        enemy_players.append(2)
+                # M14 fix: Collapsed identical if/else branches — Uhmayya
+                # fights Nordia regardless of whether Affrancia is alive
+                if not self.faction_defeated.get(2, False):
+                    enemy_players.append(2)
             else:
                 # Hostile Uhmayya (after betrayal): enemies are player 0, Affrancia, Nordia
                 if not self.faction_defeated.get(1, False):

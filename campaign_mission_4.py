@@ -540,7 +540,8 @@ class Mission4:
         if not self.transmission_overlay:
             self.transmission_overlay = TransmissionOverlay(sw, sh, text, TOP_PANEL_HEIGHT, speaker=speaker)
         else:
-            self.transmission_overlay.set_text(text)
+            # C3 fix: pass speaker so overlay updates speaker name on reuse
+            self.transmission_overlay.set_text(text, speaker=speaker)
 
     def _queue_transmission(self, text, duration, voice_key=None):
         """Queue a transmission to show during gameplay. Supports multiple queued messages.
@@ -582,6 +583,9 @@ class Mission4:
         """Called every frame to update mission state."""
         if not self.active:
             return
+        # M10 fix: Cap delta_time to prevent animation jumps on large frame times
+        # (consistent with missions 2, 3, tutorial which cap at 0.05)
+        delta_time = min(delta_time, 0.05)
 
         # Update camera animation
         # Phase 2C: unified CameraZoomAnimation.update() returns True while still
@@ -910,10 +914,13 @@ class Mission4:
                 unit_type = unit_types[type_idx % len(unit_types)]
                 cost = gs.UNIT_TYPES[unit_type]['cost']
                 if gs.player_gold[player_id] >= cost:
+                    # H7 fix: use try/finally to restore current_player on exception
                     original_player = gs.current_player
-                    gs.current_player = player_id
-                    gs.start_training(territory, plot_idx, unit_type)
-                    gs.current_player = original_player
+                    try:
+                        gs.current_player = player_id
+                        gs.start_training(territory, plot_idx, unit_type)
+                    finally:
+                        gs.current_player = original_player
                     type_idx += 1
 
     def _ai_reinforce(self, player_id, my_territories, max_units):

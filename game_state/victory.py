@@ -286,6 +286,12 @@ class VictoryMixin:
         if hasattr(self, 'hero_ownership') and player_index in self.hero_ownership:
             self.hero_ownership[player_index] = set()
 
+        # H2 fix: clean up allied garrisons the eliminated player had in other territories
+        for territory in list(self.territory_garrisons.keys()):
+            if territory not in player_territories and player_index in self.territory_garrisons[territory]:
+                del self.territory_garrisons[territory][player_index]
+                self.sync_legacy_garrison_data(territory)
+
         # Add message log
         self.add_message(f"")
         self.add_message(f"============================")

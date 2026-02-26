@@ -250,8 +250,10 @@ class NetworkClient:
             # H13 fix: check buffer overflow and disconnect on overflow
             if not self.recv_buffer.add_data(data):
                 logger.warning("Buffer overflow from server, disconnecting")
-                self.disconnected = True
-                self.disconnect_reason = "Buffer overflow"
+                # H10 fix: acquire lock for thread-safe state update
+                with self._state_lock:
+                    self.disconnected = True
+                    self.disconnect_reason = "Buffer overflow"
                 self._disconnect()
                 return
 

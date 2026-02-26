@@ -649,8 +649,9 @@ class HeroMixin:
         armies_destroyed = current_armies
 
         # Destroy all armies from all garrisons
+        # H1 fix: use = {} instead of del to keep key consistent with rest of codebase
         if target_territory in self.territory_garrisons:
-            del self.territory_garrisons[target_territory]
+            self.territory_garrisons[target_territory] = {}
 
         # Sync to legacy system (which will set legacy counts to 0)
         self.sync_legacy_garrison_data(target_territory)

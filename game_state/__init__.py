@@ -365,7 +365,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         self.building_xp = {}
 
         # Training system (for Barracks)
-        # training_queue: {territory: {barracks_plot_index: [(unit_type, turns_remaining), ...]}}
+        # training_queue: {territory: {barracks_plot_index: [(unit_type, turns_remaining, cost_paid), ...]}}
         self.training_queue = {}  # Unit training queues
 
         # Hero system

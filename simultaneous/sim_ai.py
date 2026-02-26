@@ -159,13 +159,13 @@ class SimultaneousAI:
                     f"AI player {player_id} planning timed out after "
                     f"{self.AI_PLANNING_TIMEOUT}s, proceeding with partial orders"
                 )
-                # Note: the sub-thread will continue in the background as a daemon
-                # thread, but we don't wait for it - we mark ready now
 
-            # Mark AI as ready
+            # H11 fix: mark ready BEFORE setting ai_ready flag.
+            # mark_ready sets players_ready[player_id]=True, which causes
+            # add_order() to reject any stale orders from the timed-out thread.
             sim_log.ai(player_id, "Marking ready")
-            self.ai_ready[player_id] = True
             self.sim_state.mark_ready(player_id)
+            self.ai_ready[player_id] = True
             sim_log.ai(player_id, "Now ready")
 
         except Exception as e:

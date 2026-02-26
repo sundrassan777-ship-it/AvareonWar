@@ -464,22 +464,14 @@ class BattleBarParticleEffect:
             pygame.draw.rect(screen, self.defender_color, fill_rect)
 
         # Draw bar borders using BattleBar.png if available
-        if self.bar_border_img:
-            # Scale BattleBar.png to independent PNG dimensions
-            attacker_border = pygame.transform.smoothscale(
-                self.bar_border_img,
-                (self.bar_png_width, self.bar_png_height)
-            )
-            defender_border = pygame.transform.smoothscale(
-                self.bar_border_img,
-                (self.bar_png_width, self.bar_png_height)
-            )
+        # P2 fix: use pre-scaled bar border instead of smoothscale per frame
+        if self._scaled_bar_border:
             # Center PNG both vertically and horizontally over the fill area
             png_offset_y = (self.attacker_rect.height - self.bar_png_height) // 2
             attacker_png_x = self.attacker_rect.centerx - self.bar_png_width // 2
             defender_png_x = self.defender_rect.centerx - self.bar_png_width // 2
-            screen.blit(attacker_border, (attacker_png_x, self.attacker_rect.top + png_offset_y))
-            screen.blit(defender_border, (defender_png_x, self.defender_rect.top + png_offset_y))
+            screen.blit(self._scaled_bar_border, (attacker_png_x, self.attacker_rect.top + png_offset_y))
+            screen.blit(self._scaled_bar_border, (defender_png_x, self.defender_rect.top + png_offset_y))
         else:
             pygame.draw.rect(screen, WHITE, self.attacker_rect, BAR_BORDER_WIDTH)
             pygame.draw.rect(screen, WHITE, self.defender_rect, BAR_BORDER_WIDTH)
@@ -638,7 +630,8 @@ class EnhancedBattleInterface:
         except (pygame.error, FileNotFoundError) as e:
             logger.warning(f"Could not load BattleBar.png: {e}")
             self.bar_border_img = None
-            self.bar_border_original_h = BAR_HEIGHT
+            # C2 fix: BAR_HEIGHT was undefined — use BAR_PNG_HEIGHT_REF instead
+            self.bar_border_original_h = BAR_PNG_HEIGHT_REF
 
         # Get fonts (scaled based on reference resolution)
         ui_scale = self.screen_height / REFERENCE_HEIGHT
@@ -766,6 +759,19 @@ class EnhancedBattleInterface:
             close_button_width,
             close_button_height
         )
+
+        # P2/P3 fix: pre-scale battle bar borders and panel backgrounds (constant sizes)
+        self._scaled_bar_border = None
+        if self.bar_border_img:
+            self._scaled_bar_border = pygame.transform.smoothscale(
+                self.bar_border_img, (self.bar_png_width, self.bar_png_height))
+        self._scaled_panel_bg = None
+        self._scaled_report_bg = None
+        if self.panel_bg:
+            self._scaled_panel_bg = pygame.transform.smoothscale(
+                self.panel_bg, (self.attacker_panel_rect.width, self.attacker_panel_rect.height))
+            self._scaled_report_bg = pygame.transform.smoothscale(
+                self.panel_bg, (self.report_panel_rect.width, self.report_panel_rect.height))
 
     def _extract_battle_data(self):
         """Extract battle information for display."""
@@ -1326,10 +1332,11 @@ class EnhancedBattleInterface:
             effective_strength: Calculated effective strength
             is_defender: If True, show Keep info if applicable
         """
-        # Draw panel background
-        if self.panel_bg:
-            scaled_bg = pygame.transform.smoothscale(self.panel_bg, (rect.width, rect.height))
-            self.screen.blit(scaled_bg, rect.topleft)
+        # P3 fix: use pre-scaled panel background instead of smoothscale per frame
+        if self._scaled_panel_bg:
+            self.screen.blit(self._scaled_panel_bg, rect.topleft)
+        elif self.panel_bg:
+            self.screen.blit(pygame.transform.smoothscale(self.panel_bg, (rect.width, rect.height)), rect.topleft)
         else:
             # Fallback solid color
             pygame.draw.rect(self.screen, (40, 40, 60), rect)
@@ -1472,22 +1479,14 @@ class EnhancedBattleInterface:
             pygame.draw.rect(self.screen, self.defender_color, fill_rect)
 
         # Draw borders using BattleBar.png if available
-        if self.bar_border_img:
-            # Scale BattleBar.png to independent PNG dimensions
-            attacker_border = pygame.transform.smoothscale(
-                self.bar_border_img,
-                (self.bar_png_width, self.bar_png_height)
-            )
-            defender_border = pygame.transform.smoothscale(
-                self.bar_border_img,
-                (self.bar_png_width, self.bar_png_height)
-            )
+        # P2 fix: use pre-scaled bar border instead of smoothscale per frame
+        if self._scaled_bar_border:
             # Center PNG both vertically and horizontally over the fill area
             png_offset_y = (self.attacker_bar_rect.height - self.bar_png_height) // 2
             attacker_png_x = self.attacker_bar_rect.centerx - self.bar_png_width // 2
             defender_png_x = self.defender_bar_rect.centerx - self.bar_png_width // 2
-            self.screen.blit(attacker_border, (attacker_png_x, self.attacker_bar_rect.top + png_offset_y))
-            self.screen.blit(defender_border, (defender_png_x, self.defender_bar_rect.top + png_offset_y))
+            self.screen.blit(self._scaled_bar_border, (attacker_png_x, self.attacker_bar_rect.top + png_offset_y))
+            self.screen.blit(self._scaled_bar_border, (defender_png_x, self.defender_bar_rect.top + png_offset_y))
         else:
             # Fallback to simple rectangle borders
             pygame.draw.rect(self.screen, WHITE, self.attacker_bar_rect, BAR_BORDER_WIDTH)
@@ -1600,13 +1599,13 @@ class EnhancedBattleInterface:
 
     def _render_report(self):
         """Render the REPORT state (battle summary with unit type breakdown)."""
-        # Draw panel background
-        if self.panel_bg:
-            scaled_bg = pygame.transform.smoothscale(
-                self.panel_bg,
-                (self.report_panel_rect.width, self.report_panel_rect.height)
-            )
-            self.screen.blit(scaled_bg, self.report_panel_rect.topleft)
+        # P3 fix: use pre-scaled report panel background
+        if self._scaled_report_bg:
+            self.screen.blit(self._scaled_report_bg, self.report_panel_rect.topleft)
+        elif self.panel_bg:
+            self.screen.blit(pygame.transform.smoothscale(
+                self.panel_bg, (self.report_panel_rect.width, self.report_panel_rect.height)),
+                self.report_panel_rect.topleft)
         else:
             pygame.draw.rect(self.screen, (40, 40, 60), self.report_panel_rect)
             pygame.draw.rect(self.screen, WHITE, self.report_panel_rect, 2)

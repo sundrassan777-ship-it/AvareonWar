@@ -117,6 +117,13 @@ class EconomyMixin:
         Returns:
             dict: {bonus_type: total_percent} mapping (e.g., {'income_bonus': 6, 'unit_cost': -10})
         """
+        # MP1 fix: Cache per player per turn — bonuses only change with ownership changes
+        cache_key = (player_index, getattr(self, 'turn_number', 0))
+        if not hasattr(self, '_territorial_bonus_cache'):
+            self._territorial_bonus_cache = {}
+        if cache_key in self._territorial_bonus_cache:
+            return self._territorial_bonus_cache[cache_key]
+
         bonuses = {}
         for territory, owner in self.territory_owners.items():
             if owner == player_index:
@@ -126,6 +133,7 @@ class EconomyMixin:
                     bonus_def = self.BONUS_TYPES.get(bonus_type)
                     if bonus_def:
                         bonuses[bonus_type] = bonuses.get(bonus_type, 0) + bonus_def['value']
+        self._territorial_bonus_cache[cache_key] = bonuses
         return bonuses
 
     def get_hero_cost(self, hero_type, player=None):
@@ -256,9 +264,10 @@ class EconomyMixin:
         if self.taxation_level == 0:
             return
 
-        # Tax rates for each level
+        # Tax rates for each level — M13 fix: clamp index to valid range
         tax_rates = [0.0, 0.25, 0.5, 0.75, 1.0]
-        rate = tax_rates[self.taxation_level]
+        clamped_level = max(0, min(self.taxation_level, len(tax_rates) - 1))
+        rate = tax_rates[clamped_level]
 
         current_gold = self.player_gold[player_index]
         tax_amount = int(current_gold * rate)
@@ -380,11 +389,13 @@ class EconomyMixin:
                                 value = int(value * 1.15)
                         building_bonus += value
                     elif effect == 'multiplier':
+                        # M3 fix: Stack multipliers instead of overwriting
+                        # (e.g. two Squares should multiply together, not replace)
                         # Supply and Demand: Squares multiply by 2.5× instead of 1.5×
                         if building_type == 'Square' and owner >= 0 and 'tech_0_3' in self.player_tech_researched.get(owner, set()):
-                            multiplier = 2.5
+                            multiplier *= 2.5
                         else:
-                            multiplier = value
+                            multiplier *= value
                 except (KeyError, TypeError) as e:
                     self.log_error(f"Invalid building data for {building_type} in {territory}", e)
                     continue

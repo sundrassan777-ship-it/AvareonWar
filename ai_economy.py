@@ -576,11 +576,12 @@ class BuildingPlanner:
         return building_type in game_state.buildings[territory].values()
 
     def _is_frontier_territory(self, territory, game_state, player_index):
-        """Check if territory is on the frontier (borders enemy/neutral)"""
+        """Check if territory is on the frontier (borders enemy/neutral, not just allied)"""
         neighbors = map_data.get_neighbors(territory)
         for neighbor in neighbors:
             owner = game_state.territory_owners.get(neighbor, -1)
-            if owner != player_index:  # Enemy or neutral
+            # H4 fix: exclude allied territories from frontier check
+            if owner != player_index and not (owner >= 0 and game_state.are_allies(player_index, owner)):
                 return True
         return False
 

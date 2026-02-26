@@ -241,8 +241,13 @@ class EdgeWaveEffect:
         if self.is_complete:
             return
 
-        # Create a temporary surface with per-pixel alpha for transparency
-        temp_surface = pygame.Surface((screen.get_width(), screen.get_height()), pygame.SRCALPHA)
+        # P1 fix: reuse cached SRCALPHA surface instead of creating new one each frame
+        screen_size = (screen.get_width(), screen.get_height())
+        if not hasattr(self, '_cached_surface') or self._cached_surface is None or self._cached_surface.get_size() != screen_size:
+            self._cached_surface = pygame.Surface(screen_size, pygame.SRCALPHA)
+        else:
+            self._cached_surface.fill((0, 0, 0, 0))
+        temp_surface = self._cached_surface
 
         # Calculate opacity based on phase
         if self.elapsed < EXPLOSION_DURATION:

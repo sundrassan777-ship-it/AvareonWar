@@ -192,7 +192,11 @@ class TurnAnnouncementEffect:
 
     def _render_overlay(self, screen):
         """Render semi-transparent black overlay to darken the screen."""
-        overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+        # P1 fix: reuse cached overlay surface instead of creating new one each frame
+        if not hasattr(self, '_cached_overlay') or self._cached_overlay is None:
+            self._cached_overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+        self._cached_overlay.fill((0, 0, 0, 0))
+        overlay = self._cached_overlay
 
         # Calculate overlay opacity based on phase
         if self.elapsed < self.explosion_duration:

@@ -43,6 +43,9 @@ class MainMenu:
         self.width = screen.get_width()
         self.height = screen.get_height()
 
+        # P8 fix: font cache to avoid per-frame pygame.font.Font() filesystem I/O
+        self._font_cache = {}
+
         # Scale factor for UI elements based on screen height
         self.ui_scale = min(1.0, self.height / 900.0)
 
@@ -341,6 +344,16 @@ class MainMenu:
         self.hero_icons_button_scaled = []  # For profile button
         self.icon_border_panel_scaled = None  # For borders in profile panel
         self.icon_border_button_scaled = None  # For border on profile button
+
+    def _get_cached_font(self, font_path, size):
+        """P8 fix: return cached font, creating it only once per (path, size) pair."""
+        key = (font_path, size)
+        if key not in self._font_cache:
+            try:
+                self._font_cache[key] = pygame.font.Font(font_path, size)
+            except (FileNotFoundError, OSError):
+                self._font_cache[key] = pygame.font.SysFont('arial', size, bold=True)
+        return self._font_cache[key]
 
     def _calculate_layout(self):
         """Calculate button positions and pre-scale hero icons"""
@@ -921,11 +934,12 @@ class MainMenu:
 
         # Draw custom button background or fallback
         if self.button_bg_image:
-            # Scale the button background to match the button rect size
-            scaled_button_bg = pygame.transform.smoothscale(
-                self.button_bg_image,
-                (rect.width, rect.height)
-            )
+            # P5 fix: cache pre-scaled button background instead of smoothscale per frame
+            btn_size = (rect.width, rect.height)
+            if not hasattr(self, '_scaled_button_bg_cache') or self._scaled_button_bg_cache is None or self._scaled_button_bg_cache.get_size() != btn_size:
+                self._scaled_button_bg_cache = pygame.transform.smoothscale(
+                    self.button_bg_image, btn_size)
+            scaled_button_bg = self._scaled_button_bg_cache
 
             # Darken the button base, then add brightness for states
             button_surface = scaled_button_bg.copy()
@@ -993,7 +1007,7 @@ class MainMenu:
 
         # Title (scaled font)
         title_font_size = max(36, int(72 * self.ui_scale))
-        title_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', title_font_size) if hasattr(self, 'title_font') else pygame.font.SysFont('arial', title_font_size, bold=True)
+        title_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', title_font_size)
         title_text = title_font.render("Options", True, WHITE)
         title_rect = title_text.get_rect(center=(panel_x + panel_w // 2, panel_y + padding_top))
         self.screen.blit(title_text, title_rect)
@@ -1007,8 +1021,8 @@ class MainMenu:
         # Scaled fonts for options panel
         section_font_size = max(20, int(34 * self.ui_scale))
         label_font_size = max(16, int(28 * self.ui_scale))
-        section_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf', section_font_size) if hasattr(self, 'section_header_font') else pygame.font.SysFont('arial', section_font_size, bold=True)
-        label_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', label_font_size) if hasattr(self, 'label_font') else pygame.font.SysFont('arial', label_font_size)
+        section_font = self._get_cached_font('assets/fonts/Cinzel-SemiBold.ttf', section_font_size)
+        label_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', label_font_size)
 
         # Display Section
         y = content_y
@@ -1231,7 +1245,7 @@ class MainMenu:
         elif current_icon == 0:
             # Draw question mark for unset icon
             icon_surface.fill((60, 60, 80))
-            qm_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', 40) if hasattr(self, 'title_font') else pygame.font.SysFont('arial', 40, bold=True)
+            qm_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', 40)
             qm_text = qm_font.render("?", True, WHITE)
             qm_rect = qm_text.get_rect(center=(rect.width // 2, rect.height // 2))
             icon_surface.blit(qm_text, qm_rect)
@@ -1275,7 +1289,7 @@ class MainMenu:
         else:
             # Fallback: dark background with star-like symbol
             icon_surface.fill((60, 60, 80))
-            star_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', 30) if hasattr(self, 'title_font') else pygame.font.SysFont('arial', 30, bold=True)
+            star_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', 30)
             star_text = star_font.render("★", True, WHITE)
             star_rect = star_text.get_rect(center=(rect.width // 2, rect.height // 2))
             icon_surface.blit(star_text, star_rect)
@@ -1365,7 +1379,7 @@ class MainMenu:
 
         # Title
         title_font_size = max(36, int(72 * self.ui_scale))
-        title_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', title_font_size) if hasattr(self, 'title_font') else pygame.font.SysFont('arial', title_font_size, bold=True)
+        title_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', title_font_size)
         title_text = title_font.render("Profile", True, WHITE)
         title_rect = title_text.get_rect(center=(panel_x + panel_w // 2, panel_y + padding_top))
         self.screen.blit(title_text, title_rect)
@@ -1376,7 +1390,7 @@ class MainMenu:
 
         # Scaled fonts
         label_font_size = max(16, int(28 * self.ui_scale))
-        label_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', label_font_size) if hasattr(self, 'label_font') else pygame.font.SysFont('arial', label_font_size)
+        label_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', label_font_size)
 
         # Player Name Section
         y = content_y
@@ -1499,7 +1513,7 @@ class MainMenu:
 
         # Deferred tooltip info (drawn after clip is restored)
         deferred_tooltip = None
-        small_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', max(11, int(14 * self.ui_scale)))
+        small_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', max(11, int(14 * self.ui_scale)))
 
         for i in range(total_icons):
             row = i // icons_per_row
@@ -1529,7 +1543,7 @@ class MainMenu:
 
                 if i == 0:
                     icon_surface.fill((60, 60, 80))
-                    qm_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', int(24 * self.ui_scale))
+                    qm_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', int(24 * self.ui_scale))
                     qm_text = qm_font.render("?", True, WHITE)
                     qm_rect = qm_text.get_rect(center=(icon_size // 2, icon_size // 2))
                     icon_surface.blit(qm_text, qm_rect)
@@ -1640,7 +1654,7 @@ class MainMenu:
             old_dd_clip = self.screen.get_clip()
             self.screen.set_clip(self._title_dropdown_list_rect)
 
-            small_dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', max(12, int(18 * self.ui_scale)))
+            small_dd_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', max(12, int(18 * self.ui_scale)))
 
             for idx, title_opt in enumerate(all_title_options):
                 # Offset by scroll position

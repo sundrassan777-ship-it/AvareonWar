@@ -309,11 +309,11 @@ class CutscenePlayer:
 
     def _handle_events(self):
         """Process input events -- ESC or left-click to skip."""
-        import sys
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                # M12 fix: End cutscene gracefully instead of hard sys.exit()
+                self._done = True
+                return
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
