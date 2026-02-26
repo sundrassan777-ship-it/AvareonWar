@@ -297,19 +297,32 @@ class Game:
 
         # Load resource slot assets (for enhanced top panel stats display)
         # Purpose: Replace text-based stats with visual resource slots showing Taxation, Command, Gold, Income
-        self.resource_slot_img = pygame.image.load("assets/ResourceSlot.png")
-        self.taxation_icon = pygame.image.load("assets/TXTPTS.png")
-        self.command_icon = pygame.image.load("assets/CMDPTS.png")
-        self.gold_icon = pygame.image.load("assets/GLDPTS.png")
-        self.income_icon = pygame.image.load("assets/INCPTS.png")
-        # Load menu button image for enhanced in-game menu button appearance
-        self.menu_button_img = pygame.image.load("assets/GMenuButton.png").convert_alpha()
-        # Load in-game menu background image
-        self.ingame_menu_bg = pygame.image.load("assets/InGameMenuBG.png").convert_alpha()
-        # Load in-game options menu background image
-        self.ingame_options_menu_bg = pygame.image.load("assets/IGOptMenuBG.png").convert_alpha()
-        # Load main menu button image for in-game menu buttons (Resume, Options, Quit)
-        self.main_menu_button_img = pygame.image.load("assets/MainMenuButtonNew.png").convert_alpha()
+        # H1 fix: added convert_alpha() + try/except guard for missing assets
+        try:
+            self.resource_slot_img = pygame.image.load("assets/ResourceSlot.png").convert_alpha()
+            self.taxation_icon = pygame.image.load("assets/TXTPTS.png").convert_alpha()
+            self.command_icon = pygame.image.load("assets/CMDPTS.png").convert_alpha()
+            self.gold_icon = pygame.image.load("assets/GLDPTS.png").convert_alpha()
+            self.income_icon = pygame.image.load("assets/INCPTS.png").convert_alpha()
+        except pygame.error as e:
+            logger.warning(f"Could not load resource slot assets: {e}")
+            self.resource_slot_img = None
+            self.taxation_icon = None
+            self.command_icon = None
+            self.gold_icon = None
+            self.income_icon = None
+        # H2 fix: added try/except guard for menu/UI images
+        try:
+            self.menu_button_img = pygame.image.load("assets/GMenuButton.png").convert_alpha()
+            self.ingame_menu_bg = pygame.image.load("assets/InGameMenuBG.png").convert_alpha()
+            self.ingame_options_menu_bg = pygame.image.load("assets/IGOptMenuBG.png").convert_alpha()
+            self.main_menu_button_img = pygame.image.load("assets/MainMenuButtonNew.png").convert_alpha()
+        except pygame.error as e:
+            logger.warning(f"Could not load menu UI assets: {e}")
+            self.menu_button_img = None
+            self.ingame_menu_bg = None
+            self.ingame_options_menu_bg = None
+            self.main_menu_button_img = None
         
         # Load right sidebar background image
         # Calculate sidebar height (map height between top and bottom panels)
@@ -523,7 +536,6 @@ class Game:
         self.game_state.game = self
 
         # Pre-claim territories from setup (dynamic for all players)
-        import time
         num_players = setup_config.get('num_players', 2)
 
         # Use player_territories dict if available (new 2-4 player format)
@@ -1395,8 +1407,9 @@ class Game:
             unit_id = data.get('unit_id', 0)
 
             # VALIDATION: Verify territory ownership before adding unit
+            # M5 fix: use player_index from message data instead of hardcoded 2-player logic
             if territory:
-                remote_player_index = 1 if self.local_player_index == 0 else 0
+                remote_player_index = data.get('player_index', 1 if self.local_player_index == 0 else 0)
                 territory_owner = self.game_state.territory_owners.get(territory)
 
                 if territory_owner != remote_player_index:
@@ -1437,8 +1450,9 @@ class Game:
             plot_index = data.get('plot_index')
 
             # VALIDATION: Verify territory ownership before adding building
+            # M6 fix: use player_index from message data instead of hardcoded 2-player logic
             if territory:
-                remote_player_index = 1 if self.local_player_index == 0 else 0
+                remote_player_index = data.get('player_index', 1 if self.local_player_index == 0 else 0)
                 territory_owner = self.game_state.territory_owners.get(territory)
 
                 if territory_owner != remote_player_index:
@@ -1607,9 +1621,10 @@ class Game:
 
                 # Remove from pending battles if tracked
                 if hasattr(self.sim_state, 'pending_battles'):
+                    # Battles can be objects (with .territory attr) or dicts
                     self.sim_state.pending_battles = [
                         b for b in self.sim_state.pending_battles
-                        if b.get('territory') != territory
+                        if getattr(b, 'territory', b.get('territory') if isinstance(b, dict) else None) != territory
                     ]
 
         elif msg_type == MessageType.SIM_HERO_ABILITY:
@@ -2310,21 +2325,6 @@ class Game:
             'timers': timers
         })
 
-    def _sim_send_round_complete(self, round_number: int):
-        """
-        Host broadcasts round complete to start new planning phase.
-
-        Args:
-            round_number: The new round number
-        """
-        if not self.multiplayer_mode or self.local_player_index != 0:
-            return  # Only host sends this
-
-
-        self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, {
-            'round_number': round_number
-        })
-
     def is_local_player_active(self) -> bool:
         """
         Check if the local player is the active player (can make moves).
@@ -2385,7 +2385,7 @@ class Game:
         """Check if the local human player (or their team) won the game."""
         local = self.get_local_player()
         winner = self.game_state.winner
-        if winner < 0:
+        if winner is None or winner < 0:  # M3 fix: guard against None winner
             return False
         # Direct match
         if local == winner:
@@ -2907,24 +2907,24 @@ class Game:
                 (self.map_width, self.map_height)
             )
             
-            # Rescale polygons
+            # Rescale polygons (using round() to match __init__ for smoother edges)
             for territory, polygon in map_data.TERRITORY_POLYGONS.items():
                 self.scaled_polygons[territory] = [
-                    (int(x * self.scale_factor), int(y * self.scale_factor)) 
+                    (round(x * self.scale_factor), round(y * self.scale_factor))
                     for x, y in polygon
                 ]
-            
+
             # Rescale centers
             for territory, center in map_data.TERRITORY_CENTERS.items():
                 self.scaled_centers[territory] = (
-                    int(center[0] * self.scale_factor),
-                    int(center[1] * self.scale_factor)
+                    round(center[0] * self.scale_factor),
+                    round(center[1] * self.scale_factor)
                 )
-            
+
             # Rescale plots
             for territory, plots in map_data.TERRITORY_PLOTS.items():
                 self.scaled_plots[territory] = [
-                    (int(x * self.scale_factor), int(y * self.scale_factor))
+                    (round(x * self.scale_factor), round(y * self.scale_factor))
                     for x, y in plots
                 ]
             
@@ -2936,7 +2936,37 @@ class Game:
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
             self._hero_overlay_cache = {}
-            
+
+            # H3 fix: Update ui_scale and fonts after resolution change
+            REFERENCE_WIDTH = 1600
+            REFERENCE_HEIGHT = 900
+            self.ui_scale = min(actual_width / REFERENCE_WIDTH, actual_height / REFERENCE_HEIGHT)
+            self.font = self.font_manager.get_font(int(15 * self.ui_scale))
+            self.large_font = self.font_manager.get_font(int(24 * self.ui_scale))
+            self.small_font = self.font_manager.get_font(int(12 * self.ui_scale))
+            self.small_font_bold = self.font_manager.get_bold_font(int(12 * self.ui_scale))
+            self.font_bold = self.font_manager.get_bold_font(int(15 * self.ui_scale))
+            self.large_font_bold = self.font_manager.get_bold_font(int(24 * self.ui_scale))
+            self.small_font_italic = self.font_manager.get_font(int(12 * self.ui_scale))
+            extra_small_size = 8 if actual_height == 720 else int(10 * self.ui_scale)
+            self.extra_small_font = self.font_manager.get_font(extra_small_size)
+
+            # M1 fix: Update instance layout attributes to match new globals
+            self.TOP_PANEL_HEIGHT = TOP_PANEL_HEIGHT
+            self.BOTTOM_UI_HEIGHT = BOTTOM_UI_HEIGHT
+            self.MAP_HEIGHT = MAP_HEIGHT
+
+            # Update helpers with new fonts/screen
+            self.helpers = DrawingHelpers(self.screen, self.font, self.small_font, self.large_font,
+                                          self.separator_image, self.separator_width,
+                                          small_font_bold=self.small_font_bold)
+
+            # Reset cached font sizes for AI indicator, spectator text, etc.
+            self._ai_indicator_title_font = None
+            self._ai_indicator_subtitle_font = None
+            if hasattr(self, '_cached_spectator_text'):
+                self._cached_spectator_text = None
+
             # Rescale panel images to new resolution
             # Bottom panel
             if self.bottom_panel_image:
@@ -3912,7 +3942,7 @@ class Game:
         for bubble in state['bubbles']:
             screen_x, screen_y = self.world_to_screen((bubble['x'], bubble['y']))
 
-            if 0 <= screen_x <= WINDOW_WIDTH and TOP_PANEL_HEIGHT <= screen_y <= MAP_HEIGHT:
+            if 0 <= screen_x <= WINDOW_WIDTH and TOP_PANEL_HEIGHT <= screen_y <= BOTTOM_UI_Y:  # H5 fix: use BOTTOM_UI_Y not MAP_HEIGHT
                 scaled_radius = int(bubble['radius'] * self.camera_zoom)
                 if scaled_radius < 1:
                     continue
@@ -4577,7 +4607,8 @@ class Game:
                             'unit_ids': last_order.unit_ids,
                             'player_index': self.local_player_index  # Include player for 4-player support
                         })
-    
+            return  # C1 fix: explicit return after CASE 2 movement order
+
     def _draw_battle_popup_initial(self, battle, modal_x, modal_y, modal_height, y_pos):
         """
         Draw initial battle popup state.
@@ -4856,7 +4887,7 @@ class Game:
                     
                     if enemy_comp:
                         eff_str = self.game_state.calculate_army_effective_strength(comp, enemy_comp)
-                        victory_mark = " âœ“" if player == winner else ""
+                        victory_mark = " [W]" if player == winner else ""  # H4 fix: ASCII winner mark (replaces garbled Unicode)
                         player_name = self.game_state.get_player_name(player)
                         player_text = self.small_font.render(
                             f"{player_name}: {comp_str} (Str: {eff_str:.1f}){victory_mark}", 
@@ -4982,7 +5013,7 @@ class Game:
             tab_width = UIConstants.TAB_WIDTH
             tab_height = 150  # Taller to fit rotated text + badge
             tab_x = WINDOW_WIDTH - tab_width
-            tab_y = (MAP_HEIGHT - tab_height) // 2  # Center vertically
+            tab_y = TOP_PANEL_HEIGHT + (MAP_HEIGHT - tab_height) // 2  # H6 fix: center in map area, not from y=0
             
             # Draw tab
             tab_rect = pygame.Rect(tab_x, tab_y, tab_width, tab_height)
@@ -6310,10 +6341,10 @@ class Game:
                 seconds = elapsed_seconds % 60
 
                 # Position below the timer (if showing) or below End Turn button
-                elapsed_y = ui_y + 75 if self.game_state.turn_phase == 'planning' else ui_y + 45
+                elapsed_y = ui_y + self.scale(75) if self.game_state.turn_phase == 'planning' else ui_y + self.scale(45)
 
                 elapsed_text = f"Elapsed Game Time: {hours:02d}:{minutes:02d}:{seconds:02d}"
-                elapsed_surface = self.small_font.render(elapsed_text, True, (180, 180, 180))
+                elapsed_surface = self._get_cached_text(elapsed_text, self.small_font, (180, 180, 180))
                 self.screen.blit(elapsed_surface, (ui_x, elapsed_y))
 
             # Command Limit moved to top panel (now part of Taxation - Command - Gold - Income group)
@@ -6860,7 +6891,7 @@ class Game:
 
                         # Apply red tint overlay if building is unavailable
                         if not (can_build and can_afford and can_build_this_building):
-                            display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+                            display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)  # Match training UI
 
                         # Apply hover/click brightness effects
                         if is_clicking:
@@ -6949,6 +6980,8 @@ class Game:
         self.hero_train_buttons = {}
         self.hero_cancel_button = None
         self.demolish_keep_button = None
+        self.castle_upgrade_button = None  # L10/L11 fix: clear stale castle buttons per-frame
+        self.castle_upgrade_cancel_button = None
         self.building_buttons = {}
         self.cancel_button = None
         self.demolish_button = None
@@ -7290,16 +7323,10 @@ class Game:
             'Cavalry': (180, 140, 60)      # Gold
         }
         
-        # Check army limit (include ALL garrisons)
-        current_armies = self.game_state.get_territory_total_armies(territory)
+        # Check army limit (reuse current_armies from above)
         at_army_limit = current_armies >= self.game_state.MAX_ARMIES_PER_TERRITORY
-        
-        # Get current queue
-        queue_count = 0
-        if (territory in self.game_state.training_queue and 
-            barracks_plot_index in self.game_state.training_queue[territory]):
-            queue_count = len(self.game_state.training_queue[territory][barracks_plot_index])
-        
+
+        # Reuse queue_count from above
         can_queue = queue_count < 4
         
         # Store training buttons for click detection
