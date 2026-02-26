@@ -11714,20 +11714,15 @@ class Game:
                 self.hovered_territory = None
 
             # DELAYED TOOLTIPS - Start/reset timer
-            # Territory tooltips disabled when:
-            # 1. Plot is selected (building icons shown on map)
-            # 2. Barracks is selected (training icons shown)
-            # 3. Currently hovering over a map building/training icon
-            # 4. Currently hovering over a plot itself
-            # 5. Alliance choice popup is open
-            # Army tooltips use a separate, more permissive condition so hovering
-            # armies elsewhere on the map still shows tooltips when a building is selected.
-            should_track_territory = (not self.selected_plot and
-                                     not self.selected_barracks and
-                                     not hovering_map_button and
+            # Territory and army tooltips suppressed when:
+            # 1. Currently hovering over a map building/training icon
+            # 2. Currently hovering over a plot itself
+            # 3. Alliance choice popup is open
+            # Both territory and army tooltips show regardless of which building
+            # UI is open (barracks, keep, plot selection, etc.)
+            should_track_territory = (not hovering_map_button and
                                      not plot_at_pos and
                                      not alliance_popup_open)
-            # Army tooltips only suppressed by map button hover and alliance popup
             should_track_army = (not hovering_map_button and
                                 not alliance_popup_open)
 

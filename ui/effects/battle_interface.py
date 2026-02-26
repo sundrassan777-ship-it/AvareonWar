@@ -260,6 +260,12 @@ class BattleBarParticleEffect:
         self.bar_fill_offset = bar_fill_offset if bar_fill_offset is not None else BAR_FILL_OFFSET_REF
         self.bar_png_height = bar_png_height if bar_png_height else BAR_PNG_HEIGHT_REF
 
+        # Pre-scale bar border to avoid smoothscale per frame
+        self._scaled_bar_border = None
+        if self.bar_border_img:
+            self._scaled_bar_border = pygame.transform.smoothscale(
+                self.bar_border_img, (self.bar_png_width, self.bar_png_height))
+
         # Bar fill states
         self.attacker_initial = attacker_initial_fill
         self.defender_initial = defender_initial_fill
