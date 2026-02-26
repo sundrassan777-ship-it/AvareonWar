@@ -72,6 +72,9 @@ class MapRenderer:
         self.production_glow_effects = {}
         # List to store active hero ability visual effects (burst + arc particles)
         self.ability_effects = []
+        # Embargo persistent effects: {territory_name: AbilityPolygonBurstEffect}
+        # Synced each frame with game_state.embargo_blocked_players
+        self.embargo_effects = {}
 
         # Image caching system to avoid expensive transformations every frame
         # Cache rotated ring images: key = (angle_rounded, size, color_tuple)
@@ -2177,26 +2180,111 @@ class MapRenderer:
     # Aggressive Diplomacy bubble color (fire orange, polygon-filling bubble burst)
     AGGRESSIVE_DIPLOMACY_COLOR = (255, 120, 30)
 
+    # Embargo bubble color (dark red, polygon-filling bubble burst on enemy territories)
+    EMBARGO_COLOR = (160, 20, 20)
+
     def trigger_ability_effect(self, ability_name, target_territory,
                                player_index, source_territory=None):
         """
         Trigger a visual effect for a hero ability activation.
 
         Effect types per ability:
+        Targeted abilities (target_territory required):
         - Aggressive Diplomacy: polygon-filling rising bubbles (like Defiance aura, one-shot ~1s)
         - Decisive Strike: blue explosion only (burst + quick fade)
         - Regicide: dark purple inward implosion
         - Levy: 5 small gold explosions at random polygon points (explosion only, no swirl)
         - Relentless Charge: dust/brown outward explosion
-        - Royal Charisma: gold particle arc from target to Narn's Keep
+        - Royal Charisma: blue particle arc from target to Narn's Keep
         - Valorous Charge: blue/white particle arc from Keep to target
+
+        Immediate abilities (target_territory=None, looks up locations from game_state):
+        - Reinforce: silver/steel explosion at hero's Keep territory
+        - Extort Populace: gold explosion at each Keep/Castle building plot
+        - Embargo: dark red polygon-filling bubbles on all enemy territories
 
         Args:
             ability_name: Name of the ability
-            target_territory: Territory where ability lands
+            target_territory: Territory where ability lands (None for immediate abilities)
             player_index: Player who activated the ability
             source_territory: Source territory for arc effects (Royal Charisma, Valorous Charge)
         """
+        # --- Reinforce: silver/steel explosion at hero's Keep territory ---
+        if ability_name == 'Reinforce':
+            gs = self.game.game_state
+            if gs and player_index in gs.heroes:
+                # Find Brennhen or Aevencourne (campaign clone)
+                for hero_name in ('Darius Brennhen', 'Regnus Aevencourne'):
+                    if hero_name in gs.heroes[player_index]:
+                        keep_terr = gs.heroes[player_index][hero_name].get('keep_territory')
+                        if keep_terr and keep_terr in self.game.scaled_centers:
+                            # Silver/steel burst at Keep location
+                            palette = [
+                                (160, 170, 180), (192, 192, 192), (220, 220, 230),
+                                (200, 205, 210), (240, 240, 245)
+                            ]
+                            effect = AbilityBurstEffect(
+                                center_pos=self.game.scaled_centers[keep_terr],
+                                color_palette=palette,
+                                num_particles=120,
+                                behavior='explode',
+                                world_coords=True,
+                                swirl_duration=0,
+                                float_duration=0.5
+                            )
+                            self.ability_effects.append(effect)
+                        break
+            return
+
+        # --- Extort Populace: gold explosion at each Keep/Castle plot ---
+        if ability_name == 'Extort Populace':
+            gs = self.game.game_state
+            if not gs:
+                return
+            palette = self.ABILITY_PALETTES['Levy']  # Reuse gold palette
+            for territory, buildings in gs.buildings.items():
+                if gs.territory_owners.get(territory, -1) != player_index:
+                    continue
+                for plot_index, building_type in buildings.items():
+                    if building_type in ('Keep', 'Castle'):
+                        # Get building plot position in world coords
+                        if (territory in self.game.scaled_plots
+                                and plot_index < len(self.game.scaled_plots[territory])):
+                            plot_pos = self.game.scaled_plots[territory][plot_index]
+                            effect = AbilityBurstEffect(
+                                center_pos=plot_pos,
+                                color_palette=palette,
+                                num_particles=28,
+                                behavior='explode',
+                                world_coords=True,
+                                swirl_duration=0,
+                                float_duration=0.5
+                            )
+                            self.ability_effects.append(effect)
+            return
+
+        # --- Embargo: persistent dark red bubbles on all enemy territories ---
+        # Creates continuous effects tracked in self.embargo_effects,
+        # synced each frame by sync_embargo_effects() until embargo expires
+        if ability_name == 'Embargo':
+            gs = self.game.game_state
+            if not gs:
+                return
+            for territory, owner in gs.territory_owners.items():
+                if owner >= 0 and owner != player_index:
+                    if territory not in self.embargo_effects:
+                        polygon = self.game.scaled_polygons.get(territory)
+                        if polygon:
+                            effect = AbilityPolygonBurstEffect(
+                                polygon=polygon,
+                                color=self.EMBARGO_COLOR,
+                                num_bubbles=0,
+                                world_coords=True,
+                                continuous=True
+                            )
+                            self.embargo_effects[territory] = effect
+            return
+
         # --- Aggressive Diplomacy: polygon-filling bubble burst ---
         if ability_name == 'Aggressive Diplomacy':
             polygon = self.game.scaled_polygons.get(target_territory)
@@ -2348,6 +2436,43 @@ class MapRenderer:
     def render_ability_effects(self):
         """Render all active hero ability visual effects on screen."""
         for effect in self.ability_effects:
+            effect.render(self.game.screen,
+                          world_to_screen_func=self.game.world_to_screen)
+
+    def sync_embargo_effects(self):
+        """
+        Sync persistent embargo bubble effects with game state.
+
+        Creates continuous bubble effects on enemy territories when embargo is active.
+        Stops and removes effects when embargo expires (embargo_blocked_players empties).
+        Called each frame from the main update loop.
+        """
+        gs = self.game.game_state
+        if not gs:
+            return
+
+        embargo_active = len(gs.embargo_blocked_players) > 0
+
+        if not embargo_active and self.embargo_effects:
+            # Embargo expired: stop all persistent effects (let bubbles fade out)
+            for territory, effect in list(self.embargo_effects.items()):
+                effect.stop()
+            # Remove finished effects
+            for territory in list(self.embargo_effects.keys()):
+                if self.embargo_effects[territory].is_finished():
+                    del self.embargo_effects[territory]
+
+    def update_embargo_effects(self, delta_time):
+        """Update all active embargo persistent effects."""
+        for territory in list(self.embargo_effects.keys()):
+            effect = self.embargo_effects[territory]
+            effect.update(delta_time)
+            if effect.is_finished():
+                del self.embargo_effects[territory]
+
+    def render_embargo_effects(self):
+        """Render all active embargo persistent effects."""
+        for effect in self.embargo_effects.values():
             effect.render(self.game.screen,
                           world_to_screen_func=self.game.world_to_screen)
 

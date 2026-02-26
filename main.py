@@ -1723,6 +1723,10 @@ class Game:
                             result = self.game_state.activate_hero_ability(hero_name, ability_index)
                             logger.info(f"[NETWORK] activate_hero_ability result for {ability_name}: {result}")
 
+                        # Trigger visual effect for immediate abilities (network replay)
+                        self.map_renderer.trigger_ability_effect(
+                            ability_name, None, player_id)
+
                         # Set cooldown for immediate abilities
                         hero_info = self.game_state.HERO_TYPES.get(hero_name)
                         if hero_info and ability_index is not None:
@@ -8665,6 +8669,10 @@ class Game:
                 # Update hero ability visual effects (burst + arc particles)
                 self.map_renderer.update_ability_effects(delta_time)
 
+                # Sync and update embargo persistent bubble effects
+                self.map_renderer.sync_embargo_effects()
+                self.map_renderer.update_embargo_effects(delta_time)
+
                 # Sync and update production glow effects (for buildings with active training)
                 self.map_renderer.sync_production_glow_effects()
                 self.map_renderer.update_production_glow_effects(delta_time)
@@ -9364,6 +9372,9 @@ class Game:
 
             # Draw hero ability visual effects (burst + arc particles, same layer as castle upgrades)
             self.map_renderer.render_ability_effects()
+
+            # Draw embargo persistent bubble effects (on enemy territories while embargo active)
+            self.map_renderer.render_embargo_effects()
 
             # Draw top panel (Phase 4D: inlined from delegate method)
             self.ui_renderer.draw_top_panel()
@@ -10899,7 +10910,7 @@ class Game:
                                     elif result is True:
                                         # Immediate ability executed - broadcast to other players in multiplayer
                                         if self.multiplayer_mode and self.sim_state is not None:
-                                    
+
                                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                                 'player_id': current_player,
                                                 'hero_name': hero_name,
@@ -10908,6 +10919,10 @@ class Game:
                                                 'target': None  # No target for immediate abilities
                                             })
                                             logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name}")
+
+                                        # Trigger visual effect for immediate abilities
+                                        self.map_renderer.trigger_ability_effect(
+                                            ability_name, None, current_player)
 
                                     self.clear_button_tooltip()
                                     return True

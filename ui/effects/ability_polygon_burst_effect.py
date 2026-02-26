@@ -1,21 +1,25 @@
 """
 Ability Polygon Burst Effect
 
-One-shot territory polygon bubble burst for hero ability activations.
+Territory polygon bubble effect for hero ability activations.
 Spawns rising colored circles inside a territory polygon, matching the
 visual style of existing hero aura bubbles (Defiance, Haste, Safe Haven).
+
+Supports two modes:
+- One-shot (default): All bubbles spawn at once, fade over ~1 second.
+  Used by Aggressive Diplomacy.
+- Continuous (continuous=True): Bubbles spawn gradually at a low rate,
+  each living ~1 second. Runs until stop() is called.
+  Used by Embargo (persists on enemy territories until embargo expires).
 
 Visual design:
 - Bubbles spawn at random positions inside the territory polygon
 - Each bubble: rises upward, expands 30%, fades from alpha 150 to 0
 - Filled circles with 1px border (same as existing aura bubbles)
-- Staggered spawn over first 0.15s for natural appearance
-- Total duration: ~1.0 second
 
 Integration:
     - Triggered from MapRenderer.trigger_ability_effect()
-    - Used by Aggressive Diplomacy (fire orange bubbles filling conquered territory)
-    - One-time effect (not looping)
+    - Managed by MapRenderer.sync_embargo_effects() for persistent mode
 """
 
 import pygame
@@ -26,8 +30,8 @@ import random
 # CONSTANTS
 # ========================================
 
-DURATION = 1.0             # Total effect duration (seconds)
-SPAWN_STAGGER = 0.15       # Bubbles stagger their start over this window (seconds)
+DURATION = 1.0             # Each bubble's lifetime (seconds)
+SPAWN_STAGGER = 0.15       # One-shot mode: stagger start over this window (seconds)
 RISE_SPEED = 7.5           # Upward drift speed (px/s, matches Defiance/Haste)
 INITIAL_RADIUS_MIN = 1.5   # Min bubble radius (px)
 INITIAL_RADIUS_MAX = 3.0   # Max bubble radius (px)
@@ -35,64 +39,99 @@ INITIAL_ALPHA = 150        # Starting alpha (matches existing bubbles)
 EXPAND_FACTOR = 0.3        # Bubbles grow 30% over their lifetime
 MAX_SPAWN_ATTEMPTS = 15    # Rejection sampling attempts per bubble
 
+# Continuous mode constants
+CONTINUOUS_SPAWN_INTERVAL = 0.2   # Spawn new bubbles every 200ms
+CONTINUOUS_BUBBLES_PER_SPAWN = 3  # Bubbles per spawn cycle (low density for FPS)
+
 # ========================================
 # ABILITY POLYGON BURST EFFECT CLASS
 # ========================================
 
 class AbilityPolygonBurstEffect:
     """
-    One-shot territory polygon bubble burst effect.
+    Territory polygon bubble effect with one-shot or continuous mode.
 
-    Spawns rising colored circles inside a territory polygon for ~1 second,
-    matching the visual style of existing hero aura bubbles (Defiance, Haste).
+    One-shot mode (default):
+        All bubbles spawn at once and fade over ~1 second.
+        Used by Aggressive Diplomacy.
 
-    Used by:
-    - Aggressive Diplomacy (fire orange bubbles filling conquered territory)
+    Continuous mode (continuous=True):
+        Bubbles spawn gradually at a low rate, each living ~1 second.
+        Runs indefinitely until stop() is called, then existing bubbles
+        fade out and the effect completes.
+        Used by Embargo (persists on enemy territories until embargo expires).
     """
 
-    def __init__(self, polygon, color, num_bubbles=60, world_coords=True):
+    def __init__(self, polygon, color, num_bubbles=60, world_coords=True,
+                 continuous=False):
         """
         Args:
             polygon: List of (x, y) tuples defining territory polygon (world coords)
             color: (r, g, b) tuple for bubble color
-            num_bubbles: Number of bubbles to spawn (default 60)
+            num_bubbles: Number of bubbles for one-shot mode (ignored in continuous)
             world_coords: If True, polygon is in world coordinates
+            continuous: If True, spawn bubbles continuously until stop() is called
         """
+        self.polygon = polygon
         self.color = color
         self.world_coords = world_coords
+        self.continuous = continuous
         self.elapsed = 0.0
         self.is_complete = False
         self._cached_surface = None
+        self._stopping = False  # True after stop() called, lets existing bubbles fade
 
         # Pre-compute bounding box for rejection sampling
         xs = [p[0] for p in polygon]
         ys = [p[1] for p in polygon]
         self.bbox = (min(xs), min(ys), max(xs), max(ys))
 
-        # Generate all bubble positions inside polygon via rejection sampling
+        # Bubble list (managed differently in one-shot vs continuous)
         self.bubbles = []
-        for _ in range(num_bubbles):
-            pos = self._random_point_in_polygon(polygon)
-            if pos:
-                self.bubbles.append({
-                    'world_x': pos[0],
-                    'world_y': pos[1],
-                    'initial_radius': random.uniform(INITIAL_RADIUS_MIN,
-                                                     INITIAL_RADIUS_MAX),
-                    'radius': 0.0,    # Updated each frame
-                    'alpha': 0,       # Updated each frame
-                    'offset_y': 0.0,  # Accumulated upward drift
-                    # Stagger start so bubbles don't all appear at once
-                    'delay': random.uniform(0, SPAWN_STAGGER),
-                })
 
-    def _random_point_in_polygon(self, polygon):
+        if continuous:
+            # Continuous mode: start with a few bubbles, spawn more over time
+            self._spawn_timer = 0.0
+            for _ in range(CONTINUOUS_BUBBLES_PER_SPAWN):
+                self._spawn_bubble()
+        else:
+            # One-shot mode: generate all bubbles at once
+            for _ in range(num_bubbles):
+                pos = self._random_point_in_polygon()
+                if pos:
+                    self.bubbles.append({
+                        'world_x': pos[0],
+                        'world_y': pos[1],
+                        'initial_radius': random.uniform(INITIAL_RADIUS_MIN,
+                                                         INITIAL_RADIUS_MAX),
+                        'radius': 0.0,
+                        'alpha': 0,
+                        'offset_y': 0.0,
+                        'age': -random.uniform(0, SPAWN_STAGGER),  # Negative = delayed
+                    })
+
+    def _spawn_bubble(self):
+        """Spawn a single bubble at a random position inside the polygon."""
+        pos = self._random_point_in_polygon()
+        if pos:
+            self.bubbles.append({
+                'world_x': pos[0],
+                'world_y': pos[1],
+                'initial_radius': random.uniform(INITIAL_RADIUS_MIN,
+                                                 INITIAL_RADIUS_MAX),
+                'radius': 0.0,
+                'alpha': 0,
+                'offset_y': 0.0,
+                'age': 0.0,
+            })
+
+    def _random_point_in_polygon(self):
         """Generate a random point inside the polygon via rejection sampling."""
         min_x, min_y, max_x, max_y = self.bbox
         for _ in range(MAX_SPAWN_ATTEMPTS):
             x = random.uniform(min_x, max_x)
             y = random.uniform(min_y, max_y)
-            if self._point_in_polygon(x, y, polygon):
+            if self._point_in_polygon(x, y, self.polygon):
                 return (x, y)
         return None
 
@@ -115,6 +154,14 @@ class AbilityPolygonBurstEffect:
             p1x, p1y = p2x, p2y
         return inside
 
+    def stop(self):
+        """
+        Stop spawning new bubbles (continuous mode only).
+        Existing bubbles will finish their lifecycle and fade out naturally.
+        Effect auto-completes once all remaining bubbles have expired.
+        """
+        self._stopping = True
+
     def update(self, delta_time):
         """Update bubble positions and lifetimes."""
         if self.is_complete:
@@ -122,29 +169,35 @@ class AbilityPolygonBurstEffect:
 
         self.elapsed += delta_time
 
-        # Check if all bubbles have finished their lifecycle
-        max_bubble_end = DURATION + SPAWN_STAGGER
-        if self.elapsed >= max_bubble_end:
-            self.is_complete = True
-            return
+        # Continuous mode: spawn new bubbles periodically
+        if self.continuous and not self._stopping:
+            self._spawn_timer += delta_time
+            if self._spawn_timer >= CONTINUOUS_SPAWN_INTERVAL:
+                self._spawn_timer = 0.0
+                for _ in range(CONTINUOUS_BUBBLES_PER_SPAWN):
+                    self._spawn_bubble()
 
+        # Update all bubbles
+        expired = []
         for bubble in self.bubbles:
-            t = self.elapsed - bubble['delay']
-            if t < 0:
-                # Bubble hasn't spawned yet
+            bubble['age'] += delta_time
+
+            if bubble['age'] < 0:
+                # One-shot mode: bubble hasn't spawned yet (delayed)
                 bubble['alpha'] = 0
                 continue
 
-            if t >= DURATION:
-                # Bubble has finished
+            if bubble['age'] >= DURATION:
+                # Bubble has expired
                 bubble['alpha'] = 0
+                expired.append(bubble)
                 continue
 
             # Rise upward
             bubble['offset_y'] -= RISE_SPEED * delta_time
 
             # Calculate lifecycle progress (0.0 to 1.0)
-            progress = t / DURATION
+            progress = bubble['age'] / DURATION
 
             # Expand 30% over lifetime
             bubble['radius'] = bubble['initial_radius'] * (1.0 + EXPAND_FACTOR * progress)
@@ -152,9 +205,26 @@ class AbilityPolygonBurstEffect:
             # Fade from INITIAL_ALPHA to 0
             bubble['alpha'] = int(INITIAL_ALPHA * (1.0 - progress))
 
+        # Remove expired bubbles (continuous mode recycles, one-shot lets them expire)
+        for bubble in expired:
+            self.bubbles.remove(bubble)
+
+        # Check completion
+        if self.continuous:
+            # Complete only after stopping AND all bubbles have expired
+            if self._stopping and len(self.bubbles) == 0:
+                self.is_complete = True
+        else:
+            # One-shot: complete when all bubbles have expired
+            if not self.bubbles:
+                self.is_complete = True
+            # Safety: also complete after max duration
+            elif self.elapsed >= DURATION + SPAWN_STAGGER + 0.1:
+                self.is_complete = True
+
     def render(self, screen, world_to_screen_func=None):
         """Render all bubbles as filled circles with border."""
-        if self.is_complete:
+        if self.is_complete or not self.bubbles:
             return
 
         # Reuse cached SRCALPHA surface

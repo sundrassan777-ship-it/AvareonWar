@@ -2,6 +2,13 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-26 - Hero Ability Visual Effects (Phase 2: Immediate Abilities)
+
+- **New feature:** Added particle visual effects for 3 immediate (non-targeted) hero abilities
+- **Reinforce:** Silver/steel explosion at hero's Keep territory (120 particles, explosion only)
+- **Extort Populace:** Gold explosion at each Keep/Castle building plot the player owns
+- **Embargo:** Dark red polygon-filling bubbles on all enemy territories simultaneously
+
 ## 2026-02-26 - Hero Ability Visual Effects (Phase 1: Targeted Abilities)
 
 - **New feature:** Added particle visual effects for all 7 targeted hero abilities
