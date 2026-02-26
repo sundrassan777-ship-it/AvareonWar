@@ -1095,6 +1095,36 @@ class TutorialMission:
 
         return None
 
+    def skip_transmission(self):
+        """Skip the currently visible transmission (ESC key).
+
+        Returns True if a transmission was skipped, False otherwise.
+        - Timed steps (duration > 0): hide overlay, stop voice, advance immediately.
+        - Event-driven steps (duration == 0): hide overlay only — player still
+          needs to perform the required action to advance.
+        """
+        if not self.active or not self.transmission_overlay:
+            return False
+        # Don't skip during victory cinematic
+        if self.victory_sequence_active:
+            return False
+
+        from global_sound import stop_transmission_sound
+        stop_transmission_sound()
+        self.transmission_overlay = None
+
+        current = self.steps[self.current_step_index]
+        if current.transmission_duration > 0:
+            # Timed step: advance immediately (skip inter-transmission pause)
+            self._inter_transmission_pause = 0
+            if current.step_id == 39:
+                # Final step triggers victory sequence
+                self._start_victory_sequence()
+            else:
+                self._advance_step()
+        # Event-driven steps (duration == 0): overlay hidden, step stays active
+        return True
+
     def render(self, screen):
         """Called after normal game rendering to draw tutorial overlay."""
         if not self.active:

@@ -2,6 +2,14 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-26 - ESC to Skip Campaign Transmissions
+
+- **New feature:** Pressing ESC during a visible campaign transmission now skips it (hides overlay, stops voice audio). If no transmission is visible, ESC opens the game menu as usual.
+- Works across all 4 campaign missions (tutorial, missions 2-4), during both intro sequences and gameplay transmissions.
+- Tutorial event-driven steps (duration=0): ESC hides the text but does not advance the step — player still needs to perform the required action.
+- Added `skip_transmission()` method to `TutorialMission`, `Mission2`, `Mission3`, `Mission4`.
+- Modified `main.py` ESC handling in 3 event-loop locations (camera-locked, AI turns, general KEYDOWN).
+
 ## 2026-02-26 - QA Audit #8: Comprehensive Codebase Audit (40 fixes across 31 files)
 
 ### CRITICAL Bug Fixes (3)

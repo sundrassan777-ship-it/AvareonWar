@@ -700,6 +700,40 @@ class Mission4:
             self._cleanup()
             return 'exit_campaign'
 
+    def skip_transmission(self):
+        """Skip the currently visible transmission (ESC key).
+
+        Returns True if a transmission was skipped, False otherwise.
+        Handles both intro sequence and gameplay transmissions.
+        Victory/defeat: hiding overlay triggers endgame animation naturally
+        via _pending_victory/_pending_defeat flags in update().
+        """
+        if not self.active or not self.transmission_overlay:
+            return False
+        # Don't skip during victory/defeat cinematic animation
+        if self.victory_sequence_active or self.defeat_sequence_active:
+            return False
+
+        from global_sound import stop_transmission_sound
+        stop_transmission_sound()
+        self.transmission_overlay = None
+
+        if self.intro_active:
+            # During intro: cancel pause/timer, cancel camera animation, advance
+            self._intro_pause_timer = 0
+            self.intro_timer = 0.0
+            self.intro_waiting_for_zoom = False
+            if self.camera_animation:
+                self.camera_animation = None
+            self.intro_step_index += 1
+            self._execute_intro_step()
+        else:
+            # During gameplay: reset timer, next queued transmission starts on
+            # next idle frame via update() logic
+            self.transmission_timer = 0.0
+            self.transmission_duration = 0.0
+        return True
+
     # ========================================================================
     # AI CONTROL
     # ========================================================================

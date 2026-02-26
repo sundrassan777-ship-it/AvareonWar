@@ -8995,9 +8995,13 @@ class Game:
                 elif (self.tutorial_mission
                       and self.tutorial_mission.active
                       and not self.tutorial_mission.is_action_allowed('camera')):
-                    # When camera is locked, block almost everything except ESC for menu
+                    # When camera is locked, block almost everything except ESC for menu/skip
                     if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                        if self.game_menu_visible:
+                        # ESC skips visible transmission before toggling menu
+                        if (hasattr(self.tutorial_mission, 'skip_transmission')
+                                and self.tutorial_mission.skip_transmission()):
+                            pass  # Transmission skipped, consume ESC
+                        elif self.game_menu_visible:
                             self.game_menu_visible = False
                             self._unpause_game()
                         else:
@@ -9029,8 +9033,13 @@ class Game:
                         self.mouse.handle_mouse_motion(event.pos)
                         continue  # Skip other MOUSEMOTION processing
                     elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        # ESC skips visible transmission before toggling menu
+                        if (self.tutorial_mission
+                                and hasattr(self.tutorial_mission, 'skip_transmission')
+                                and self.tutorial_mission.skip_transmission()):
+                            pass  # Transmission skipped, consume ESC
                         # Allow ESC to toggle menu during AI turns
-                        if self.options_menu_visible:
+                        elif self.options_menu_visible:
                             # Close options menu and return to game menu
                             self.options_menu_visible = False
                             self.game_menu_visible = True
@@ -9173,8 +9182,15 @@ class Game:
                             self.temp_camera_zoom_speed = min_zoom_speed + slider_pos * (max_zoom_speed - min_zoom_speed)
                 
                 elif event.type == pygame.KEYDOWN:
-                    # Keyboard input (Phase 2A: extracted to method)
-                    self.handle_keyboard_input(event)
+                    # ESC skips visible campaign transmission before normal handling
+                    if (event.key == pygame.K_ESCAPE
+                            and self.tutorial_mission
+                            and hasattr(self.tutorial_mission, 'skip_transmission')
+                            and self.tutorial_mission.skip_transmission()):
+                        pass  # Transmission skipped, consume ESC
+                    else:
+                        # Keyboard input (Phase 2A: extracted to method)
+                        self.handle_keyboard_input(event)
                 
                 elif event.type == pygame.MOUSEWHEEL:
                     # Options menu scrolling (when options menu is open)

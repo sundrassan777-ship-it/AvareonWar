@@ -2007,6 +2007,7 @@ def is_action_allowed(self, action_type, **kwargs):
 - `_pause_game()` calls `pause_transmission_sound()` — voice pauses when game menu opens
 - `_unpause_game()` calls `unpause_transmission_sound()` — voice resumes when game menu closes
 - "Quit to Main Menu" button calls `stop_transmission_sound()` — voice stops on exit
+- **ESC skips visible transmission** — `main.py` intercepts ESC in 3 event-loop locations (camera-locked, AI turns, general KEYDOWN) and calls `mission.skip_transmission()`. If a transmission was visible, it's dismissed and the voice stops; otherwise ESC falls through to normal game menu toggle.
 
 **Per-mission voice requirements checklist:**
 
@@ -2022,6 +2023,7 @@ def is_action_allowed(self, action_type, **kwargs):
 10. **Victory/defeat** — call `play_transmission_sound()` directly alongside `_show_transmission()` for victory/defeat voice lines.
 11. **`_end_intro_sequence()`** — call `stop_transmission_sound()` to stop any lingering intro voice.
 12. **`_cleanup()`** — call `stop_transmission_sound()` to stop voice on mission exit.
+13. **`skip_transmission()`** — ESC-to-skip method. Hides overlay, stops voice, advances to next step (intro) or resets timer (gameplay). For tutorial event-driven steps (duration=0), only hides overlay without advancing. Returns True if skipped, False otherwise. Called from `main.py` ESC handlers.
 
 **Implemented in:** All 4 missions — Mission 1 (`tutorial_mission.py`), Mission 2 (`campaign_mission_2.py`), Mission 3 (`campaign_mission_3.py`), Mission 4 (`campaign_mission_4.py`).
 
@@ -2045,6 +2047,9 @@ def is_action_allowed(self, action_type, **kwargs):
 - [ ] Voice stops on mission exit / quit to menu
 - [ ] 1s silent gap between consecutive voiced intro steps
 - [ ] Voice stops on camera pan during intro
+- [ ] ESC skips visible transmission and stops voice
+- [ ] ESC opens game menu when no transmission visible
+- [ ] Tutorial event-driven steps: ESC hides text but doesn't advance step
 
 ---
 
