@@ -162,6 +162,7 @@ building_types = {
 - Building income: `building_types[name]['value']`
 - Territory base income: Edit `economic_data.json`
 - Town Square multiplier: `building_types['Square']['value']`
+- Multiple Squares in same territory compound: `multiplier *= value` (not `= value`)
 
 **Army limit:**
 - Change `MAX_ARMIES_PER_TERRITORY` (currently 15)
@@ -331,20 +332,31 @@ if hasattr(self, 'player_teams') and self.player_teams:
 
 #### ✅ Modify Economy
 
-**Income calculation:** `calculate_income()` (line ~4000)
+**Income calculation:** `calculate_income()` in `economy.py`
 - Base income from `economic_data.json`
 - Building bonuses from `building_types`
 - Tech multipliers from research
-- Town Square 1.5× multiplier
+- Town Square 1.5× multiplier (compounds: multiple Squares use `*=`)
+- `calculate_player_territorial_bonuses()` is cached per (player, turn_number)
 
-**Taxation:** `apply_taxation()` (line ~4082)
+**Taxation:** `apply_taxation()` in `economy.py`
 - Applied at turn end BEFORE income collection
 - Deducts percentage of leftover gold from previous turn
 - 5 levels: 0% (no tax), 25%, 50%, 75%, 100%
 - Configured in game setup (not changeable mid-game)
+- `taxation_level` is clamped to valid `tax_rates` index range (bounds-safe)
 - Modify tax_rates list to change percentages: `[0.0, 0.25, 0.5, 0.75, 1.0]`
 - Called from `_advance_to_next_player()` (line ~3832)
 - Generates log message if tax > 0
+
+**Training queue format:** `{territory: {barracks_plot_index: [(unit_type, turns_remaining, cost_paid), ...]}}`
+- `cost_paid` stores the actual gold deducted at training start (for accurate cancel refunds)
+- Legacy 2-tuple entries `(unit_type, turns)` are handled with fallback recalculation
+- Use index access `entry[0]`, `entry[1]` — not destructuring — to survive format changes
+
+**Research tracking format:** `{player_id: {'tech_id': str, 'turns_remaining': int, 'cost_paid': int}}`
+- `cost_paid` stores actual gold deducted (for accurate cancel refunds)
+- Legacy entries without `cost_paid` fall back to recalculation
 
 **Starting resources:**
 - Find `__init__` method
@@ -1350,7 +1362,7 @@ The codebase uses several performance patterns. Follow these when adding new ren
 2. Add polygon to `territory_polygons.json` (use `Polygon_Tool.py`)
 3. Add economic data to `economic_data.json` (use `Economic_Tool.py`)
 4. Add plots to `plots.json` (use `Plot_Tool.py`)
-5. Update territory count (currently 59)
+5. Update territory count (currently 57)
 
 ✅ **Change adjacency:**
 - Modify `ADJACENCY` dict
@@ -1847,6 +1859,14 @@ Campaign missions are self-contained modules that:
 - Starting gold: 200g (human), 100g (EK), 250g (CotL), 5000g (Ahtep)
 
 ### When to Modify
+
+#### Required Patterns (All Missions)
+
+- **Cap `delta_time`:** Every `update()` method must start with `delta_time = min(delta_time, 0.05)`
+- **Clean up in `deactivate()`:** Call `map_data.clear_enabled_territories()` to restore full map
+- **try/finally for `current_player` swaps:** When temporarily changing `current_player` for AI actions, wrap in try/finally to restore on exception
+- **Graceful exit:** Use `self._done = True` or result flags — never `pygame.quit(); sys.exit()`
+- **Pass `speaker` to `TransmissionOverlay.set_text()`:** Both on creation and on reuse
 
 #### ✅ Add New Campaign Mission
 

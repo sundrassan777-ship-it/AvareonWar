@@ -19,7 +19,7 @@ Turn Structure:
 
 ## 🗺️ Territory System
 
-**137 Territories** on the map
+**57 Territories** on the map
 
 **Territory Properties:**
 - Owner (player 1-8, or neutral 0)
@@ -27,7 +27,7 @@ Turn Structure:
 - Army composition (unit types)
 - Buildings (0-5 plots per territory)
 - Base income (varies by territory)
-- Terrain type (affects battles)
+- Territorial bonus type (one per territory)
 
 **Adjacency:**
 - Territories connect to neighbors
@@ -38,12 +38,13 @@ Turn Structure:
 
 ## ⚔️ Army System
 
-**Army Composition:**
-- Infantry - Basic unit (strength 1.0)
-- Cavalry - Fast unit (strength 1.2)  
-- Archers - Ranged unit (strength 1.1)
-- Siege - Anti-building (strength 1.3)
-- Elite - Promoted units (strength 1.5)
+**4 Unit Types (Counter System):**
+- **Swordsman** (25g) — Counters Pikeman, countered by Archer
+- **Archer** (20g) — Counters Swordsman, countered by Cavalry
+- **Pikeman** (30g) — Counters Cavalry, countered by Swordsman
+- **Cavalry** (40g) — Counters Archer, countered by Pikeman
+
+Counter advantage grants +50% effective strength in combat.
 
 **Army Movement:**
 1. Select territory with your army
@@ -53,10 +54,9 @@ Turn Structure:
 
 **Army Recruitment:**
 1. Select territory with Barracks
-2. Click recruitment icon (sword)
-3. Select unit type
-4. Choose quantity
-5. Pay gold → units added next turn
+2. Click unit type button
+3. Pay gold → unit trains for 1 turn
+4. Unit spawns next turn (up to 4 in queue per Barracks)
 
 ---
 
@@ -64,25 +64,24 @@ Turn Structure:
 
 **5 Building Types:**
 
-1. **Farm** (Cost: 10 gold, Build: 1 turn)
-   - +2 income per turn
-   - Maximum 3 per territory
+1. **Farm** (Cost: 30 gold, Build: 1 turn)
+   - +10 income per turn
+   - Gains XP passively (+20/turn), each level adds +10% income
 
-2. **Mine** (Cost: 15 gold, Build: 1 turn)
-   - +3 income per turn
-   - Terrain dependent
+2. **Mine** (Cost: 40 gold, Build: 1 turn)
+   - +15 income per turn
+   - Gains XP passively (+20/turn), each level adds +10% income
 
-3. **Barracks** (Cost: 20 gold, Build: 2 turns)
-   - Enables unit recruitment
-   - One per territory
+3. **Barracks** (Cost: 50 gold, Build: 1 turn)
+   - Enables unit recruitment (queue up to 4 units)
 
-4. **Keep** (Cost: 30 gold, Build: 3 turns)
-   - +50% defense bonus
-   - One per territory
+4. **Keep/Fortress** (Cost: 100 gold, Build: 2 turns)
+   - +2 effective armies for defender in battle
+   - One per territory; can upgrade to Castle (150 gold)
 
-5. **Quest Building** (Cost: 25 gold, Build: 2 turns)
-   - Future: Enables quests
-   - One per territory
+5. **Square** (Cost: 60 gold, Build: 1 turn)
+   - 1.5× income multiplier for the territory
+   - Multiple Squares compound: 1.5 × 1.5 = 2.25×
 
 **Building Process:**
 1. Select territory you own
@@ -91,6 +90,15 @@ Turn Structure:
 4. Pay gold → added to queue
 5. Each turn: construction_turns -= 1
 6. When done → building provides benefits
+
+**Cancellation & Refunds:**
+- Cancelling training or research refunds the **exact gold paid** at time of start
+- The system stores `cost_paid` so refund is accurate even if bonuses/discounts change
+- Construction cancellation also refunds full cost
+
+**Square Multiplier Stacking:**
+- If a territory has multiple Squares, their multipliers compound: `1.5 × 1.5 = 2.25×`
+- With Supply & Demand tech: `2.5 × 2.5 = 6.25×`
 
 **Building Limits:**
 - Max 1 building per turn per territory
@@ -112,22 +120,21 @@ Turn Structure:
 2. See participants & armies
 3. Click "Resolve"
 4. Combat calculated:
-   - Base strength from units
-   - Terrain modifiers (Mountain +20%, etc.)
-   - Keep bonus (+50% defense)
-   - Composition bonuses
+   - Base strength from units and counter advantages
+   - Keep bonus (+2 effective armies for defender)
+   - Unit veterancy bonuses (+15% per level)
+   - Composition bonuses (counter matchups)
 5. Winner determined
 6. Casualties applied
 7. Territory ownership updates
 
 **Strength Calculation:**
 ```
-Strength = Sum of (unit_count * unit_strength)
+Strength = Sum of (unit_count * unit_strength * counter_bonus)
 
 Defender bonuses:
-- Terrain: +0% to +30%
-- Keep: +50%
-- Defensive composition: +10%
+- Keep: +2 effective armies
+- Counter advantage: +50% for favorable matchups
 
 Winner = Higher total strength
 ```
@@ -191,8 +198,9 @@ Winner = Higher total strength
    - Defined in `economic_data.json`, mapped via `TIER_INCOME` in `map_data.py`
 
 2. **Buildings**
-   - Farm: +2 gold/turn
-   - Mine: +3 gold/turn
+   - Farm: +10 gold/turn (base, before veterancy/tech bonuses)
+   - Mine: +15 gold/turn (base, before veterancy/tech bonuses)
+   - Square: 1.5× multiplier on territory income
    - Total from all owned territories
 
 **Income Collection:**
@@ -225,7 +233,7 @@ Winner = Higher total strength
 ## 🏆 Territorial Bonus System
 
 **Overview:**
-Each of the 39 territories on the map grants one permanent bonus to its owner. Bonuses stack globally and apply to all player actions.
+Each of the 57 territories on the map grants one permanent bonus to its owner. Bonuses stack globally and apply to all player actions.
 
 **9 Bonus Types:**
 
@@ -307,7 +315,7 @@ Each of the 39 territories on the map grants one permanent bonus to its owner. B
 **Assignment:**
 - Territory bonuses are pre-configured in `territory_bonuses.json`
 - Can be modified using `Bonus_Tool.py` (development tool)
-- All 39 territories must have exactly one bonus assigned
+- All 57 territories must have exactly one bonus assigned
 
 ---
 
@@ -414,23 +422,10 @@ Each of the 39 territories on the map grants one permanent bonus to its owner. B
 - Composition matters
 
 **Factors:**
-- Unit types and counts
-- Terrain type
-- Buildings (Keep)
-- Composition bonuses
-
----
-
-## 🗺️ Terrain Types
-
-From economic_data.json:
-
-- **Plains** - Normal (+0% defense)
-- **Forest** - (+10% defense)
-- **Hills** - (+15% defense)
-- **Mountains** - (+20% defense)
-- **Desert** - (+5% defense)
-- **Swamp** - (+10% defense)
+- Unit types, counts, and counter matchups
+- Keep defense (+2 effective armies)
+- Unit veterancy (up to +75% at level 5)
+- Territorial strength bonuses
 
 ---
 

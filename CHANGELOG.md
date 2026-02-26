@@ -2,6 +2,52 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-26 - QA Audit #8: Comprehensive Codebase Audit (40 fixes across 31 files)
+
+### CRITICAL Bug Fixes (3)
+- **sim_state `.get()` on list crash** — `player_teams` is a list; `.get()` caused `AttributeError`. Fixed to index-based access with bounds checking.
+- **battle_interface undefined `BAR_HEIGHT`** — Except block referenced undefined variable, causing `NameError` if BattleBar.png was missing. Changed to `BAR_PNG_HEIGHT_REF`.
+- **campaign_mission_4 missing speaker param** — `_show_transmission()` didn't pass `speaker` to `set_text()` on overlay reuse, causing wrong speaker display.
+
+### HIGH Bug Fixes (12)
+- **Garrison cleanup** — `heroes.py` used `del territory_garrisons[t]` instead of `= {}` convention; `victory.py` didn't clean up allied garrisons in non-owned territories during elimination.
+- **AI ally exclusion** — Added `are_allies()` checks to 7 hero ability scorers, frontier detection, counterattack risk, and military threat assessment to prevent AI treating allies as enemies.
+- **Castle upgrade cost** — AI budget calculation used 100 instead of correct 150 for Castle upgrades.
+- **campaign_mission_4 try/finally** — AI `current_player` swap wasn't wrapped in try/finally; exception would leave wrong player active.
+- **campaign_mission_5/6 territory cleanup** — Missing `map_data.clear_enabled_territories()` in `deactivate()`.
+- **map_renderer dynamic resolution** — Hardcoded `WINDOW_WIDTH`/`WINDOW_HEIGHT` replaced with `screen.get_width()`/`get_height()`.
+- **network/client thread safety** — Buffer overflow disconnection state writes now wrapped with `_state_lock`.
+- **sim_ai ready flag race** — Reordered `mark_ready()` before `ai_ready` flag to activate order rejection guard.
+- **recap_screen graceful exit** — Replaced `pygame.quit(); sys.exit()` with graceful result return.
+
+### HIGH Performance Fixes (9)
+- **SRCALPHA surface caching** — Cached full-screen SRCALPHA surfaces in 6 UI effects (castle_upgrade, sparkle, edge_wave, turn_announcement ×2, integrated_setup, territory_selector).
+- **battle_interface pre-scaling** — Pre-scaled bar borders (4 per-frame smoothscale calls) and panel backgrounds (2 per-frame) at layout time.
+- **main_menu font caching** — Added `_font_cache` dict replacing 10+ per-frame `pygame.font.Font()` filesystem calls. Cached pre-scaled button background.
+- **main.py duplicate hover tracking** — Removed redundant building button hover code (already in `update_frame_tooltips()`).
+- **O(n) particle cleanup** — Replaced O(n×k) `list.remove()` loop with O(n) list comprehension for Master Negotiator particles.
+
+### MEDIUM Bug Fixes (11)
+- **Accurate refunds** — Training queue now stores `(unit_type, turns, cost_paid)` and research stores `cost_paid` in its dict. Cancel operations refund the exact amount paid instead of recalculating (which could differ if bonuses changed).
+- **Square multiplier stacking** — Changed `multiplier = value` to `multiplier *= value` so multiple Squares compound correctly.
+- **Action log overflow** — Messages now stop rendering past overlay bottom boundary.
+- **Victory overlay type conflict** — `_render_victory_sequence` (non-SRCALPHA) and `draw_victory_screen` (SRCALPHA) now use separate cached surfaces.
+- **Merge glow zoom scaling** — Cyan reinforcement glow radius now scales with `ui_scale` matching the red attack glow.
+- **AI hardcoded plot count** — `_score_master_negotiator` now uses `map_data.get_plots()` instead of assuming 3 plots per territory.
+- **delta_time cap** — campaign_mission_4 now caps `delta_time` at 0.05s, matching missions 2/3/tutorial.
+- **Cutscene graceful exit** — `cutscene_player.py` QUIT event sets `_done = True` instead of `sys.exit()`.
+- **Taxation bounds check** — `apply_taxation` now clamps `taxation_level` to valid `tax_rates` index range.
+- **Identical branches** — Collapsed duplicate if/else in campaign_mission_3 Uhmayya AI enemy selection.
+
+### MEDIUM Performance Fixes (5)
+- **Territorial bonus caching** — `calculate_player_territorial_bonuses()` cached per (player, turn_number) to avoid re-iterating 57 territories on every cost calculation.
+- **Tooltip surface reuse** — `draw_tooltip_box` reuses cached SRCALPHA surface when size matches.
+- **Chat input surface reuse** — `draw_chat_input` reuses cached SRCALPHA surface instead of per-frame allocation.
+- **Achievement panel `.copy()` reduction** — Removed unnecessary `.copy()` on cached bg/icon/border surfaces; copy only when modifying in-place for unearned darkening.
+
+### Documentation
+- **CLAUDE.md** — Added best practices from audit: deferred refunds, campaign mission patterns, surface cache separation, ally exclusion, multiplier stacking, bounds checking, graceful exits.
+
 ## 2026-02-25 - QA Review Fixes (R1-R12)
 
 ### Bug Fixes

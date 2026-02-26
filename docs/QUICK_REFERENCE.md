@@ -27,7 +27,7 @@
 **Map:** 57 territories
 **Players:** 1-8
 **Building Types:** 5
-**Unit Types:** 5
+**Unit Types:** 4
 **Starting Gold:** 50
 **Turn Structure:** 4 phases
 
@@ -49,11 +49,11 @@ Total map income: 795g/turn (~199g/player with 4 players)
 
 | Building | Cost | Turns | Effect |
 |----------|------|-------|--------|
-| Farm | 10g | 1 | +2 income |
-| Mine | 15g | 1 | +3 income |
-| Barracks | 20g | 2 | Enable recruitment |
-| Keep | 30g | 3 | +50% defense |
-| Quest | 25g | 2 | (Future) |
+| Farm | 30g | 1 | +10 income/turn |
+| Mine | 40g | 1 | +15 income/turn |
+| Barracks | 50g | 1 | Enable recruitment |
+| Keep | 100g | 2 | +2 defense armies |
+| Square | 60g | 1 | 1.5× income multiplier |
 
 ---
 
@@ -106,13 +106,14 @@ Total map income: 795g/turn (~199g/player with 4 players)
 
 ## ⚔️ Unit Quick Reference
 
-| Unit | Cost | Strength | Notes |
-|------|------|----------|-------|
-| Infantry | 5g | 1.0 | Basic |
-| Cavalry | 8g | 1.2 | Fast |
-| Archers | 7g | 1.1 | Ranged |
-| Siege | 10g | 1.3 | Anti-building |
-| Elite | 15g | 1.5 | Promoted |
+| Unit | Cost | Counters | Countered By |
+|------|------|----------|--------------|
+| Swordsman | 25g | Pikeman | Archer |
+| Archer | 20g | Swordsman | Cavalry |
+| Pikeman | 30g | Cavalry | Swordsman |
+| Cavalry | 40g | Archer | Pikeman |
+
+Counter advantage: +50% effective strength. Training: 1 turn per unit.
 
 ---
 
@@ -152,16 +153,9 @@ Total map income: 795g/turn (~199g/player with 4 players)
 
 ## 🗺️ Terrain Effects
 
-| Terrain | Defense Bonus |
-|---------|---------------|
-| Plains | +0% |
-| Forest | +10% |
-| Hills | +15% |
-| Mountains | +20% |
-| Desert | +5% |
-| Swamp | +10% |
+*Terrain system not yet implemented. Combat uses counter system and Keep bonus only.*
 
-**Keep Bonus:** +50% defense
+**Keep Bonus:** +2 effective armies for defender
 
 ---
 
