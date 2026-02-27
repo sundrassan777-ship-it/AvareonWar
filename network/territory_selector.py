@@ -198,6 +198,18 @@ class TerritorySelector:
         self._load_assets()
         self._calculate_ui_layout()
 
+        # Clickable IP address state (host only — click to copy to clipboard)
+        self._ip_click_rect = None  # Set each frame in _draw_host_ip()
+        self._ip_hovered = False
+        self._ip_copied_timer = 0  # Countdown in ms for floating "Copied!" text
+        self._ip_copied_pos = (0, 0)  # Mouse position when copy was triggered
+
+        # Initialize pygame.scrap for clipboard copy support
+        try:
+            pygame.scrap.init()
+        except Exception:
+            pass  # Non-fatal — clipboard copy just won't work
+
     # Legacy properties for backwards compatibility with 2-player network mode
     @property
     def player1_selection(self):
@@ -428,6 +440,11 @@ class TerritorySelector:
                 # Return lobby_state and settings
                 return (self.lobby_state, self.victory_condition, self.taxation_level, self.turn_mode)
 
+            # Tick down "Copied!" feedback timer
+            dt = clock.get_time()
+            if self._ip_copied_timer > 0:
+                self._ip_copied_timer = max(0, self._ip_copied_timer - dt)
+
             # Render
             self.render()
             pygame.display.flip()
@@ -445,6 +462,19 @@ class TerritorySelector:
 
     def handle_click(self, pos):
         """Handle mouse click."""
+        # Check if host clicked on the IP address to copy to clipboard
+        if self.is_host and self._ip_click_rect and self._ip_click_rect.collidepoint(pos):
+            server = self.network_connection
+            display_ip = server.get_display_ip() if hasattr(server, 'get_display_ip') else self.host_ip
+            if display_ip:
+                try:
+                    pygame.scrap.put(pygame.SCRAP_TEXT, display_ip.encode('utf-8'))
+                    self._ip_copied_timer = 750  # Floating text fades over 0.75s
+                    self._ip_copied_pos = pos  # Anchor at click position
+                except Exception:
+                    pass  # Clipboard not available
+            return
+
         # Check for open slot dropdowns first
         any_slot_dropdown_open = any(v is not None for v in self.active_slot_dropdown.values())
         if any_slot_dropdown_open:
@@ -829,6 +859,10 @@ class TerritorySelector:
 
     def handle_hover(self, pos):
         """Handle mouse hover."""
+        # Track hover over clickable IP address (host only)
+        self._ip_hovered = (self.is_host and self._ip_click_rect is not None
+                            and self._ip_click_rect.collidepoint(pos))
+
         if pos[0] >= self.left_panel_width:  # In map area
             self.hovered_territory = self.get_territory_at_pos(pos)
         else:
@@ -1175,6 +1209,16 @@ class TerritorySelector:
         if self.is_host:
             self._draw_warning_tooltips()
 
+        # Draw floating "Copied to Clipboard!" text near mouse, fading out
+        if self._ip_copied_timer > 0:
+            alpha = int(255 * (self._ip_copied_timer / 750))
+            copied_surf = self.small_font.render("Copied to Clipboard!", True, WHITE)
+            copied_surf.set_alpha(alpha)
+            # Position slightly above and to the right of click location
+            cx = self._ip_copied_pos[0] + 12
+            cy = self._ip_copied_pos[1] - 20
+            self.screen.blit(copied_surf, (cx, cy))
+
         # Draw syncing indicator for clients waiting for lobby state
         if not self.is_host and not self.lobby_synced:
             self._draw_syncing_indicator()
@@ -1450,7 +1494,11 @@ class TerritorySelector:
         self.screen.blit(title_text, title_rect)
 
     def _draw_host_ip(self):
-        """Draw the host IP address and UPnP status for players to connect (host only)."""
+        """Draw the host IP address and UPnP status for players to connect (host only).
+
+        IP is clickable — copies to clipboard on click, shows hover highlight and
+        'Copied!' feedback text.
+        """
         if not self.is_host:
             return
 
@@ -1471,12 +1519,15 @@ class TerritorySelector:
 
         # Label changes based on UPnP result
         if upnp_succeeded:
-            label_str = "Public IP (share with friend):"
+            label_str = "Public IP (click to copy):"
         else:
             label_str = "Join IP:"
 
-        # IP color: green when internet play ready, white otherwise
-        ip_color = (100, 255, 100) if upnp_succeeded else WHITE
+        # IP color: lighter green on hover to indicate clickability
+        if upnp_succeeded:
+            ip_color = (200, 255, 200) if self._ip_hovered else (100, 255, 100)
+        else:
+            ip_color = (200, 200, 255) if self._ip_hovered else WHITE
 
         # Draw label and IP address
         label_text = self.small_font.render(label_str, True, WHITE)
@@ -1488,6 +1539,9 @@ class TerritorySelector:
 
         self.screen.blit(label_text, label_rect)
         self.screen.blit(ip_text, ip_rect)
+
+        # Store rect for click/hover detection
+        self._ip_click_rect = ip_rect
 
     def _draw_player_info(self):
         """Draw player information rows with Type/Color/Team dropdowns.

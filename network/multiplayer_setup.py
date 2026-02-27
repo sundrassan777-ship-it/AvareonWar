@@ -255,7 +255,7 @@ class MultiplayerSetup:
             # Draw buttons with main menu styling
             self._draw_menu_button('host', self.host_button, "Host Game", BRASS_COLOR)
             self._draw_menu_button('join', self.join_button, "Join Game", BRASS_COLOR)
-            self._draw_menu_button('back', self.back_button, "Return to Main Menu", WHITE)
+            self._draw_menu_button('back', self.back_button, "Return", WHITE)
 
             # Reset click flash after rendering (one-frame flash like main menu)
             self.clicked_button = None
@@ -543,6 +543,12 @@ class MultiplayerSetup:
         Returns:
             IP address string or None if cancelled
         """
+        # Initialize clipboard support for Ctrl+V paste
+        try:
+            pygame.scrap.init()
+        except Exception:
+            pass  # Non-fatal — paste just won't work
+
         input_text = "127.0.0.1"  # Default to localhost
         input_active = True
         cursor_visible = True
@@ -618,6 +624,20 @@ class MultiplayerSetup:
                         input_text = input_text[:-1]
                         backspace_held = True
                         backspace_hold_timer = 0
+                    elif event.key == pygame.K_v and (event.mod & pygame.KMOD_CTRL):
+                        # Ctrl+V: paste from clipboard, filter to valid IP chars
+                        try:
+                            clipboard_text = pygame.scrap.get(pygame.SCRAP_TEXT)
+                            if clipboard_text:
+                                paste = clipboard_text.decode('utf-8', errors='ignore').rstrip('\x00')
+                                # Keep only valid IP characters
+                                filtered = ''.join(c for c in paste if c in '0123456789.')
+                                # Clip to max IP length
+                                remaining = 15 - len(input_text)
+                                if remaining > 0 and filtered:
+                                    input_text += filtered[:remaining]
+                        except Exception:
+                            pass  # Clipboard not available
                     else:
                         # Add character if valid for IP address
                         if event.unicode in '0123456789.':
