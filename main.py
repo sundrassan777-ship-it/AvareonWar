@@ -4553,13 +4553,26 @@ class Game:
         if self.sim_state is not None and self.sim_state.sim_phase == 'resolving':
             return
 
-        # Check if clicking on sidebar area for technology research cancellation
+        # Block right-clicks on top panel
+        if pos[1] < TOP_PANEL_HEIGHT:
+            return
+
+        # Check if clicking on sidebar area (body + tab buttons)
         sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        if pos[0] >= sidebar_x and self.game_state.active_sidebar_tab == 'technology':
-            # Try to handle technology tab right-click (for cancel research)
-            handled = self.handle_technology_tab_click(pos, right_click=True)
-            if handled:
-                return handled
+        if self.game_state.sidebar_expanded:
+            if pos[0] >= sidebar_x:
+                # Handle technology tab right-click (for cancel research)
+                if self.game_state.active_sidebar_tab == 'technology':
+                    handled = self.handle_technology_tab_click(pos, right_click=True)
+                    if handled:
+                        return handled
+                # Block all right-clicks over expanded sidebar from reaching map
+                return
+            # Block right-clicks on sidebar tab buttons (they stick out left of sidebar)
+            if hasattr(self, 'sidebar_tab_buttons') and self.sidebar_tab_buttons:
+                for tab_rect in self.sidebar_tab_buttons.values():
+                    if tab_rect.collidepoint(pos):
+                        return
 
         # Check if clicking on map area (not bottom UI)
         if pos[1] >= BOTTOM_UI_Y:
@@ -11683,8 +11696,18 @@ class Game:
         ui_scale = self.get_ui_scale_factor()
         army_hover_radius_world = (ARMY_CIRCLE_RADIUS * ui_scale) / self.camera_zoom
         
-        # Only track territory/army hover when in map area (not bottom UI)
-        if pos[1] < MAP_HEIGHT:
+        # Only track territory/army hover when in map area (not top panel, bottom UI, or sidebar)
+        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
+        in_sidebar = self.game_state.sidebar_expanded and pos[0] >= sidebar_x
+        # Also check sidebar tab buttons (they stick out to the left of the sidebar)
+        in_tab_buttons = False
+        if self.game_state.sidebar_expanded and hasattr(self, 'sidebar_tab_buttons') and self.sidebar_tab_buttons:
+            for tab_rect in self.sidebar_tab_buttons.values():
+                if tab_rect.collidepoint(pos):
+                    in_tab_buttons = True
+                    break
+        in_map_area = pos[1] >= TOP_PANEL_HEIGHT and pos[1] < MAP_HEIGHT and not in_sidebar and not in_tab_buttons
+        if in_map_area:
             # Check if hovering over an army first (takes priority over territory)
             # NOTE: scaled_centers are in WORLD coordinates, so compare with world_pos!
             army_at_pos = None
@@ -11828,7 +11851,7 @@ class Game:
                     self.hover_target_army = None
                     self.show_tooltip_army = None
         else:
-            # Mouse in bottom UI - clear map hover states
+            # Mouse outside map area (top panel, bottom UI, sidebar, or tab buttons) - clear hover states
             self.hovered_army = None
             self.hovered_territory = None
             self.hover_target_army = None

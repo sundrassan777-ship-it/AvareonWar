@@ -160,6 +160,9 @@ class MouseHandler:
                     if handled:
                         return handled
 
+                # Consume click even if no tab handler matched — prevent map fallthrough
+                return True
+
             # Tab buttons stick out to the LEFT of the sidebar, so check them separately
             # They're at (sidebar_x - tab_width), so pos[0] < sidebar_x
             if pos[0] < sidebar_x and pos[0] >= sidebar_x - 40:  # Tab width is ~40px
