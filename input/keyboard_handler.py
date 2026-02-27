@@ -350,6 +350,7 @@ class KeyboardHandler:
                 # Set territory owner if not already owned
                 if game_state.territory_owners.get(territory, -1) == -1:
                     game_state.territory_owners[territory] = player_index
+                    game_state.invalidate_territorial_bonus_cache()  # Ownership changed
                     logger.info(f"Cheat: Claimed {territory} for Player {player_num}")
 
                 # Create a swordsman unit (health=10)
@@ -460,6 +461,7 @@ class KeyboardHandler:
                 if current_owner != player_index:
                     logger.info(f"Cheat: Claiming {territory} for Player {player_num} (was Player {current_owner + 1 if current_owner >= 0 else 'neutral'})")
                     game_state.territory_owners[territory] = player_index
+                    game_state.invalidate_territorial_bonus_cache()  # Ownership changed
 
                 # Instantly build a Keep (add to completed buildings)
                 if territory not in game_state.buildings:

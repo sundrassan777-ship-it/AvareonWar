@@ -1758,6 +1758,7 @@ class MilitaryMixin:
             self.destroy_buildings(territory, battle.original_owner, new_owner=-1)
 
             self.territory_owners[territory] = -1  # Neutral
+            self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
             self.armies[territory] = 0
             self.armies_unmoved[territory] = 0
             self.armies_moved[territory] = 0
@@ -1877,6 +1878,7 @@ class MilitaryMixin:
 
         # Set territory ownership
         self.territory_owners[territory] = winner
+        self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
         # Tutorial hook: notify territory conquered (only if ownership changed)
         if self.tutorial_mission and battle.original_owner != winner:
@@ -2437,6 +2439,7 @@ class MilitaryMixin:
 
                     # Update ownership
                     self.territory_owners[territory] = winner
+                    self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
                     # Campaign hook: notify territory conquered (uncontested takeover)
                     if self.tutorial_mission and current_owner != winner:
@@ -2530,6 +2533,7 @@ class MilitaryMixin:
                         # Neutral territory - assign to team leader
                         team_leader = list(team_armies.keys())[0]
                         self.territory_owners[territory] = team_leader
+                        self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
                         owner_msg = f"Player {team_leader + 1} captures"
                     else:
                         # Territory already owned by someone (ally) - keep current ownership

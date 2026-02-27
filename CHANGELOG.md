@@ -2,6 +2,13 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-27 - Fix Territory Bonuses Not Updating After Conquest
+
+- **Bug fix:** Territorial bonuses (income, unit cost, building cost, unit strength, etc.) were permanently cached from game start and never refreshed when territories changed ownership
+  - **Root cause:** `calculate_player_territorial_bonuses()` cached results keyed by `(player_index, turn_number)`, but `turn_number` was never incremented — it stayed at 0 the entire game, so the cache was never invalidated
+  - **Fix:** Replaced broken turn-number cache with explicit invalidation via `invalidate_territorial_bonus_cache()`, called at all 15 ownership-change sites across `game_state/`, `simultaneous/`, `main.py`, campaign missions, keyboard handler, and tutorial
+  - Bonuses now correctly update in real-time when territories are conquered, lost, or transferred
+
 ## 2026-02-27 - Training Grounds Building
 
 - **New building:** Training Grounds (50g, 1 turn) — grants +15 XP per turn to all units garrisoned in the territory

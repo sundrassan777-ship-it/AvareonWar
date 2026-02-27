@@ -686,6 +686,7 @@ class HeroMixin:
 
         # Claim the territory
         self.territory_owners[target_territory] = owner
+        self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
         # Build message
         message = f"Player {owner + 1}: Aggressive Diplomacy conquers {target_territory}!"

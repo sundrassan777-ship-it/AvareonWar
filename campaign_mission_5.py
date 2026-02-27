@@ -100,6 +100,9 @@ class Mission5:
                     if territory_name in gs.territory_owners:
                         gs.territory_owners[territory_name] = player_idx
 
+        # Invalidate bonus cache after bulk territory setup
+        gs.invalidate_territorial_bonus_cache()
+
         # Set starting gold using the correct GameState API: gs.player_gold[idx]
         # (NOT gs.gold[idx], which does not exist)
         for player_idx, gold in STARTING_GOLD.items():

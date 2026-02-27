@@ -354,6 +354,9 @@ class Mission2:
             unmoved = len(units)
             gs.set_garrison_armies(territory, owner, unmoved=unmoved, moved=0, units=units)
 
+        # Invalidate bonus cache after bulk territory setup
+        gs.invalidate_territorial_bonus_cache()
+
         # Set starting territories for reference
         gs.player_starting_territories[0] = "Lobardia"
         gs.player_starting_territories[1] = "Elletian Isles"

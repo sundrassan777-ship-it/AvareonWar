@@ -892,6 +892,7 @@ class SimPhaseManager:
                     # Single player captures neutral territory
                     new_owner = players_present[0]
                     self.gs.territory_owners[territory] = new_owner
+                    self.gs.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
                     sim_log.sync(f"Player {new_owner} captured neutral territory {territory}")
                     # Capital Assault: Check if this neutral territory was someone's capital (rare edge case)
                     self._check_capital_assault_eliminations(territory, new_owner)
@@ -910,6 +911,7 @@ class SimPhaseManager:
                 if owner_team != sole_player_team:
                     # Enemy captures undefended territory
                     self.gs.territory_owners[territory] = sole_player
+                    self.gs.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
                     sim_log.sync(f"Player {sole_player} captured undefended territory {territory} (was P{current_owner})")
 
                     # Capital Assault: Check if captured territory is enemy's capital
@@ -1586,6 +1588,7 @@ class SimPhaseManager:
             sim_log.sync(f"Territory {territory} captured from neutral by P{winner}")
 
         self.gs.territory_owners[territory] = new_owner
+        self.gs.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
         # Capital Assault: Check if captured territory is a capital
         if new_owner != old_owner and old_owner >= 0:

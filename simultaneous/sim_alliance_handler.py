@@ -140,6 +140,7 @@ class SimAllianceHandler:
         """
         # Set new owner
         self.gs.territory_owners[territory] = new_owner
+        self.gs.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
         # Check for army overflow
         self._check_overflow(territory)

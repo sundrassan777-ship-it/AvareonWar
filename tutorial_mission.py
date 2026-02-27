@@ -344,6 +344,7 @@ class TutorialMission:
         # Player 0 (Blue) owns Lunedale — 300 Gold, no starting armies
         # Player name uses profile name from settings (not overridden here)
         gs.territory_owners['Lunedale'] = 0
+        gs.invalidate_territorial_bonus_cache()  # Ownership changed
         gs.player_gold[0] = 300
 
         # Clear default starting armies from Lunedale (initialize_game creates 3 units)

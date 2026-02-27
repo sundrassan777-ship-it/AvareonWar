@@ -554,6 +554,7 @@ class Game:
                 territory = setup_config.get(territory_key)
             if territory:
                 self.game_state.territory_owners[territory] = player_index
+                self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
 
                 # Store starting territory for Capital Assault victory condition
                 if player_index not in self.game_state.player_starting_territories:
@@ -1320,6 +1321,7 @@ class Game:
             # Apply the battle result to our game state
             if territory:
                 self.game_state.territory_owners[territory] = new_owner
+                self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
 
                 # IMPORTANT: Clear ALL garrisons in this territory first (losers' armies are destroyed)
                 # Then set only the winner's garrison
@@ -1609,6 +1611,7 @@ class Game:
 
                 if territory and new_owner is not None:
                     self.game_state.territory_owners[territory] = new_owner
+                    self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
                     self.game_state.set_garrison_armies(territory, new_owner,
                                                        unmoved=0, moved=surviving_armies, units=None)
 
@@ -1744,6 +1747,7 @@ class Game:
             if self.sim_state is not None and territory:
                 # Assign territory ownership
                 self.game_state.territory_owners[territory] = new_owner
+                self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
 
                 # Remove from alliance arrivals
                 if territory in self.sim_state.alliance_arrivals:
@@ -1812,6 +1816,8 @@ class Game:
                         if self.game_state.territory_owners.get(territory) != owner:
                             logger.debug(f"[NETWORK] Sync: {territory} owner {self.game_state.territory_owners.get(territory)} -> {owner}")
                         self.game_state.territory_owners[territory] = owner
+                    # Invalidate bonus cache once after bulk sync (not per territory)
+                    self.game_state.invalidate_territorial_bonus_cache()
 
                 if 'eliminated_players' in data:
                     self.sim_state.eliminated_players = set(data['eliminated_players'])

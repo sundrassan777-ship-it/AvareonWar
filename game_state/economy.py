@@ -107,6 +107,14 @@ class EconomyMixin:
 
         return effective_cost
 
+    def invalidate_territorial_bonus_cache(self):
+        """Invalidate the territorial bonus cache after ownership changes.
+
+        Must be called whenever territory_owners is modified (conquests, battles,
+        hero abilities, eliminations) so bonuses reflect current ownership.
+        """
+        self._territorial_bonus_cache = {}
+
     def calculate_player_territorial_bonuses(self, player_index):
         """
         Calculate summed territorial bonuses from all owned territories.
@@ -117,12 +125,12 @@ class EconomyMixin:
         Returns:
             dict: {bonus_type: total_percent} mapping (e.g., {'income_bonus': 6, 'unit_cost': -10})
         """
-        # MP1 fix: Cache per player per turn — bonuses only change with ownership changes
-        cache_key = (player_index, getattr(self, 'turn_number', 0))
+        # Cache per player — invalidated explicitly when territory_owners changes
+        # (via invalidate_territorial_bonus_cache)
         if not hasattr(self, '_territorial_bonus_cache'):
             self._territorial_bonus_cache = {}
-        if cache_key in self._territorial_bonus_cache:
-            return self._territorial_bonus_cache[cache_key]
+        if player_index in self._territorial_bonus_cache:
+            return self._territorial_bonus_cache[player_index]
 
         bonuses = {}
         for territory, owner in self.territory_owners.items():
@@ -133,7 +141,7 @@ class EconomyMixin:
                     bonus_def = self.BONUS_TYPES.get(bonus_type)
                     if bonus_def:
                         bonuses[bonus_type] = bonuses.get(bonus_type, 0) + bonus_def['value']
-        self._territorial_bonus_cache[cache_key] = bonuses
+        self._territorial_bonus_cache[player_index] = bonuses
         return bonuses
 
     def get_hero_cost(self, hero_type, player=None):

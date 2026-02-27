@@ -355,7 +355,7 @@ if hasattr(self, 'player_teams') and self.player_teams:
 - Building bonuses from `building_types`
 - Tech multipliers from research
 - Town Square 1.5× multiplier (compounds: multiple Squares use `*=`)
-- `calculate_player_territorial_bonuses()` is cached per (player, turn_number)
+- `calculate_player_territorial_bonuses()` is cached per player, invalidated via `invalidate_territorial_bonus_cache()` on ownership changes
 
 **Taxation:** `apply_taxation()` in `game_state/economy.py`
 - Applied at turn end BEFORE income collection
@@ -439,9 +439,11 @@ BONUS_TYPES = {
 - **Unit strength:** `calculate_army_effective_strength()` (`game_state/military.py`) - Per-unit-type bonuses
 
 **How bonuses work:**
-- Bonuses recalculate automatically each turn based on current territory ownership
-- Capturing a bonus territory gives benefits starting next turn
-- Losing a bonus territory removes benefits starting next turn
+- Bonuses recalculate dynamically based on current territory ownership
+- Cache is invalidated via `invalidate_territorial_bonus_cache()` whenever `territory_owners` changes
+- **CRITICAL:** Any code that modifies `territory_owners[x]` MUST call `invalidate_territorial_bonus_cache()` afterward
+- Capturing a bonus territory gives benefits immediately
+- Losing a bonus territory removes benefits immediately
 - Multiple territories with same bonus stack (e.g., 2× income_bonus = +6% total)
 - Bonuses apply globally to all player actions (not per-territory)
 

@@ -563,6 +563,9 @@ class Mission3:
                 units.append({"type": unit_type, "id": i, "status": "ready", "order": None, "xp": 0, "level": 0})
             gs.set_garrison_armies(territory, 2, unmoved=num_units, moved=0, units=units)
 
+        # Invalidate bonus cache after bulk territory setup
+        gs.invalidate_territorial_bonus_cache()
+
         # Set starting territories
         gs.player_starting_territories[0] = "Zjoal Islands"
         gs.player_starting_territories[1] = "Free Cities"

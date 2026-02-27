@@ -269,6 +269,11 @@ class VictoryMixin:
             # 3. Convert to neutral
             self.territory_owners[territory] = -1
 
+            # Ownership changed — refresh territorial bonus cache
+            # (done once after loop would suffice, but keeping here for safety
+            # since early returns or exceptions could skip a deferred call)
+            self.invalidate_territorial_bonus_cache()
+
             # 4. Cancel training queues
             if territory in self.training_queue:
                 del self.training_queue[territory]

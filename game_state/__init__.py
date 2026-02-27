@@ -937,6 +937,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             return False  # Player has claimed max territories
 
         self.territory_owners[territory] = player_index
+        self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
         self.armies[territory] = 3  # Start with 3 armies
         self.armies_unmoved[territory] = 3  # All can move immediately
 
