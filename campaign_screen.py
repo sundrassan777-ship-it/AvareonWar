@@ -268,17 +268,17 @@ class CampaignScreen:
             # Arrow pointing right: tip on the right, base on the left
             points = [(cx + half_w, cy), (cx - half_w, cy - half_h), (cx - half_w, cy + half_h)]
 
-        # Choose color based on state — dark brown matching "Campaign" title
+        # Choose color based on state — very dark brown, nearly black
         if is_clicked:
-            color = (120, 80, 40)
+            color = (60, 40, 20)
         elif is_hovered:
-            color = (100, 65, 30)
+            color = (45, 28, 12)
         else:
-            color = (80, 50, 20)
+            color = (30, 18, 8)
 
         pygame.draw.polygon(self.screen, color, points)
         # Subtle outline for definition
-        pygame.draw.polygon(self.screen, (50, 30, 10), points, max(1, int(2 * self.ui_scale)))
+        pygame.draw.polygon(self.screen, (20, 12, 5), points, max(1, int(2 * self.ui_scale)))
 
     def _draw_return_button(self):
         """Draw the Return to Main Menu button with integrated_setup styling"""
