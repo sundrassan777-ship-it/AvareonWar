@@ -2,6 +2,14 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-27 - Multiplayer Bug Fixes (ORDER_REMOVE + Reconnect Timeout)
+
+- **Bug fix:** Implemented `ORDER_REMOVE` network handler — was a silent no-op stub causing multiplayer desyncs when a player cancelled movement orders
+  - **Receive side** (`_handle_remote_order_remove`): now calls `cancel_movement_order()` / `cancel_all_orders()` with player validation and try/finally current_player swap
+  - **Send side**: cancel-order and cancel-all-orders sidebar clicks now send `ORDER_REMOVE` messages with `order_index` or `cancel_all` flag + `player_index`
+- **Bug fix:** Reconnection timeout mismatch — `server.py` hardcoded 300s instead of using `RECONNECTION_TIMEOUT` (60s) from `network_config.py`
+  - `server.py` now imports and uses `RECONNECTION_TIMEOUT` constant
+
 ## 2026-02-27 - Loading Screen Gameplay Tips
 
 - **New feature:** Added gameplay tips to loading screen, displayed above the progress bar

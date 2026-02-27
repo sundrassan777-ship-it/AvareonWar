@@ -908,7 +908,7 @@ set_game_started(started)             # Enable reconnection mode
 - Modify in `network_config.py`:
   - `MAX_CLIENTS = 3` (host + 3 = 4 players)
   - `CONNECTION_TIMEOUT = 15.0` seconds
-  - `RECONNECTION_TIMEOUT = 60.0` seconds (note: `server.py` still has 300s hardcoded — discrepancy)
+  - `RECONNECTION_TIMEOUT = 60.0` seconds (server.py now uses this constant)
   - `HEARTBEAT_INTERVAL = 5.0` seconds
 
 ✅ **Change disconnect behavior:**

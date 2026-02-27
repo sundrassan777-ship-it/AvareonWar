@@ -2041,11 +2041,49 @@ class Game:
         self.game_state.current_player = original_player
 
     def _handle_remote_order_remove(self, data: dict):
-        """Remove order from remote player"""
-        # BUG: Not implemented — ORDER_REMOVE messages are silently ignored.
-        # This can cause multiplayer desyncs when a player cancels a movement order.
-        # TODO: Implement proper order removal to match host state.
-        pass
+        """Remove movement order(s) from remote player.
+
+        Handles both single order cancellation (by index) and cancel-all.
+        Uses the same current_player swap pattern as other remote handlers
+        so that game_state methods see the correct player context.
+
+        Data fields:
+            player_index (int): Which player cancelled the order(s).
+            cancel_all (bool): If True, cancel all orders for that player.
+            order_index (int): Index into movement_orders to cancel (when cancel_all is False).
+        """
+        cancel_all = data.get('cancel_all', False)
+        order_index = data.get('order_index')
+        # Get player_index from message (4-player support) or fall back to 2-player logic
+        remote_player_index = data.get('player_index')
+        if remote_player_index is None:
+            remote_player_index = 1 if self.local_player_index == 0 else 0
+            if self.game_state.num_players > 2:
+                logger.warning(f"[NETWORK] WARNING: ORDER_REMOVE missing player_index, falling back to {remote_player_index}")
+
+        # VALIDATION: Player index must be in valid range
+        if remote_player_index < 0 or remote_player_index >= self.game_state.num_players:
+            logger.warning(f"[NETWORK] REJECTED: Invalid player_index {remote_player_index} (num_players={self.game_state.num_players})")
+            return
+
+        # Temporarily set current_player to remote player (cancel methods check current_player)
+        original_player = self.game_state.current_player
+        try:
+            self.game_state.current_player = remote_player_index
+
+            if cancel_all:
+                count = self.game_state.cancel_all_orders()
+                logger.info(f"[NETWORK] Player {remote_player_index} cancelled all orders ({count} removed)")
+            elif order_index is not None:
+                if self.game_state.cancel_movement_order(order_index):
+                    logger.info(f"[NETWORK] Player {remote_player_index} cancelled order at index {order_index}")
+                else:
+                    logger.warning(f"[NETWORK] Player {remote_player_index} cancel order failed: invalid index {order_index}")
+            else:
+                logger.warning(f"[NETWORK] ORDER_REMOVE missing both cancel_all and order_index")
+        finally:
+            # Restore current_player even if cancel methods throw
+            self.game_state.current_player = original_player
 
     def _send_action_to_remote(self, action_type: str, data: dict):
         """
@@ -11009,6 +11047,12 @@ class Game:
                             and not self.tutorial_mission.is_action_allowed('cancel_order')):
                         return True  # Silently block
                     self.game_state.cancel_movement_order(order_index)
+                    # MULTIPLAYER: Notify remote players about cancelled order
+                    if self.multiplayer_mode:
+                        self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                            'order_index': order_index,
+                            'player_index': self.local_player_index
+                        })
                     return True
 
         # Check cancel all button (only if expanded)
@@ -11020,6 +11064,12 @@ class Game:
                         and not self.tutorial_mission.is_action_allowed('cancel_all_orders')):
                     return True  # Silently block
                 self.game_state.cancel_all_orders()
+                # MULTIPLAYER: Notify remote players about cancel-all
+                if self.multiplayer_mode:
+                    self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                        'cancel_all': True,
+                        'player_index': self.local_player_index
+                    })
                 return True
         
         return False

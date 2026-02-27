@@ -36,7 +36,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from network_config import (
     DEFAULT_PORT, MESSAGE_BUFFER_SIZE, HEARTBEAT_INTERVAL,
-    CONNECTION_TIMEOUT, MAX_CLIENTS, MessageType
+    CONNECTION_TIMEOUT, MAX_CLIENTS, RECONNECTION_TIMEOUT, MessageType
 )
 from network.protocol import NetworkProtocol, MessageBuffer
 from network.message_queue import NetworkMessageQueue
@@ -113,7 +113,8 @@ class NetworkServer:
 
         # Disconnected players who can reconnect: {player_index: DisconnectedPlayer}
         self.disconnected_players: Dict[int, DisconnectedPlayer] = {}
-        self.reconnect_timeout = 300.0  # 5 minutes to reconnect
+        # Use canonical timeout from network_config (was hardcoded 300s, should match config)
+        self.reconnect_timeout = RECONNECTION_TIMEOUT
 
         # Whether we're in-game (affects disconnect handling)
         self.game_started = False
