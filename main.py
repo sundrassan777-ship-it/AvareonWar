@@ -8622,6 +8622,16 @@ class Game:
         running = True
         self.return_to_main_menu = False  # Flag for returning to main menu
 
+        # Reset planning and game timers so they start from now (after loading screen),
+        # not from when initialize_game() was called during deferred loading
+        self.game_start_time = time.time()
+        if self.game_state and self.game_state.planning_phase_start_time is not None:
+            self.game_state.planning_phase_start_time = time.time()
+        # Simultaneous mode: reset sim_state timer too
+        if self.sim_state is not None and hasattr(self.sim_state, 'timer_start_time'):
+            self.sim_state.timer_start_time = time.monotonic()
+            self.sim_state.planning_phase_start_time = time.monotonic()
+
         # Reset clock timer before game loop starts
         # Call tick() twice so get_time() has valid previous tick reference
         self.clock.tick()

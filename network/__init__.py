@@ -1,7 +1,7 @@
 """
 Network package for multiplayer functionality.
 
-Provides client-server networking infrastructure for 1v1 multiplayer mode.
+Provides client-server networking infrastructure for multiplayer mode (up to 4 players).
 """
 
 from .protocol import NetworkProtocol

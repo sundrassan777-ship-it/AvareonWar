@@ -172,22 +172,16 @@ class LoadingScreen:
         self._select_tip()
 
     def _load_screen_assets(self):
-        """Load logo and create fonts for the loading screen itself."""
+        """Load background image, logo and create fonts for the loading screen."""
         sw, sh = self.screen.get_size()
 
-        # Load game logo (same as main menu)
-        self.logo = None
+        # Load background image, scaled to fill the screen
+        self.background = None
         try:
-            raw_logo = pygame.image.load('assets/GameLogo.png').convert_alpha()
-            # Scale logo to fit ~40% of screen width, preserving aspect ratio
-            target_w = int(sw * 0.4)
-            logo_w, logo_h = raw_logo.get_size()
-            scale = target_w / logo_w
-            self.logo = pygame.transform.smoothscale(
-                raw_logo, (target_w, int(logo_h * scale))
-            )
+            raw_bg = pygame.image.load('assets/LoadingScreen.png').convert()
+            self.background = pygame.transform.smoothscale(raw_bg, (sw, sh))
         except pygame.error:
-            logger.warning("Could not load GameLogo.png for loading screen")
+            logger.warning("Could not load LoadingScreen.png for loading screen")
 
         # Load Cinzel fonts for consistent look with the rest of the game
         self.font_large = None
@@ -251,15 +245,11 @@ class LoadingScreen:
         """Render one frame of the loading screen."""
         sw, sh = self.screen.get_size()
 
-        # Dark background
-        self.screen.fill((15, 15, 25))
-
-        # Draw logo centered in upper third
-        logo_bottom = int(sh * 0.45)  # Fallback if no logo
-        if self.logo:
-            logo_rect = self.logo.get_rect(centerx=sw // 2, centery=int(sh * 0.3))
-            self.screen.blit(self.logo, logo_rect)
-            logo_bottom = logo_rect.bottom
+        # Background image, falling back to dark solid fill
+        if self.background:
+            self.screen.blit(self.background, (0, 0))
+        else:
+            self.screen.fill((15, 15, 25))
 
         # Progress bar near the bottom of the screen (~2cm above edge)
         bar_width = int(sw * 0.6)
@@ -317,14 +307,17 @@ class LoadingScreen:
         # Below bar: show task label while loading, replace with prompt when complete
         label_y = bar_y + bar_height + 15
         if self.loading_complete:
-            # Replace task label with the "click to start" prompt
+            # Replace task label with prompt based on readiness state
             if not self.is_multiplayer:
+                # Single-player: just click to start
                 prompt = "Click any key to continue"
                 color = (220, 200, 120)
-            elif self.all_players_ready:
-                prompt = "Click any key to continue"
+            elif not self.local_ready:
+                # Multiplayer: local player hasn't clicked yet
+                prompt = "Click any key when ready"
                 color = (220, 200, 120)
             else:
+                # Multiplayer: local player clicked, waiting for others
                 prompt = "Waiting for other players..."
                 color = (180, 160, 100)
             prompt_surface = self.font_large.render(prompt, True, color)
@@ -370,13 +363,9 @@ class LoadingScreen:
         self.current_label = "Loading complete"
         self._draw()
 
-        # Phase 2: Multiplayer - send GAME_READY to remote players
-        if self.is_multiplayer:
-            self._send_game_ready()
-
-        # Phase 3: Wait for player input (and multiplayer readiness)
+        # Phase 2: Wait for player input (and multiplayer readiness)
         # Single-player: any click/keypress starts the game
-        # Multiplayer: must also wait for all remote players to be ready
+        # Multiplayer: click sends GAME_READY, game auto-starts when all players ready
         waiting = True
         while waiting:
             for event in pygame.event.get():
@@ -387,13 +376,21 @@ class LoadingScreen:
                     if not self.is_multiplayer:
                         # Single-player: start immediately on click/key
                         waiting = False
-                    elif self.all_players_ready:
-                        # Multiplayer: only allow start when all players ready
-                        waiting = False
+                    elif not self.local_ready:
+                        # Multiplayer: first click marks local player as ready
+                        self.local_ready = True
+                        self._send_game_ready()
+                        # If all remote players already ready, start immediately
+                        if self.all_players_ready:
+                            waiting = False
 
             # Poll for multiplayer readiness messages
             if self.is_multiplayer and not self.all_players_ready:
                 self._poll_network_ready()
+
+            # Auto-start when all players (including local) are ready
+            if self.is_multiplayer and self.local_ready and self.all_players_ready:
+                waiting = False
 
             self._draw()
             self.clock.tick(30)

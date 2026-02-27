@@ -449,7 +449,7 @@ class NetworkClient:
             return self.connected
 
     def get_player_index(self) -> Optional[int]:
-        """Get assigned player index (0 or 1)"""
+        """Get assigned player index (0-3)"""
         return self.player_index
 
     def get_reconnect_password(self) -> str:
