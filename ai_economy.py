@@ -3,7 +3,7 @@ AI Economy Module
 Economic decision-making for building construction and technology research.
 
 This module handles all economic decisions including:
-- Building placement (Farm, Mine, Barracks, Keep, Square)
+- Building placement (Farm, Mine, Barracks, Keep, Square, Training Grounds)
 - Technology research priority
 - Resource budget allocation
 
@@ -55,6 +55,11 @@ class BuildingPlanner:
             'Square': {
                 'base_score_fn': self._base_score_square,
                 'modifiers': [self._mod_square_income_multiplier],
+                'cap': 100.0,
+            },
+            'Training Grounds': {
+                'base_score_fn': self._base_score_training_grounds,
+                'modifiers': [self._mod_training_grounds_frontier],
                 'cap': 100.0,
             },
         }
@@ -566,6 +571,40 @@ class BuildingPlanner:
         """Square score bonus from territory income (how much will be multiplied)"""
         territory_income = game_state.calculate_territory_income(territory)
         score += territory_income * 0.5
+        return score
+
+    # ---- Training Grounds scoring ----
+
+    def _base_score_training_grounds(self, territory, building_type, game_state, player_index):
+        """Base score for Training Grounds: based on army presence in territory.
+        Returns 0 if territory already has Training Grounds (completed or under construction)."""
+        # One-per-territory check (mirrors Keep pattern)
+        if territory in game_state.buildings:
+            for bt in game_state.buildings[territory].values():
+                if bt == 'Training Grounds':
+                    return 0.0
+        if territory in game_state.under_construction:
+            for entry in game_state.under_construction[territory].values():
+                if entry[0] == 'Training Grounds':
+                    return 0.0
+
+        # Score based on army count — more units = more value from passive XP
+        total = game_state.get_territory_total_armies(territory)
+        if total == 0:
+            return 0.0
+        # 5 points per unit, capped at 75 (15 units = max base score)
+        return min(total * 5.0, 75.0)
+
+    def _mod_training_grounds_frontier(self, score, territory, building_type, game_state, player_index):
+        """Boost Training Grounds score on frontline territories where units stay longer."""
+        neighbors = map_data.get_neighbors(territory)
+        has_enemy_neighbor = any(
+            game_state.territory_owners.get(n, -1) not in [-1, player_index]
+            and not game_state.are_allies(player_index, game_state.territory_owners.get(n, -1))
+            for n in neighbors
+        )
+        if has_enemy_neighbor:
+            score *= 1.3  # Frontline bonus: units stay here longer, benefit more from XP
         return score
 
     def _territory_has_building(self, territory, building_type, game_state):

@@ -26,7 +26,7 @@
 
 **Map:** 57 territories
 **Players:** 1-8
-**Building Types:** 5
+**Building Types:** 6
 **Unit Types:** 4
 **Starting Gold:** 100
 **Turn Structure:** 4 phases
@@ -54,6 +54,7 @@ Total map income: 795g/turn (~199g/player with 4 players)
 | Barracks | 50g | 1 | Enable recruitment |
 | Keep | 100g | 2 | +2 defense armies |
 | Square | 60g | 1 | 1.5× income multiplier |
+| Training Grounds | 50g | 1 | +15 XP/turn to units |
 
 ---
 

@@ -62,7 +62,7 @@ Counter advantage grants 2.0× effective strength in combat (countered units are
 
 ## 🏗️ Building System
 
-**5 Building Types:**
+**6 Building Types:**
 
 1. **Farm** (Cost: 30 gold, Build: 1 turn)
    - +10 income per turn
@@ -82,6 +82,11 @@ Counter advantage grants 2.0× effective strength in combat (countered units are
 5. **Square** (Cost: 60 gold, Build: 1 turn)
    - 1.5× income multiplier for the territory
    - Multiple Squares compound: 1.5 × 1.5 = 2.25×
+
+6. **Training Grounds** (Cost: 50 gold, Build: 1 turn)
+   - Grants +15 XP per turn to all units garrisoned in the territory
+   - One per territory limit
+   - Accelerates unit veterancy (units gain combat strength per level)
 
 **Building Process:**
 1. Select territory you own

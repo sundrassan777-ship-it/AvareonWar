@@ -109,7 +109,8 @@ building_types = {
     'Mine': {'cost': 40, 'effect': 'income', 'value': 15, 'time': 1},
     'Barracks': {'cost': 50, 'effect': 'recruitment', 'value': True, 'time': 1},
     'Keep': {'cost': 100, 'effect': 'defense', 'value': 2, 'time': 2},
-    'Square': {'cost': 60, 'effect': 'multiplier', 'value': 1.5, 'time': 1}
+    'Square': {'cost': 60, 'effect': 'multiplier', 'value': 1.5, 'time': 1},
+    'Training Grounds': {'cost': 50, 'effect': 'training', 'value': 15, 'time': 1}
 }
 ```
 

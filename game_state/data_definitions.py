@@ -28,7 +28,8 @@ BUILDING_TYPES = {
     'Mine': {'cost': 40, 'letter': 'M', 'effect': 'income', 'value': 15, 'time': 1},
     'Barracks': {'cost': 50, 'letter': 'B', 'effect': 'recruitment', 'value': True, 'time': 1},
     'Keep': {'cost': 100, 'letter': 'K', 'effect': 'defense', 'value': 2, 'time': 2},
-    'Square': {'cost': 60, 'letter': 'S', 'effect': 'multiplier', 'value': 1.5, 'time': 1}
+    'Square': {'cost': 60, 'letter': 'S', 'effect': 'multiplier', 'value': 1.5, 'time': 1},
+    'Training Grounds': {'cost': 50, 'letter': 'T', 'effect': 'training', 'value': 15, 'time': 1},
 }
 
 # ============================================================================

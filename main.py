@@ -672,9 +672,11 @@ class Game:
         # Load building icons for map display
         # Format: {building_name: pygame.Surface}
         self.building_icons = {}
-        building_names = ['Square', 'Keep', 'Castle', 'Barracks', 'Farm', 'Mine', 'Plot']
+        building_names = ['Square', 'Keep', 'Castle', 'Barracks', 'Farm', 'Mine', 'Plot', 'Training Grounds']
         for building_name in building_names:
-            icon_path = f"assets/mapicons/{building_name}Icon.png"
+            # Strip spaces for filename (e.g. 'Training Grounds' -> 'TrainingGroundsIcon.png')
+            icon_filename = building_name.replace(' ', '')
+            icon_path = f"assets/mapicons/{icon_filename}Icon.png"
             try:
                 building_image = pygame.image.load(icon_path).convert_alpha()
                 self.building_icons[building_name] = building_image
@@ -3835,11 +3837,13 @@ class Game:
         if effect == 'income':
             return f"- Generates {value} Gold per turn."
         elif effect == 'defense':
-            return f"- Provides +{value} defense bonus."
+            return f"- Provides +{value} defense bonus. (Limit 1 per territory)"
         elif effect == 'multiplier':
             return f"- Multiplies territory income x{value}."
         elif effect == 'recruitment':
             return "- Allows training of military units."
+        elif effect == 'training':
+            return f"- Grants {value} XP per turn to units in territory. (Limit 1 per territory)"
         else:
             return f"- {str(effect)}"
 
@@ -5372,13 +5376,15 @@ class Game:
                 description = f"Generates +{value} Gold/turn."
             elif effect == 'defense':
                 if building_name == 'Keep':
-                    description = "Defense bonus & trains Heroes."
+                    description = "Defense bonus & trains Heroes. (Limit 1 per territory)"
                 else:
                     description = "Provides defense bonus."
             elif effect == 'multiplier':
                 description = f"Multiplies territory income x{value}."
             elif effect == 'recruitment':
                 description = "Train military units."
+            elif effect == 'training':
+                description = f"Grants +{value} XP/turn to units. (Limit 1 per territory)"
             else:
                 description = str(effect)
 
@@ -5391,7 +5397,8 @@ class Game:
                 'Mine': 'M',
                 'Barracks': 'B',
                 'Keep': 'K',
-                'Square': 'Q'
+                'Square': 'Q',
+                'Training Grounds': 'T'
             }
             shortcut = keyboard_shortcuts.get(building_name, '')
 
@@ -6809,7 +6816,7 @@ class Game:
                 # Greyed out demolish button during tutorial
                 self.draw_feedback_button(demolish_rect, (80, 80, 80),
                                           'demolish', 'building',
-                                          text=f"Demolish {building} (50%)", font=self.small_font,
+                                          text="Demolish (50%)", font=self.small_font,
                                           text_color=(120, 120, 120))
             else:
                 # Check if Confiscate is active (Erec Silvyr + Farm/Mine)
@@ -6821,7 +6828,7 @@ class Game:
                     demolish_color = (30, 60, 150)  # Dark blue
                     self.draw_feedback_button(demolish_rect, demolish_color,
                                               'demolish', 'building',
-                                              text=f"Demolish {building} (50%)", font=self.small_font)
+                                              text="Demolish (50%)", font=self.small_font)
 
                     # Add glowing effect - draw a bright blue outline
                     glow_color = (70, 120, 255)  # Bright blue glow
@@ -6830,7 +6837,7 @@ class Game:
                     # Normal red demolish button
                     self.draw_feedback_button(demolish_rect, (150, 100, 100),
                                               'demolish', 'building',
-                                              text=f"Demolish {building} (50%)", font=self.small_font)
+                                              text="Demolish (50%)", font=self.small_font)
 
             self.demolish_button = demolish_rect
             
@@ -6906,7 +6913,7 @@ class Game:
                 letter = info['letter']
                 can_afford = current_gold >= cost
                 
-                # Check Keep restriction (only one Keep per territory)
+                # Check one-per-territory restrictions (Keep, Training Grounds)
                 can_build_this_building = True
                 if building_name == 'Keep':
                     # Check if already has a Keep (completed or under construction)
@@ -6918,8 +6925,17 @@ class Game:
                             if entry[0] == 'Keep':  # entry is (building_type, turns_remaining, cost)
                                 can_build_this_building = False
                                 break
+                elif building_name == 'Training Grounds':
+                    # Check if already has Training Grounds (completed or under construction)
+                    if self.game_state.has_training_grounds(territory):
+                        can_build_this_building = False
+                    if territory in self.game_state.under_construction:
+                        for plot_idx, entry in self.game_state.under_construction[territory].items():
+                            if entry[0] == 'Training Grounds':
+                                can_build_this_building = False
+                                break
                 
-                # Button color - consider affordability, building limit, AND Keep restriction
+                # Button color - consider affordability, building limit, AND one-per-territory restriction
                 if can_build and can_afford and can_build_this_building:
                     button_color = (100, 200, 100)  # Green
                 else:

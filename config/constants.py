@@ -137,8 +137,8 @@ PLOT_CIRCLE_RADIUS = 24  # Was 12 (2x larger)
 PLOT_CIRCLE_CENTER_OFFSET = 30  # Was 15 (2x larger)
 PLOT_SURFACE_SIZE = 60  # Was 30 (2x larger)
 EMPTY_PLOT_RADIUS = 16  # Was 8 (2x larger)
-BUILDING_ICON_RADIUS = 37  # Was 50 (reduced to 75% per user request)
-ICON_CLICK_RADIUS = 21  # Was 28 (reduced to 75% per user request)
+BUILDING_ICON_RADIUS = 42  # Orbit radius for quick-access icons (increased for 6 buildings)
+ICON_CLICK_RADIUS = 18  # Click/display radius per icon (reduced for 6 buildings)
 
 # Army and Badge Sizes
 ARMY_CIRCLE_RADIUS = 15

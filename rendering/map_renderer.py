@@ -3361,7 +3361,7 @@ class MapRenderer:
                         can_afford = current_gold >= cost
                         can_build_this_turn = territory not in self.game.game_state.buildings_started_this_turn
                         
-                        # Check Keep restriction (only one Keep per territory)
+                        # Check one-per-territory restrictions (Keep, Training Grounds)
                         can_build_keep = True
                         if building_name == 'Keep':
                             # Check if already has a Keep (completed or under construction)
@@ -3373,13 +3373,22 @@ class MapRenderer:
                                     if entry[0] == 'Keep':  # entry is (building_type, turns_remaining, cost)
                                         can_build_keep = False
                                         break
+                        elif building_name == 'Training Grounds':
+                            # Check if already has Training Grounds (completed or under construction)
+                            if self.game.game_state.has_training_grounds(territory):
+                                can_build_keep = False
+                            if territory in self.game.game_state.under_construction:
+                                for plot_idx, entry in self.game.game_state.under_construction[territory].items():
+                                    if entry[0] == 'Training Grounds':
+                                        can_build_keep = False
+                                        break
                         
                         # Tutorial lock: force red if building type not allowed
                         _tutorial_locked = False
                         if hasattr(self.game, 'tutorial_mission') and self.game.tutorial_mission and self.game.tutorial_mission.active:
                             _tutorial_locked = not self.game.tutorial_mission.is_action_allowed('build', building_type=building_name)
 
-                        # Base color - consider affordability, building limit, Keep restriction, and tutorial lock
+                        # Base color - consider affordability, building limit, and one-per-territory restriction
                         if _tutorial_locked:
                             icon_color = COLOR_ICON_UNAVAILABLE  # Red (tutorial locked)
                         elif can_afford and can_build_this_turn and can_build_keep:

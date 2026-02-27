@@ -32,6 +32,15 @@ class BuildingMixin:
                 return True
         return False
 
+    def has_training_grounds(self, territory):
+        """Check if territory has a completed Training Grounds building"""
+        if territory not in self.buildings:
+            return False
+        for plot_index, building_type in self.buildings[territory].items():
+            if building_type == 'Training Grounds':
+                return True
+        return False
+
     def is_castle(self, territory, plot_index):
         """Check if a Keep at this location has been upgraded to Castle"""
         if territory not in self.castle_upgrades:
@@ -137,6 +146,17 @@ class BuildingMixin:
                         self.add_message("Already building a Fortress in this territory!")
                         return False
 
+        # Special rule: Only one Training Grounds allowed per territory
+        if building_type == 'Training Grounds':
+            if self.has_training_grounds(territory):
+                self.add_message("Only one Training Grounds allowed per territory!")
+                return False
+            if territory in self.under_construction:
+                for plot_idx, entry in self.under_construction[territory].items():
+                    if entry[0] == 'Training Grounds':
+                        self.add_message("Already building Training Grounds in this territory!")
+                        return False
+
         # Check if plot is empty
         if territory in self.buildings and plot_index in self.buildings[territory]:
             if self.buildings[territory][plot_index] is not None:
@@ -164,7 +184,7 @@ class BuildingMixin:
         # Track building type at start time (not finish) so conquered buildings credit original builder
         if building_type in ('Farm', 'Mine', 'Square'):
             self._track_stat(self.current_player, 'economy_buildings_built')
-        elif building_type == 'Barracks':
+        elif building_type in ('Barracks', 'Training Grounds'):
             self._track_stat(self.current_player, 'barracks_built')
         elif building_type == 'Keep':
             self._track_stat(self.current_player, 'keeps_built')
@@ -253,6 +273,54 @@ class BuildingMixin:
         if xp_awarded_count > 0:
             logger.info(f"Building XP tick: +{self.BUILDING_XP_PER_TURN} XP to {xp_awarded_count} Farms/Mines for Player {self.current_player + 1}")
             self.add_message(f"  +{self.BUILDING_XP_PER_TURN} XP to {xp_awarded_count} building{'s' if xp_awarded_count > 1 else ''}")
+
+    def _tick_training_grounds_xp(self):
+        """Award XP to all units garrisoned in territories with Training Grounds.
+        Called at start of each player's turn. Skips territories where
+        Training Grounds just completed this turn (same pattern as building XP)."""
+        # Identify territories where Training Grounds just finished construction
+        newly_completed_territories = set()
+        if hasattr(self, 'last_completed_buildings') and self.last_completed_buildings:
+            for territory, building_type, plot_index in self.last_completed_buildings:
+                if building_type == 'Training Grounds':
+                    newly_completed_territories.add(territory)
+
+        xp_amount = self.TRAINING_GROUNDS_UNIT_XP_PER_TURN
+        territories_affected = 0
+        total_units_trained = 0
+
+        for territory, plots in self.buildings.items():
+            if self.territory_owners.get(territory) != self.current_player:
+                continue
+            # Check if territory has a completed Training Grounds
+            has_tg = any(bt == 'Training Grounds' for bt in plots.values() if bt is not None)
+            if not has_tg:
+                continue
+            # Skip if Training Grounds just completed this turn
+            if territory in newly_completed_territories:
+                logger.debug(f"Skipping newly completed Training Grounds in {territory}")
+                continue
+
+            # Award XP to all units in this territory's garrison
+            garrison = self.territory_garrisons.get(territory, {})
+            player_garrison = garrison.get(self.current_player)
+            if not player_garrison:
+                continue
+            units = player_garrison.get('units', [])
+            if not units:
+                continue
+
+            for unit in units:
+                self.award_unit_xp(unit, xp_amount)
+            territories_affected += 1
+            total_units_trained += len(units)
+
+        if territories_affected > 0:
+            logger.info(f"Training Grounds XP tick: +{xp_amount} XP to {total_units_trained} units "
+                        f"in {territories_affected} territor{'ies' if territories_affected > 1 else 'y'} "
+                        f"for Player {self.current_player + 1}")
+            self.add_message(f"  Training Grounds: +{xp_amount} XP to {total_units_trained} unit{'s' if total_units_trained > 1 else ''} "
+                             f"in {territories_affected} territor{'ies' if territories_affected > 1 else 'y'}")
 
     def finish_constructions(self):
         """Finish all buildings that completed this turn (only counts owner's turns)"""

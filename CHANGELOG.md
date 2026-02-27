@@ -2,6 +2,14 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-27 - Training Grounds Building
+
+- **New building:** Training Grounds (50g, 1 turn) — grants +15 XP per turn to all units garrisoned in the territory
+  - One per territory limit (like Keep)
+  - AI evaluates based on army presence and frontline status
+  - Keyboard shortcut: T
+  - Destroyed on conquest (not preserved by Champion of the People)
+
 ## 2026-02-27 - Multiplayer Bug Fixes (ORDER_REMOVE + Reconnect Timeout)
 
 - **Bug fix:** Implemented `ORDER_REMOVE` network handler — was a silent no-op stub causing multiplayer desyncs when a player cancelled movement orders

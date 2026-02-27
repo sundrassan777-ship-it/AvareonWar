@@ -28,6 +28,7 @@ _BUILDING_SHORTCUTS = {
     pygame.K_b: 'Barracks',
     pygame.K_k: 'Keep',
     pygame.K_q: 'Square',
+    pygame.K_t: 'Training Grounds',
 }
 
 _TRAINING_SHORTCUTS = {

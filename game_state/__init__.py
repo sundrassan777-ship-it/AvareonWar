@@ -199,6 +199,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
     BUILDING_XP_PER_TURN = 20           # XP awarded to Farms/Mines each turn
     BATTLE_XP_PER_KILL = 10             # Base XP per enemy unit killed (+1 per enemy level)
     HERO_KEEP_DESTROY_XP = 100          # Flat XP when destroying a Keep with a Hero
+    TRAINING_GROUNDS_UNIT_XP_PER_TURN = 15  # XP awarded to units in territory with Training Grounds
 
     # Unit type definitions (TIER 3: Multiple Unit Types)
     UNIT_TYPES = {
@@ -785,6 +786,9 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
             # Award XP to Farms and Mines owned by current player (+20 XP/turn)
             self._tick_building_xp()
+
+            # Award XP to units in territories with Training Grounds (+15 XP/turn)
+            self._tick_training_grounds_xp()
 
             # IMPORTANT: Cleanup empty garrisons at turn start (belt & suspenders)
             # This catches any ghost garrisons that might have been missed

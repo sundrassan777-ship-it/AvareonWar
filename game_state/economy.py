@@ -88,7 +88,7 @@ class EconomyMixin:
         territorial_bonuses = self.calculate_player_territorial_bonuses(player)
 
         # Building cost reduction (-15% per bonus territory)
-        if item_type in ['Farm', 'Mine', 'Barracks', 'Keep', 'Square']:
+        if item_type in ['Farm', 'Mine', 'Barracks', 'Keep', 'Square', 'Training Grounds']:
             discount_pct = abs(territorial_bonuses.get('building_cost', 0))
             if discount_pct > 0:
                 effective_cost = int(effective_cost * (100 - discount_pct) / 100)

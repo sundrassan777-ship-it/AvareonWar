@@ -486,6 +486,8 @@ class SimultaneousGameState:
                     self.gs.finish_castle_upgrades()
                     # Award XP to Farms/Mines (veterancy system)
                     self.gs._tick_building_xp()
+                    # Award XP to units in territories with Training Grounds
+                    self.gs._tick_training_grounds_xp()
         finally:
             # Restore original current_player
             self.gs.current_player = original_player
