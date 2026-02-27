@@ -683,15 +683,6 @@ class Game:
                 logger.warning(f"Could not load {icon_path}: {e}. Building icon will not be displayed for {building_name}")
                 self.building_icons[building_name] = None
 
-        # Load army ring circle icon for map display
-        self.ring_circle_icon = None
-        ring_circle_path = "assets/mapicons/RingCircle.png"
-        try:
-            self.ring_circle_icon = pygame.image.load(ring_circle_path).convert_alpha()
-            logger.debug("Loaded ring circle icon: RingCircle.png")
-        except pygame.error as e:
-            logger.warning(f"Could not load {ring_circle_path}: {e}. Army circles will use fallback drawn circles")
-
         # Load unit type icons for UI display
         # Format: {unit_type: pygame.Surface}
         self.unit_icons = {}

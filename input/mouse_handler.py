@@ -143,9 +143,8 @@ class MouseHandler:
                     if handled:
                         return handled
                 elif self.game.game_state.active_sidebar_tab == 'action_log':
-                    handled = self.game.handle_action_log_click(pos)
-                    if handled:
-                        return handled
+                    # Action log is read-only — consume click to prevent map interaction
+                    return True
                 elif self.game.game_state.active_sidebar_tab == 'heroes':
                     # MULTIPLAYER: Block hero tab clicks for spectators
                     if not self.game.is_local_player_active():

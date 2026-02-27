@@ -1320,9 +1320,11 @@ class EnhancedBattleInterface:
 
     def _render_overlay(self):
         """Render the semi-transparent dark overlay."""
-        overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, OVERLAY_ALPHA))
-        self.screen.blit(overlay, (0, 0))
+        # FPS OPT: Cache overlay surface (avoids fullscreen SRCALPHA alloc every frame)
+        if not hasattr(self, '_cached_overlay') or self._cached_overlay.get_size() != (self.screen_width, self.screen_height):
+            self._cached_overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+            self._cached_overlay.fill((0, 0, 0, OVERLAY_ALPHA))
+        self.screen.blit(self._cached_overlay, (0, 0))
 
     def _render_panel(self, rect, title, title_color, territory, composition,
                       effective_strength, is_defender=False):
@@ -1419,30 +1421,40 @@ class EnhancedBattleInterface:
         is_hovering = rect.collidepoint(self.mouse_pos)
 
         if bg_image:
-            # Scale image to button size
-            scaled_img = pygame.transform.smoothscale(bg_image, (rect.width, rect.height))
-            modified_img = scaled_img.copy()
+            # FPS OPT: Cache scaled+darkened base button image (avoids smoothscale+copy+Surface every frame)
+            if not hasattr(self, '_button_base_cache'):
+                self._button_base_cache = {}
+            btn_key = (id(bg_image), rect.width, rect.height)
+            if btn_key not in self._button_base_cache:
+                scaled_img = pygame.transform.smoothscale(bg_image, (rect.width, rect.height))
+                darkened = scaled_img.copy()
+                dark_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                dark_surface.fill((100, 100, 100, 255))
+                darkened.blit(dark_surface, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                self._button_base_cache[btn_key] = darkened
 
-            # Apply darkening
-            dark_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-            dark_surface.fill((100, 100, 100, 255))
-            modified_img.blit(dark_surface, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-
-            # Apply brightness for hover
             if is_hovering:
+                # Only .copy() + brighten for the hovered button (rare — 1 at a time)
+                modified_img = self._button_base_cache[btn_key].copy()
                 bright_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
                 bright_surface.fill((40, 40, 40, 0))
                 modified_img.blit(bright_surface, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
-
-            self.screen.blit(modified_img, rect.topleft)
+                self.screen.blit(modified_img, rect.topleft)
+            else:
+                # FPS OPT: Blit directly from cache — no .copy() needed
+                self.screen.blit(self._button_base_cache[btn_key], rect.topleft)
         else:
             # Fallback solid color button
             color = (80, 80, 120) if not is_hovering else (100, 100, 150)
             pygame.draw.rect(self.screen, color, rect)
             pygame.draw.rect(self.screen, WHITE, rect, 2)
 
-        # Draw text
-        text_surface = self.button_font.render(text, True, WHITE)
+        # FPS OPT: Cache button text render (avoids font.render() every frame)
+        if not hasattr(self, '_button_text_cache'):
+            self._button_text_cache = {}
+        if text not in self._button_text_cache:
+            self._button_text_cache[text] = self.button_font.render(text, True, WHITE)
+        text_surface = self._button_text_cache[text]
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
 

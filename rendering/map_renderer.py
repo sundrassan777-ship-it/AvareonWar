@@ -77,8 +77,9 @@ class MapRenderer:
         self.embargo_effects = {}
 
         # Image caching system to avoid expensive transformations every frame
-        # Cache rotated ring images: key = (angle_rounded, size, color_tuple)
-        self.rotated_ring_cache = {}
+        # FPS OPT: Static glow circles replace old rotating ring system
+        # Cache pre-rendered glow surfaces: key = (color, radius_rounded)
+        self.static_glow_cache = {}
         # Cache scaled flag images: key = (player, tier, width, height)
         self.scaled_flag_cache = {}
         # Cache scaled building icons: key = (building_type, size)
@@ -99,10 +100,8 @@ class MapRenderer:
         self.surface_pool = {}  # key = (width, height), value = list of surfaces
         self.max_pool_size = 50  # Limit pool size to prevent memory bloat
 
-        # PHASE 1 OPTIMIZATION: Pre-created glitter overlay surfaces at common sizes
-        # Avoids creating surfaces every frame for every garrison
-        self.glitter_overlay_cache = {}  # key = (size, alpha), value = surface
-        self._initialize_glitter_cache()
+        # FPS OPT: Cache for cropped-to-circle training icons
+        self._cropped_circle_cache = {}  # key = (unit_type, icon_size), value = surface
 
         # PERFORMANCE OPTIMIZATION: Font caching to avoid creating Font objects every frame
         # Creating pygame.font.Font() is expensive; cache by size for reuse
@@ -123,7 +122,6 @@ class MapRenderer:
 
         # Per-frame cached values (reset each frame)
         self.cached_mouse_world_pos = None
-        self.cached_glitter_pulse = 0.0
 
         # FPS OPTIMIZATION: Cache building types list (static after game init)
         # Avoids list() conversion every frame in quick-access icon rendering
@@ -196,31 +194,19 @@ class MapRenderer:
         """
         FPS OPTIMIZATION 6.1: Pre-warm image transformation caches at startup.
 
-        Populates rotated_ring_cache, scaled_flag_cache, and other image caches
-        with common sizes and colors to eliminate first-use cache misses.
-
-        This adds ~0.2-0.5s to startup but ensures smooth gameplay from frame 1.
+        Pre-populates glow, font, and other image caches at common sizes
+        to eliminate first-use cache misses.
         """
-        # Pre-warm rotated ring cache for common sizes and angles
-        # Common ring sizes based on typical army radius calculations (20-60px at various zooms)
-        common_ring_sizes = [21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60]
-        common_angles = range(0, 360, 30)  # Every 30 degrees (12 angles)
-
-        # Get player colors for ring tinting (4 players)
-        player_colors = [
-            self.game.game_state.get_player_color(i) if hasattr(self.game, 'game_state') else (255, 255, 255)
-            for i in range(4)
-        ]
-
-        # Pre-warm ring cache
-        if hasattr(self.game, 'ring_circle_icon') and self.game.ring_circle_icon:
-            for size in common_ring_sizes:
-                for angle in common_angles:
-                    for color in player_colors:
-                        try:
-                            self.get_cached_rotated_ring(self.game.ring_circle_icon, angle, size, color)
-                        except Exception:
-                            pass  # Ignore errors during pre-warming
+        # Pre-warm static glow cache for common sizes and player colors
+        common_radii = [9, 12, 15, 18, 21, 24, 27, 30]
+        if hasattr(self.game, 'game_state'):
+            for i in range(4):
+                try:
+                    color = self.game.game_state.get_player_color(i)
+                    for radius in common_radii:
+                        self._get_static_glow(color, radius)
+                except Exception:
+                    pass
 
         # Pre-warm font cache for common sizes
         common_font_sizes = [12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
@@ -298,54 +284,94 @@ class MapRenderer:
         if len(self.surface_pool[size_key]) < self.max_pool_size:
             self.surface_pool[size_key].append(surface)
 
-    def _initialize_glitter_cache(self):
+    def _build_glow_surface(self, color, radius):
         """
-        PHASE 1 OPTIMIZATION: Pre-create glitter overlay surfaces at common sizes.
+        Build a pre-rendered glow halo surface for army circles.
 
-        This avoids creating surfaces every frame for every garrison.
-        Creates surfaces for typical ring sizes at different alpha values.
-        """
-        # Common ring sizes (based on typical army radius * 2 * 1.4)
-        # Army radius is typically 10-30, so ring sizes are 28-84
-        common_sizes = [30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
-
-        # Alpha values based on glitter pulse range (10 to 35)
-        # Pre-create at 5-alpha intervals for smooth interpolation
-        alpha_values = [10, 15, 20, 25, 30, 35]
-
-        for size in common_sizes:
-            for alpha in alpha_values:
-                surface = pygame.Surface((size, size), pygame.SRCALPHA)
-                surface.fill((255, 255, 255, alpha))
-                self.glitter_overlay_cache[(size, alpha)] = surface
-
-    def _get_glitter_overlay(self, size, alpha):
-        """
-        PHASE 1 OPTIMIZATION: Get glitter overlay from cache or create if needed.
-
-        Uses pre-created surfaces when possible, falls back to creation for unusual sizes.
+        Creates a small SRCALPHA surface with concentric translucent circles
+        that produce a soft glow effect around the army circle.
 
         Args:
-            size: Width/height of the square overlay
-            alpha: Alpha transparency value (0-255)
+            color: RGB tuple of the player color
+            radius: Circle radius in pixels
 
         Returns:
-            Surface with white fill at specified alpha
+            SRCALPHA surface with glow rings pre-rendered
         """
-        # Round alpha to nearest 5 for cache lookup
-        alpha_rounded = round(alpha / 5) * 5
-        alpha_rounded = max(10, min(35, alpha_rounded))  # Clamp to expected range
+        # Surface must fit the outer glow ring (radius + glow_margin on each side)
+        glow_margin = max(4, radius // 3)
+        surf_size = (radius + glow_margin) * 2
+        surface = pygame.Surface((surf_size, surf_size), pygame.SRCALPHA)
+        center = (surf_size // 2, surf_size // 2)
 
-        cache_key = (size, alpha_rounded)
+        # Outer soft glow — large, very translucent
+        pygame.draw.circle(surface, (*color, 35), center, radius + glow_margin)
+        # Mid glow — slightly brighter
+        pygame.draw.circle(surface, (*color, 55), center, radius + glow_margin // 2)
 
-        if cache_key in self.glitter_overlay_cache:
-            return self.glitter_overlay_cache[cache_key]
-
-        # M11 fix: Cache fallback surfaces too (avoids per-frame allocation)
-        surface = pygame.Surface((size, size), pygame.SRCALPHA)
-        surface.fill((255, 255, 255, alpha))
-        self.glitter_overlay_cache[cache_key] = surface
         return surface
+
+    def _get_static_glow(self, color, radius):
+        """
+        Get cached glow surface for an army circle, building on miss.
+
+        Rounds radius to nearest 3px for cache efficiency during zoom.
+
+        Args:
+            color: RGB tuple of the player color
+            radius: Circle radius in pixels
+
+        Returns:
+            Cached SRCALPHA glow surface
+        """
+        radius_rounded = int(round(radius / 3.0) * 3)
+        radius_rounded = max(3, radius_rounded)
+        cache_key = (color, radius_rounded)
+
+        if cache_key not in self.static_glow_cache:
+            self.static_glow_cache[cache_key] = self._build_glow_surface(color, radius_rounded)
+
+        return self.static_glow_cache[cache_key]
+
+    def _draw_army_circle(self, screen, x, y, color, radius, is_hovering=False, is_clicking=False):
+        """
+        Draw a transparent army circle with glowing dark border at the given position.
+
+        Visual design:
+        1. Cached glow halo (soft translucent outer rings in player color)
+        2. Dark border ring (darker player color, no fill — transparent inside)
+        Circle is 25% smaller than the radius and shifted up slightly so the
+        flag pole sits naturally inside the ring.
+
+        Args:
+            screen: Pygame surface to draw on
+            x, y: Screen position (base center for the flag)
+            color: RGB tuple of the player color
+            radius: Base radius in pixels (will be reduced 25%)
+            is_hovering: Whether mouse is hovering over this circle
+            is_clicking: Whether this circle is being clicked/selected
+        """
+        # 25% smaller circle, shifted up so flag sits inside it
+        draw_radius = int(radius * 0.75)
+        draw_y = y - int(radius * 0.35)
+
+        # Blit pre-cached glow halo centered at draw position
+        glow = self._get_static_glow(color, draw_radius)
+        glow_rect = glow.get_rect(center=(x, draw_y))
+        screen.blit(glow, glow_rect)
+
+        # Border color = darker version of player color (55%)
+        dark_color = (int(color[0] * 0.55), int(color[1] * 0.55), int(color[2] * 0.55))
+
+        # Adjust for hover/click brightness
+        if is_clicking:
+            dark_color = brighten_color(dark_color, 0.4)
+        elif is_hovering:
+            dark_color = brighten_color(dark_color, 0.2)
+
+        # Transparent inside — only draw the border ring (no fill)
+        border_width = max(2, draw_radius // 5)
+        pygame.draw.circle(screen, dark_color, (x, draw_y), draw_radius, border_width)
 
     def get_cached_font(self, size):
         """
@@ -375,50 +401,6 @@ class MapRenderer:
         if self._cached_building_list is None:
             self._cached_building_list = list(self.game.game_state.building_types.keys())
         return self._cached_building_list
-
-    def get_cached_rotated_ring(self, ring_icon, angle, size, color):
-        """
-        Get a rotated and colored ring from cache or create and cache it.
-
-        PERFORMANCE OPTIMIZATION: Round both angle AND size to reduce cache churn
-        Old: Exact size creates new entries on zoom (1px difference = cache miss)
-        New: Round to nearest 5 degrees AND 3 pixels for better cache hit rate
-
-        Args:
-            ring_icon: The base ring icon to rotate
-            angle: Rotation angle in degrees
-            size: Target size for the ring
-            color: RGB tuple for tinting
-
-        Returns:
-            Rotated, scaled, and colored ring surface
-        """
-        # Round angle to nearest 5 degrees to reduce cache size (72 entries per size/color combo)
-        angle_rounded = round(angle / 5) * 5
-
-        # PERFORMANCE: Round size to nearest 3 pixels to improve cache hit rate during zoom
-        size_rounded = int(round(size / 3.0) * 3)
-
-        # Create cache key
-        cache_key = (angle_rounded, size_rounded, color)
-
-        # Return cached version if available
-        if cache_key in self.rotated_ring_cache:
-            return self.rotated_ring_cache[cache_key]
-
-        # Create new transformed image (use rounded size)
-        scale_factor = size_rounded / ring_icon.get_width()
-        rotated_ring = pygame.transform.rotozoom(ring_icon, -angle_rounded, scale_factor)
-
-        # Apply color tinting
-        colored_ring = rotated_ring.copy()
-        color_overlay = pygame.Surface(colored_ring.get_size(), pygame.SRCALPHA)
-        color_overlay.fill((*color, 220))
-        colored_ring.blit(color_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-
-        # Cache and return
-        self.rotated_ring_cache[cache_key] = colored_ring
-        return colored_ring
 
     def get_cached_scaled_flag(self, player, tier, flag_icon, width, height):
         """
@@ -755,9 +737,6 @@ class MapRenderer:
         mouse_screen_x, mouse_screen_y = self.game.mouse_pos
         self.cached_mouse_world_pos = self.game.screen_to_world((mouse_screen_x, mouse_screen_y))
 
-        # Cache glitter pulse calculation (used for all garrison rings)
-        self.cached_glitter_pulse = abs(math.sin(time.time() * 2.5))
-
         # PERFORMANCE OPTIMIZATION: Batch all territory overlays into single surface
         # Old: Clear+draw+blit fullscreen surface for EACH territory (13-14 territories = 13-14 fullscreen ops)
         # New: Draw all polygons to one surface, blit once (1 fullscreen op)
@@ -893,12 +872,6 @@ class MapRenderer:
         # New: 1 calculation per frame (99% reduction)
         ui_scale = self.game.get_ui_scale_factor()
 
-        # PERFORMANCE OPTIMIZATION: Calculate rotation angle ONCE per frame for all rings
-        # Old: Unique rotation per flag defeats cache (cache miss rate ~95%)
-        # New: Shared rotation across all flags (cache hit rate ~80%+)
-        # Store as instance variable so draw_animated_armies() can access it
-        self.global_rotation_angle = (time.time() * 20) % 360
-
         for territory, world_center in self.game.scaled_centers.items():
             if territory not in self.game.game_state.territory_owners:
                 continue
@@ -990,20 +963,21 @@ class MapRenderer:
                         flag_world_x, flag_world_y = flag_positions[garrison_position_idx]
                         glow_x, glow_y = self.game.world_to_screen((flag_world_x, flag_world_y))
 
+                # Align glow with the army circle (25% smaller, shifted up)
+                circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * 0.75)
+                circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * 0.35)
+                glow_y = glow_y - circle_y_offset
+
                 # Pulsing green glow effect (scales with zoom!)
                 pulse = abs(math.sin(time.time() * 2))  # Pulse between 0 and 1
                 glow_alpha = int(100 + 100 * pulse)  # Between 100 and 200
 
-                # PERFORMANCE: Use cached ui_scale (pre-computed above)
-                # Removed redundant: ui_scale = self.game.get_ui_scale_factor()
-
                 # PERFORMANCE OPTIMIZATION: Reduce glow layers when zoomed out
-                # At zoom out (ui_scale < 1.2), single layer sufficient; full detail when zoomed in
-                glow_layers = 1 if ui_scale < 1.5 else 3  # FPS OPTIMIZATION: More aggressive threshold
+                glow_layers = 1 if ui_scale < 1.5 else 3
 
-                # Draw multiple glow circles for effect (scaled with zoom)
+                # Draw glow circles sized to match the smaller army circle
                 for i in range(glow_layers):
-                    glow_radius = int((18 + i * 3) * ui_scale)
+                    glow_radius = circle_radius + int((3 + i * 3) * ui_scale)
                     # PERFORMANCE: Use reusable surface from pool
                     glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
                     pygame.draw.circle(glow_surface, (0, 255, 0, glow_alpha // (i + 1)),
@@ -1092,73 +1066,15 @@ class MapRenderer:
                           self.game.clicked_element[0] == 'army' and 
                           self.game.clicked_element[1] == territory)
             
-            # Apply visual feedback
-            if is_clicking:
-                army_color = brighten_color(army_color, 0.4)
-            elif is_hovering:
-                army_color = lighten_color(army_color, 0.2)
-
-            # Draw army circle using RingCircle.png or fallback to drawn circles
+            # Draw army circle (static circle + glow halo) for all players
             # CRITICAL: Only draw main circle for single-garrison territories
-            # For multi-garrison, each garrison gets its own ring at flag position
+            # For multi-garrison, each garrison gets its own circle at flag position
             if num_garrisons <= 1:
-                # PERFORMANCE OPTIMIZATION: Only show rotating ring for current/local player
-                # This reduces ring rendering cost by 75% in 4-player game (1 player instead of 4)
-                # Also improves visual clarity - immediately shows whose turn it is
-                # SIMULTANEOUS MODE: Show ring for local player (since all players plan at once)
-                if hasattr(self.game, 'sim_state') and self.game.sim_state is not None:
-                    # In simultaneous mode, show ring for the local (human) player
-                    local_player = self.game.get_local_player()
-                    is_current_player = (owner == local_player)
-                else:
-                    # Sequential mode: show ring for current player
-                    is_current_player = (owner == self.game.game_state.current_player)
-
-                if self.game.ring_circle_icon and is_current_player:
-                    # Use the RingCircle.png image (40% bigger)
-                    ring_size = int(scaled_army_radius * 2 * 1.4)  # Diameter * 1.4 for 40% bigger
-
-                    # PERFORMANCE: Use global rotation angle (calculated once per frame above)
-                    # This dramatically improves cache hit rate across all flags
-
-                    # PERFORMANCE: Use cached ring directly, apply effects to temp surface
-                    cached_ring = self.get_cached_rotated_ring(
-                        self.game.ring_circle_icon,
-                        self.global_rotation_angle,
-                        ring_size,
-                        army_color
-                    )
-
-                    # Get ring dimensions
-                    ring_width, ring_height = cached_ring.get_size()
-
-                    # Create temp surface from pool for combining ring + effects
-                    temp_ring = self.get_reusable_surface(ring_width, ring_height)
-                    temp_ring.fill((0, 0, 0, 0))
-                    temp_ring.blit(cached_ring, (0, 0))
-
-                    # Apply glitter effect
-                    glitter_alpha = int(10 + 25 * self.cached_glitter_pulse)
-                    glitter_overlay = self._get_glitter_overlay(ring_width, glitter_alpha)
-                    temp_ring.blit(glitter_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-                    # Apply hover/click brightness effects
-                    if is_clicking:
-                        bright_overlay = self.get_reusable_surface(ring_width, ring_height)
-                        bright_overlay.fill((255, 255, 255, 100))
-                        temp_ring.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                        self.return_surface_to_pool(bright_overlay)
-                    elif is_hovering:
-                        light_overlay = self.get_reusable_surface(ring_width, ring_height)
-                        light_overlay.fill((255, 255, 255, 50))
-                        temp_ring.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                        self.return_surface_to_pool(light_overlay)
-
-                    # Blit to screen
-                    ring_rect = temp_ring.get_rect(center=(int(x), int(y)))
-                    self.game.screen.blit(temp_ring, ring_rect)
-                    self.return_surface_to_pool(temp_ring)
-                # else: Non-current player - no ring drawn (only flags visible)
+                # FPS OPT: Static circle replaces old rotating ring — shown for ALL players
+                # _draw_army_circle handles hover/click brightness internally
+                self._draw_army_circle(self.game.screen, int(x), int(y),
+                                       army_color, scaled_army_radius,
+                                       is_hovering, is_clicking)
 
             # Draw army flag icon(s) for garrison(s)
             if num_garrisons > 1:
@@ -1208,62 +1124,11 @@ class MapRenderer:
                                            self.game.clicked_element[1] == territory and
                                            player_index == self.game.game_state.current_player) or is_garrison_selected
 
-                    # Adjust color for hover/click
-                    if garrison_is_clicking:
-                        garrison_color = brighten_color(garrison_color, 0.4)
-                    elif garrison_is_hovering:
-                        garrison_color = lighten_color(garrison_color, 0.2)
-
-                    # Draw ring at flag position
-                    # PERFORMANCE OPTIMIZATION: Only show rotating ring for current/local player's garrisons
-                    # SIMULTANEOUS MODE: Show ring for local player (since all players plan at once)
-                    if hasattr(self.game, 'sim_state') and self.game.sim_state is not None:
-                        local_player = self.game.get_local_player()
-                        is_current_player_garrison = (player_index == local_player)
-                    else:
-                        is_current_player_garrison = (player_index == self.game.game_state.current_player)
-
-                    if self.game.ring_circle_icon and is_current_player_garrison:
-                        ring_size = int(scaled_army_radius * 2 * 1.4)
-
-                        # PERFORMANCE: Use cached ring directly, apply effects to temp surface
-                        cached_ring = self.get_cached_rotated_ring(
-                            self.game.ring_circle_icon,
-                            self.global_rotation_angle,
-                            ring_size,
-                            garrison_color
-                        )
-
-                        # Get ring dimensions
-                        ring_width, ring_height = cached_ring.get_size()
-
-                        # Create temp surface from pool
-                        temp_ring = self.get_reusable_surface(ring_width, ring_height)
-                        temp_ring.fill((0, 0, 0, 0))
-                        temp_ring.blit(cached_ring, (0, 0))
-
-                        # Apply glitter effect
-                        glitter_alpha = int(10 + 25 * self.cached_glitter_pulse)
-                        glitter_overlay = self._get_glitter_overlay(ring_width, glitter_alpha)
-                        temp_ring.blit(glitter_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-                        # Apply hover/click effects
-                        if garrison_is_clicking:
-                            bright_overlay = self.get_reusable_surface(ring_width, ring_height)
-                            bright_overlay.fill((255, 255, 255, 100))
-                            temp_ring.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                            self.return_surface_to_pool(bright_overlay)
-                        elif garrison_is_hovering:
-                            light_overlay = self.get_reusable_surface(ring_width, ring_height)
-                            light_overlay.fill((255, 255, 255, 50))
-                            temp_ring.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                            self.return_surface_to_pool(light_overlay)
-
-                        # Blit to screen
-                        ring_rect = temp_ring.get_rect(center=(int(flag_screen_x), int(flag_screen_y)))
-                        self.game.screen.blit(temp_ring, ring_rect)
-                        self.return_surface_to_pool(temp_ring)
-                    # else: Non-current player garrison - no ring drawn (only flags visible)
+                    # FPS OPT: Static circle replaces old rotating ring — shown for ALL garrisons
+                    # _draw_army_circle handles hover/click brightness internally
+                    self._draw_army_circle(self.game.screen, int(flag_screen_x), int(flag_screen_y),
+                                           garrison_color, scaled_army_radius,
+                                           garrison_is_hovering, garrison_is_clicking)
 
                     # Determine flag tier based on this garrison's army count
                     flag_tier = self.game.get_army_flag_tier(garrison_armies)
@@ -1421,45 +1286,9 @@ class MapRenderer:
             ui_scale = self.game.get_ui_scale_factor()
             scaled_army_radius = int(ARMY_CIRCLE_RADIUS * ui_scale)
 
-            # Draw the moving army circle using RingCircle.png or fallback to drawn circles
-            # PERFORMANCE OPTIMIZATION: Only show rotating ring for current/local player's moving armies
-            # SIMULTANEOUS MODE: Show ring for local player (since all players plan at once)
-            if hasattr(self.game, 'sim_state') and self.game.sim_state is not None:
-                local_player = self.game.get_local_player()
-                is_current_player_army = (player == local_player)
-            else:
-                is_current_player_army = (player == self.game.game_state.current_player)
-
-            if self.game.ring_circle_icon and is_current_player_army:
-                # Use the RingCircle.png image (40% bigger)
-                ring_size = int(scaled_army_radius * 2 * 1.4)  # Diameter * 1.4 for 40% bigger
-
-                # PERFORMANCE: Use cached ring directly, apply effects to temp surface
-                cached_ring = self.get_cached_rotated_ring(
-                    self.game.ring_circle_icon,
-                    self.global_rotation_angle,
-                    ring_size,
-                    player_color
-                )
-
-                # Get ring dimensions
-                ring_width, ring_height = cached_ring.get_size()
-
-                # Create temp surface from pool
-                temp_ring = self.get_reusable_surface(ring_width, ring_height)
-                temp_ring.fill((0, 0, 0, 0))
-                temp_ring.blit(cached_ring, (0, 0))
-
-                # Apply glitter effect
-                glitter_alpha = int(10 + 25 * self.cached_glitter_pulse)
-                glitter_overlay = self._get_glitter_overlay(ring_width, glitter_alpha)
-                temp_ring.blit(glitter_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-                # Blit to screen
-                ring_rect = temp_ring.get_rect(center=(int(screen_x), int(screen_y)))
-                self.game.screen.blit(temp_ring, ring_rect)
-                self.return_surface_to_pool(temp_ring)
-            # else: Non-current player moving army - no ring drawn (only flags visible)
+            # FPS OPT: Static circle replaces old rotating ring — shown for ALL moving armies
+            self._draw_army_circle(self.game.screen, int(screen_x), int(screen_y),
+                                   player_color, scaled_army_radius)
 
             # Draw combined army flag icon
             total_count = group_data['total_count']
@@ -2869,27 +2698,36 @@ class MapRenderer:
         if 'Plot' in self.game.building_icons and self.game.building_icons['Plot']:
             plot_icon = self.game.building_icons['Plot']
             icon_size = int(scaled_empty_plot_radius * 2)
-            scaled_plot_icon = self.get_cached_scaled_plot('Plot', plot_icon, icon_size).copy()
+            cached_icon = self.get_cached_scaled_plot('Plot', plot_icon, icon_size)
 
-            if not can_build:
-                grey_overlay = self.get_reusable_surface(icon_size, icon_size)
-                grey_overlay.fill((128, 128, 128, 180))
-                scaled_plot_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                self.return_surface_to_pool(grey_overlay)
+            # FPS OPT: Only .copy() when effects need to modify the surface in-place
+            needs_effects = (not can_build) or is_clicking or is_hovering
+            if needs_effects:
+                scaled_plot_icon = cached_icon.copy()
 
-            if is_clicking:
-                bright_overlay = self.get_reusable_surface(icon_size, icon_size)
-                bright_overlay.fill((100, 100, 100, 100))
-                scaled_plot_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                self.return_surface_to_pool(bright_overlay)
-            elif is_hovering:
-                light_overlay = self.get_reusable_surface(icon_size, icon_size)
-                light_overlay.fill((50, 50, 50, 50))
-                scaled_plot_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                self.return_surface_to_pool(light_overlay)
+                if not can_build:
+                    grey_overlay = self.get_reusable_surface(icon_size, icon_size)
+                    grey_overlay.fill((128, 128, 128, 180))
+                    scaled_plot_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                    self.return_surface_to_pool(grey_overlay)
 
-            icon_rect = scaled_plot_icon.get_rect(center=(x, y))
-            self.game.screen.blit(scaled_plot_icon, icon_rect)
+                if is_clicking:
+                    bright_overlay = self.get_reusable_surface(icon_size, icon_size)
+                    bright_overlay.fill((100, 100, 100, 100))
+                    scaled_plot_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                    self.return_surface_to_pool(bright_overlay)
+                elif is_hovering:
+                    light_overlay = self.get_reusable_surface(icon_size, icon_size)
+                    light_overlay.fill((50, 50, 50, 50))
+                    scaled_plot_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                    self.return_surface_to_pool(light_overlay)
+
+                icon_rect = scaled_plot_icon.get_rect(center=(x, y))
+                self.game.screen.blit(scaled_plot_icon, icon_rect)
+            else:
+                # FPS OPT: Blit directly from cache — no .copy() needed
+                icon_rect = cached_icon.get_rect(center=(x, y))
+                self.game.screen.blit(cached_icon, icon_rect)
 
         # Draw layered border
         player_color = self.game.game_state.get_player_color(owner)
@@ -3381,38 +3219,36 @@ class MapRenderer:
                 # Draw PlotIcon.png if available
                 if 'Plot' in self.game.building_icons and self.game.building_icons['Plot']:
                     plot_icon = self.game.building_icons['Plot']
-
-                    # Scale the icon to fit within the plot circle (about 2x the circle radius)
                     icon_size = int(scaled_empty_plot_radius * 2)
+                    cached_icon = self.get_cached_scaled_plot('Plot', plot_icon, icon_size)
 
-                    # Get cached scaled plot icon (PERFORMANCE: cached to avoid expensive scaling)
-                    scaled_plot_icon = self.get_cached_scaled_plot('Plot', plot_icon, icon_size).copy()
+                    # FPS OPT: Only .copy() when effects need to modify the surface in-place
+                    needs_effects = (not can_build) or is_clicking or is_hovering
+                    if needs_effects:
+                        scaled_plot_icon = cached_icon.copy()
 
-                    # Apply grey tint if cannot build (not current player or build limit reached)
-                    if not can_build:
-                        # PERFORMANCE: Use reusable surface from pool
-                        grey_overlay = self.get_reusable_surface(icon_size, icon_size)
-                        grey_overlay.fill((128, 128, 128, 180))  # Grey overlay
-                        scaled_plot_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                        self.return_surface_to_pool(grey_overlay)
+                        if not can_build:
+                            grey_overlay = self.get_reusable_surface(icon_size, icon_size)
+                            grey_overlay.fill((128, 128, 128, 180))
+                            scaled_plot_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                            self.return_surface_to_pool(grey_overlay)
 
-                    # Apply hover/click brightness effects to icon
-                    if is_clicking:
-                        # PERFORMANCE: Use reusable surface from pool
-                        bright_overlay = self.get_reusable_surface(icon_size, icon_size)
-                        bright_overlay.fill((100, 100, 100, 100))  # White overlay with transparency
-                        scaled_plot_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                        self.return_surface_to_pool(bright_overlay)
-                    elif is_hovering:
-                        # PERFORMANCE: Use reusable surface from pool
-                        light_overlay = self.get_reusable_surface(icon_size, icon_size)
-                        light_overlay.fill((50, 50, 50, 50))  # Lighter white overlay
-                        scaled_plot_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                        self.return_surface_to_pool(light_overlay)
+                        if is_clicking:
+                            bright_overlay = self.get_reusable_surface(icon_size, icon_size)
+                            bright_overlay.fill((100, 100, 100, 100))
+                            scaled_plot_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                            self.return_surface_to_pool(bright_overlay)
+                        elif is_hovering:
+                            light_overlay = self.get_reusable_surface(icon_size, icon_size)
+                            light_overlay.fill((50, 50, 50, 50))
+                            scaled_plot_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                            self.return_surface_to_pool(light_overlay)
 
-                    # Center the icon on the plot
-                    icon_rect = scaled_plot_icon.get_rect(center=(x, y))
-                    self.game.screen.blit(scaled_plot_icon, icon_rect)
+                        icon_rect = scaled_plot_icon.get_rect(center=(x, y))
+                        self.game.screen.blit(scaled_plot_icon, icon_rect)
+                    else:
+                        icon_rect = cached_icon.get_rect(center=(x, y))
+                        self.game.screen.blit(cached_icon, icon_rect)
 
                 # Draw layered border AFTER icon: black - player color - black (thinner than army circles)
                 # Get player color for the border
@@ -3710,12 +3546,17 @@ class MapRenderer:
                         # Use PNG icon
                         icon_size = scaled_icon_click_radius * 2  # Full diameter
 
-                        # Get cached scaled unit icon (PERFORMANCE: cached to avoid expensive scaling)
-                        scaled_icon = self.get_cached_scaled_unit(unit_type, unit_icon, int(icon_size)).copy()
+                        # FPS OPT: Cache the cropped-to-circle result (avoids crop_to_circle + .copy() every frame)
+                        crop_cache_key = (unit_type, int(icon_size))
+                        if crop_cache_key not in self._cropped_circle_cache:
+                            from rendering.helpers import DrawingHelpers
+                            base = self.get_cached_scaled_unit(unit_type, unit_icon, int(icon_size))
+                            self._cropped_circle_cache[crop_cache_key] = DrawingHelpers.crop_to_circle(base.copy())
+                        cached_cropped = self._cropped_circle_cache[crop_cache_key]
 
-                        # Crop to circle to fit within circular border
-                        from rendering.helpers import DrawingHelpers
-                        scaled_icon = DrawingHelpers.crop_to_circle(scaled_icon)
+                        # Only .copy() when effects need to modify in-place
+                        needs_effects = (not can_train) or is_clicking or is_hovering
+                        scaled_icon = cached_cropped.copy() if needs_effects else cached_cropped
 
                         # Apply red tint if cannot train (only affects RGB, not alpha)
                         if not can_train:

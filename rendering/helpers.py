@@ -240,7 +240,15 @@ class DrawingHelpers:
             else:  # "small" or default
                 font = self.small_font
 
-            surf = font.render(text, True, color)
+            # FPS OPT: Cache tooltip text renders (avoids font.render() every frame)
+            cache_key = (text, id(font), color)
+            surf = self.text_cache.get(cache_key)
+            if surf is None:
+                if len(self.text_cache) >= self._text_cache_max_size:
+                    oldest_key = next(iter(self.text_cache))
+                    del self.text_cache[oldest_key]
+                surf = font.render(text, True, color)
+                self.text_cache[cache_key] = surf
             rendered_lines.append(surf)
             max_line_width = max(max_line_width, surf.get_width())
             total_height += surf.get_height() + line_spacing
@@ -348,8 +356,15 @@ class DrawingHelpers:
         # Draw border
         pygame.draw.rect(self.screen, border_color, rect, border_width)
         
-        # Draw centered letter
-        letter_surf = self.large_font.render(letter, True, letter_color)
+        # FPS OPT: Cache letter render (avoids font.render() every frame)
+        cache_key = (letter, id(self.large_font), letter_color)
+        letter_surf = self.text_cache.get(cache_key)
+        if letter_surf is None:
+            if len(self.text_cache) >= self._text_cache_max_size:
+                oldest_key = next(iter(self.text_cache))
+                del self.text_cache[oldest_key]
+            letter_surf = self.large_font.render(letter, True, letter_color)
+            self.text_cache[cache_key] = letter_surf
         letter_rect = letter_surf.get_rect(center=rect.center)
         self.screen.blit(letter_surf, letter_rect)
     
@@ -377,8 +392,16 @@ class DrawingHelpers:
         # Draw border circle
         pygame.draw.circle(self.screen, border_color, pos, radius, 2)
         
-        # Draw centered text
-        text_surf = self.small_font.render(str(text), True, text_color)
+        # FPS OPT: Cache badge text render (avoids font.render() every frame)
+        text_str = str(text)
+        cache_key = (text_str, id(self.small_font), text_color)
+        text_surf = self.text_cache.get(cache_key)
+        if text_surf is None:
+            if len(self.text_cache) >= self._text_cache_max_size:
+                oldest_key = next(iter(self.text_cache))
+                del self.text_cache[oldest_key]
+            text_surf = self.small_font.render(text_str, True, text_color)
+            self.text_cache[cache_key] = text_surf
         text_rect = text_surf.get_rect(center=pos)
         self.screen.blit(text_surf, text_rect)
     

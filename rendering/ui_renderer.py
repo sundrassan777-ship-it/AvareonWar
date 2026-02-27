@@ -274,12 +274,12 @@ class UIRenderer:
         # Draw channel indicator with color coding
         channel_text = "[TEAM]" if current_channel == 'team' else "[ALL]"
         channel_color = (100, 200, 100) if current_channel == 'team' else (100, 200, 255)
-        channel_surface = self.game.small_font.render(channel_text, True, channel_color)
+        channel_surface = self.get_cached_text(channel_text, self.game.small_font, channel_color, "small")
         self.game.screen.blit(channel_surface, (input_x + 10, input_y + 12))
 
         # Draw current text being typed (after channel indicator)
         text_x = input_x + 10 + channel_surface.get_width() + 10
-        chat_text = self.game.small_font.render(self.game.chat_input_text, True, WHITE)
+        chat_text = self.get_cached_text(self.game.chat_input_text, self.game.small_font, WHITE, "small")
         self.game.screen.blit(chat_text, (text_x, input_y + 12))
 
         # Draw blinking cursor
@@ -291,7 +291,7 @@ class UIRenderer:
                            (cursor_x, input_y + input_height - 10), 2)
 
         # Draw instructions with TAB toggle hint
-        instructions = self.game.small_font.render("TAB: channel | ENTER: send | ESC: cancel", True, (150, 150, 150))
+        instructions = self.get_cached_text("TAB: channel | ENTER: send | ESC: cancel", self.game.small_font, (150, 150, 150), "small")
         inst_rect = instructions.get_rect(right=input_x + input_width - 10, centery=input_y + input_height // 2)
         self.game.screen.blit(instructions, inst_rect)
     
@@ -394,7 +394,7 @@ class UIRenderer:
                 pygame.draw.rect(self.game.screen, phase_color, phase_rect, 2, border_radius=5)
 
                 # Draw phase text (centered) - Phase 2: Use SemiBold for phase indicator
-                phase_text_surface = self.game.small_font_bold.render(phase_text, True, phase_color)
+                phase_text_surface = self.get_cached_text(phase_text, self.game.small_font_bold, phase_color, "small_bold")
                 phase_text_rect = phase_text_surface.get_rect(center=phase_rect.center)
                 self.game.screen.blit(phase_text_surface, phase_text_rect)
 
@@ -567,8 +567,8 @@ class UIRenderer:
                 icon_y = slots_y + (slot_height - icon_height) // 2
                 self.game.screen.blit(scaled_icon, (icon_x, icon_y))
 
-                # Render value text (right side with more padding to prevent leaking)
-                text_surface = self.game.small_font.render(value_text, True, text_color)
+                # FPS OPT: Cache resource slot text (changes only on turn change)
+                text_surface = self.get_cached_text(value_text, self.game.small_font, text_color, "small")
                 text_rect = text_surface.get_rect(
                     midright=(slot_x + slot_width - right_padding, slots_y + slot_height // 2)
                 )
@@ -582,7 +582,7 @@ class UIRenderer:
         # FPS counter (top-right corner, if enabled)
         if self.game.show_fps:
             fps = int(self.game.clock.get_fps())
-            fps_text = self.game.small_font.render(f"FPS: {fps}", True, BROWN_TEXT_SECONDARY)
+            fps_text = self.get_cached_text(f"FPS: {fps}", self.game.small_font, BROWN_TEXT_SECONDARY, "small")
             fps_rect = fps_text.get_rect(topright=(self.WINDOW_WIDTH - 10, 2))
             self.game.screen.blit(fps_text, fps_rect)
 
@@ -627,7 +627,7 @@ class UIRenderer:
         pygame.draw.circle(self.game.screen, (0, 0, 0), (indicator_x, indicator_y), 6, 1)  # Border
 
         # Draw status text (latency or status)
-        text_surface = self.game.small_font.render(status_text, True, BROWN_TEXT_PRIMARY)
+        text_surface = self.get_cached_text(status_text, self.game.small_font, BROWN_TEXT_PRIMARY, "small")
         text_rect = text_surface.get_rect(midright=(indicator_x - 12, indicator_y))
         self.game.screen.blit(text_surface, text_rect)
 
@@ -1282,18 +1282,18 @@ class UIRenderer:
 
             # Truncate if too long
             max_width = sidebar_width - 100
-            movement_surface = self.game.small_font.render(movement_text, True, movement_color)
+            movement_surface = self.get_cached_text(movement_text, self.game.small_font, movement_color, "small")
             if movement_surface.get_width() > max_width:
                 # Try shortening territory names
                 from_short = order.from_territory[:10] + "..." if len(order.from_territory) > 10 else order.from_territory
                 to_short = order.to_territory[:10] + "..." if len(order.to_territory) > 10 else order.to_territory
                 movement_text = f"{from_short} -> {to_short}"
-                movement_surface = self.game.small_font.render(movement_text, True, movement_color)
+                movement_surface = self.get_cached_text(movement_text, self.game.small_font, movement_color, "small")
 
             self.game.screen.blit(movement_surface, (sidebar_x + 40, order_y + 8))
 
             # Army count below
-            count_text = self.game.small_font.render(f"Units: {order.army_count}", True, (200, 200, 200))
+            count_text = self.get_cached_text(f"Units: {order.army_count}", self.game.small_font, (200, 200, 200), "small")
             self.game.screen.blit(count_text, (sidebar_x + 40, order_y + 28))
 
             # Cancel button (X) - ASCII character for better font compatibility
@@ -1478,8 +1478,8 @@ class UIRenderer:
                 for word in words:
                     test_line = line + " " + word if line else word
                     if len(test_line) > max_chars:
-                        # Draw current line
-                        msg_text = self.game.small_font.render(line, True, msg_color)
+                        # FPS OPT: Cache action log text renders
+                        msg_text = self.get_cached_text(line, self.game.small_font, msg_color, "small")
                         self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
                         msg_y += 18
                         line = word
@@ -1492,12 +1492,12 @@ class UIRenderer:
 
                 # Draw last line
                 if line and msg_y + 20 < sidebar_y + sidebar_height - 40:
-                    msg_text = self.game.small_font.render(line, True, msg_color)
+                    msg_text = self.get_cached_text(line, self.game.small_font, msg_color, "small")
                     self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
                     msg_y += 18
             else:
                 # Short message - draw directly
-                msg_text = self.game.small_font.render(message, True, msg_color)
+                msg_text = self.get_cached_text(message, self.game.small_font, msg_color, "small")
                 self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
                 msg_y += 18
 
@@ -1530,11 +1530,11 @@ class UIRenderer:
             
             # Draw position text
             position_text = f"{actual_end_index}/{total_messages}"
-            pos_text_surface = self.game.small_font.render(position_text, True, (120, 120, 120))
-            pos_rect = pos_text_surface.get_rect(right=sidebar_x + sidebar_width - 15, 
+            pos_text_surface = self.get_cached_text(position_text, self.game.small_font, (120, 120, 120), "small")
+            pos_rect = pos_text_surface.get_rect(right=sidebar_x + sidebar_width - 15,
                                                   bottom=sidebar_y + sidebar_height - 5)
             self.game.screen.blit(pos_text_surface, pos_rect)
-    
+
     def _draw_chat_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """
         Draw Chat tab content with message history and scrolling.
@@ -1618,22 +1618,22 @@ class UIRenderer:
             player_color = self.game.game_state.get_player_color(player_id)
             player_name = self.game.game_state.get_player_name(player_id)
 
-            # Draw timestamp in gray
-            time_text = self.game.small_font.render(f"[{timestamp}]", True, (150, 150, 150))
+            # FPS OPT: Cache all chat text renders
+            time_text = self.get_cached_text(f"[{timestamp}]", self.game.small_font, (150, 150, 150), "small")
             self.game.screen.blit(time_text, (sidebar_x + 30, msg_y))
             name_x = sidebar_x + 30 + time_text.get_width() + 5
 
             # Draw [TEAM] indicator for team messages (green color)
             if channel == 'team':
-                team_text = self.game.small_font.render("[TEAM]", True, (100, 200, 100))
+                team_text = self.get_cached_text("[TEAM]", self.game.small_font, (100, 200, 100), "small")
                 self.game.screen.blit(team_text, (name_x, msg_y))
                 name_x += team_text.get_width() + 5
 
             # Draw player name in their color
-            name_text = self.game.small_font.render(player_name + ":", True, player_color)
+            name_text = self.get_cached_text(player_name + ":", self.game.small_font, player_color, "small")
             self.game.screen.blit(name_text, (name_x, msg_y))
             msg_y += 18
-            
+
             # Draw message (word wrapped)
             max_chars = UIConstants.MESSAGE_MAX_CHARS
             if len(message) > max_chars:
@@ -1642,26 +1642,25 @@ class UIRenderer:
                 for word in words:
                     test_line = line + " " + word if line else word
                     if len(test_line) > max_chars:
-                        # Draw current line
-                        msg_text = self.game.small_font.render(line, True, (200, 200, 200))
+                        msg_text = self.get_cached_text(line, self.game.small_font, (200, 200, 200), "small")
                         self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
                         msg_y += 16
                         line = word
-                        
+
                         # Check space again
                         if msg_y + 30 > sidebar_y + sidebar_height - 40:
                             break
                     else:
                         line = test_line
-                
+
                 # Draw last line
                 if line and msg_y + 20 < sidebar_y + sidebar_height - 40:
-                    msg_text = self.game.small_font.render(line, True, (200, 200, 200))
+                    msg_text = self.get_cached_text(line, self.game.small_font, (200, 200, 200), "small")
                     self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
                     msg_y += 16
             else:
                 # Short message - draw directly
-                msg_text = self.game.small_font.render(message, True, (200, 200, 200))
+                msg_text = self.get_cached_text(message, self.game.small_font, (200, 200, 200), "small")
                 self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
                 msg_y += 16
             
@@ -1694,7 +1693,7 @@ class UIRenderer:
             
             # Draw position text
             position_text = f"{actual_end_index}/{total_messages}"
-            pos_text_surface = self.game.small_font.render(position_text, True, (120, 120, 120))
+            pos_text_surface = self.get_cached_text(position_text, self.game.small_font, (120, 120, 120), "small")
             pos_rect = pos_text_surface.get_rect(right=sidebar_x + sidebar_width - 15,
                                                   bottom=sidebar_y + sidebar_height - 5)
             self.game.screen.blit(pos_text_surface, pos_rect)
@@ -1726,7 +1725,7 @@ class UIRenderer:
         # Hero limit display (centered below header)
         current_hero_count = len(self.game.game_state.hero_ownership[current_player])
         hero_limit = self.game.game_state.player_hero_limit[current_player]
-        limit_text = self.game.small_font.render(f"Hero Limit: {current_hero_count}/{hero_limit}", True, (200, 200, 100))
+        limit_text = self.get_cached_text(f"Hero Limit: {current_hero_count}/{hero_limit}", self.game.small_font, (200, 200, 100), "small")
         limit_rect = limit_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y + 25)
         self.game.screen.blit(limit_text, limit_rect)
 
@@ -1787,12 +1786,12 @@ class UIRenderer:
                 self.game.hero_selection_buttons[hero_type] = hero_rect
 
                 # Hero name
-                name_text = self.game.font.render(hero_type, True, (200, 200, 100))
+                name_text = self.get_cached_text(hero_type, self.game.font, (200, 200, 100), "font")
                 self.game.screen.blit(name_text, (sidebar_x + 40, hero_y + 5))
 
                 # Keep location
                 location = f"Keep: {hero_data['keep_territory']}"
-                location_text = self.game.small_font.render(location, True, (150, 150, 150))
+                location_text = self.get_cached_text(location, self.game.small_font, (150, 150, 150), "small")
                 self.game.screen.blit(location_text, (sidebar_x + 40, hero_y + 28))
 
                 # Abilities: Coming Soon text removed per user request
@@ -1820,17 +1819,17 @@ class UIRenderer:
                     pygame.draw.rect(self.game.screen, (200, 150, 100), training_rect, 2, border_radius=5)
 
                     # Hero name
-                    name_text = self.game.font.render(hero_type, True, (200, 150, 100))
+                    name_text = self.get_cached_text(hero_type, self.game.font, (200, 150, 100), "font")
                     self.game.screen.blit(name_text, (sidebar_x + 40, hero_y + 5))
 
                     # Progress
                     progress = f"Training: {turns_remaining} turns remaining"
-                    progress_text = self.game.small_font.render(progress, True, (150, 150, 150))
+                    progress_text = self.get_cached_text(progress, self.game.small_font, (150, 150, 150), "small")
                     self.game.screen.blit(progress_text, (sidebar_x + 40, hero_y + 28))
 
                     # Location
                     location = f"Keep: {territory}"
-                    location_text = self.game.small_font.render(location, True, (120, 120, 120))
+                    location_text = self.get_cached_text(location, self.game.small_font, (120, 120, 120), "small")
                     self.game.screen.blit(location_text, (sidebar_x + 40, hero_y + 45))
 
                     hero_y += 70
@@ -2031,62 +2030,69 @@ class UIRenderer:
                             icon = pygame.image.load(icon_path)
                             self.tech_icons[cache_key] = pygame.transform.scale(icon, (button_width, button_height))
 
-                        icon = self.tech_icons[cache_key].copy()  # Make a copy for effects
-
-                        # Apply color tinting based on state
+                        # FPS OPT: Determine tint state, cache tinted icon variants
+                        # Only .copy() when hover/click effects need to modify the surface in-place
                         if is_researched:
-                            # Green tint for researched
                             tint_color = (60, 120, 60)
                             blend_amount = 128
                         elif is_researching:
-                            # Yellow tint for researching
                             tint_color = (200, 200, 100)
                             blend_amount = 100
                         elif is_available and not requirements_met:
-                            # Red tint for available but requirements not met (same as locked)
                             tint_color = (200, 100, 100)
                             blend_amount = 120
                         elif is_available and not can_afford:
-                            # Red tint for available but insufficient resources
                             tint_color = (200, 100, 100)
                             blend_amount = 120
                         elif not is_available:
-                            # Red tint for locked (not available)
                             tint_color = (200, 100, 100)
                             blend_amount = 120
-                        elif is_available and requirements_met and can_afford:
-                            # No tint for available upgrades with requirements met and sufficient resources
-                            tint_color = None
-                            blend_amount = 0
                         else:
-                            # No tint (fallback)
                             tint_color = None
                             blend_amount = 0
 
-                        # Apply tint if needed
+                        # FPS OPT: Cache tinted icon variant (avoids .copy() + tint every frame)
+                        if not hasattr(self, '_tech_tinted_cache'):
+                            self._tech_tinted_cache = {}
+                        tint_cache_key = (cache_key, tint_color, blend_amount)
+
                         if tint_color:
-                            tint_surface = pygame.Surface((button_width, button_height))
-                            tint_surface.fill(tint_color)
-                            tint_surface.set_alpha(blend_amount)
-                            icon.blit(tint_surface, (0, 0), special_flags=pygame.BLEND_MULT)
+                            if tint_cache_key not in self._tech_tinted_cache:
+                                tinted = self.tech_icons[cache_key].copy()
+                                # FPS OPT: Cache tint surface by (size, color, alpha)
+                                if not hasattr(self, '_tech_tint_surfaces'):
+                                    self._tech_tint_surfaces = {}
+                                ts_key = (button_width, button_height, tint_color, blend_amount)
+                                if ts_key not in self._tech_tint_surfaces:
+                                    ts = pygame.Surface((button_width, button_height))
+                                    ts.fill(tint_color)
+                                    ts.set_alpha(blend_amount)
+                                    self._tech_tint_surfaces[ts_key] = ts
+                                tinted.blit(self._tech_tint_surfaces[ts_key], (0, 0), special_flags=pygame.BLEND_MULT)
+                                self._tech_tinted_cache[tint_cache_key] = tinted
+                            base_icon = self._tech_tinted_cache[tint_cache_key]
+                        else:
+                            base_icon = self.tech_icons[cache_key]
 
-                        # Apply hover effect (+20% brightness, consistent with standard buttons)
-                        if is_hovering:
-                            # Lighten by adding 20% brightness
-                            brighten = pygame.Surface((button_width, button_height))
-                            brighten.fill((51, 51, 51))  # 255 * 0.2 = 51 for additive
-                            brighten.set_alpha(255)
-                            icon.blit(brighten, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-                        # Apply click flash (+40% brightness, consistent with standard buttons)
-                        if is_clicking:
-                            flash = pygame.Surface((button_width, button_height))
-                            flash.fill((102, 102, 102))  # 255 * 0.4 = 102 for additive
-                            flash.set_alpha(255)
-                            icon.blit(flash, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-                        # Draw the icon (fills button exactly, no centering needed)
-                        self.game.screen.blit(icon, (button_x, button_y))
+                        # Only .copy() for hover/click effects (rare — 1 button at a time)
+                        if is_hovering or is_clicking:
+                            icon = base_icon.copy()
+                            if is_hovering:
+                                if not hasattr(self, '_tech_brighten_surface') or self._tech_brighten_size != (button_width, button_height):
+                                    self._tech_brighten_surface = pygame.Surface((button_width, button_height))
+                                    self._tech_brighten_surface.fill((51, 51, 51))
+                                    self._tech_brighten_size = (button_width, button_height)
+                                icon.blit(self._tech_brighten_surface, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                            if is_clicking:
+                                if not hasattr(self, '_tech_flash_surface') or self._tech_flash_size != (button_width, button_height):
+                                    self._tech_flash_surface = pygame.Surface((button_width, button_height))
+                                    self._tech_flash_surface.fill((102, 102, 102))
+                                    self._tech_flash_size = (button_width, button_height)
+                                icon.blit(self._tech_flash_surface, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                            self.game.screen.blit(icon, (button_x, button_y))
+                        else:
+                            # FPS OPT: Blit directly from cache — no .copy() needed
+                            self.game.screen.blit(base_icon, (button_x, button_y))
 
                         # PERFORMANCE OPTIMIZATION: Cache tech border scaling (21 buttons = 21× smoothscale without cache)
                         # This was causing ~30% FPS drop when technology panel open
@@ -2099,7 +2105,7 @@ class UIRenderer:
                 # Draw turns remaining if researching
                 if is_researching:
                     turns_text = f"{turns_remaining} turn{'s' if turns_remaining != 1 else ''}"
-                    turns_surface = self.game.small_font.render(turns_text, True, (255, 255, 100))
+                    turns_surface = self.get_cached_text(turns_text, self.game.small_font, (255, 255, 100), "small")
                     turns_rect = turns_surface.get_rect(centerx=button_x + button_width // 2,
                                                        y=button_y + button_height - 18)
                     # Draw semi-transparent background for better visibility
@@ -2124,7 +2130,7 @@ class UIRenderer:
                         else:
                             text_color = (180, 120, 120)
 
-                        text_surface = self.game.small_font.render(line, True, text_color)
+                        text_surface = self.get_cached_text(line, self.game.small_font, text_color, "small")
                         text_rect = text_surface.get_rect(centerx=button_x + button_width // 2, y=text_y)
                         self.game.screen.blit(text_surface, text_rect)
                         text_y += 14
@@ -2359,7 +2365,7 @@ class UIRenderer:
         """Draw quest log content for the Quests tab (used by tutorial missions)."""
         # Title
         title_y = content_start_y
-        title_text = self.game.font.render("Quests", True, WHITE)
+        title_text = self.get_cached_text("Quests", self.game.font, WHITE, "font")
         title_rect = title_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=title_y)
         self.game.screen.blit(title_text, title_rect)
 
@@ -2410,7 +2416,7 @@ class UIRenderer:
                 lines.append(current_line)
 
             for line in lines:
-                text_surface = self.game.small_font.render(line, True, color)
+                text_surface = self.get_cached_text(line, self.game.small_font, color, "small")
                 self.game.screen.blit(text_surface, (padding_x, y))
                 y += line_height
             y += 4  # Extra spacing between quests
@@ -2419,7 +2425,7 @@ class UIRenderer:
         """Draw placeholder content for tabs that aren't implemented yet."""
         # Title
         title_y = content_start_y
-        title_text = self.game.font.render(tab_name, True, WHITE)
+        title_text = self.get_cached_text(tab_name, self.game.font, WHITE, "font")
         title_rect = title_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=title_y)
         self.game.screen.blit(title_text, title_rect)
         
