@@ -12818,7 +12818,9 @@ if __name__ == "__main__":
                         # Create game with campaign map, load assets via loading screen
                         game = Game(existing_screen=screen, campaign_map=mission_info['map'])
                         screen = game.screen
-                        loading = LoadingScreen(screen, game, mission_info['config'])
+                        # Pass mission_id so loading screen shows mission-specific tips
+                        loading = LoadingScreen(screen, game, mission_info['config'],
+                                                mission_id=launched_mission)
                         loading.run()
 
                         mission_obj = MissionClass(game.game_state, game)

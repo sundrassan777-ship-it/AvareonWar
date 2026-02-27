@@ -2,6 +2,15 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-27 - Loading Screen Gameplay Tips
+
+- **New feature:** Added gameplay tips to loading screen, displayed above the progress bar
+- Custom games: 50 general tips randomly selected (units, buildings, heroes, tech, economy)
+- Campaign missions: 3 mission-specific tips per mission (missions 1-4), randomly selected
+- "TIP:" label rendered in Cinzel-Bold gold; tip text in white, word-wrapped to bar width
+- `loading_screen.py`: added `CUSTOM_TIPS`, `CAMPAIGN_TIPS` data, `_select_tip()`, `_wrap_text()`, tip rendering
+- `main.py`: passes `mission_id` to `LoadingScreen` for campaign-specific tip selection
+
 ## 2026-02-27 - Deferred Asset Loading with Loading Screen
 
 - **New feature:** Added loading screen with progress bar between setup and gameplay
