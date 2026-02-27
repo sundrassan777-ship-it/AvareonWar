@@ -18,12 +18,14 @@
                            ↓
          ┌─────────────────────────────────────┐
          │        Game State                    │
-         │     (game_state.py)                  │
+         │     (game_state/ package)            │
          │  - Territory ownership               │
-         │  - Army positions                    │
-         │  - Building queues                   │
+         │  - Garrison system                   │
+         │  - Building management               │
          │  - Movement orders                   │
          │  - Battle resolution                 │
+         │  - Hero system                       │
+         │  - Economy and diplomacy             │
          └─────────────────────────────────────┘
                 ↓                    ↓
     ┌──────────────────┐   ┌──────────────────┐
@@ -41,8 +43,8 @@
 
 ### **1. Separation of Concerns**
 
-**Game Logic** (game_state.py):
-- All game rules and state
+**Game Logic** (game_state/ package):
+- All game rules and state (8 files, mixin decomposition)
 - No rendering code
 - No input handling
 - Pure logic and data
@@ -62,22 +64,25 @@
 ### **2. Single Responsibility**
 
 Each module has ONE clear purpose:
-- `game_state.py` - Game rules and state
+- `game_state/` - Game rules and state (mixin package)
 - `map_renderer.py` - Map visualization
 - `ui_renderer.py` - UI overlays
 - `mouse_handler.py` - Mouse input routing
-- `camera.py` - Viewport management
+- `camera_handler.py` - Viewport management
 
 ### **3. Data-Driven Design**
 
-Game data in JSON files:
+Game data in JSON files (project root directory):
 - `territory_polygons.json` - Map geometry
 - `economic_data.json` - Territory economies
 - `plots.json` - Building plot locations
+- `territory_bonuses.json` - Territory bonus assignments
+- `campaign_data.json` - Campaign mission text data
+- `cutscene_data.json` - Cutscene definitions
 
 Benefits:
 - Easy to modify without code changes
-- Tools can edit data files
+- Tools can edit data files (Plot_Tool, Economic_Tool, Polygon_Tool, etc.)
 - Clear separation of data/logic
 
 ---
@@ -86,50 +91,79 @@ Benefits:
 
 ### **Tier 1: Core Systems**
 
-**main.py** (5,309 lines)
+**main.py** (~13,000 lines)
 - Game loop orchestration
 - Phase management
 - Window management
+- Event handling
 - Top-level coordination
 
-**game_state.py** (1,732 lines)
-- Territory ownership
-- Army management
-- Building queues
-- Order execution
-- Battle resolution
-- Economic calculations
+**game_state/** (~8,605 lines across 8 files)
+- `__init__.py` - GameState class, turn management, coordinates, chat, diplomacy
+- `data_definitions.py` - HERO_TYPES, BUILDING_TYPES, technologies, BONUS_TYPES
+- `garrison.py` - GarrisonMixin: multi-garrison system, legacy sync
+- `heroes.py` - HeroMixin: training, abilities, queries
+- `buildings.py` - BuildingMixin: construction, training, upgrades, tech
+- `economy.py` - EconomyMixin: income, costs, taxation, bonuses
+- `military.py` - MilitaryMixin: orders, battles, movement, casualties
+- `victory.py` - VictoryMixin: victory checks, elimination
 
 ### **Tier 2: Subsystems**
 
 **Rendering** (rendering/):
-- `map_renderer.py` (992 lines) - Map drawing
-- `ui_renderer.py` (1,236 lines) - UI overlays
-- `panel_renderer.py` - Panel coordination
+- `map_renderer.py` (~3,690 lines) - Map drawing, territory overlays, plots, arrows, battle markers
+- `ui_renderer.py` (~2,553 lines) - UI panels, buttons, info displays
+- `panel_renderer.py` - Panel layout coordination
 - `helpers.py` (755 lines) - Drawing utilities
 
-**Input** (input/, ui/):
+**Input** (input/):
 - `mouse_handler.py` (192 lines) - Click routing
 - `keyboard_handler.py` - Key handling
-- `camera.py` - Viewport control
+- `camera_handler.py` - Camera/viewport management
 
 **Configuration** (config/):
-- `constants.py` - Game constants
-- `colors.py` - Color definitions
+- `constants.py` - Game constants (window, colors, timing, camera)
+- `font_manager.py` - Font loading and management
 
 **UI Systems** (ui/):
 - `scaler.py` - Dynamic UI scaling
+- `effects/` - 9 effect modules (battle, sparkles, turn announcements, hero abilities, etc.)
+
+**AI System** (5 files):
+- `ai_player.py` - Main AI controller
+- `ai_strategy.py` - Strategic evaluation, threat detection
+- `ai_economy.py` - Building decisions, tech upgrades
+- `ai_military.py` - Combat, troop movement, tactics
+- `ai_hero.py` - Hero training and abilities
+
+**Networking** (network/):
+- `server.py` - TCP server for multiplayer (up to 4 players)
+- `client.py` - Network client
+- `protocol.py` - Message serialization
+- `message_queue.py` - Thread-safe queue
+- `upnp.py` - UPnP port forwarding and public IP detection
+
+**Simultaneous Mode** (simultaneous/):
+- `sim_state.py` - SimultaneousGameState wrapper
+- `sim_phase_manager.py` - Phase transitions
+- `sim_conflict_resolver.py` - Crossing armies, battles
+- `sim_alliance_handler.py` - Allied territory capture
+- `sim_ai.py` - AI adapter for simultaneous mode
 
 ### **Tier 3: Tools & Data**
 
-**Tools** (tools/):
-- Map editors
-- Data editors
-- Development utilities
+**Tools** (root + tools/):
+- Plot_Tool.py, Economic_Tool.py, Polygon_Tool.py, Adjacency_Tool.py - Map/data editors
+- Bonus_Tool.py, Campaign_Text_Tool.py, Cutscene_Tool.py - Content editors
+- tools/stress_test_generator.py - Late-game scenario generator
 
-**Data** (data/):
-- JSON data files
-- Map definitions
+**Data** (JSON files in project root):
+- `territory_polygons.json` - Map geometry
+- `economic_data.json` - Territory economy definitions
+- `plots.json` - Building plot locations
+- `territory_bonuses.json` - Territory bonus assignments
+- `campaign_data.json` - Campaign mission text
+- `cutscene_data.json` - Cutscene definitions
 
 ---
 
@@ -185,7 +219,7 @@ while running:
     
     # 4. Display
     pygame.display.flip()
-    clock.tick(60)  # 60 FPS
+    clock.tick(80)  # 80 FPS
 ```
 
 ### **Phase Management:**
@@ -300,32 +334,32 @@ def handle_click(pos):
 
 ### **Single Source of Truth:**
 
-All game state in `game_state.py`:
+All game state in the `game_state/` package:
 
 ```python
-class GameState:
-    # Territory state
-    territory_owners: dict[str, int]
-    territory_armies: dict[str, int]
-    
-    # Building state
-    completed_buildings: dict[str, dict]
-    building_queue: dict[str, list]
-    
-    # Order state
-    movement_orders: list[MovementOrder]
-    
-    # Economic state
-    player_gold: dict[int, int]
-    
-    # Phase state
-    current_phase: str
-    turn_number: int
+class GameState(GarrisonMixin, HeroMixin, BuildingMixin,
+                EconomyMixin, MilitaryMixin, VictoryMixin):
+    # Core state attributes (game_state/__init__.py)
+    self.territory_owners = {}     # {territory_name: player_index}
+    self.player_gold = [0] * N     # list indexed by player (NOT dict)
+    self.phase = 'setup'           # 'setup', 'playing', 'ended'
+    self.turn_phase = 'planning'   # 'planning', etc.
+    self.buildings = {}            # {territory: {plot_idx: building_type}}
+    self.under_construction = {}   # {territory: {plot_idx: (type, turns_left)}}
+    self.territory_garrisons = {}  # {territory: {garrison_id: {unit_type: count}}}
+    self.armies = {}               # legacy counter (use get_territory_total_armies() instead)
+    self.training_queue = {}       # {territory: {barracks_plot: [(type, turns_left)]}}
+    self.movement_orders = []      # [MovementOrder objects]
+    self.pending_battles = []      # [Battle objects]
+    self.turn_number = 1
 ```
+
+**Note:** The garrison system is authoritative for army counts. Always use
+`get_territory_total_armies(territory)` instead of reading `self.armies[]` directly.
 
 ### **State Modification Rules:**
 
-1. **Only game_state.py modifies state**
+1. **Only game_state/ methods modify state**
 2. **UI only reads state**
 3. **Input calls game methods**
 4. **Rendering never changes state**
@@ -356,13 +390,13 @@ def conquer_territory(self, territory, player):
    ↓
 3. User selects building type
    ↓
-4. Building added to queue
+4. Gold deducted, added to under_construction
    ↓
-5. Each turn: construction_turns -= 1
+5. Each turn: turns_left decremented
    ↓
-6. When construction_turns == 0:
+6. When turns_left == 0:
    ↓
-7. Move to completed_buildings
+7. Move to self.buildings (completed)
    ↓
 8. Start providing benefits
 ```
@@ -371,20 +405,15 @@ def conquer_territory(self, territory, player):
 
 ```python
 # Under construction:
-building_queue[territory] = [
-    {
-        'type': 'Farm',
-        'plot_id': 'A1',
-        'construction_turns': 2
-    }
-]
+self.under_construction[territory] = {
+    plot_index: (building_type, turns_left)
+    # e.g. {0: ('Farm', 1)}
+}
 
 # Completed:
-completed_buildings[territory] = {
-    'A1': {
-        'type': 'Farm',
-        'level': 1
-    }
+self.buildings[territory] = {
+    plot_index: building_type
+    # e.g. {0: 'Farm', 1: 'Mine'}
 }
 ```
 
@@ -397,7 +426,7 @@ completed_buildings[territory] = {
 ```
 1. Army moves into enemy territory
    ↓
-2. Battle scheduled (pending_battles)
+2. Battle scheduled (pending_battles list)
    ↓
 3. Battles phase begins
    ↓
@@ -408,14 +437,13 @@ completed_buildings[territory] = {
 6. User clicks "Resolve"
    ↓
 7. Calculate combat:
-   - Base strength
-   - Terrain modifiers
-   - Keep bonuses
-   - Composition bonuses
+   - Unit counter system (composition)
+   - Keep bonus (+2 effective armies)
+   - Veterancy bonus (+15% per level)
    ↓
 8. Determine winner
    ↓
-9. Apply casualties
+9. Apply casualties (veterancy-aware priority)
    ↓
 10. Update territory ownership
 ```
@@ -423,29 +451,24 @@ completed_buildings[territory] = {
 ### **Battle Calculation:**
 
 ```python
-def resolve_battle(attacker, defender, territory):
-    # Base strength
-    attacker_strength = calculate_strength(attacker)
-    defender_strength = calculate_strength(defender)
-    
-    # Terrain modifier
-    defender_strength *= get_terrain_modifier(territory)
-    
-    # Keep bonus
-    if has_keep(territory):
-        defender_strength *= 1.5
-    
-    # Determine winner
-    if attacker_strength > defender_strength:
-        winner = attacker
-    else:
-        winner = defender
-    
-    # Calculate casualties
-    casualties = calculate_casualties(...)
-    
-    return BattleResult(winner, casualties, ...)
+def resolve_battle(self, battle_index):
+    """Two-phase Keep battle or simple field battle.
+    Defined in game_state/military.py. Called by index into self.battles list."""
+    # Get battle participants from self.battles[battle_index]
+    # Calculate effective strength per unit type with counter system:
+    #   countered enemy type: 2.0x effectiveness
+    #   countering enemy type: 0.5x effectiveness
+    #   neutral matchup: 1.0x effectiveness
+    # Keep bonus: +2 effective armies for defender (flat, not multiplier)
+    # Veterancy: +15% effective strength per unit level
+    # Winner = higher total effective strength
+    # Casualties scaled by strength ratio
+    # Casualty priority: lowest level dies first, then countered > neutral > advantaged
 ```
+
+**Note:** `MovementOrder` is a simple data class (defined in `game_state/__init__.py`).
+It has NO `execute()` method. Order execution is handled by `execute_all_orders()` in
+`game_state/military.py`.
 
 ---
 
@@ -456,18 +479,19 @@ def resolve_battle(attacker, defender, territory):
 ```python
 def calculate_player_income(player):
     income = 0
-    
+
     for territory in owned_territories(player):
-        # Base income
+        # Base income (from economic_data.json, typically 5-20 per territory)
         income += get_base_income(territory)
-        
-        # Building bonuses
+
+        # Building bonuses (values from BUILDING_TYPES in data_definitions.py)
         for building in territory_buildings(territory):
             if building.type == 'Farm':
-                income += 2
+                income += 10       # Farm value = 10 gold
             elif building.type == 'Mine':
-                income += 3
-    
+                income += 15       # Mine value = 15 gold
+            # Square provides 1.5x multiplier on territory income
+
     return income
 ```
 
@@ -520,23 +544,35 @@ class UIConstants:
 
 ### **Development Tools:**
 
-**Plot Tool** (plot_tool.py):
+**Plot Tool** (Plot_Tool.py):
 - Visual plot placement
 - Saves to plots.json
 - Real-time preview
 
-**Economic Tool** (economic_tool.py):
+**Economic Tool** (Economic_Tool.py):
 - Edit territory incomes
 - Edit terrain types
 - Saves to economic_data.json
 
-**Polygon Tool** (polygon_tool.py):
+**Polygon Tool** (Polygon_Tool.py):
 - Edit territory shapes
 - Saves to territory_polygons.json
 
-**Adjacency Tool** (adjacency_tool.py):
+**Adjacency Tool** (Adjacency_Tool.py):
 - Edit territory connections
 - Graph visualization
+
+**Bonus Tool** (Bonus_Tool.py):
+- Edit territorial bonus assignments
+- Saves to territory_bonuses.json
+
+**Campaign Text Tool** (Campaign_Text_Tool.py):
+- WYSIWYG editor for campaign mission text
+- Saves to campaign_data.json
+
+**Cutscene Tool** (Cutscene_Tool.py):
+- Cutscene editor (camera rects, audio, subtitles)
+- Saves to cutscene_data.json
 
 ---
 
@@ -562,22 +598,26 @@ class UIConstants:
 3. Add plots to plots.json
 4. Done!
 
-### **Harder to Add:**
+### **Fully Implemented Systems:**
 
-**AI Players:**
-- Need decision-making system
-- Territory evaluation
-- Strategic planning
+**AI Players** (5 files, fully operational):
+- Multi-difficulty AI (Easy, Normal, Hard)
+- Strategic evaluation, threat detection, ally awareness
+- Economic decisions, tech upgrades, hero management
+- Adaptive military tactics
 
-**Multiplayer:**
-- Network code
-- State synchronization
-- Turn management
+**Multiplayer** (network/ package, fully operational):
+- TCP server supporting up to 4 players
+- State synchronization via message protocol
+- UPnP port forwarding for internet play
+- Simultaneous turn mode with conflict resolution
+
+### **Not Yet Implemented:**
 
 **Save/Load:**
 - Serialization system
 - File format design
-- Compatibility handling
+- Mid-game save/resume
 
 ---
 
@@ -585,7 +625,7 @@ class UIConstants:
 
 ### **1. Model-View-Controller (MVC)**
 
-- **Model:** game_state.py
+- **Model:** game_state/ package
 - **View:** rendering/
 - **Controller:** input/, main.py
 
@@ -606,13 +646,18 @@ if game_state.battle_popup_visible:
     draw_battle_popup()
 ```
 
-### **4. Command Pattern**
+### **4. Data-Driven Orders**
 
-Orders are commands:
+Orders are data objects, executed centrally:
 ```python
 class MovementOrder:
-    def execute(self):
-        # Execute the order
+    # Simple data class (no execute method)
+    # from_territory, to_territory, army_count, player, unit_ids
+    pass
+
+# Execution handled by game_state/military.py:
+def execute_all_orders(self):
+    # Processes all MovementOrder objects in self.movement_orders
 ```
 
 ### **5. State Pattern**
@@ -661,8 +706,9 @@ elif phase == 'battles':
 
 1. **Map caching** - Scaled map cached
 2. **Polygon caching** - Scaled polygons cached
-3. **60 FPS cap** - Prevents excessive CPU use
-4. **Dirty rectangles** - Could be added for efficiency
+3. **80 FPS cap** - Prevents excessive CPU use (FPS = 80 in config/constants.py)
+4. **Surface caching** - Icon, text, overlay, and font caches avoid per-frame allocation
+5. **BLEND_RGBA_MULT** - Efficient tint overlays instead of per-pixel operations
 
 ### **State Optimizations:**
 
@@ -702,5 +748,5 @@ elif phase == 'battles':
 
 ---
 
-**Last Updated:** January 5, 2026  
-**Architecture Version:** Phase 4 Complete
+**Last Updated:** February 27, 2026
+**Architecture Version:** Phase 7 Complete (mixin decomposition)

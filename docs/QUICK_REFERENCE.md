@@ -28,7 +28,7 @@
 **Players:** 1-8
 **Building Types:** 5
 **Unit Types:** 4
-**Starting Gold:** 50
+**Starting Gold:** 100
 **Turn Structure:** 4 phases
 
 ---
@@ -113,7 +113,7 @@ Total map income: 795g/turn (~199g/player with 4 players)
 | Pikeman | 30g | Cavalry | Swordsman |
 | Cavalry | 40g | Archer | Pikeman |
 
-Counter advantage: +50% effective strength. Training: 1 turn per unit.
+Counter advantage: 2.0× effective strength (countered: 0.5×). Training: 1 turn per unit.
 
 ---
 
@@ -137,7 +137,7 @@ Counter advantage: +50% effective strength. Training: 1 turn per unit.
 | Hero Keep destroy | +100 flat | When destroying Keep with Hero |
 | Building passive | +20/turn | Farms/Mines only |
 
-**Constants (game_state.py):**
+**Constants (game_state/__init__.py):**
 - `LEVEL_XP_PER_LEVEL = [30, 45, 50, 55, 60]`
 - `LEVEL_XP_CUMULATIVE = [30, 75, 125, 180, 240]`
 - `MAX_LEVEL = 5`
@@ -193,7 +193,7 @@ Next Turn
 | DEFAULT_PORT | 7777 | Server listen port |
 | MAX_CLIENTS | 3 | Host + 3 = 4 players |
 | CONNECTION_TIMEOUT | 15.0s | No response = disconnect |
-| RECONNECTION_TIMEOUT | 300.0s | 5 min window to reconnect |
+| RECONNECTION_TIMEOUT | 60.0s | Window to reconnect (network_config.py; server.py uses 300s) |
 | HEARTBEAT_INTERVAL | 5.0s | Ping frequency |
 
 **Player Slots:**
@@ -274,7 +274,7 @@ server.send_to_player(player_idx, msg)
 
 **Main code:**
 - main.py
-- game_state.py
+- game_state/ (package: __init__.py, military.py, economy.py, buildings.py, heroes.py, garrison.py, victory.py, data_definitions.py)
 - map_data.py
 
 **Rendering:**
@@ -284,29 +284,32 @@ server.send_to_player(player_idx, msg)
 
 **Input:**
 - input/mouse_handler.py
-- ui/keyboard_handler.py
+- input/keyboard_handler.py
 
-**Data:**
-- data/economic_data.json
-- data/territory_polygons.json
-- data/plots.json
+**Data (root directory):**
+- economic_data.json
+- territory_polygons.json
+- plots.json
 
-**Tools:**
-- tools/plot_tool.py
-- tools/economic_tool.py
-- tools/adjacency_tool.py
+**Tools (root directory, PascalCase):**
+- Plot_Tool.py
+- Economic_Tool.py
+- Adjacency_Tool.py
 
 ---
 
 ## 🎯 Common Methods
 
-**Game State:**
+**Game State (game_state/ package):**
 ```python
-game_state.get_territory_owner(territory)
-game_state.get_territory_armies(territory)
-game_state.calculate_player_income(player)
-game_state.create_movement_order(from, to, count)
-game_state.start_building(territory, plot, type)
+game_state.territory_owners[territory]       # Direct attribute access (no getter)
+game_state.get_territory_total_armies(territory)  # Use this, NOT self.armies[]
+game_state.calculate_player_income(player)    # economy.py
+game_state.calculate_territory_income(territory, player)  # economy.py
+game_state.create_movement_order(from_t, to_t, count, composition)  # military.py
+game_state.start_construction(territory, plot_idx, building_type)   # buildings.py
+game_state.calculate_army_effective_strength(composition, enemy_comp)  # military.py
+game_state.execute_all_orders()               # military.py
 ```
 
 **Main Game:**
@@ -314,7 +317,7 @@ game_state.start_building(territory, plot, type)
 game.handle_map_click(pos)
 game.handle_bottom_ui_click(pos)
 game.advance_to_orders_phase()
-game.resolve_battle(battle)
+game.resolve_battle(battle_index)
 ```
 
 ---
@@ -328,8 +331,8 @@ python main.py
 
 **Run tools:**
 ```bash
-python tools/plot_tool.py
-python tools/economic_tool.py
+python Plot_Tool.py
+python Economic_Tool.py
 ```
 
 **Clear cache:**
@@ -359,8 +362,8 @@ game_state.create_movement_order(from_terr, to_terr, army_count)
 
 **Get army composition:**
 ```python
-composition = game_state.get_army_composition(territory)
-# Returns: {'Infantry': 5, 'Cavalry': 2}
+composition = game_state.get_territory_composition(territory)
+# Returns: {'Swordsman': 5, 'Cavalry': 2, 'Archer': 0, 'Pikeman': 0}
 ```
 
 ---
@@ -444,12 +447,10 @@ EDGE_SCROLL_SPEED = 15
 
 - **README.md** - Project overview
 - **ARCHITECTURE.md** - System design
-- **MODULE_GUIDE.md** - Module details
+- **CODE_GUIDE.md** - Living knowledge base (module-specific guidance)
 - **GAME_MECHANICS.md** - Game rules
-- **CODE_ORGANIZATION.md** - File structure
 - **USER_STORIES_PROGRESS.md** - Feature status
 - **DEVELOPMENT_GUIDE.md** - How to develop
-- **REFACTORING_HISTORY.md** - What changed
 
 ---
 
@@ -458,13 +459,13 @@ EDGE_SCROLL_SPEED = 15
 For Claude Code, read these first:
 1. README.md
 2. ARCHITECTURE.md
-3. MODULE_GUIDE.md
+3. CODE_GUIDE.md
 4. GAME_MECHANICS.md
 
 For quick answers:
 1. This file (QUICK_REFERENCE.md)
-2. CODE_ORGANIZATION.md
+2. CODE_GUIDE.md
 
 ---
 
-**Last Updated:** February 1, 2026
+**Last Updated:** February 27, 2026

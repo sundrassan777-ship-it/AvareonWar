@@ -1147,7 +1147,7 @@ class Game:
         self.cached_scaled_map = None     # Cached scaled map image
         self.cached_zoom_level = None     # Zoom level of cached map
         
-        # Camera debug state (Phase 2D: temporary for testing)
+        # Camera debug state
         self.debug_edge_scroll = None
         self.debug_keyboard_scroll = None
 
@@ -2042,7 +2042,9 @@ class Game:
 
     def _handle_remote_order_remove(self, data: dict):
         """Remove order from remote player"""
-        # TODO: Implement this in next step
+        # BUG: Not implemented — ORDER_REMOVE messages are silently ignored.
+        # This can cause multiplayer desyncs when a player cancels a movement order.
+        # TODO: Implement proper order removal to match host state.
         pass
 
     def _send_action_to_remote(self, action_type: str, data: dict):

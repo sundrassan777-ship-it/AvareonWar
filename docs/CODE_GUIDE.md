@@ -9,7 +9,7 @@ This guide provides module-specific guidance on when and how to modify different
 ## Table of Contents
 
 1. [Logging System](#logging-system) - Structured logging
-2. [game_state.py](#game_statepy) - Core game logic
+2. [game_state package](#game_state-package) - Core game logic
 3. [main.py](#mainpy) - Main game loop and UI
 4. [AI System](#ai-system) - AI decision making
 5. [Network System](#network-system) - Multiplayer
@@ -68,15 +68,29 @@ setup_logging()  # console=INFO, file=DEBUG, rotation=5MB x 3
 
 ---
 
-## game_state.py
+## game_state package
 
 **What it does:** Core game logic - territories, armies, buildings, economy, battles
-**Size:** 7,425 lines
+**Size:** ~8,605 lines across 8 files
+**Location:** `game_state/` package (decomposed from former monolithic `game_state.py`)
 **Dependencies:** map_data.py (territory definitions)
 **Used by:** main.py (UI), ai_player.py (AI), network/protocol.py (sync)
 
-### Constants (Lines 168-200)
+**Package files:**
+| File | Purpose | Lines (approx) |
+|------|---------|----------------|
+| `game_state/__init__.py` | GameState class, UNIT_TYPES, turn mgmt, coordinates, chat, diplomacy | ~1,064 |
+| `game_state/data_definitions.py` | BUILDING_TYPES, HERO_TYPES, BONUS_TYPES, build_technologies() | ~683 |
+| `game_state/military.py` | Orders, battles, movement, casualties | ~3,162 |
+| `game_state/economy.py` | Income, costs, taxation, bonuses | ~390 |
+| `game_state/buildings.py` | Construction, training, upgrades, tech | ~1,070 |
+| `game_state/heroes.py` | Hero training, abilities, queries | ~1,467 |
+| `game_state/garrison.py` | Multi-garrison system, legacy sync | ~796 |
+| `game_state/victory.py` | Victory checks, elimination | ~284 |
 
+### Constants
+
+**UNIT_TYPES** — `game_state/__init__.py` (line ~204)
 ```python
 MAX_ARMIES_PER_TERRITORY = 15
 
@@ -86,7 +100,10 @@ UNIT_TYPES = {
     'Pikeman': {'cost': 30, 'counters': 'Cavalry', 'countered_by': 'Swordsman'},
     'Cavalry': {'cost': 40, 'counters': 'Archer', 'countered_by': 'Pikeman'}
 }
+```
 
+**BUILDING_TYPES** — `game_state/data_definitions.py` (line ~26)
+```python
 building_types = {
     'Farm': {'cost': 30, 'effect': 'income', 'value': 10, 'time': 1},
     'Mine': {'cost': 40, 'effect': 'income', 'value': 15, 'time': 1},
@@ -101,7 +118,7 @@ building_types = {
 #### ✅ Add New Unit Type
 
 **Steps:**
-1. Add entry to `UNIT_TYPES` dict (lines 171-200)
+1. Add entry to `UNIT_TYPES` dict in `game_state/__init__.py` (line ~204)
    ```python
    'YourUnit': {
        'cost': 35,
@@ -114,19 +131,19 @@ building_types = {
    ```
 2. Add icon to `assets/mapicons/YourUnit.png`
 3. Update counter chain to maintain balance (must be circular)
-4. Test training in `start_training()` method
-5. Test combat in `resolve_battle()` method
+4. Test training in `start_training()` method (`game_state/buildings.py`)
+5. Test combat in `resolve_battle()` method (`game_state/military.py`)
 6. Update `GAME_MECHANICS.md` and `QUICK_REFERENCE.md`
 
 **Methods to check:**
-- `start_training()` - Validates unit type, deducts cost
-- `resolve_battle()` - Uses counter relationships
-- `calculate_effectiveness()` - Computes unit matchups
+- `start_training()` — Validates unit type, deducts cost (`game_state/buildings.py`)
+- `resolve_battle()` — Uses counter relationships (`game_state/military.py`)
+- `calculate_army_effective_strength()` — Computes unit matchups (`game_state/military.py`)
 
 #### ✅ Add New Building Type
 
 **Steps:**
-1. Add entry to `building_types` dict (line 387)
+1. Add entry to `BUILDING_TYPES` dict in `game_state/data_definitions.py` (line ~26)
    ```python
    'YourBuilding': {
        'cost': 50,
@@ -137,15 +154,15 @@ building_types = {
    }
    ```
 2. Add icon to `assets/mapicons/YourBuilding.png`
-3. Update `calculate_income()` if `effect: 'income'` (line ~4000)
+3. Update `calculate_player_income()` / `calculate_territory_income()` if `effect: 'income'` (`game_state/economy.py`)
 4. Update `apply_combat_modifiers()` if affects combat
-5. Test building construction in `build_building()` method
+5. Test building construction in `start_construction()` method (`game_state/buildings.py`)
 6. Update `GAME_MECHANICS.md` and `QUICK_REFERENCE.md`
 
 **Methods to check:**
-- `build_building()` - Validates building, deducts cost, starts construction
-- `calculate_income()` - Processes income effects
-- `get_effective_building_cost()` - Applies tech discounts
+- `start_construction()` — Validates building, deducts cost, starts construction (`game_state/buildings.py`)
+- `calculate_player_income()` / `calculate_territory_income()` — Processes income effects (`game_state/economy.py`)
+- `get_effective_building_cost()` — Applies tech discounts
 
 #### ✅ Change Game Balance
 
@@ -171,42 +188,41 @@ building_types = {
 - Order validation uses `_get_effective_capacity()` which accounts for outgoing orders (armies leaving the destination)
 - Cancelling an outgoing order triggers `_revalidate_incoming_orders()` which auto-cancels excess incoming orders (last-added first) with red shake animation
 - Safety net: `_enforce_army_limits()` clamps all per-player garrisons after arrivals and battle resolution
-- Called from both `game_state.py` (sequential) and `sim_phase_manager.py` (simultaneous)
+- Called from both `game_state/military.py` (sequential) and `sim_phase_manager.py` (simultaneous)
 
 #### ✅ Modify Combat Mechanics
 
-**Battle resolution:** (Lines 2000-2100)
+**Battle resolution:** `game_state/military.py` (line ~2008)
 ```python
 def resolve_battle(self, battle):
     # Modify combat calculation here
 ```
 
 **Counter multipliers:**
-- Currently: Counter = 2×, Countered = 0.5×, Neutral = 1×
-- Change in `calculate_effectiveness()` method
+- Currently: Counter = 2.0x, Countered = 0.5x, Neutral = 1x
+- Change in `calculate_army_effective_strength()` method (`game_state/military.py`)
 - Update `GAME_MECHANICS.md` with new values
 
 **Keep defense bonus:**
 - Currently: +2 effective units for defender
-- Change in `resolve_battle()` where Keep bonus applied
-- Located around line 2050
+- Change in `resolve_battle()` where Keep bonus applied (`game_state/military.py`)
 
 **Casualty calculation:**
-- Modify casualty formula in `_apply_battle_casualties_simple()` (~line 3861)
+- Modify casualty formula in `_apply_battle_casualties_simple()` (`game_state/military.py`, line ~1657)
 - Formula: `casualties = loser_count * (loser_strength / winner_strength)`, min 1
-- Same formula applied in `_resolve_keep_battle()` Phase 1 (~line 3707, 3741)
+- Same formula applied in `_resolve_keep_battle()` Phase 1 (`game_state/military.py`, line ~1424)
 - Keep Phase 2 uses fixed numerical comparison (unchanged)
 
 #### ✅ Modify Veterancy/Experience System
 
-**Key constants** (lines 175-183):
+**Key constants** (in `game_state/__init__.py`):
 - `LEVEL_XP_PER_LEVEL`, `LEVEL_XP_CUMULATIVE`, `MAX_LEVEL`
 - `UNIT_LEVEL_STRENGTH_BONUS` (0.15 = +15% per level)
 - `BUILDING_LEVEL_INCOME_BONUS` (0.10 = +10% per level)
 - `BUILDING_XP_PER_TURN` (20), `BATTLE_XP_PER_KILL` (10), `HERO_KEEP_DESTROY_XP` (100)
 
 **Unit XP/Level data model:**
-- Every unit dict has `'xp': 0, 'level': 0` — ~25 creation points in game_state.py
+- Every unit dict has `'xp': 0, 'level': 0` — ~25 creation points across the game_state package
 - `award_unit_xp(unit, amount)` — adds XP and auto-levels up
 - `get_unit_avg_levels(units)` — returns `{unit_type: avg_level}` for strength calc
 
@@ -260,9 +276,9 @@ def resolve_battle(self, battle):
    }
    ```
 3. Implement effect in appropriate method:
-   - Cost reduction: `get_effective_cost()` (line ~1760)
-   - Income boost: `calculate_income()` (line ~4000)
-   - Combat bonus: `resolve_battle()` or strength calculations
+   - Cost reduction: `get_effective_cost()` (`game_state/economy.py`, line ~23)
+   - Income boost: `calculate_player_income()` / `calculate_territory_income()` (`game_state/economy.py`)
+   - Combat bonus: `resolve_battle()` or `calculate_army_effective_strength()` (`game_state/military.py`)
 4. Add tech icon to `assets/upgrades/`
 5. Test research cost and effect
 6. Update `GAME_MECHANICS.md`
@@ -285,7 +301,7 @@ def resolve_battle(self, battle):
 | Capital Assault | Capture enemy capitals | Allies can't eliminate each other |
 | Total Conquest | All 57 territories | Team counts aggregated |
 
-**Methods in game_state.py:**
+**Methods in `game_state/victory.py`:**
 - `check_victory()` - Main entry point, routes to specific check
 - `_check_domination_victory()` - Aggregates team territory counts
 - `_check_capital_assault_victory()` - Checks last team standing
@@ -333,21 +349,21 @@ if hasattr(self, 'player_teams') and self.player_teams:
 
 #### ✅ Modify Economy
 
-**Income calculation:** `calculate_income()` in `economy.py`
+**Income calculation:** `calculate_player_income()` / `calculate_territory_income()` in `game_state/economy.py`
 - Base income from `economic_data.json`
 - Building bonuses from `building_types`
 - Tech multipliers from research
 - Town Square 1.5× multiplier (compounds: multiple Squares use `*=`)
 - `calculate_player_territorial_bonuses()` is cached per (player, turn_number)
 
-**Taxation:** `apply_taxation()` in `economy.py`
+**Taxation:** `apply_taxation()` in `game_state/economy.py`
 - Applied at turn end BEFORE income collection
 - Deducts percentage of leftover gold from previous turn
 - 5 levels: 0% (no tax), 25%, 50%, 75%, 100%
 - Configured in game setup (not changeable mid-game)
 - `taxation_level` is clamped to valid `tax_rates` index range (bounds-safe)
 - Modify tax_rates list to change percentages: `[0.0, 0.25, 0.5, 0.75, 1.0]`
-- Called from `_advance_to_next_player()` (line ~3832)
+- Called from `_advance_to_next_player()` (`game_state/__init__.py`, line ~696)
 - Generates log message if tax > 0
 
 **Training queue format:** `{territory: {barracks_plot_index: [(unit_type, turns_remaining, cost_paid), ...]}}`
@@ -370,7 +386,9 @@ if hasattr(self, 'player_teams') and self.player_teams:
 
 **Files involved:**
 - `territory_bonuses.json` - Territory → bonus_type mappings (57 territories)
-- `game_state.py` - Bonus calculation and integration (lines 1803-1828, 1893-1919, 2111-2120, 4165-4170)
+- `game_state/data_definitions.py` - BONUS_TYPES definition (line ~347)
+- `game_state/economy.py` - Cost reduction and income bonus integration
+- `game_state/military.py` - Unit strength bonus integration
 - `map_data.py` - Bonus loading (line 136+)
 - `Bonus_Tool.py` - Assignment tool for configuring bonuses
 
@@ -397,27 +415,27 @@ BONUS_TYPES = {
 5. Restart game to load new bonuses
 
 **To add new bonus type:**
-1. Add entry to `BONUS_TYPES` in `game_state.py` (line ~1750)
+1. Add entry to `BONUS_TYPES` in `game_state/data_definitions.py` (line ~347)
 2. Add integration point:
-   - Cost bonus: `get_effective_cost()` or `get_effective_tech_cost()`
-   - Income bonus: `calculate_player_income()` (line ~4165)
-   - Strength bonus: `calculate_army_effective_strength()` (line ~2111)
+   - Cost bonus: `get_effective_cost()` or `get_effective_tech_cost()` (`game_state/economy.py`)
+   - Income bonus: `calculate_player_income()` (`game_state/economy.py`)
+   - Strength bonus: `calculate_army_effective_strength()` (`game_state/military.py`)
 3. Add color to `Bonus_Tool.py` BONUS_TYPES dict (line 41)
 4. Update `GAME_MECHANICS.md` and `QUICK_REFERENCE.md`
 
 **To change bonus values:**
-1. Modify `BONUS_TYPES['bonus_type']['value']` in `game_state.py`
+1. Modify `BONUS_TYPES['bonus_type']['value']` in `game_state/data_definitions.py`
 2. Values are percentages (3 = +3%, -5 = -5%)
 3. Test stacking behavior (multiple territories with same bonus)
 4. Update `QUICK_REFERENCE.md` with new values
 
 **Integration points:**
-- **Income:** `calculate_player_income()` (line 4165) - Applied after all territory income summed
-- **Building costs:** `get_effective_cost()` (line 1803) - Checked for 'building_cost' bonus
-- **Unit costs:** `get_effective_cost()` (line 1803) - Checked for 'unit_cost' bonus
-- **Hero costs:** `get_effective_cost()` (line 1803) - Checked for 'hero_cost' bonus
-- **Tech costs:** `get_effective_tech_cost()` (line 1893) - Separate method for research
-- **Unit strength:** `calculate_army_effective_strength()` (line 2111) - Per-unit-type bonuses
+- **Income:** `calculate_player_income()` (`game_state/economy.py`) - Applied after all territory income summed
+- **Building costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'building_cost' bonus
+- **Unit costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'unit_cost' bonus
+- **Hero costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'hero_cost' bonus
+- **Tech costs:** `get_effective_tech_cost()` (`game_state/economy.py`) - Separate method for research
+- **Unit strength:** `calculate_army_effective_strength()` (`game_state/military.py`) - Per-unit-type bonuses
 
 **How bonuses work:**
 - Bonuses recalculate automatically each turn based on current territory ownership
@@ -433,7 +451,7 @@ BONUS_TYPES = {
 - Territory info in bottom panel shows territory's bonus type
 - Tooltip format: "+6% Income", "-10% Technology Research Cost" (no territory counts)
 
-### When NOT to Modify
+### When NOT to Modify game_state
 
 ❌ **Rendering** → Use `rendering/map_renderer.py`, `rendering/ui_renderer.py`
 ❌ **Input handling** → Use `input/mouse_handler.py`, `input/keyboard_handler.py`
@@ -445,28 +463,29 @@ BONUS_TYPES = {
 
 ### Key Methods Reference
 
-| Method | Purpose | Line (approx) |
-|--------|---------|---------------|
-| `__init__()` | Initialize game state | 202 |
-| `build_building()` | Start building construction | 5000 |
-| `start_training()` | Queue unit for training | 5248 |
-| `create_movement_order()` | Create army movement | ~2500 |
-| `execute_orders()` | Process all movement orders | ~2800 |
-| `resolve_battle()` | Combat resolution | ~2000 |
-| `calculate_income()` | Generate player income | ~4000 |
-| `apply_taxation()` | Deduct taxation at turn end | 4082 |
-| `check_victory()` | Check win conditions | Search |
-| `get_effective_cost()` | Apply tech discounts | 1760 |
-| `calculate_effectiveness()` | Unit matchup calculation | 1937 |
+| Method | Purpose | File | Line (approx) |
+|--------|---------|------|---------------|
+| `__init__()` | Initialize game state | `game_state/__init__.py` | ~202 |
+| `start_construction()` | Start building construction | `game_state/buildings.py` | Search |
+| `start_training()` | Queue unit for training | `game_state/buildings.py` | Search |
+| `create_movement_order()` | Create army movement | `game_state/military.py` | Search |
+| `execute_all_orders()` | Process all movement orders | `game_state/military.py` | Search |
+| `resolve_battle()` | Combat resolution | `game_state/military.py` | ~2008 |
+| `calculate_player_income()` | Generate player income | `game_state/economy.py` | Search |
+| `calculate_territory_income()` | Territory-level income | `game_state/economy.py` | Search |
+| `apply_taxation()` | Deduct taxation at turn end | `game_state/economy.py` | ~261 |
+| `check_victory()` | Check win conditions | `game_state/victory.py` | Search |
+| `get_effective_cost()` | Apply tech discounts | `game_state/economy.py` | ~23 |
+| `calculate_army_effective_strength()` | Unit matchup calculation | `game_state/military.py` | Search |
 
 ---
 
 ## main.py
 
 **What it does:** Main game loop, UI rendering, event handling
-**Size:** 9,750 lines
+**Size:** ~13,000 lines
 **Dependencies:** pygame, game_state, rendering modules, input modules
-**Pure UI layer:** No game logic (delegates to game_state.py)
+**Pure UI layer:** No game logic (delegates to game_state package)
 
 ### When to Modify
 
@@ -597,7 +616,7 @@ WINDOW_HEIGHT = 1080
 
 ### When NOT to Modify
 
-❌ **Game rules/logic** → Use `game_state.py`
+❌ **Game rules/logic** → Use `game_state/` package
 ❌ **Territory data** → Use `map_data.py` or data files
 ❌ **AI decisions** → Use `ai_player.py` and AI modules
 ❌ **Network sync** → Use `network/` directory
@@ -619,10 +638,10 @@ WINDOW_HEIGHT = 1080
 ## AI System
 
 **Modules:** `ai_player.py`, `ai_strategy.py`, `ai_military.py`, `ai_economy.py`, `ai_hero.py`
-**Total:** 3,246 lines
+**Total:** ~4,508 lines
 **Difficulty levels:** Easy (0), Medium (1), Hard (2) - all fully implemented
 
-### ai_player.py (682 lines)
+### ai_player.py (~911 lines)
 
 **What it does:** Main AI controller with threading
 **Entry point:** Called by main game loop when AI turn
@@ -780,7 +799,7 @@ WINDOW_HEIGHT = 1080
 
 ### When NOT to Modify AI
 
-❌ **Change game rules** → Use `game_state.py`
+❌ **Change game rules** → Use `game_state/` package
 ❌ **Cheat/give AI advantages** → Difficulty should affect decision quality, not resources
 ❌ **Modify rendering** → AI doesn't touch rendering
 
@@ -807,7 +826,7 @@ python tests/test_2v2_simultaneous_40turn.py
 ## Network System
 
 **Modules:** `network/server.py`, `network/client.py`, `network/protocol.py`, `network/message_queue.py`, `network/lobby.py`, `network/territory_selector.py`, `network/multiplayer_setup.py`, `network/upnp.py`
-**Total:** ~2,700 lines
+**Total:** ~4,900+ lines
 **Status:** Full 2-4 player multiplayer with AI slots, reconnection support, UPnP internet play
 
 ### Architecture Overview
@@ -858,7 +877,7 @@ python tests/test_2v2_simultaneous_40turn.py
 
 **Integration points:** `server.setup_upnp()` starts it, `server.stop()` cleans up, `territory_selector._draw_host_ip()` polls status
 
-### network/server.py (~900 lines)
+### network/server.py (~1,000 lines)
 
 **What it does:** Multi-client TCP server for 2-4 player multiplayer
 
@@ -889,7 +908,7 @@ set_game_started(started)             # Enable reconnection mode
 - Modify in `network_config.py`:
   - `MAX_CLIENTS = 3` (host + 3 = 4 players)
   - `CONNECTION_TIMEOUT = 15.0` seconds
-  - `RECONNECTION_TIMEOUT = 300.0` seconds (5 min)
+  - `RECONNECTION_TIMEOUT = 60.0` seconds (note: `server.py` still has 300s hardcoded — discrepancy)
   - `HEARTBEAT_INTERVAL = 5.0` seconds
 
 ✅ **Change disconnect behavior:**
@@ -897,7 +916,7 @@ set_game_started(started)             # Enable reconnection mode
 - `game_started` flag determines reconnection vs removal
 - AI takeover triggered via `PLAYER_DISCONNECT` message
 
-### network/client.py (~450 lines)
+### network/client.py (~558 lines)
 
 **What it does:** Network client for joining multiplayer games
 
@@ -950,7 +969,7 @@ SIM_PLAYER_READY, SIM_ALL_READY, SIM_TIMER_UPDATE
 SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
 ```
 
-### network/lobby.py (~150 lines)
+### network/lobby.py (~514 lines)
 
 **What it does:** Lobby state management
 
@@ -958,7 +977,7 @@ SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
 - `LobbySlot` - Per-slot state (human/AI/empty, color, team, territory)
 - `LobbyState` - Full lobby state with serialization
 
-### network/territory_selector.py (~1,500 lines)
+### network/territory_selector.py (~2,053 lines)
 
 **What it does:** Multiplayer lobby UI with territory selection
 
@@ -1013,7 +1032,7 @@ if self.local_player_index != 0:
 
 ### When NOT to Modify Network
 
-❌ **Game logic** → Use `game_state.py` (network just syncs state)
+❌ **Game logic** → Use `game_state/` package (network just syncs state)
 ❌ **UI rendering** → Network doesn't handle rendering
 ❌ **AI decisions** → AI runs on host only, network syncs results
 
@@ -1048,7 +1067,7 @@ python main.py --multiplayer --join <host_ip>
 ## Simultaneous Mode
 
 **Modules:** `simultaneous/sim_state.py`, `simultaneous/sim_phase_manager.py`, `simultaneous/sim_conflict_resolver.py`, `simultaneous/sim_alliance_handler.py`, `simultaneous/sim_ai.py`
-**Total:** ~1,200 lines
+**Total:** ~3,425 lines
 **Status:** Complete, available in single-player and multiplayer
 
 The simultaneous mode is a separate turn system where all players plan their moves at the same time, then orders execute together.
@@ -1110,7 +1129,7 @@ The simultaneous mode is a separate turn system where all players plan their mov
 - Reset at start of each planning session to prevent selecting same unit twice
 
 ✅ **Change unit spawn behavior:**
-- `finish_training()` in `game_state.py` spawns units with 'moved' status
+- `finish_training()` in `game_state/buildings.py` spawns units with 'moved' status
 - Called AFTER `start_planning_phase()` in `sim_state.py` to preserve status
 - Haste ability exception handled in `finish_training()`
 
@@ -1211,10 +1230,10 @@ if self.sim_state is not None:
 ## Rendering System
 
 **Modules:** `rendering/map_renderer.py`, `rendering/ui_renderer.py`, `rendering/panel_renderer.py`, `rendering/helpers.py`
-**Total:** 2,983 lines
+**Total:** ~6,832 lines
 **Pure rendering:** No game logic (reads from game_state)
 
-### rendering/map_renderer.py (2,136 lines)
+### rendering/map_renderer.py (~3,690 lines)
 
 **What it does:** Territory overlays, plots, arrows, battle markers
 
@@ -1228,11 +1247,11 @@ if self.sim_state is not None:
 
 ✅ **Change territory colors:**
 - Modify color calculation in territory rendering
-- Update player colors in `game_state.py` (not here)
+- Update player colors in `game_state/__init__.py` (not here)
 - Capital territories are darkened by 30% (0.7× RGB) to distinguish them
 - Removed: Previously territories with moved units had dark overlay (50,50,50,40) - removed to avoid confusion with capital highlighting
 
-### rendering/ui_renderer.py (1,906 lines)
+### rendering/ui_renderer.py (~2,553 lines)
 
 **What it does:** UI panels, buttons, info displays
 
@@ -1264,7 +1283,7 @@ if self.sim_state is not None:
 - Security: Prevents players from naming themselves "Player 2" to see opponent messages
 - Message storage: Plain strings in `game_state.messages[]`
 
-### rendering/helpers.py (383 lines)
+### rendering/helpers.py (~527 lines)
 
 **What it does:** Drawing utilities (text, shapes, borders)
 
@@ -1302,7 +1321,7 @@ The codebase uses several performance patterns. Follow these when adding new ren
 
 ### When NOT to Modify Rendering
 
-❌ **Game logic** → Use `game_state.py`
+❌ **Game logic** → Use `game_state/` package
 ❌ **Input handling** → Use `input/` modules
 ❌ **AI decisions** → Use `ai_*` modules
 
@@ -1311,10 +1330,10 @@ The codebase uses several performance patterns. Follow these when adding new ren
 ## Input System
 
 **Modules:** `input/mouse_handler.py`, `input/keyboard_handler.py`, `input/camera_handler.py`
-**Total:** 650+ lines
+**Total:** ~1,165 lines
 **Delegator pattern:** Handles input, delegates actions to game_state
 
-### input/mouse_handler.py (211 lines)
+### input/mouse_handler.py (~236 lines)
 
 **What it does:** Mouse input delegation with click priority
 
@@ -1329,7 +1348,7 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - Modify priority order in `handle_click()`
 - Current: Popups → UI elements → Map territories
 
-### input/keyboard_handler.py (246 lines)
+### input/keyboard_handler.py (~530 lines)
 
 **What it does:** Keyboard shortcuts and commands
 
@@ -1356,7 +1375,7 @@ The codebase uses several performance patterns. Follow these when adding new ren
 ## map_data.py
 
 **What it does:** Territory definitions, adjacency graph, polygon geometry
-**Size:** 208 lines
+**Size:** ~357 lines
 **Data source:** Loads from JSON files
 
 ### When to Modify
@@ -1376,7 +1395,7 @@ The codebase uses several performance patterns. Follow these when adding new ren
 ### When NOT to Modify
 
 ❌ **Edit JSON files manually** → Use the editor tools
-❌ **Game logic** → Use `game_state.py`
+❌ **Game logic** → Use `game_state/` package
 
 ### Editor Tools
 
@@ -1413,16 +1432,16 @@ The codebase uses several performance patterns. Follow these when adding new ren
 ### "I want to..."
 
 **...add a new unit type**
-→ `game_state.py` lines 171-200, add to `UNIT_TYPES`
+→ `game_state/__init__.py` line ~204, add to `UNIT_TYPES`
 
 **...add a new building**
-→ `game_state.py` line 387, add to `building_types`
+→ `game_state/data_definitions.py` line ~26, add to `BUILDING_TYPES`
 
 **...change unit/building costs**
-→ `game_state.py` `UNIT_TYPES` and `building_types` dicts
+→ `game_state/__init__.py` `UNIT_TYPES` and `game_state/data_definitions.py` `BUILDING_TYPES` dicts
 
 **...modify combat mechanics**
-→ `game_state.py` `resolve_battle()` method (~line 2000)
+→ `game_state/military.py` `resolve_battle()` method (line ~2008)
 
 **...change AI behavior**
 → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py` depending on type
@@ -1453,7 +1472,7 @@ The codebase uses several performance patterns. Follow these when adding new ren
 → Use `Adjacency_Tool.py` or edit `map_data.py` `ADJACENCY`
 
 **...add research/tech**
-→ `game_state.py` technology tree, implement effect
+→ `game_state/data_definitions.py` technology tree, implement effect in appropriate submodule
 
 **...add logging to a module**
 → `from utils.logger import get_logger` then `logger = get_logger(__name__)`
@@ -1462,10 +1481,10 @@ The codebase uses several performance patterns. Follow these when adding new ren
 → `network/protocol.py`
 
 **...change victory conditions**
-→ `game_state.py` `check_victory()` method
+→ `game_state/victory.py` `check_victory()` method
 
 **...balance the economy**
-→ Adjust costs in `game_state.py` and `economic_data.json`
+→ Adjust costs in `game_state/economy.py`, `game_state/data_definitions.py`, and `economic_data.json`
 
 ---
 
@@ -1509,9 +1528,9 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' �
 ## Sound System
 
 **What it does:** Audio playback for UI interactions, game events, and hero voice lines
-**Size:** 281 lines (sound_manager.py) + 127 lines (global_sound.py)
+**Size:** 281 lines (sound_manager.py) + ~525 lines (global_sound.py)
 **Dependencies:** pygame.mixer
-**Used by:** main.py, game_state.py, all menu modules
+**Used by:** main.py, game_state package, all menu modules
 
 ### Files
 
@@ -1555,7 +1574,7 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' �
 
 **Files affected:**
 - `global_sound.py` - Add loading and helper functions
-- Game logic file (e.g., `game_state.py`) - Add trigger points
+- Game logic file (e.g., `game_state/buildings.py`) - Add trigger points
 
 #### ✅ Add New Hero Voice Lines
 
@@ -1584,7 +1603,7 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' �
 
 **Files affected:**
 - `global_sound.py` - Add hero loading and functions
-- `game_state.py` `finish_hero_training()` - Add recruitment trigger
+- `game_state/heroes.py` `finish_hero_training()` - Add recruitment trigger
 - `main.py` hero selection handler - Add selection trigger
 
 #### ✅ Add Event Sound (Research, Castle, etc.)
@@ -1601,7 +1620,7 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' �
        else:
            return sound_manager.play_specific('general', X)
    ```
-4. Add trigger in appropriate game logic method (e.g., `game_state.py`):
+4. Add trigger in appropriate game logic method (e.g., in the `game_state/` package):
    ```python
    # Play event sound for local player only
    should_play_sound = (owner == self.current_player)
@@ -1624,7 +1643,7 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' �
 - `play_castle_complete_sound()` - CastleCompleted.mp3 index
 
 **Sound Priority System:**
-Order of execution in `game_state.py` `end_turn()` determines priority:
+Order of execution in `game_state/__init__.py` `end_turn()` determines priority:
 ```python
 self.finish_research()         # Priority 1 (plays immediately)
 self.finish_castle_upgrades()  # Priority 2 (queues if research playing)
@@ -1685,7 +1704,7 @@ sound_manager.set_category_volume('general', 1.5)  # 1.5x master volume
 - Want specific playback order (priority system)
 - Prevent overlap of important sounds
 
-**Example from `game_state.py`:**
+**Example from the game_state package:**
 ```python
 # Check if a sound is currently playing
 is_sound_playing = any(
@@ -1779,7 +1798,7 @@ When making changes, test:
 
 **What it does:** Scripted single-player campaign missions with cinematic sequences, custom AI behavior, and quest tracking
 **Files:** `campaign_mission_*.py` (one per mission), `campaign_screen.py` (UI)
-**Dependencies:** `game_state.py`, `map_data.py` (territory filtering)
+**Dependencies:** `game_state/` package, `map_data.py` (territory filtering)
 **Used by:** `main.py` (launch handlers)
 
 ### Architecture
@@ -2089,13 +2108,13 @@ def is_action_allowed(self, action_type, **kwargs):
 
 **Architecture:** Modeled on `MissionScreen` in `campaign_screen.py` (same background, tab buttons, content panel).
 
-**Stat Tracking:** `game_state.py` has `player_stats` dict (init in `__init__`), incremented via `_track_stat()` at 13 hook points across training, combat, construction, income, and research methods. `get_end_game_stats()` packages stats with calculated `territories_owned`.
+**Stat Tracking:** The game_state package has `player_stats` dict (init in `__init__`), incremented via `_track_stat()` at 13 hook points across training, combat, construction, income, and research methods. `get_end_game_stats()` packages stats with calculated `territories_owned`.
 
 **Integration:** `main.py` calls `show_recap_if_ended(game)` after each `game.run()` at 5 sites (custom, 3 campaign missions, multiplayer).
 
 ### When to Modify
 
-- **Add new stat column**: Add to `TAB_COLUMNS` in `recap_screen.py`, add tracking hook in `game_state.py` (init in `player_stats` + increment via `_track_stat`)
+- **Add new stat column**: Add to `TAB_COLUMNS` in `recap_screen.py`, add tracking hook in `game_state/__init__.py` (init in `player_stats` + increment via `_track_stat`)
 - **Add new tab**: Add to `TABS`, `TAB_LABELS`, `TAB_COLUMNS` in `recap_screen.py`
 - **Change table layout**: Modify `_draw_table()` in `recap_screen.py`
 

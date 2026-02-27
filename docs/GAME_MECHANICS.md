@@ -44,7 +44,7 @@ Turn Structure:
 - **Pikeman** (30g) — Counters Cavalry, countered by Swordsman
 - **Cavalry** (40g) — Counters Archer, countered by Pikeman
 
-Counter advantage grants +50% effective strength in combat.
+Counter advantage grants 2.0× effective strength in combat (countered units are 0.5×).
 
 **Army Movement:**
 1. Select territory with your army
@@ -134,7 +134,7 @@ Strength = Sum of (unit_count * unit_strength * counter_bonus)
 
 Defender bonuses:
 - Keep: +2 effective armies
-- Counter advantage: +50% for favorable matchups
+- Counter advantage: 2.0× for favorable matchups (countered: 0.5×)
 
 Winner = Higher total strength
 ```
@@ -226,7 +226,7 @@ Winner = Higher total strength
 - Must have sufficient gold
 - Cannot go into debt
 
-**Starting Gold:** 50 gold per player
+**Starting Gold:** 100 gold per player
 
 ---
 
@@ -371,8 +371,8 @@ Each of the 57 territories on the map grants one permanent bonus to its owner. B
 **Players 1-8:**
 - Each has unique color
 - Independent economies
-- Simultaneous turns (planned)
-- Currently single-player
+- Simultaneous turns (implemented)
+- Multiplayer supported (2-4 players)
 
 **Neutral (Player 0):**
 - Starting territories
@@ -444,11 +444,10 @@ Each of the 57 territories on the map grants one permanent bonus to its owner. B
 - Phase indicator
 
 **Right Sidebar:**
-- Technology tab (planned)
-- Heroes tab (planned)
+- Technology tab
+- Heroes tab
 - Action Queue (orders)
 - Action Log (events)
-- Quests tab (planned)
 - Chat tab
 
 **Territory Info Panel:**
@@ -718,4 +717,4 @@ Units spawning from Barracks in simultaneous mode:
 
 ---
 
-**Last Updated:** February 1, 2026
+**Last Updated:** February 27, 2026

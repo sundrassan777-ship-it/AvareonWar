@@ -7,10 +7,10 @@ This module handles:
 - Hero ability usage (when and how to use abilities)
 - Hero placement strategy
 
-For the initial implementation, we focus on:
+Key behaviors:
 - Training economically valuable heroes (Nextroy, Nithieln)
-- Basic ability usage for high-impact abilities
-- Simple hero placement logic
+- Ability usage for high-impact abilities
+- Hero placement strategy
 
 Classes:
     HeroSelector: Chooses which heroes to train

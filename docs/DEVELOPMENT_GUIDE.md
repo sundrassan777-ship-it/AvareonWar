@@ -13,7 +13,7 @@
 1. **Read Documentation First:**
    - README.md - Project overview
    - ARCHITECTURE.md - System design
-   - MODULE_GUIDE.md - Detailed modules
+   - CODE_GUIDE.md - Module-specific guidance
    - GAME_MECHANICS.md - Game rules
 
 2. **Understand Current State:**
@@ -62,7 +62,7 @@
 
 ### 1. Separation of Concerns
 
-**Game Logic** (game_state.py):
+**Game Logic** (game_state/ package):
 ```python
 # ✅ Good
 def conquer_territory(self, territory, player):
@@ -90,15 +90,16 @@ def draw_territory(self, territory):
 
 ### 2. State Access Pattern
 
-**Always use methods, not direct access:**
+**Use authoritative methods where they exist:**
 ```python
-# ✅ Good
-owner = game_state.get_territory_owner(territory)
-game_state.set_territory_armies(territory, 10)
+# ✅ Good - use garrison system for army counts
+armies = game_state.get_territory_total_armies(territory)
 
-# ❌ Bad
-owner = game_state.territory_owners[territory]  # Direct access
-game_state.territory_armies[territory] = 10     # Direct modification
+# ❌ Bad - legacy counter can be stale
+armies = game_state.armies[territory]
+
+# Direct access is OK for territory_owners (no getter exists)
+owner = game_state.territory_owners[territory]
 ```
 
 ### 3. Delegation Pattern
@@ -120,28 +121,26 @@ def draw_territories(self):
 
 ### Adding a New Building Type
 
-**1. Define in constants.py:**
+**1. Define in game_state/data_definitions.py (BUILDING_TYPES dict):**
 ```python
 BUILDING_TYPES = {
+    # ... existing buildings ...
     'NewBuilding': {
         'cost': 25,
-        'construction_turns': 2,
-        'income_bonus': 4
+        'letter': 'N',
+        'effect': 'income',
+        'value': 10,
+        'time': 2
     }
 }
 ```
 
-**2. Add to game_state.py:**
+**2. Add income logic in game_state/economy.py (calculate_territory_income):**
 ```python
-def get_building_income(self, territory):
-    buildings = self.completed_buildings.get(territory, {})
-    income = 0
-    for building in buildings.values():
-        if building['type'] == 'Farm':
-            income += 2
-        elif building['type'] == 'NewBuilding':  # Add here
-            income += 4
-    return income
+# Income from buildings is driven by BUILDING_TYPES 'effect' and 'value' fields
+# Farm: effect='income', value=10 → +10 gold/turn
+# Mine: effect='income', value=15 → +15 gold/turn
+# If your new building uses effect='income', it works automatically
 ```
 
 **3. Update UI (ui_renderer.py or main.py):**
@@ -160,32 +159,29 @@ building_types = ['Farm', 'Mine', 'NewBuilding']  # Add here
 
 ### Adding a New Unit Type
 
-**1. Define in constants.py:**
+**1. Define in game_state/__init__.py (UNIT_TYPES class attribute):**
 ```python
 UNIT_TYPES = {
+    # Existing: Swordsman, Archer, Pikeman, Cavalry
     'NewUnit': {
         'cost': 15,
         'strength': 1.3,
-        'special': 'description'
+        'counters': 'Swordsman',
+        'countered_by': 'Cavalry'
     }
 }
 ```
 
-**2. Add to game_state.py:**
+**2. Update counter system in game_state/military.py:**
 ```python
-def calculate_unit_strength(self, unit_type, count):
-    strengths = {
-        'Infantry': 1.0,
-        'Cavalry': 1.2,
-        'NewUnit': 1.3,  # Add here
-    }
-    return count * strengths.get(unit_type, 1.0)
+# Counter relationships are used by calculate_army_effective_strength()
+# Add new unit's counter matchups to the counter logic
 ```
 
 **3. Update recruitment UI:**
 ```python
 # Add to recruitment menu
-unit_types = ['Infantry', 'Cavalry', 'NewUnit']
+unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'NewUnit']
 ```
 
 **4. Test:**
@@ -242,23 +238,15 @@ def handle_my_element_click(self, pos):
 
 ### Modifying Game Rules
 
-**Always in game_state.py:**
+**Always in game_state/ package (not main.py or rendering):**
 
-**Example: Change battle calculations**
+**Example: Change battle calculations (game_state/military.py):**
 ```python
-def calculate_battle_strength(self, player, territory, army_count):
-    # Base strength
-    strength = army_count * 10
-    
-    # Add your modifications here
-    if self.has_special_bonus(territory):
-        strength *= 1.2
-    
-    # Existing modifiers
-    if self.has_keep(territory):
-        strength *= 1.5
-    
-    return strength
+# Battle strength uses calculate_army_effective_strength()
+# Counter system: 2.0x vs countered, 0.5x vs countering, 1.0x neutral
+# Keep bonus: +2 effective armies (flat, not multiplier)
+# Veterancy: +15% per level
+# Modify resolve_battle() and related methods in military.py
 ```
 
 **Test thoroughly:**
@@ -376,7 +364,7 @@ def calc_inc(p):
 - [ ] No visual glitches
 
 **For Rendering Changes:**
-- [ ] Draws at 60 FPS
+- [ ] Draws at 80 FPS
 - [ ] Scales with zoom
 - [ ] Camera works
 - [ ] No flickering
@@ -394,14 +382,14 @@ def draw_territory(self):
     self.game_state.territory_owners[terr] = player  # NO!
 ```
 
-### 2. Direct State Access
+### 2. Direct State Access (Armies)
 
 ```python
-# ❌ Don't access directly
-armies = game_state.territory_armies[terr]
+# ❌ Don't use legacy counter
+armies = game_state.armies[terr]
 
-# ✅ Use methods
-armies = game_state.get_territory_armies(terr)
+# ✅ Use garrison system
+armies = game_state.get_territory_total_armies(terr)
 ```
 
 ### 3. Forgetting Layout Values
@@ -431,14 +419,14 @@ if territory in building_queue:
 
 ### Documentation:
 - ARCHITECTURE.md - Design overview
-- MODULE_GUIDE.md - Detailed module info
+- CODE_GUIDE.md - Module-specific guidance (living knowledge base)
 - GAME_MECHANICS.md - Game rules
 - QUICK_REFERENCE.md - Quick lookups
 
-### Tools:
-- plot_tool.py - Visual plot editing
-- economic_tool.py - Economy editing
-- adjacency_tool.py - Adjacency editing
+### Tools (PascalCase, in root directory):
+- Plot_Tool.py - Visual plot editing
+- Economic_Tool.py - Economy editing
+- Adjacency_Tool.py - Adjacency editing
 
 ### Data Files:
 - territory_polygons.json - Map shapes
@@ -460,4 +448,4 @@ if territory in building_queue:
 
 ---
 
-**Last Updated:** January 5, 2026
+**Last Updated:** February 27, 2026
