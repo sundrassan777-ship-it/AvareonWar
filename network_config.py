@@ -75,6 +75,9 @@ class MessageType(str, enum.Enum):
     LOBBY_COUNTDOWN = "LOBBY_COUNTDOWN"      # Launch countdown timer (host -> clients)
     LOBBY_LAUNCH = "LOBBY_LAUNCH"            # Game starting (host -> clients)
 
+    # Loading Screen Sync
+    GAME_READY = "GAME_READY"                # Player finished loading, ready to start (bidirectional)
+
     # Reconnection
     RECONNECT_REQUEST = "RECONNECT_REQUEST"  # Player attempting to reconnect (client -> host)
     RECONNECT_ACCEPT = "RECONNECT_ACCEPT"    # Reconnection successful (host -> client)

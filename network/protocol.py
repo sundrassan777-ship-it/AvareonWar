@@ -268,6 +268,18 @@ class NetworkProtocol:
             "settings": settings
         })
 
+    # ========== Loading Screen Sync ==========
+
+    def create_game_ready(self, player_index: int) -> bytes:
+        """Create a game-ready message indicating this player finished loading.
+
+        Args:
+            player_index: Index of the player that finished loading
+        """
+        return self.encode_message(MessageType.GAME_READY, {
+            "player_index": player_index
+        })
+
     # ========== Reconnection Messages ==========
 
     def create_reconnect_request(self, player_name: str, password: str) -> bytes:

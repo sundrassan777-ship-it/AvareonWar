@@ -31,88 +31,95 @@ sound_manager = SoundManager(enabled=True, volume=0.5)
 _transmission_sounds = {}
 _transmission_channel = None  # Currently playing transmission voice channel
 
-def initialize_sounds():
+def initialize_menu_sounds():
     """
-    Load all sound files into the global sound manager.
-    Call this once during application startup.
+    Load only the sounds needed for menu UI (click, completion jingles).
+    Called at startup before the main menu for fast launch.
+    Game-specific sounds (heroes, structures, transmissions) are deferred
+    to the loading screen via get_game_sound_tasks().
     """
     num_general = sound_manager.load_sounds_from_folder('general', 'assets/sounds/general')
-    num_armycomp = sound_manager.load_sounds_from_folder('armycomp', 'assets/sounds/armycomp')
-    num_seledra = sound_manager.load_sounds_from_folder('seledra', 'assets/sounds/heroes/seledra')
-    num_nextroy = sound_manager.load_sounds_from_folder('nextroy', 'assets/sounds/heroes/nextroy')
-    num_narn = sound_manager.load_sounds_from_folder('narn', 'assets/sounds/heroes/narn')
-    num_asford = sound_manager.load_sounds_from_folder('asford', 'assets/sounds/heroes/asford')
-    num_hevilneu = sound_manager.load_sounds_from_folder('hevilneu', 'assets/sounds/heroes/hevilneu')
-    num_nithieln = sound_manager.load_sounds_from_folder('nithieln', 'assets/sounds/heroes/nithieln')
-    num_brennhen = sound_manager.load_sounds_from_folder('brennhen', 'assets/sounds/heroes/brennhen')
-    num_silvyr = sound_manager.load_sounds_from_folder('silvyr', 'assets/sounds/heroes/silvyr')
-    # Structure on-click sounds (Barracks, Construction, Farm, Keep, Mine, Square)
-    num_structures = sound_manager.load_sounds_from_folder('structures', 'assets/sounds/structures')
 
-    # Set volume for specific sounds in general category
-    # We need to set individual volumes because different sounds need different levels
-    sounds = sound_manager.sound_categories['general']
+    # Set volume for general category sounds
+    sounds = sound_manager.sound_categories.get('general', [])
     if len(sounds) >= 3:
         sounds[0].set_volume(sound_manager.volume * 1.5)  # CastleCompleted - moderate volume
         sounds[1].set_volume(sound_manager.volume * 2.5)  # DefaultMouseClick - loud
         sounds[2].set_volume(sound_manager.volume * 2.0)  # ResearchCompleted - very loud
 
-    # Set volume for hero sounds (individual multipliers for easy adjustment)
-    # Seledra - default volume
-    seledra_sounds = sound_manager.sound_categories.get('seledra', [])
-    for sound in seledra_sounds:
-        sound.set_volume(sound_manager.volume * 1.0)
+    logger.info(f"Loaded {num_general} menu sounds (general category)")
+    return sound_manager
 
-    # Nextroy - quiet speaker, needs boost
-    nextroy_sounds = sound_manager.sound_categories.get('nextroy', [])
-    for sound in nextroy_sounds:
-        sound.set_volume(sound_manager.volume * 3.5)
 
-    # Narn - default volume
-    narn_sounds = sound_manager.sound_categories.get('narn', [])
-    for sound in narn_sounds:
-        sound.set_volume(sound_manager.volume * 1.0)
+def _make_sound_loader(category, folder, volume_mult):
+    """Create a closure that loads sounds for one category and sets volume.
+    Uses default-arg binding to avoid late-binding closure gotcha."""
+    def _load(cat=category, p=folder, v=volume_mult):
+        num = sound_manager.load_sounds_from_folder(cat, p)
+        # Apply per-sound volume multiplier
+        for snd in sound_manager.sound_categories.get(cat, []):
+            snd.set_volume(sound_manager.volume * v)
+        logger.info(f"Loaded {num} {cat} sounds")
+    return _load
 
-    # Asford - default volume
-    asford_sounds = sound_manager.sound_categories.get('asford', [])
-    for sound in asford_sounds:
-        sound.set_volume(sound_manager.volume * 1.0)
 
-    # Hevilneu - default volume
-    hevilneu_sounds = sound_manager.sound_categories.get('hevilneu', [])
-    for sound in hevilneu_sounds:
-        sound.set_volume(sound_manager.volume * 1.0)
+def get_game_sound_tasks(is_campaign=False):
+    """
+    Return a list of (label, callable) tasks for deferred game sound loading.
+    Each callable loads one sound category from disk. Used by LoadingScreen
+    to show progress while loading game-specific audio assets.
 
-    # Nithieln - quiet speaker, moderate boost
-    nithieln_sounds = sound_manager.sound_categories.get('nithieln', [])
-    for sound in nithieln_sounds:
-        sound.set_volume(sound_manager.volume * 1.3)
+    Args:
+        is_campaign: If True, include campaign-only sounds (transmission voice lines).
+    """
+    # (display_label, category_key, folder_path, volume_multiplier)
+    hero_sound_defs = [
+        ("Loading Seledra voice lines",   'seledra',   'assets/sounds/heroes/seledra',   1.0),
+        ("Loading Nextroy voice lines",   'nextroy',   'assets/sounds/heroes/nextroy',   3.5),
+        ("Loading Narn voice lines",      'narn',      'assets/sounds/heroes/narn',       1.0),
+        ("Loading Asford voice lines",    'asford',    'assets/sounds/heroes/asford',     1.0),
+        ("Loading Hevilneu voice lines",  'hevilneu',  'assets/sounds/heroes/hevilneu',  1.0),
+        ("Loading Nithieln voice lines",  'nithieln',  'assets/sounds/heroes/nithieln',  1.3),
+        ("Loading Brennhen voice lines",  'brennhen',  'assets/sounds/heroes/brennhen',  1.0),
+        ("Loading Silvyr voice lines",    'silvyr',    'assets/sounds/heroes/silvyr',     1.0),
+    ]
 
-    # Brennhen - default volume
-    brennhen_sounds = sound_manager.sound_categories.get('brennhen', [])
-    for sound in brennhen_sounds:
-        sound.set_volume(sound_manager.volume * 1.0)
+    tasks = []
 
-    # Silvyr - default volume
-    silvyr_sounds = sound_manager.sound_categories.get('silvyr', [])
-    for sound in silvyr_sounds:
-        sound.set_volume(sound_manager.volume * 1.0)
+    # Hero voice line tasks (8 heroes, ~6 files each)
+    for label, cat, folder, vol in hero_sound_defs:
+        tasks.append((label, _make_sound_loader(cat, folder, vol)))
 
-    # Load campaign transmission voice lines (T1.mp3 - T27.mp3 etc.)
-    num_transmissions = load_transmission_sounds()
+    # Army composition sounds (7 files)
+    tasks.append(("Loading army composition sounds",
+                  _make_sound_loader('armycomp', 'assets/sounds/armycomp', 1.0)))
 
-    logger.info(f"Loaded {num_general} general sounds")
-    logger.info(f"Loaded {num_armycomp} army composition sounds")
-    logger.info(f"Loaded {num_seledra} Seledra sounds")
-    logger.info(f"Loaded {num_nextroy} Nextroy sounds")
-    logger.info(f"Loaded {num_narn} Narn sounds")
-    logger.info(f"Loaded {num_asford} Asford sounds")
-    logger.info(f"Loaded {num_hevilneu} Hevilneu sounds")
-    logger.info(f"Loaded {num_nithieln} Nithieln sounds")
-    logger.info(f"Loaded {num_brennhen} Brennhen sounds")
-    logger.info(f"Loaded {num_silvyr} Silvyr sounds")
-    logger.info(f"Loaded {num_transmissions} transmission voice lines")
-    logger.info(f"Loaded {num_structures} structure sounds")
+    # Structure on-click sounds (6 files: Barracks, Construction, Farm, Keep, Mine, Square)
+    tasks.append(("Loading structure sounds",
+                  _make_sound_loader('structures', 'assets/sounds/structures', 1.0)))
+
+    # Campaign transmission voice lines (~75 files) — only for campaign missions
+    if is_campaign:
+        def _load_transmissions():
+            num = load_transmission_sounds()
+            logger.info(f"Loaded {num} transmission voice lines")
+        tasks.append(("Loading campaign voice lines", _load_transmissions))
+
+    return tasks
+
+
+def initialize_sounds():
+    """
+    Load ALL sound files into the global sound manager (legacy).
+    Kept for backwards compatibility / testing. Normal startup uses
+    initialize_menu_sounds() + get_game_sound_tasks() instead.
+    """
+    # Load menu sounds first
+    initialize_menu_sounds()
+
+    # Then load all game sounds immediately (including campaign transmissions)
+    for label, loader in get_game_sound_tasks(is_campaign=True):
+        loader()
 
     return sound_manager
 

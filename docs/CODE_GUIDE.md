@@ -22,6 +22,7 @@ This guide provides module-specific guidance on when and how to modify different
 12. [Quick Navigation](#quick-navigation) - Where to find things
 13. [Achievement System](#achievement-system) - Achievements, rewards, tracking
 14. [Recap Screen](#recap-screen) - Post-game statistics
+15. [Loading Screen](#loading-screen) - Deferred asset loading + multiplayer sync
 
 ---
 
@@ -2097,6 +2098,23 @@ def is_action_allowed(self, action_type, **kwargs):
 - **Add new stat column**: Add to `TAB_COLUMNS` in `recap_screen.py`, add tracking hook in `game_state.py` (init in `player_stats` + increment via `_track_stat`)
 - **Add new tab**: Add to `TABS`, `TAB_LABELS`, `TAB_COLUMNS` in `recap_screen.py`
 - **Change table layout**: Modify `_draw_table()` in `recap_screen.py`
+
+## Loading Screen
+
+`loading_screen.py` - Loading screen shown between setup and gameplay. Defers game asset loading (sounds, images, fonts) to after menu/setup for faster startup.
+
+**Architecture:** `LoadingScreen(screen, game, setup_config, network_connection)` builds a task list from `get_game_sound_tasks()` (11 sound categories) + `game.initialize_game()` (images, fonts, GameState). Renders progress bar at 30 FPS, then waits for player input.
+
+**Sound Split:** `global_sound.py` provides `initialize_menu_sounds()` (3 files, called at startup) and `get_game_sound_tasks()` (136 files, deferred to loading screen).
+
+**Multiplayer Sync:** Uses `GAME_READY` message type (`network_config.py`). Host collects GAME_READY from all clients, then broadcasts confirmation. Both sides wait for "click to start" after all ready.
+
+### When to Modify
+
+- **Add new deferred sound category**: Add entry in `get_game_sound_tasks()` in `global_sound.py`
+- **Change loading screen visuals**: Modify `_draw()` in `loading_screen.py`
+- **Add new loading task**: Append to `_build_task_list()` in `loading_screen.py`
+- **Change multiplayer sync logic**: Modify `_send_game_ready()` / `_poll_network_ready()` in `loading_screen.py`
 
 ## Version Info
 

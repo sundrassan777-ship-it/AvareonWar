@@ -12603,6 +12603,7 @@ if __name__ == "__main__":
     from campaign_screen import CampaignScreen, MissionScreen, MISSION_DATA
     from network.multiplayer_setup import MultiplayerSetup
     from recap_screen import RecapScreen
+    from loading_screen import LoadingScreen
     from settings_manager import settings
     from achievement_manager import achievement_manager
 
@@ -12639,9 +12640,9 @@ if __name__ == "__main__":
     # Initialize pygame for main menu
     pygame.init()
 
-    # Initialize global sound manager
-    from global_sound import initialize_sounds
-    initialize_sounds()
+    # Initialize menu-only sounds for fast startup (game sounds deferred to loading screen)
+    from global_sound import initialize_menu_sounds
+    initialize_menu_sounds()
 
     # Create initial window for main menu using settings
     initial_resolution = settings.get_resolution()
@@ -12814,10 +12815,11 @@ if __name__ == "__main__":
                         module = importlib.import_module(mission_info['import'][0])
                         MissionClass = getattr(module, mission_info['import'][1])
 
-                        # Create game with campaign map, initialize, wire up mission
+                        # Create game with campaign map, load assets via loading screen
                         game = Game(existing_screen=screen, campaign_map=mission_info['map'])
                         screen = game.screen
-                        game.initialize_game(mission_info['config'])
+                        loading = LoadingScreen(screen, game, mission_info['config'])
+                        loading.run()
 
                         mission_obj = MissionClass(game.game_state, game)
                         game.tutorial_mission = mission_obj
@@ -12872,8 +12874,9 @@ if __name__ == "__main__":
                 # Screen already exists, just continue to main menu
                 continue
 
-            # Initialize game with config
-            game.initialize_game(setup_config)
+            # Show loading screen (deferred asset loading + "click to start")
+            loading = LoadingScreen(screen, game, setup_config)
+            loading.run()
 
             # Run game
             result = game.run()
@@ -12940,7 +12943,10 @@ if __name__ == "__main__":
             elif mode == 'client':
                 game.local_player_index = network_connection.get_player_index()  # Get from server
 
-            game.initialize_game(setup_config)
+            # Show loading screen with multiplayer readiness sync
+            loading = LoadingScreen(screen, game, setup_config,
+                                    network_connection=network_connection)
+            loading.run()
 
             # Run game
             result = game.run()

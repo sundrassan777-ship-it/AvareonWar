@@ -2,6 +2,15 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-27 - Deferred Asset Loading with Loading Screen
+
+- **New feature:** Added loading screen with progress bar between setup and gameplay
+- Only menu sounds (3 files) load at startup; game sounds (~136 files) deferred to loading screen
+- `global_sound.py`: split into `initialize_menu_sounds()` (startup) + `get_game_sound_tasks()` (deferred)
+- New file `loading_screen.py`: `LoadingScreen` class with progress bar, "click to start" prompt
+- Multiplayer: `GAME_READY` network message ensures both players finish loading before game starts
+- Loading screen used in all 3 game modes: custom game, campaign, multiplayer
+
 ## 2026-02-26 - Hero Ability Visual Effects (Phase 2: Immediate Abilities)
 
 - **New feature:** Added particle visual effects for 3 immediate (non-targeted) hero abilities
