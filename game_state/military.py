@@ -468,6 +468,8 @@ class MilitaryMixin:
                     # Track enemy heroes killed by the conquering player
                     if heroes_killed_count > 0 and new_owner is not None and new_owner >= 0:
                         self._track_stat(new_owner, 'heroes_killed', heroes_killed_count)
+                        # Player Level: award XP for killing enemy heroes (10 per hero)
+                        self._track_stat(new_owner, 'xp_earned', 10 * heroes_killed_count)
 
                     # Cancel training
                     if (territory in self.hero_training_queue and
@@ -1888,6 +1890,10 @@ class MilitaryMixin:
                 new_owner=winner
             )
 
+        # Player Level: award XP for conquering enemy territory with a battle
+        if battle.original_owner != winner:
+            self._track_stat(winner, 'xp_earned', 8)
+
         # Capital Assault: Check if conquered territory is enemy's capital
         # Note: Allies cannot eliminate each other - only enemies can capture capitals
         if self.victory_condition == "Capital Assault":
@@ -2476,6 +2482,14 @@ class MilitaryMixin:
                     self.sync_legacy_garrison_data(territory)
 
                     self.add_message(f"Player {winner + 1} conquers {territory} ({winner_armies} armies)")
+
+                    # Player Level: award XP based on conquest type (uncontested)
+                    if current_owner == -1:
+                        # Neutral territory conquest
+                        self._track_stat(winner, 'xp_earned', 2)
+                    else:
+                        # Enemy territory conquered without a battle
+                        self._track_stat(winner, 'xp_earned', 4)
 
             elif unique_players > 1:
                 # TEAM CHECK: Group allies together before creating battles

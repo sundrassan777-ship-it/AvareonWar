@@ -80,7 +80,7 @@ class RecapScreen:
     }
 
     def __init__(self, screen, player_stats, player_names, player_colors, winner_index, num_players,
-                 newly_earned_achievements=None):
+                 newly_earned_achievements=None, xp_result=None):
         """
         Args:
             screen: Pygame display surface
@@ -90,6 +90,8 @@ class RecapScreen:
             winner_index: Index of winning player (-1 if no winner)
             num_players: Total number of players
             newly_earned_achievements: List of achievement dicts earned this game (or None)
+            xp_result: Dict from player_level_manager.record_game_xp() with xp_earned,
+                       old_level, new_level, old_xp, new_xp (or None)
         """
         self.screen = screen
         self.width = screen.get_width()
@@ -234,11 +236,22 @@ class RecapScreen:
             except Exception:
                 self.achievement_icon_border = None
 
+        # --- Player Level XP bar state (shown after achievement popups) ---
+        self.xp_result = xp_result
+        self.xp_bar_phase = 'xp_waiting'  # xp_waiting -> xp_fading_in -> xp_filling -> xp_showing -> xp_fading -> xp_done
+        self.xp_bar_timer = 0.0
+        self.xp_bar_alpha = 0
+        self.xp_bar_fill_progress = 0.0  # 0.0 to 1.0 animation progress
+        self.xp_bar_anim_level = 0       # Animated level (tracks level changes during fill)
+        self.xp_level_up_particles = []  # Golden burst particles on level-up
+        self.xp_level_up_spawn_accum = 0.0
+
     def run(self):
         """Main loop - blocks until user clicks Main Menu."""
         while not self.done:
             dt = self.clock.tick(60) / 1000.0
             self._update_achievement_preview(dt)
+            self._update_xp_bar(dt)
             self.handle_events()
             self.render()
             pygame.display.flip()
@@ -332,6 +345,9 @@ class RecapScreen:
 
         # Achievement preview popup (drawn on top of everything)
         self._draw_achievement_preview()
+
+        # Player Level XP bar (drawn after/instead of achievement preview)
+        self._draw_xp_bar()
 
         # Reset clicked state after render
         self.clicked_button = None
@@ -696,6 +712,232 @@ class RecapScreen:
 
             r, g, b = p['color']
             # Convert to local surface coordinates
+            lx = int(p['x'] - area_x)
+            ly = int(p['y'] - area_y)
+            if 0 <= lx < area_w and 0 <= ly < area_h:
+                pygame.draw.circle(particle_surf, (r, g, b, alpha), (lx, ly), p['size'])
+
+        self.screen.blit(particle_surf, (area_x, area_y))
+
+    # --- Player Level XP Bar ---
+
+    def _update_xp_bar(self, dt):
+        """Update XP bar animation state machine (queued after achievement popups)."""
+        # Skip if no XP earned this game
+        if not self.xp_result or self.xp_result['xp_earned'] <= 0:
+            # Still update level-up particles if any remain
+            if self.xp_level_up_particles:
+                self._age_xp_particles(dt)
+            return
+
+        if self.xp_bar_phase == 'xp_waiting':
+            # Wait for achievement popups to finish (or start after delay if none)
+            achievements_done = (not self.newly_earned or
+                                 self.achievement_preview_phase == 'done')
+            glitter_done = not self.glitter_particles
+            if achievements_done and glitter_done:
+                self.xp_bar_timer += dt
+                # Small delay after achievements finish (or 1.5s if no achievements)
+                wait_time = 0.5 if self.newly_earned else 1.5
+                if self.xp_bar_timer >= wait_time:
+                    self.xp_bar_phase = 'xp_fading_in'
+                    self.xp_bar_timer = 0.0
+                    self.xp_bar_alpha = 0
+                    # Initialize animated level to the old level
+                    self.xp_bar_anim_level = self.xp_result['old_level']
+            return
+
+        self.xp_bar_timer += dt
+
+        if self.xp_bar_phase == 'xp_fading_in':
+            progress = min(1.0, self.xp_bar_timer / 0.3)
+            self.xp_bar_alpha = int(255 * progress)
+            if progress >= 1.0:
+                self.xp_bar_phase = 'xp_filling'
+                self.xp_bar_timer = 0.0
+                self.xp_bar_alpha = 255
+
+        elif self.xp_bar_phase == 'xp_filling':
+            # Animate fill over 2 seconds with ease-out curve for smooth deceleration
+            t = min(1.0, self.xp_bar_timer / 2.0)
+            # Cubic ease-out: fast start, gentle landing
+            self.xp_bar_fill_progress = 1.0 - (1.0 - t) ** 3
+
+            # Check for level-up during fill animation
+            from player_level import level_from_xp
+            old_xp = self.xp_result['old_xp']
+            new_xp = self.xp_result['new_xp']
+            current_animated_xp = old_xp + (new_xp - old_xp) * self.xp_bar_fill_progress
+            current_animated_level = level_from_xp(int(current_animated_xp))
+
+            # Trigger level-up burst when animated level increases
+            if current_animated_level > self.xp_bar_anim_level:
+                self.xp_bar_anim_level = current_animated_level
+                self._spawn_xp_level_up_burst()
+
+            if self.xp_bar_fill_progress >= 1.0:
+                self.xp_bar_phase = 'xp_showing'
+                self.xp_bar_timer = 0.0
+
+        elif self.xp_bar_phase == 'xp_showing':
+            if self.xp_bar_timer >= 3.0:
+                self.xp_bar_phase = 'xp_fading'
+                self.xp_bar_timer = 0.0
+
+        elif self.xp_bar_phase == 'xp_fading':
+            progress = min(1.0, self.xp_bar_timer / 0.5)
+            self.xp_bar_alpha = max(0, int(255 * (1.0 - progress)))
+            if progress >= 1.0:
+                self.xp_bar_phase = 'xp_done'
+
+        # Update level-up particles during visible phases
+        if self.xp_bar_phase in ('xp_fading_in', 'xp_filling', 'xp_showing', 'xp_fading'):
+            self._age_xp_particles(dt)
+
+    def _draw_xp_bar(self):
+        """Draw the XP bar popup at bottom-center of screen (same position as achievements)."""
+        # Always draw remaining level-up particles even after bar is gone
+        if self.xp_level_up_particles and self.xp_bar_phase == 'xp_done':
+            bar_w = int(450 * self.ui_scale)
+            bar_h = int(80 * self.ui_scale)
+            bar_x = (self.width - bar_w) // 2
+            bar_y = self.height - bar_h - int(40 * self.ui_scale)
+            self._draw_xp_particles(bar_x, bar_y, bar_w, bar_h)
+            return
+
+        if (not self.xp_result or self.xp_result['xp_earned'] <= 0 or
+                self.xp_bar_phase in ('xp_waiting', 'xp_done')):
+            return
+
+        from player_level import get_progress_for_xp
+
+        # Bar dimensions (same position as achievement popup)
+        bar_w = int(450 * self.ui_scale)
+        bar_h = int(80 * self.ui_scale)
+        bar_x = (self.width - bar_w) // 2
+        bar_y = self.height - bar_h - int(40 * self.ui_scale)
+
+        # Calculate current animated XP for the fill
+        old_xp = self.xp_result['old_xp']
+        new_xp = self.xp_result['new_xp']
+        current_xp = old_xp + (new_xp - old_xp) * self.xp_bar_fill_progress
+        progress_info = get_progress_for_xp(int(current_xp))
+
+        # Build bar surface
+        bar_surf = pygame.Surface((bar_w, bar_h), pygame.SRCALPHA)
+
+        # Background (dark semi-transparent, matching achievement popup style)
+        bar_surf.fill((30, 30, 45, 220))
+        pygame.draw.rect(bar_surf, BRASS_COLOR, (0, 0, bar_w, bar_h), 2)
+
+        # Text: "Level: X (+Y Experience)" centered at top
+        level_display = self.xp_result['new_level']
+        xp_earned = self.xp_result['xp_earned']
+        text_str = f"Level: {level_display} (+{xp_earned} Experience)"
+        text_surf = self.achievement_preview_font.render(text_str, True, WHITE)
+        text_rect = text_surf.get_rect(centerx=bar_w // 2, top=int(10 * self.ui_scale))
+        bar_surf.blit(text_surf, text_rect)
+
+        # Inner progress bar
+        inner_margin_x = int(20 * self.ui_scale)
+        inner_h = int(24 * self.ui_scale)
+        inner_y = bar_h - inner_h - int(14 * self.ui_scale)
+        inner_w = bar_w - 2 * inner_margin_x
+        inner_rect = pygame.Rect(inner_margin_x, inner_y, inner_w, inner_h)
+
+        # Progress bar background
+        pygame.draw.rect(bar_surf, (20, 20, 20), inner_rect, border_radius=4)
+
+        # Gold fill based on current animated progress within current level
+        fill_fraction = progress_info['progress_fraction']
+        fill_width = int(inner_w * fill_fraction)
+        if fill_width > 0:
+            # Draw gold fill clipped to rounded rect
+            fill_surf = pygame.Surface((inner_w, inner_h), pygame.SRCALPHA)
+            pygame.draw.rect(fill_surf, (184, 134, 11), (0, 0, fill_width, inner_h), border_radius=4)
+            # Clip to the rounded inner rect shape
+            mask_surf = pygame.Surface((inner_w, inner_h), pygame.SRCALPHA)
+            pygame.draw.rect(mask_surf, (255, 255, 255, 255), (0, 0, inner_w, inner_h), border_radius=4)
+            fill_surf.blit(mask_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            bar_surf.blit(fill_surf, inner_rect.topleft)
+
+        # Progress bar border
+        pygame.draw.rect(bar_surf, (100, 100, 100), inner_rect, 1, border_radius=4)
+
+        # Draw level-up particles behind the bar
+        self._draw_xp_particles(bar_x, bar_y, bar_w, bar_h)
+
+        # Apply fade alpha and blit
+        bar_surf.set_alpha(self.xp_bar_alpha)
+        self.screen.blit(bar_surf, (bar_x, bar_y))
+
+    def _spawn_xp_level_up_burst(self):
+        """Spawn a burst of golden particles when the player levels up during the fill animation."""
+        # Burst from the center of the XP bar
+        bar_w = int(450 * self.ui_scale)
+        bar_h = int(80 * self.ui_scale)
+        bar_x = (self.width - bar_w) // 2
+        bar_y = self.height - bar_h - int(40 * self.ui_scale)
+        center_x = bar_x + bar_w // 2
+        center_y = bar_y + bar_h // 2
+
+        # Spawn ~100 particles exploding outward from center
+        for _ in range(100):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(40, 160) * self.ui_scale
+            self.xp_level_up_particles.append({
+                'x': center_x + random.uniform(-10, 10),
+                'y': center_y + random.uniform(-10, 10),
+                'vx': math.cos(angle) * speed,
+                'vy': math.sin(angle) * speed - random.uniform(10, 30) * self.ui_scale,  # Slight upward bias
+                'color': random.choice(GLITTER_SHADES),
+                'size': random.choice([1, 1, 2, 2, 3]),  # Larger particles for level-up
+                'lifetime': random.uniform(0.6, 1.2),
+                'age': 0.0,
+                'max_alpha': random.randint(180, 255),
+            })
+
+    def _age_xp_particles(self, dt):
+        """Age and remove dead level-up particles."""
+        for p in self.xp_level_up_particles:
+            p['age'] += dt
+            p['x'] += p['vx'] * dt
+            p['y'] += p['vy'] * dt
+            # Decelerate over time
+            p['vx'] *= 0.97
+            p['vy'] *= 0.97
+        self.xp_level_up_particles = [p for p in self.xp_level_up_particles if p['age'] < p['lifetime']]
+
+    def _draw_xp_particles(self, bar_x, bar_y, bar_w, bar_h):
+        """Draw golden level-up burst particles around the XP bar."""
+        if not self.xp_level_up_particles:
+            return
+
+        global_alpha = self.xp_bar_alpha / 255.0 if self.xp_bar_alpha > 0 else 1.0
+
+        # Particle area covers the bar + generous margin for the burst
+        margin = int(80 * self.ui_scale)
+        area_x = bar_x - margin
+        area_y = bar_y - margin
+        area_w = bar_w + margin * 2
+        area_h = bar_h + margin * 2
+        particle_surf = pygame.Surface((area_w, area_h), pygame.SRCALPHA)
+
+        for p in self.xp_level_up_particles:
+            progress = p['age'] / p['lifetime']
+            # Quick fade in, then gradual fade out
+            if progress < 0.1:
+                opacity = progress / 0.1
+            elif progress < 0.4:
+                opacity = 1.0
+            else:
+                opacity = 1.0 - (progress - 0.4) / 0.6
+
+            alpha = int(p['max_alpha'] * opacity * global_alpha)
+            if alpha <= 0:
+                continue
+
+            r, g, b = p['color']
             lx = int(p['x'] - area_x)
             ly = int(p['y'] - area_y)
             if 0 <= lx < area_w and 0 <= ly < area_h:

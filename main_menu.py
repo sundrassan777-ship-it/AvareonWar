@@ -1422,6 +1422,53 @@ class MainMenu:
                            (cursor_x, input_rect.bottom - 8), 2)
 
         self.profile_ui_elements['name_input'] = {'rect': input_rect}
+
+        # --- Player Level Bar (to the right of name input) ---
+        from player_level import player_level_manager
+        level_progress = player_level_manager.get_progress()
+        level_bar_spacing = int(20 * self.ui_scale)
+        level_bar_width = int(200 * self.ui_scale)
+        level_bar_height = input_height  # Same height as name input
+        level_bar_x = input_rect.right + level_bar_spacing
+        level_bar_y = input_rect.top
+
+        # "Player Level:" label above the bar
+        level_label_text = label_font.render("Player Level:", True, WHITE)
+        self.screen.blit(level_label_text, (level_bar_x, content_y))
+
+        # Level bar background (same style as name input)
+        level_bar_rect = pygame.Rect(level_bar_x, level_bar_y, level_bar_width, level_bar_height)
+        pygame.draw.rect(self.screen, (20, 20, 20), level_bar_rect, border_radius=5)
+
+        # Gold fill based on XP progress within current level
+        fill_fraction = level_progress['progress_fraction']
+        fill_width = int(level_bar_width * fill_fraction)
+        if fill_width > 0:
+            # Draw gold fill clipped to rounded rect shape using a temporary surface
+            fill_surf = pygame.Surface((level_bar_width, level_bar_height), pygame.SRCALPHA)
+            pygame.draw.rect(fill_surf, (184, 134, 11), (0, 0, fill_width, level_bar_height), border_radius=5)
+            # Clip right side: if fill doesn't cover full width, mask with the full rounded shape
+            if fill_width < level_bar_width:
+                mask_surf = pygame.Surface((level_bar_width, level_bar_height), pygame.SRCALPHA)
+                pygame.draw.rect(mask_surf, (255, 255, 255, 255), (0, 0, level_bar_width, level_bar_height), border_radius=5)
+                fill_surf.blit(mask_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            self.screen.blit(fill_surf, level_bar_rect.topleft)
+
+        # Border
+        pygame.draw.rect(self.screen, (100, 100, 100), level_bar_rect, 2, border_radius=5)
+
+        # Center text: "Level: X"
+        level_text_str = f"Level: {level_progress['level']}"
+        level_text_surf = label_font.render(level_text_str, True, WHITE)
+        level_text_rect = level_text_surf.get_rect(center=level_bar_rect.center)
+        self.screen.blit(level_text_surf, level_text_rect)
+
+        # Register level bar for hover detection and tooltip
+        self.profile_ui_elements['level_bar'] = {
+            'rect': level_bar_rect,
+            'tooltip': f"XP: {level_progress['xp_into_level']:,} / {level_progress['xp_for_next']:,}",
+        }
+
         y += input_height + int(15 * self.ui_scale)
 
         # --- Title Selection Section ---
@@ -1714,6 +1761,11 @@ class MainMenu:
                                         [(arrow_x, ay - 6), (arrow_x - 5, ay - 12), (arrow_x + 5, ay - 12)])
 
         # --- Deferred: Draw tooltip on top of everything ---
+        # Check level bar hover for tooltip (not inside icon grid clip region)
+        if not deferred_tooltip and self.hovered_profile_element == 'level_bar':
+            level_bar_data = self.profile_ui_elements.get('level_bar')
+            if level_bar_data and 'tooltip' in level_bar_data:
+                deferred_tooltip = level_bar_data['tooltip']
         if deferred_tooltip:
             self._draw_tooltip(self.screen, deferred_tooltip, pygame.mouse.get_pos(), small_font)
 

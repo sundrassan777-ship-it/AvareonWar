@@ -152,6 +152,54 @@ Counter advantage: 2.0× effective strength (countered: 0.5×). Training: 1 turn
 
 ---
 
+## 🏆 Player Level System
+
+**Persistence:** `config.json` via `settings_manager` (`player_xp`, `campaign_missions_xp_claimed`)
+
+**Level Progression (XP per level):**
+
+| Level Range | XP/Level | Cumulative at Tier End |
+|-------------|----------|----------------------|
+| 1-10 | 100 | 900 |
+| 11-20 | 250 | 3,400 |
+| 21-40 | 500 | 13,400 |
+| 41-100 | 1,000 | 73,400 |
+| 101-200 | 2,500 | 323,400 |
+| 201-500 | 5,000 | 1,823,400 |
+| 501-10000 | 10,000 | 96,823,400 |
+
+Max level: 10,000.
+
+**XP Per Action:**
+
+| Action | XP |
+|--------|-----|
+| Train a unit | +2 |
+| Build a building | +2 |
+| Conquer neutral territory | +2 |
+| Conquer enemy territory (no battle) | +4 |
+| Conquer enemy territory (with battle) | +8 |
+| Train a hero | +4 |
+| Kill a hero | +10 |
+| Use active hero ability | +2 |
+| Research a technology | +4 |
+
+**End-of-Game Bonuses:**
+
+| Condition | XP |
+|-----------|-----|
+| Custom/MP defeat | +25 |
+| Custom/MP victory | +50 |
+| MP victory (enemy humans >= your humans) | +100 |
+| Campaign first-time mission win | +100 |
+
+**Eligibility:** Campaign always. Custom/MP only if >=1 enemy exists. No XP on premature quit.
+**Halving:** All XP halved if player's team has more players than enemy team.
+
+**Key Files:** `player_level.py` (logic), `settings_manager.py` (persistence), `main_menu.py` (profile UI), `recap_screen.py` (recap UI)
+
+---
+
 ## 🗺️ Terrain Effects
 
 *Terrain system not yet implemented. Combat uses counter system and Keep bonus only.*

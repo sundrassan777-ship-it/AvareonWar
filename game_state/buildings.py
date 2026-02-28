@@ -360,6 +360,8 @@ class BuildingMixin:
         for territory, building_type, plot_index in completed:
             owner = self.territory_owners[territory]
             self.add_message(f"Player {owner + 1}: {building_type} completed in {territory}")
+            # Player Level: award XP for completing a building
+            self._track_stat(owner, 'xp_earned', 2)
 
         # Return completed buildings for network synchronization
         return completed
@@ -739,6 +741,9 @@ class BuildingMixin:
                         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
                         self.add_message(f"Player {owner + 1}: {unit_type} trained in {territory}{haste_msg}")
 
+                        # Player Level: award XP for training a unit
+                        self._track_stat(owner, 'xp_earned', 2)
+
                         # Track for network sync
                         completed_units.append({
                             'territory': territory,
@@ -1095,6 +1100,9 @@ class BuildingMixin:
             if tech:
                 # Mark as researched (per-player)
                 self.player_tech_researched[self.current_player].add(tech_id)
+
+                # Player Level: award XP for completing technology research
+                self._track_stat(self.current_player, 'xp_earned', 4)
 
                 # Remove from available (already researched)
                 self.player_tech_available[self.current_player].discard(tech_id)

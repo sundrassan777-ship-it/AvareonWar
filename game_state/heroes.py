@@ -185,6 +185,8 @@ class HeroMixin:
                     self.add_message(f"Player {owner + 1}: {hero_type} trained in {territory}!")
                     # Track hero trained for recap screen
                     self._track_stat(owner, 'heroes_trained')
+                    # Player Level: award XP for training a hero
+                    self._track_stat(owner, 'xp_earned', 4)
 
                     # Play hero recruitment sound for human player only
                     # FIX: Check if owner is human (not AI) - sounds should never play for AI actions
@@ -375,6 +377,9 @@ class HeroMixin:
             self.hero_ability_cooldowns[current_player][hero_name] = {}
         self.hero_ability_cooldowns[current_player][hero_name][ability_name] = cooldown
 
+        # Player Level: award XP for using an active hero ability (non-targeted path)
+        self._track_stat(current_player, 'xp_earned', 2)
+
         return True
 
     def _activate_vow_of_silence(self, caster_hero_name, ability):
@@ -518,6 +523,9 @@ class HeroMixin:
         # Add message to action log
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
         self.add_message(f"Player {owner + 1}: Relentless Charge summoned {cavalry_spawned} Cavalry in {target_territory}{haste_msg}")
+
+        # Player Level: award XP for using active hero ability (targeted)
+        self._track_stat(owner, 'xp_earned', 2)
 
         return (True, None)
 
@@ -719,6 +727,9 @@ class HeroMixin:
                 saved_msg.append(f"{mines_saved} Mine(s)")
             self.add_message(f"  {' and '.join(saved_msg)} saved by Champion of the People!")
 
+        # Player Level: award XP for using active hero ability (targeted)
+        self._track_stat(owner, 'xp_earned', 2)
+
         return (True, None)
 
     def execute_levy(self, target_territory, owner):
@@ -745,6 +756,9 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {owner + 1}: Levy collected {income} Gold from {target_territory}!")
+
+        # Player Level: award XP for using active hero ability (targeted)
+        self._track_stat(owner, 'xp_earned', 2)
 
         return (True, None)
 
@@ -859,6 +873,9 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {owner + 1}: Decisive Strike removed {armies_to_remove} armies from {target_territory}!")
+
+        # Player Level: award XP for using active hero ability (targeted)
+        self._track_stat(owner, 'xp_earned', 2)
 
         return (True, None)
 
@@ -988,6 +1005,9 @@ class HeroMixin:
         # Add message to action log
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
         self.add_message(f"Player {owner + 1}: Valorous Charge moved {units_to_move} units from {keep_territory} to {target_territory}{haste_msg}")
+
+        # Player Level: award XP for using active hero ability (targeted)
+        self._track_stat(owner, 'xp_earned', 2)
 
         return (True, None)
 
@@ -1128,6 +1148,9 @@ class HeroMixin:
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
         self.add_message(f"Player {owner + 1}: Royal Charisma stole {units_to_steal} units from {target_territory} to {narn_keep_territory}{haste_msg}!")
 
+        # Player Level: award XP for using active hero ability (targeted)
+        self._track_stat(owner, 'xp_earned', 2)
+
         return (True, None)
 
     def execute_regicide(self, target_territory, owner):
@@ -1191,6 +1214,9 @@ class HeroMixin:
         else:
             # No hero found - ability is wasted
             self.add_message(f"Player {owner + 1}: Regicide targeted {target_territory}, but no hero was found!")
+
+        # Player Level: award XP for using active hero ability (targeted)
+        self._track_stat(owner, 'xp_earned', 2)
 
         return (True, None)
 

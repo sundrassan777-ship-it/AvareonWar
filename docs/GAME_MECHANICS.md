@@ -371,6 +371,31 @@ Each of the 57 territories on the map grants one permanent bonus to its owner. B
 
 ---
 
+## 🏆 Player Level System
+
+Persistent player level that tracks progression across all game modes. XP is earned from gameplay actions and end-of-game bonuses. Stored in `config.json` via `settings_manager`.
+
+**Level Progression:** Tiered XP requirements — 100 XP/level for levels 1-10, scaling up to 10,000 XP/level for levels 501+. Max level 10,000.
+
+**XP from Gameplay Actions:**
+- Train a unit: +2, Build a building: +2, Conquer neutral territory: +2
+- Conquer enemy territory (no battle): +4, Conquer enemy territory (battle): +8
+- Train a hero: +4, Kill a hero: +10, Use active hero ability: +2, Research tech: +4
+
+**End-of-Game Bonuses:**
+- Custom/MP defeat: +25 XP, Custom/MP victory: +50 XP
+- MP victory doubled to +100 when enemy team has >= as many human players as yours
+- Campaign first-time mission win: +100 XP (one-time per mission)
+- Campaign defeat or repeat win: 0 XP
+
+**Eligibility:** Campaign always eligible. Custom/MP require at least 1 enemy player. No XP on premature quit.
+
+**Halving:** If player's team has more total players than enemy team (e.g. 3v1, 2v1), all XP (actions + bonuses) is halved.
+
+**UI:** Level bar in Profile panel (gold fill, right of player name). Animated XP bar in Recap screen after achievements with level-up particle burst.
+
+---
+
 ## 👥 Player System
 
 **Players 1-8:**

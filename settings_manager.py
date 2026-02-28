@@ -61,6 +61,9 @@ SETTING_TYPES = {
     'achievement_stats': (dict,),
     'earned_achievements': (dict,),
     'selected_title': (str, type(None)),
+    # Player Level system persistence
+    'player_xp': (int,),
+    'campaign_missions_xp_claimed': (list,),
 }
 
 
@@ -117,7 +120,11 @@ class SettingsManager:
             # Achievement system
             'achievement_stats': {},       # Cumulative stats: {'custom_game_ai_wins': 0, ...}
             'earned_achievements': {},     # Earned achievements: {'achievement_id': 'ISO_timestamp', ...}
-            'selected_title': None         # Currently selected title string or None
+            'selected_title': None,        # Currently selected title string or None
+
+            # Player Level system
+            'player_xp': 0,                    # Total accumulated player XP
+            'campaign_missions_xp_claimed': [], # Mission IDs that granted first-time 100 XP bonus
         }
 
         # Current settings (loaded from file or defaults)
@@ -381,6 +388,24 @@ class SettingsManager:
     def set_selected_title(self, title):
         """Set currently selected profile title"""
         self.settings['selected_title'] = title
+
+    # --- Player Level system accessors ---
+
+    def get_player_xp(self):
+        """Get total accumulated player XP"""
+        return self.settings.get('player_xp', 0)
+
+    def set_player_xp(self, xp):
+        """Set total accumulated player XP"""
+        self.settings['player_xp'] = xp
+
+    def get_campaign_missions_xp_claimed(self):
+        """Get list of campaign mission IDs that granted first-time XP bonus"""
+        return self.settings.get('campaign_missions_xp_claimed', [])
+
+    def set_campaign_missions_xp_claimed(self, missions):
+        """Set list of campaign mission IDs that granted first-time XP bonus"""
+        self.settings['campaign_missions_xp_claimed'] = missions
 
     def apply_to_game(self, game):
         """

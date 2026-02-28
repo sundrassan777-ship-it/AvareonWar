@@ -2,6 +2,19 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-02-27 - Player Level System
+
+- **New feature:** Persistent Player Level system with XP earned from gameplay actions and end-of-game bonuses
+  - **New file:** `player_level.py` — core XP/level logic, tiered progression formula, persistence via `settings_manager`
+  - **XP actions:** unit training (+2), building (+2), neutral conquest (+2), enemy uncontested conquest (+4), battle conquest (+8), hero training (+4), hero kill (+10), hero ability (+2), tech research (+4)
+  - **End-of-game bonuses:** defeat (+25), victory (+50, doubled to 100 in MP vs equal/more humans), campaign first-time win (+100)
+  - **Eligibility:** Campaign always; Custom/MP only if >=1 enemy exists; no XP on premature quit
+  - **Halving:** All XP halved if player's team outnumbers enemy team
+  - **Profile panel:** Level bar with gold fill displayed to the right of player name in main menu Profile
+  - **Recap screen:** Animated XP bar after achievement popups with 2s fill animation, golden particle burst on level-up
+  - Level formula: 100 XP/level (1-10), 250 (11-20), 500 (21-40), 1000 (41-100), 2500 (101-200), 5000 (201-500), 10000 (501-10000); max level 10,000
+  - XP hooks in `game_state/buildings.py`, `heroes.py`, `military.py` (10 sites total)
+
 ## 2026-02-27 - Fix Territory Bonuses Not Updating After Conquest
 
 - **Bug fix:** Territorial bonuses (income, unit cost, building cost, unit strength, etc.) were permanently cached from game start and never refreshed when territories changed ownership

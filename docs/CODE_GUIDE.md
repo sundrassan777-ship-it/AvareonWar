@@ -2138,6 +2138,28 @@ def is_action_allowed(self, action_type, **kwargs):
 - **Add new loading task**: Append to `_build_task_list()` in `loading_screen.py`
 - **Change multiplayer sync logic**: Modify `_send_game_ready()` / `_poll_network_ready()` in `loading_screen.py`
 
+## Player Level System
+
+**Files:** `player_level.py` (logic), `settings_manager.py` (persistence), `main_menu.py` (profile UI), `recap_screen.py` (recap UI)
+
+The player level system tracks persistent XP across games. XP is accumulated during gameplay via `_track_stat(player, 'xp_earned', amount)` hooks in `game_state/buildings.py`, `heroes.py`, and `military.py`. At game end, `player_level_manager.record_game_xp(game)` reads the accumulated stat, applies eligibility checks, halving, and end-of-game bonuses, then persists via `settings_manager`.
+
+**Architecture:**
+- `player_level.py`: Singleton `PlayerLevelManager`, tiered XP formula (`XP_TIERS`), `xp_for_level()`/`level_from_xp()` conversion, `record_game_xp()` end-of-game calculation
+- `game_state/`: 10 hook sites use `_track_stat(player, 'xp_earned', amount)` — stats tracked for all players, only human player's read at game end
+- `main_menu.py`: Gold-filled level bar in profile panel (to the right of name input)
+- `recap_screen.py`: Animated XP bar after achievement popups with level-up particle burst
+
+### When to Modify
+
+- **Change XP amounts per action**: Edit constants in `player_level.py` (`XP_UNIT_TRAINED`, `XP_BUILDING_BUILT`, etc.)
+- **Change level progression formula**: Edit `XP_TIERS` list in `player_level.py`
+- **Add new XP-granting action**: Add `self._track_stat(player_index, 'xp_earned', amount)` at the event site in `game_state/`
+- **Change end-of-game bonuses**: Edit `_calculate_end_bonus()` in `player_level.py`
+- **Change eligibility/halving rules**: Edit `_has_enemy_player()` / `_should_halve()` in `player_level.py`
+- **Change profile level bar appearance**: Edit `_draw_profile_panel()` in `main_menu.py`
+- **Change recap XP bar animation**: Edit `_update_xp_bar()` / `_draw_xp_bar()` in `recap_screen.py`
+
 ## Version Info
 
 **Last Updated:** February 2026

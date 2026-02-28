@@ -343,6 +343,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
                 'gold_lost_to_taxation': 0, 'max_income_per_turn': 0,
                 'economy_buildings_built': 0, 'barracks_built': 0,
                 'keeps_built': 0, 'buildings_destroyed': 0,
+                'xp_earned': 0,  # Player Level system: accumulated XP from gameplay actions
             }
 
         # Building system

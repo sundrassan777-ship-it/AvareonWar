@@ -12699,6 +12699,10 @@ if __name__ == "__main__":
         # Record game result and check for newly earned achievements
         newly_earned = achievement_manager.record_game_result(game)
 
+        # Player Level: record XP earned during this game and persist
+        from player_level import player_level_manager
+        xp_result = player_level_manager.record_game_xp(game)
+
         end_stats = game.game_state.get_end_game_stats()
         player_names = [game.game_state.get_player_name(i) for i in range(game.game_state.num_players)]
         player_colors = game.game_state.player_colors[:game.game_state.num_players]
@@ -12710,7 +12714,8 @@ if __name__ == "__main__":
             player_colors=player_colors,
             winner_index=winner,
             num_players=game.game_state.num_players,
-            newly_earned_achievements=newly_earned
+            newly_earned_achievements=newly_earned,
+            xp_result=xp_result
         )
         recap.run()
 
