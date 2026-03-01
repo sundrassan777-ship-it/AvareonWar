@@ -57,7 +57,7 @@ class CampaignScreen:
             {'id': 'mission_2', 'text': 'Chapter 2: Early Eastern Conquests'},
             {'id': 'mission_3', 'text': 'Chapter 3: Storms above the West'},
             {'id': 'mission_4', 'text': 'Chapter 4: Domination'},
-            {'id': 'mission_5', 'text': 'Chapter 5: TBD'},
+            {'id': 'mission_5', 'text': 'Chapter 5: The First War'},
             {'id': 'mission_6', 'text': 'Chapter 6: TBD'},
         ]
 

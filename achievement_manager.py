@@ -448,11 +448,11 @@ ACHIEVEMENTS = [
         'stat_key': 'campaign_mission_4_bonus',
         'stat_threshold': 1,
     },
-    # Mission 5: TBD — completion
+    # Mission 5: The First War — completion
     {
         'id': 'campaign_mission_5',
-        'name': 'Chapter 5',
-        'description': 'Complete Chapter 5.',
+        'name': 'The First War',
+        'description': 'Complete Chapter 5: The First War.',
         'category': 'campaign',
         'icon': 'assets/achievements/AchievementIcons/Campaign5Achiev.png',
         'reward_type': None,
@@ -460,15 +460,16 @@ ACHIEVEMENTS = [
         'stat_key': 'campaign_mission_5_completed',
         'stat_threshold': 1,
     },
-    # Mission 5 Bonus — placeholder
+    # Mission 5 Bonus — conquer all Azincourne Empire territories and win
     {
         'id': 'campaign_mission_5_bonus',
-        'name': 'Chapter 5 Bonus',
-        'description': 'Complete the bonus objective in Chapter 5.',
+        'name': 'Change of Command',
+        'description': 'Conquer all territories controlled by the Azincourne Empire and win Chapter 5: The First War.',
         'category': 'campaign',
-        'icon': 'assets/achievements/AchievementIcons/Campaign5Bonus.png',
-        'reward_type': None,
-        'reward_id': None,
+        'icon': 'assets/achievements/AchievementIcons/Campaign5BonusAchiev.png',
+        'reward_type': 'icon',
+        'reward_id': 'assets/achievements/RewardsIcons/AlexiusBrennhen.png',
+        'reward_name': 'Alexius Brennhen Icon',
         'stat_key': 'campaign_mission_5_bonus',
         'stat_threshold': 1,
     },
@@ -524,6 +525,7 @@ ALL_REWARD_ICON_PATHS = [
     'assets/achievements/RewardsIcons/Fighter.png',
     'assets/achievements/RewardsIcons/Knight.png',
     'assets/achievements/RewardsIcons/regnus.png',
+    'assets/achievements/RewardsIcons/AlexiusBrennhen.png',
 ]
 
 # Build lookup: reward_icon_path -> achievement that awards it (or None)

@@ -4,6 +4,7 @@
 # Features custom hybrid AI (normal build/train, attack-player-only, ramp limit,
 # defensive minimums), pre-assigned hero, and territory display name overrides.
 
+import copy
 import pygame
 import map_data
 from utils.logger import get_logger
@@ -386,8 +387,8 @@ class Mission4:
             for plot_idx, building_type in config.get("buildings", {}).items():
                 gs.buildings[territory][plot_idx] = building_type
 
-            # Set garrison units
-            units = config.get("units", [])
+            # Set garrison units — deep copy to prevent TERRITORY_SETUP mutation on restart
+            units = copy.deepcopy(config.get("units", []))
             unmoved = len(units)
             gs.set_garrison_armies(territory, owner, unmoved=unmoved, moved=0, units=units)
 

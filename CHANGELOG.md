@@ -2,6 +2,20 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-01 - Campaign Mission 5: The First War
+
+- **New feature:** Implemented Campaign Mission 5 "The First War"
+  - 3 factions: Human (Red) + Elletic Rebels (Yellow, allied) vs Azincourne Empire (Blue)
+  - 17 playable territories with alliance system (player_teams [0, 0, 1])
+  - Normal AI handles both AI players (alliance-aware via are_allies())
+  - Victory: liberate 9 specific territories (controlled by either allied player)
+  - Defeat: Elletic Isles falls to Azincourne, or human loses all territories
+  - 2 quest objectives, intro zoom/transmission sequence, flag icon remapping
+  - Human starts with Efficient Farming I + Master Planner I pre-researched
+  - Territory rename: "The Holy Land" → "Neimer Coast", "Elletian Isles" → "Elletic Isles"
+  - Bonus achievement: win without losing any starting allied territories
+  - Updated campaign screen, mission registry, achievement entries
+
 ## 2026-03-01 - Player Level Achievements
 
 - **New feature:** 12 achievements for reaching player levels 5, 10, 20, 30, 40, 50, 75, 100, 150, 200, 250, 500

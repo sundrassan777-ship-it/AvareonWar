@@ -4,6 +4,7 @@
 # Features dynamic alliance (Uhmayya joins then betrays), semi-dormant AI,
 # heroes enabled, and AI restrictions (half-unit movement, no heroes).
 
+import copy
 import pygame
 import map_data
 import random
@@ -546,7 +547,8 @@ class Mission3:
             for plot_idx, building_type in config.get("buildings", {}).items():
                 gs.buildings[territory][plot_idx] = building_type
 
-            units = config.get("units", [])
+            # Deep copy to prevent TERRITORY_SETUP mutation on restart
+            units = copy.deepcopy(config.get("units", []))
             unmoved = len(units)
             gs.set_garrison_armies(territory, owner, unmoved=unmoved, moved=0, units=units)
 
