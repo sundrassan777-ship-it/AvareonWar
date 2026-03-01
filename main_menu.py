@@ -175,6 +175,7 @@ class MainMenu:
             'assets/achievements/RewardsIcons/Ranger.png': 'Ranger',
             'assets/achievements/RewardsIcons/Fighter.png': 'Fighter',
             'assets/achievements/RewardsIcons/Knight.png': 'Knight',
+            'assets/achievements/RewardsIcons/AlexiusBrennhen.png': 'Alexius Brennhen',
         }
 
         # Clock
