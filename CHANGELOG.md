@@ -2,6 +2,15 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-01 - Player Level Achievements
+
+- **New feature:** 12 achievements for reaching player levels 5, 10, 20, 30, 40, 50, 75, 100, 150, 200, 250, 500
+  - Category: General
+  - Level 5 has no reward; levels 10-500 each unlock a title reward (Scout, Soldier, Sergeant, Corporal, Lieutenant, High Lieutenant, Commander, High Commander, Captain, Marshal, High Marshal)
+  - Uses special `player_level` stat_key resolved from `PlayerLevelManager` instead of cumulative stats
+  - Achievement check now runs **after** XP recording so level changes are detected
+  - Icons: `assets/achievements/AchievementIcons/Level{N}.png`
+
 ## 2026-02-27 - Player Level System
 
 - **New feature:** Persistent Player Level system with XP earned from gameplay actions and end-of-game bonuses

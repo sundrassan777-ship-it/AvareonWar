@@ -12696,12 +12696,12 @@ if __name__ == "__main__":
         if not hasattr(game, 'game_state') or game.game_state.phase == 'setup':
             return
 
-        # Record game result and check for newly earned achievements
-        newly_earned = achievement_manager.record_game_result(game)
-
-        # Player Level: record XP earned during this game and persist
+        # Player Level: record XP earned first so level achievements can detect new level
         from player_level import player_level_manager
         xp_result = player_level_manager.record_game_xp(game)
+
+        # Record game result and check for newly earned achievements (after XP update)
+        newly_earned = achievement_manager.record_game_result(game)
 
         end_stats = game.game_state.get_end_game_stats()
         player_names = [game.game_state.get_player_name(i) for i in range(game.game_state.num_players)]

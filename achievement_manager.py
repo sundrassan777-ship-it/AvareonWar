@@ -16,6 +16,7 @@ Reward types: None, 'title' (shown under profile name), 'icon' (selectable in pr
 
 from datetime import datetime
 from settings_manager import settings
+from player_level import player_level_manager
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -85,6 +86,141 @@ ACHIEVEMENTS = [
         'reward_name': 'Knight Icon',
         'stat_key': 'cavalry_trained_total',
         'stat_threshold': 2000,
+    },
+    # --- Player Level Achievements ---
+    # These use the special stat_key 'player_level' which is resolved from
+    # PlayerLevelManager rather than the cumulative stats dict.
+    {
+        'id': 'level_5',
+        'name': 'Level 5',
+        'description': 'Reach Player Level 5.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level5.png',
+        'reward_type': None,
+        'reward_id': None,
+        'stat_key': 'player_level',
+        'stat_threshold': 5,
+    },
+    {
+        'id': 'level_10',
+        'name': 'Level 10',
+        'description': 'Reach Player Level 10.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level10.png',
+        'reward_type': 'title',
+        'reward_id': 'Scout',
+        'stat_key': 'player_level',
+        'stat_threshold': 10,
+    },
+    {
+        'id': 'level_20',
+        'name': 'Level 20',
+        'description': 'Reach Player Level 20.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level20.png',
+        'reward_type': 'title',
+        'reward_id': 'Soldier',
+        'stat_key': 'player_level',
+        'stat_threshold': 20,
+    },
+    {
+        'id': 'level_30',
+        'name': 'Level 30',
+        'description': 'Reach Player Level 30.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level30.png',
+        'reward_type': 'title',
+        'reward_id': 'Sergeant',
+        'stat_key': 'player_level',
+        'stat_threshold': 30,
+    },
+    {
+        'id': 'level_40',
+        'name': 'Level 40',
+        'description': 'Reach Player Level 40.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level40.png',
+        'reward_type': 'title',
+        'reward_id': 'Corporal',
+        'stat_key': 'player_level',
+        'stat_threshold': 40,
+    },
+    {
+        'id': 'level_50',
+        'name': 'Level 50',
+        'description': 'Reach Player Level 50.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level50.png',
+        'reward_type': 'title',
+        'reward_id': 'Lieutenant',
+        'stat_key': 'player_level',
+        'stat_threshold': 50,
+    },
+    {
+        'id': 'level_75',
+        'name': 'Level 75',
+        'description': 'Reach Player Level 75.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level75.png',
+        'reward_type': 'title',
+        'reward_id': 'High Lieutenant',
+        'stat_key': 'player_level',
+        'stat_threshold': 75,
+    },
+    {
+        'id': 'level_100',
+        'name': 'Level 100',
+        'description': 'Reach Player Level 100.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level100.png',
+        'reward_type': 'title',
+        'reward_id': 'Commander',
+        'stat_key': 'player_level',
+        'stat_threshold': 100,
+    },
+    {
+        'id': 'level_150',
+        'name': 'Level 150',
+        'description': 'Reach Player Level 150.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level150.png',
+        'reward_type': 'title',
+        'reward_id': 'High Commander',
+        'stat_key': 'player_level',
+        'stat_threshold': 150,
+    },
+    {
+        'id': 'level_200',
+        'name': 'Level 200',
+        'description': 'Reach Player Level 200.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level200.png',
+        'reward_type': 'title',
+        'reward_id': 'Captain',
+        'stat_key': 'player_level',
+        'stat_threshold': 200,
+    },
+    {
+        'id': 'level_250',
+        'name': 'Level 250',
+        'description': 'Reach Player Level 250.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level250.png',
+        'reward_type': 'title',
+        'reward_id': 'Marshal',
+        'stat_key': 'player_level',
+        'stat_threshold': 250,
+    },
+    {
+        'id': 'level_500',
+        'name': 'Level 500',
+        'description': 'Reach Player Level 500.',
+        'category': 'general',
+        'icon': 'assets/achievements/AchievementIcons/Level500.png',
+        'reward_type': 'title',
+        'reward_id': 'High Marshal',
+        'stat_key': 'player_level',
+        'stat_threshold': 500,
     },
     {
         'id': 'hero_slayer',
@@ -546,7 +682,11 @@ class AchievementManager:
             ach_id = ach['id']
             if ach_id in self.earned:
                 continue  # Already earned
-            stat_value = self.stats.get(ach['stat_key'], 0)
+            # Level achievements pull from PlayerLevelManager, not cumulative stats
+            if ach['stat_key'] == 'player_level':
+                stat_value = player_level_manager.get_level()
+            else:
+                stat_value = self.stats.get(ach['stat_key'], 0)
             if stat_value >= ach['stat_threshold']:
                 timestamp = datetime.now().isoformat()
                 self.earned[ach_id] = timestamp
@@ -564,7 +704,11 @@ class AchievementManager:
             entry['earned'] = ach['id'] in self.earned
             entry['earned_timestamp'] = self.earned.get(ach['id'], None)
             # Include current progress toward the stat threshold
-            entry['stat_progress'] = self.stats.get(ach['stat_key'], 0)
+            # Level achievements pull from PlayerLevelManager, not cumulative stats
+            if ach['stat_key'] == 'player_level':
+                entry['stat_progress'] = player_level_manager.get_level()
+            else:
+                entry['stat_progress'] = self.stats.get(ach['stat_key'], 0)
             result.append(entry)
         return result
 
