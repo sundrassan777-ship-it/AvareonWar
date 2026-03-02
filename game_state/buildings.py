@@ -601,12 +601,12 @@ class BuildingMixin:
         # M1 fix: Use stored cost_paid for accurate refund (bonuses may have changed
         # since training started). Fall back to recalculating if legacy tuple format.
         entry = self.training_queue[territory][barracks_plot_index][queue_index]
+        owner = self.territory_owners[territory]
         if len(entry) >= 3:
             unit_type, turns_remaining, unit_cost = entry
         else:
             unit_type, turns_remaining = entry[:2]
             base_cost = self.UNIT_TYPES.get(unit_type, {}).get('cost', 25)
-            owner = self.territory_owners[territory]
             unit_cost = self.get_effective_cost(unit_type, base_cost, owner)
 
         # Refund gold
