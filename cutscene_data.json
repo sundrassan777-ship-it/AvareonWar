@@ -950,10 +950,174 @@
     ]
   },
   "mission_5_intro": {
-    "slides": []
+    "slides": [
+      {
+        "image": "assets/cutscenes/M5C1I1.png",
+        "camera_a": {
+          "x": 73.52781954887209,
+          "y": 454.89060150375934,
+          "width": 663.2601503759398,
+          "height": 373.08383458646614,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 170.53834586466155,
+          "y": 52.88872180451139,
+          "width": 1300.7654135338348,
+          "height": 731.6805451127822,
+          "rotation": 0
+        },
+        "pan_duration": 13.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M5C1I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "55 years after Regnus's death, the air was thick with tension. People of the east, yearning to be free from Azincourne's yoke, have been waiting for so long."
+      },
+      {
+        "image": "assets/cutscenes/M5C1I2.png",
+        "camera_a": {
+          "x": 510.2601503759398,
+          "y": 66.67819548872177,
+          "width": 564.1699248120301,
+          "height": 317.34558270676695,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 42.724791215799996,
+          "y": 64.10503941471995,
+          "width": 1458.2375939849624,
+          "height": 820.2586466165413,
+          "rotation": 0.0
+        },
+        "pan_duration": 19.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M5C1I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Soon, a massive rebellion commenced. At the helm of this rebellion were young nobles - Alexius Brennhen of Noxfort and Derion Royen of Arcburg. They rallied the population and the nobles behind them and rose up against the Empire."
+      },
+      {
+        "image": "assets/cutscenes/M5C1I3.png",
+        "camera_a": {
+          "x": 37.52631578947373,
+          "y": 259.1593984962406,
+          "width": 476.3984962406015,
+          "height": 267.9741541353384,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 749.4992481203008,
+          "y": 294.64511278195494,
+          "width": 768,
+          "height": 432,
+          "rotation": 0
+        },
+        "pan_duration": 14.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M5C1I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Following suit were the peoples of the Elletic lands. The two powerful rebellions took Azincourne's stretched military by surprise - and were ready to liberate the east from its zealotry at last."
+      }
+    ]
   },
   "mission_5_outro": {
-    "slides": []
+    "slides": [
+      {
+        "image": "assets/cutscenes/M5C2I1.png",
+        "camera_a": {
+          "x": 434.80751879699255,
+          "y": 37.42105263157896,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 45.81052631578953,
+          "y": 192.2578007518798,
+          "width": 1453.6180451127818,
+          "height": 817.6601503759398,
+          "rotation": 0
+        },
+        "pan_duration": 10.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M5C2I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The First Continental War was over. And the liberators were standing victorious over the remnants of the Azincournean empire."
+      },
+      {
+        "image": "assets/cutscenes/M5C2I2.png",
+        "camera_a": {
+          "x": 43.68571428571431,
+          "y": 205.26466165413535,
+          "width": 608.8255639097744,
+          "height": 342.46437969924807,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 877.3293233082705,
+          "y": 219.09624060150367,
+          "width": 606.2932330827069,
+          "height": 341.03994360902266,
+          "rotation": 0
+        },
+        "pan_duration": 16.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M5C2I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The magnitude of the war and the subsequent changes forced the first ever conference among the kings and the nobles of the entire east - the Council of the Iron Valley, which would decide the order of the post-war world."
+      },
+      {
+        "image": "assets/cutscenes/M5C2I3.png",
+        "camera_a": {
+          "x": 91.81904761904775,
+          "y": 68.72412164670936,
+          "width": 1408.1069340016707,
+          "height": 792.0601503759398,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 392.6188805346701,
+          "y": 225.07241715399607,
+          "width": 573.9675856307434,
+          "height": 322.8567669172932,
+          "rotation": 0
+        },
+        "pan_duration": 28.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M5C2I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "By decrees of the Council, five kingdoms emerged from the Empire's ashes - Kingdom of Azincourne itself, Heilonic Kingdom of Révia, Kingdom of Venexia, the Holy Kingdom of Elletia and the United Kingdom of Naragonthid. All mighty kingdoms in their own regard - but only two of them would continue to shape the destiny of the world."
+      }
+    ]
   },
   "mission_6_intro": {
     "slides": []

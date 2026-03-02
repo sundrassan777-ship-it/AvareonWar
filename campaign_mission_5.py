@@ -229,24 +229,24 @@ TERRITORY_SETUP = {
 INTRO_SEQUENCE = [
     # Step 0: Zoom to Leuse Valley
     ("zoom_to", "Leuse Valley", ""),
-    # Step 1: First transmission (~5s estimated)
+    # Step 1: First transmission (5s voice line M5T1)
     ("wait", 5.0, "The time has come! The Azincourne Empire shall rule the east no longer!"),
-    # Step 2: Second transmission (~7s estimated)
-    ("wait", 7.0, "We must reclaim what is rightfully ours! We have successfully driven them out of Nordica and the Leuse Valley, but we must not stop there!"),
+    # Step 2: Second transmission (9s voice line M5T2)
+    ("wait", 9.0, "We must reclaim what is rightfully ours! We have successfully driven them out of Nordica and the Leuse Valley, but we must not stop there!"),
     # Step 3: Pan camera to Elland (1s)
     ("pan_to", "Elland", ""),
-    # Step 4: Third transmission (~6s estimated)
+    # Step 4: Third transmission (6s voice line M5T3)
     ("wait", 6.0, "The Elletic Rebels have also begun their assault on the mainland. Their help will be invaluable for our liberation!"),
     # Step 5: Pan camera back to Leuse Valley (1s)
     ("pan_to", "Leuse Valley", ""),
-    # Step 6: Fourth transmission (~5s estimated)
-    ("wait", 5.0, "Seize our chance! Strike as one! Death to the oppressors!"),
+    # Step 6: Fourth transmission (4s voice line M5T4)
+    ("wait", 4.0, "Seize our chance! Strike as one! Death to the oppressors!"),
     # Step 7: Start gameplay
     ("start_game", 0, ""),
 ]
 
-# Voice line mapping (intro step index → voice key). Populate when voice files are ready.
-INTRO_STEP_TO_VOICE = {}
+# Voice line mapping (intro step index → voice key for M5T1–M5T4)
+INTRO_STEP_TO_VOICE = {1: "M5T1", 2: "M5T2", 4: "M5T3", 6: "M5T4"}
 
 # Speaker name used for all mission 5 transmissions
 MISSION_5_SPEAKER = "Rebellious Noble"
@@ -329,8 +329,9 @@ class Mission5:
         self._victory_waiting = False
         self._defeat_waiting = False
 
-        # Defeat text (set dynamically based on defeat cause)
+        # Defeat text and voice key (set dynamically based on defeat cause)
         self._defeat_text = "We have failed. And the suffering of our people shall not end.."
+        self._defeat_voice_key = "M5T7"
 
         # Allow turn timer to auto-end player turns
         self.allow_timer_expiry = True
@@ -725,8 +726,11 @@ class Mission5:
 
                 text = "We have prevailed! The Azincournean Empire cannot hold! Liberation is at hand!"
                 self._show_transmission(text, speaker=MISSION_5_SPEAKER)
-                self.transmission_duration = 7.0
+                self.transmission_duration = 6.0
                 self.transmission_timer = 0.0
+                # Play victory voice line M5T5
+                from global_sound import play_transmission_sound
+                play_transmission_sound("M5T5")
 
         # Deferred defeat: same pattern — wait for battles/popups, then show defeat
         if self._defeat_waiting and gameplay_idle:
@@ -736,8 +740,11 @@ class Mission5:
                 self.game_paused = True
 
                 self._show_transmission(self._defeat_text, speaker=MISSION_5_SPEAKER)
-                self.transmission_duration = 5.0
+                self.transmission_duration = 4.0
                 self.transmission_timer = 0.0
+                # Play defeat voice line (M5T6 for ally defeat, M5T7 for player defeat)
+                from global_sound import play_transmission_sound
+                play_transmission_sound(self._defeat_voice_key)
 
         # Update victory sequence — return 'exit_campaign' to tell main.py to exit game loop
         result = self._update_victory_sequence(delta_time)
@@ -1221,6 +1228,7 @@ class Mission5:
         if territory == FAIL_TERRITORY and new_owner == 2:
             logger.info("Elletic Isles fell to Azincourne — defeat!")
             self._defeat_text = "Our allies have been defeated! Without them, all hope is lost!"
+            self._defeat_voice_key = "M5T6"
             self._start_defeat()
             return
 
@@ -1231,6 +1239,7 @@ class Mission5:
         if not human_has_territory:
             logger.info("Human player eliminated — defeat!")
             self._defeat_text = "We have failed. And the suffering of our people shall not end.."
+            self._defeat_voice_key = "M5T7"
             self._start_defeat()
             return
 
