@@ -26,6 +26,7 @@ import threading
 import time
 import select
 import hashlib
+import hmac
 import secrets
 from typing import Optional, Dict, List
 from dataclasses import dataclass, field
@@ -145,6 +146,15 @@ class NetworkServer:
         self._rate_limit_window = 10.0  # seconds
         self._rate_limit_max = 5  # max connections per window per IP
         self._last_rate_limit_cleanup = 0  # monotonic time of last stale-entry pruning
+
+        # Security: reconnection rate limiting (H2 fix — anti-brute-force)
+        self._reconnect_attempts = {}  # {ip: [timestamp, ...]}
+        self._reconnect_rate_limit_window = 30.0  # seconds
+        self._reconnect_rate_limit_max = 5  # max reconnect attempts per window per IP
+
+        # Security: per-client sequence number tracking (H1 fix — anti-replay)
+        # Maps player_index -> last accepted sequence number
+        self._client_last_seq = {}  # {player_index: int}
 
         # UPnP port forwarding manager (created on demand via setup_upnp())
         self.upnp_manager = None
@@ -475,6 +485,23 @@ class NetworkServer:
                            f"ignoring")
             return
 
+        # Security (H3): Validate data fields (ranges, types, lengths)
+        if not self.protocol.validate_message_data(message):
+            logger.warning(f"Message data validation failed from player "
+                           f"{from_player_index}, ignoring")
+            return
+
+        # Security (H1): Sequence number validation to prevent replay attacks.
+        # Reject messages with seq <= last accepted seq for this client.
+        msg_seq = message.get('seq')
+        if isinstance(msg_seq, int):
+            last_seq = self._client_last_seq.get(from_player_index, -1)
+            if msg_seq <= last_seq:
+                logger.warning(f"Replay/duplicate detected from player "
+                               f"{from_player_index}: seq {msg_seq} <= {last_seq}")
+                return
+            self._client_last_seq[from_player_index] = msg_seq
+
         msg_type = message.get('type')
 
         # Handle connection messages
@@ -498,14 +525,34 @@ class NetworkServer:
             # Forward to game loop
             self.message_queue.receive_message(message)
 
+    @staticmethod
+    def _sanitize_player_name(name: str, fallback: str = "Player") -> str:
+        """Sanitize player name: strip control chars, limit length, ensure non-empty.
+
+        Security: prevents null bytes, control characters, and oversized names
+        that could cause display/logging issues or downstream crashes.
+        """
+        import unicodedata
+        if not isinstance(name, str):
+            return fallback
+        # Strip control characters (Unicode category C) and null bytes
+        name = ''.join(
+            ch for ch in name
+            if unicodedata.category(ch)[0] != 'C'
+        )
+        # Truncate and strip whitespace
+        name = name[:32].strip()
+        return name if name else fallback
+
     def _handle_connect_request(self, message: dict, player_index: int):
         """Handle connection request from client"""
         data = message.get('data', {})
         client_version = data.get('version')
-        # L6 fix: Validate and truncate player name length
-        player_name = data.get('player_name', f"Player {player_index + 1}")
-        if len(player_name) > 32:
-            player_name = player_name[:32]
+        # Security: sanitize player name (strip control chars, limit length)
+        player_name = self._sanitize_player_name(
+            data.get('player_name', ''),
+            fallback=f"Player {player_index + 1}"
+        )
 
         # Check version compatibility
         from network_config import NETWORK_VERSION
@@ -523,8 +570,8 @@ class NetworkServer:
             self._disconnect_client(player_index)
             return
 
-        # Generate reconnection password
-        password = secrets.token_urlsafe(6)[:8]  # 8-char password
+        # Generate reconnection password (16 chars for stronger entropy)
+        password = secrets.token_urlsafe(16)[:16]
         password_hash = hashlib.sha256(password.encode()).hexdigest()
 
         # Update client info
@@ -575,6 +622,36 @@ class NetworkServer:
         password = data.get('password', '')
         password_hash = hashlib.sha256(password.encode()).hexdigest()
 
+        # Security (H2): Rate-limit reconnection attempts to prevent brute-force
+        client_ip = None
+        with self._clients_lock:
+            if from_socket_player_index in self.clients:
+                sock = self.clients[from_socket_player_index].socket
+                try:
+                    client_ip = sock.getpeername()[0]
+                except Exception:
+                    pass
+        if client_ip:
+            now = time.monotonic()
+            attempts = self._reconnect_attempts.get(client_ip, [])
+            attempts = [t for t in attempts if now - t < self._reconnect_rate_limit_window]
+            if len(attempts) >= self._reconnect_rate_limit_max:
+                logger.warning(f"Reconnect rate limited for {client_ip} "
+                               f"({len(attempts)} attempts in "
+                               f"{self._reconnect_rate_limit_window}s)")
+                with self._clients_lock:
+                    if from_socket_player_index in self.clients:
+                        try:
+                            reject_msg = self.protocol.encode_message(
+                                MessageType.RECONNECT_REJECT,
+                                {'reason': 'Too many reconnection attempts'})
+                            self.clients[from_socket_player_index].socket.sendall(reject_msg)
+                        except Exception:
+                            pass
+                return
+            attempts.append(now)
+            self._reconnect_attempts[client_ip] = attempts
+
         # Clean up expired reconnection entries
         self._cleanup_expired_reconnects()
 
@@ -584,8 +661,10 @@ class NetworkServer:
 
         with self._clients_lock:
             for idx, disconnected in self.disconnected_players.items():
+                # Security: use hmac.compare_digest for constant-time comparison
+                # to prevent timing attacks on password hash
                 if (disconnected.player_name.lower() == player_name.lower() and
-                    disconnected.password_hash == password_hash):
+                    hmac.compare_digest(disconnected.password_hash, password_hash)):
                     matching_player = disconnected
                     original_player_index = idx
                     break

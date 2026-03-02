@@ -346,15 +346,21 @@ class NetworkProtocol:
 
     # ========== Chat Message (Extended) ==========
 
+    # Security: maximum chat message length to prevent memory exhaustion / DoS
+    MAX_CHAT_LENGTH = 500
+
     def create_chat_message(self, player_index: int, message: str,
                             channel: str = "all") -> bytes:
         """Create a chat message.
 
         Args:
             player_index: Sender's slot index (0-3)
-            message: Chat message text
+            message: Chat message text (truncated to MAX_CHAT_LENGTH)
             channel: 'all' for everyone, 'team' for allies only
         """
+        # Security: cap chat length to prevent oversized messages
+        if len(message) > self.MAX_CHAT_LENGTH:
+            message = message[:self.MAX_CHAT_LENGTH]
         return self.encode_message(MessageType.CHAT_MESSAGE, {
             "player_index": player_index,
             "message": message,
@@ -493,6 +499,142 @@ class NetworkProtocol:
             MessageType(message.get('type'))
         except ValueError:
             logger.warning(f"Unknown message type: {message.get('type')}")
+            return False
+
+        return True
+
+    def validate_message_data(self, message: Dict[str, Any]) -> bool:
+        """
+        Validate data fields of an incoming message based on its type.
+
+        Security: prevents malicious clients from sending out-of-range player
+        indices, negative army counts, oversized chat messages, etc.
+        Checks numeric ranges and string lengths for known message types.
+
+        Args:
+            message: Decoded message dict (must pass validate_message() first)
+
+        Returns:
+            True if data fields are valid, False if any field fails validation
+        """
+        msg_type = message.get('type')
+        data = message.get('data', {})
+        if not isinstance(data, dict):
+            logger.warning(f"Message data is not a dict: {type(data)}")
+            return False
+
+        def _valid_player_index(val):
+            """Player index must be int 0-3"""
+            return isinstance(val, int) and 0 <= val <= 3
+
+        def _valid_string(val, max_len=256):
+            """String field must be str within length limit"""
+            return isinstance(val, str) and len(val) <= max_len
+
+        # Per-type data field validation
+        try:
+            if msg_type in (MessageType.TERRITORY_SELECT, MessageType.LOBBY_JOIN,
+                            MessageType.LOBBY_LEAVE, MessageType.LOBBY_KICK,
+                            MessageType.PLAYER_DISCONNECT, MessageType.GAME_READY,
+                            MessageType.SIM_PLAYER_READY):
+                pi = data.get('player_index')
+                if pi is not None and not _valid_player_index(pi):
+                    logger.warning(f"Invalid player_index {pi} in {msg_type}")
+                    return False
+
+            elif msg_type == MessageType.LOBBY_SLOT_UPDATE:
+                pi = data.get('player_index')
+                if pi is not None and not _valid_player_index(pi):
+                    logger.warning(f"Invalid player_index {pi} in LOBBY_SLOT_UPDATE")
+                    return False
+                diff = data.get('ai_difficulty')
+                if diff is not None and not (isinstance(diff, int) and 0 <= diff <= 2):
+                    logger.warning(f"Invalid ai_difficulty {diff}")
+                    return False
+                team = data.get('team')
+                if team is not None and not (isinstance(team, int) and 0 <= team <= 3):
+                    logger.warning(f"Invalid team {team}")
+                    return False
+
+            elif msg_type == MessageType.AI_TAKEOVER:
+                pi = data.get('player_index')
+                if pi is not None and not _valid_player_index(pi):
+                    logger.warning(f"Invalid player_index {pi} in AI_TAKEOVER")
+                    return False
+                diff = data.get('ai_difficulty')
+                if diff is not None and not (isinstance(diff, int) and 0 <= diff <= 2):
+                    logger.warning(f"Invalid ai_difficulty {diff}")
+                    return False
+
+            elif msg_type == MessageType.CHAT_MESSAGE:
+                pi = data.get('player_index')
+                if pi is not None and not _valid_player_index(pi):
+                    logger.warning(f"Invalid player_index {pi} in CHAT_MESSAGE")
+                    return False
+                msg_text = data.get('message', '')
+                if not _valid_string(msg_text, self.MAX_CHAT_LENGTH):
+                    logger.warning(f"Chat message too long or invalid type")
+                    return False
+                channel = data.get('channel', 'all')
+                if channel not in ('all', 'team'):
+                    logger.warning(f"Invalid chat channel: {channel}")
+                    return False
+
+            elif msg_type == MessageType.MOVEMENT_ORDER:
+                count = data.get('army_count')
+                if count is not None and not (isinstance(count, int) and 1 <= count <= 999):
+                    logger.warning(f"Invalid army_count {count} in MOVEMENT_ORDER")
+                    return False
+                for field in ('from_territory', 'to_territory'):
+                    val = data.get(field)
+                    if val is not None and not _valid_string(val, 64):
+                        logger.warning(f"Invalid {field} in MOVEMENT_ORDER")
+                        return False
+
+            elif msg_type == MessageType.BUILDING_ORDER:
+                plot_idx = data.get('plot_index')
+                if plot_idx is not None and not (isinstance(plot_idx, int) and 0 <= plot_idx <= 10):
+                    logger.warning(f"Invalid plot_index {plot_idx}")
+                    return False
+                for field in ('territory', 'building_type'):
+                    val = data.get(field)
+                    if val is not None and not _valid_string(val, 64):
+                        logger.warning(f"Invalid {field} in BUILDING_ORDER")
+                        return False
+
+            elif msg_type == MessageType.TRAINING_ORDER:
+                plot_idx = data.get('barracks_plot')
+                if plot_idx is not None and not (isinstance(plot_idx, int) and 0 <= plot_idx <= 10):
+                    logger.warning(f"Invalid barracks_plot {plot_idx}")
+                    return False
+                for field in ('territory', 'unit_type'):
+                    val = data.get(field)
+                    if val is not None and not _valid_string(val, 64):
+                        logger.warning(f"Invalid {field} in TRAINING_ORDER")
+                        return False
+
+            elif msg_type == MessageType.SETUP_COMPLETE:
+                vc = data.get('victory_condition')
+                if vc is not None and not (isinstance(vc, int) and 0 <= vc <= 2):
+                    logger.warning(f"Invalid victory_condition {vc}")
+                    return False
+                tl = data.get('taxation_level')
+                if tl is not None and not (isinstance(tl, int) and 0 <= tl <= 4):
+                    logger.warning(f"Invalid taxation_level {tl}")
+                    return False
+                tm = data.get('turn_mode')
+                if tm is not None and not (isinstance(tm, int) and 0 <= tm <= 1):
+                    logger.warning(f"Invalid turn_mode {tm}")
+                    return False
+
+            elif msg_type == MessageType.SIM_ALLIANCE_CHOICE:
+                owner = data.get('new_owner')
+                if owner is not None and not _valid_player_index(owner):
+                    logger.warning(f"Invalid new_owner {owner}")
+                    return False
+
+        except Exception as e:
+            logger.warning(f"Data validation error for {msg_type}: {e}")
             return False
 
         return True

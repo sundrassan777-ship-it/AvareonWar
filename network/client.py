@@ -357,13 +357,11 @@ class NetworkClient:
             player_index = self.player_index
 
         # Store reconnection password if provided
+        # Security: never log the password -- it's a credential
         reconnect_password = data.get('reconnect_password', '')
         if reconnect_password:
             self.reconnect_password = reconnect_password
-            logger.info(f"Connection accepted - Player {player_index + 1}")
-            logger.debug(f"Reconnection password: {reconnect_password}")
-        else:
-            logger.info(f"Connection accepted - Player {player_index + 1}")
+        logger.info(f"Connection accepted - Player {player_index + 1}")
 
     def _handle_connect_reject(self, message: dict):
         """Handle connection rejection from server"""
