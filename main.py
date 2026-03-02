@@ -689,7 +689,7 @@ class Game:
         # Load unit type icons for UI display
         # Format: {unit_type: pygame.Surface}
         self.unit_icons = {}
-        unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']
+        unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']
         for unit_type in unit_types:
             icon_path = f"assets/mapicons/{unit_type}Icon.png"
             try:
@@ -4378,7 +4378,7 @@ class Game:
                 plot_x, plot_y = int(plot_x), int(plot_y)
                 
                 # Check if clicking on a training icon
-                unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']
+                unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']
                 num_units = len(unit_types)
                 
                 # Get scaled icon sizes for click detection (must match rendering!)
@@ -5271,7 +5271,7 @@ class Game:
         if armies > 0:
             composition = self.game_state.get_unit_composition(territory)
             if composition:
-                for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']:
+                for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']:
                     if unit_type in composition and composition[unit_type] > 0:
                         count = composition[unit_type]
                         battalion_name = f"{unit_type} Battalion" if count == 1 else f"{unit_type} Battalions"
@@ -5331,9 +5331,11 @@ class Game:
             unit_type = button_key
             unit_info = self.game_state.UNIT_TYPES[unit_type]
 
-            # Get counter name in plural form
+            # Get counter name in plural form (Captain has no counters)
             counters_name = unit_info['counters']
-            if counters_name == 'Cavalry':
+            if counters_name is None:
+                counters_plural = None  # Captain: no counter relationship
+            elif counters_name == 'Cavalry':
                 counters_plural = 'Cavalry'
             elif counters_name == 'Pikeman':
                 counters_plural = 'Pikemen'
@@ -5347,7 +5349,8 @@ class Game:
                 'Swordsman': 'S',
                 'Archer': 'A',
                 'Pikeman': 'P',
-                'Cavalry': 'C'
+                'Cavalry': 'C',
+                'Captain': 'T'
             }
             shortcut = keyboard_shortcuts.get(unit_type, '')
 
@@ -5361,8 +5364,15 @@ class Game:
                 [("normal_bold", f"Train {unit_type}", gold_color)],  # Title in gold, SemiBold weight
                 [("small_bold", "Cost:", silvery_color), ("small", f" {effective_cost} Gold", white_color)],  # Cost label bold, value normal (with discount)
                 [("small_bold", "Training Time:", silvery_color), ("small", " 1 turn", white_color)],  # Training time label bold, value normal
-                [("small_italic", f"Counters {counters_plural}.", bronze_color)],  # Counter info italic bronze
             ]
+            # Captain shows army bonus + extended movement instead of counter info
+            if counters_plural:
+                lines.append([("small_italic", f"Counters {counters_plural}.", bronze_color)])
+            else:
+                lines.append([("small_italic", "Support unit. Weak in combat, but increases power of", bronze_color)])
+                lines.append([("small_italic", "other units in the army by 12% and allows armies to", bronze_color)])
+                lines.append([("small_italic", "move across one more territory when reinforcing.", bronze_color)])
+                lines.append([("small_italic", "Bonuses do not stack.", bronze_color)])
 
             if shortcut:
                 lines.append([("small_bold", "Shortcut:", silvery_color), ("small", f" {shortcut}", white_color)])
@@ -5805,7 +5815,7 @@ class Game:
                 composition = self.game_state.get_unit_composition(territory)
                 if composition:
                     # Sort by unit type for consistent display
-                    for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']:
+                    for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']:
                         if unit_type in composition and composition[unit_type] > 0:
                             count = composition[unit_type]
                             # Use Battalion terminology
@@ -6229,7 +6239,7 @@ class Game:
         if armies > 0:
             composition = self.game_state.get_unit_composition(territory)
             if composition:
-                for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']:
+                for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']:
                     if unit_type in composition and composition[unit_type] > 0:
                         count = composition[unit_type]
                         # Use Battalion terminology
@@ -7426,10 +7436,10 @@ class Game:
         armies_text = self.small_font.render(f"Armies: {current_armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", True, BROWN_TEXT_SECONDARY)
         self.screen.blit(armies_text, (info_x, info_y))
 
-        # Training buttons - 1.7x larger (75% of 2x = 15% reduction from 2x)
+        # Training buttons - sized to fit 5 unit types (Swordsman, Archer, Pikeman, Cavalry, Captain)
         button_y = panel_y
-        button_width = int(BUTTON_SIZE_SQUARE * 1.5)  # 75% of 2x = 1.7x
-        button_height = int(BUTTON_SIZE_SQUARE * 1.5)  # 75% of 2x = 1.7x
+        button_width = int(BUTTON_SIZE_SQUARE * 1.2)
+        button_height = int(BUTTON_SIZE_SQUARE * 1.2)
         button_spacing = BUTTON_SPACING
         button_x = info_x + 150  # Position to the right of the info section
         
@@ -7438,7 +7448,8 @@ class Game:
             'Swordsman': (100, 100, 150),  # Blue-gray
             'Archer': (100, 150, 100),     # Green
             'Pikeman': (120, 90, 70),      # Brown
-            'Cavalry': (180, 140, 60)      # Gold
+            'Cavalry': (180, 140, 60),     # Gold
+            'Captain': (160, 120, 180)     # Purple
         }
         
         # Check army limit (reuse current_armies from above)
@@ -7451,8 +7462,8 @@ class Game:
         self.train_buttons = {}
         any_affordable = False  # Bug 4 fix: track if ANY unit is affordable
 
-        # Draw 4 training buttons (one for each unit type)
-        for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']:
+        # Draw 5 training buttons (one for each unit type including Captain)
+        for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']:
             unit_info = self.game_state.UNIT_TYPES[unit_type]
             # Use discounted cost for affordability check (fixes red tint persisting after discount)
             unit_cost = self.game_state.get_effective_cost(unit_type, unit_info['cost'])
@@ -7567,8 +7578,8 @@ class Game:
         panel_y += UI_LINE_SPACING_SMALL
 
         # Draw first vertical divider line (between training controls and queue)
-        # Calculate position: info section (150px) + buttons (4 × 120px + spacing) + margin
-        divider_x = info_x + 150 + (button_width * 4) + (button_spacing * 3) + 20
+        # Calculate position: info section (150px) + buttons (5 unit types + spacing) + margin
+        divider_x = info_x + 150 + (button_width * 5) + (button_spacing * 4) + 20
         self.draw_separator(divider_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
         
         # Draw training queue on the right

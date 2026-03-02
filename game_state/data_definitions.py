@@ -628,7 +628,7 @@ def build_technologies():
                     'name': 'Heroic Fortitude',
                     'column': col,
                     'row': row,
-                    'description': 'Increases hero limit to 4.',
+                    'description': 'Increases hero limit to 4. Reduces Captain cost to 50g.',
                     'cost': 250,
                     'turns': 3,
                     'icon': 'assets/upgrades/HeroicFortitudeIcon.png',

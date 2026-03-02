@@ -32,7 +32,7 @@ class EconomyMixin:
             item_type: Type of item being purchased:
                       - 'Hero' for any hero
                       - 'Keep', 'Farm', 'Mine', 'Barracks', 'Square' for buildings
-                      - 'Swordsman', 'Pikeman', 'Archer', 'Cavalry' for units
+                      - 'Swordsman', 'Pikeman', 'Archer', 'Cavalry', 'Captain' for units
             base_cost: The base cost before any discounts
             player: Player index (if None, uses current_player)
 
@@ -66,6 +66,12 @@ class EconomyMixin:
             if discount_percent > 0:
                 effective_cost = int(effective_cost * (100 - discount_percent) / 100)
 
+        # Heroic Fortitude: 33% discount on Captains (75g → 50g)
+        if item_type == 'Captain':
+            discount_percent = self.player_captain_cost_discount[player]
+            if discount_percent > 0:
+                effective_cost = int(effective_cost * (100 - discount_percent) / 100)
+
         # Makeshift Barracks: 25% discount on Barracks
         if item_type == 'Barracks':
             discount_percent = self.player_barracks_cost_discount[player]
@@ -94,7 +100,7 @@ class EconomyMixin:
                 effective_cost = int(effective_cost * (100 - discount_pct) / 100)
 
         # Unit cost reduction (-5% per bonus territory)
-        if item_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']:
+        if item_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']:
             discount_pct = abs(territorial_bonuses.get('unit_cost', 0))
             if discount_pct > 0:
                 effective_cost = int(effective_cost * (100 - discount_pct) / 100)

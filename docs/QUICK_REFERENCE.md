@@ -27,7 +27,7 @@
 **Map:** 57 territories
 **Players:** 1-8
 **Building Types:** 6
-**Unit Types:** 4
+**Unit Types:** 5
 **Starting Gold:** 100
 **Turn Structure:** 4 phases
 
@@ -82,7 +82,7 @@ Total map income: 795g/turn (~199g/player with 4 players)
 |------------|-------|------------|-------|
 | Income Bonus | +3% | Total income | TBD (~6-7 territories) |
 | Tech Cost | -5% | Technology research | TBD (~6-7 territories) |
-| Unit Cost | -5% | Unit training (S/A/P/C) | TBD (~6-7 territories) |
+| Unit Cost | -5% | Unit training (S/A/P/C/Captain) | TBD (~6-7 territories) |
 | Hero Cost | -3% | Hero recruitment | TBD (~6-7 territories) |
 | Pikeman Strength | +10% | Pikeman combat | TBD (~6-7 territories) |
 | Archer Strength | +10% | Archer combat | TBD (~6-7 territories) |
@@ -107,14 +107,17 @@ Total map income: 795g/turn (~199g/player with 4 players)
 
 ## ⚔️ Unit Quick Reference
 
-| Unit | Cost | Counters | Countered By |
-|------|------|----------|--------------|
-| Swordsman | 25g | Pikeman | Archer |
-| Archer | 20g | Swordsman | Cavalry |
-| Pikeman | 30g | Cavalry | Swordsman |
-| Cavalry | 40g | Archer | Pikeman |
+| Unit | Cost | Strength | Counters | Countered By |
+|------|------|----------|----------|--------------|
+| Swordsman | 25g | 1.0 | Pikeman | Archer |
+| Archer | 20g | 1.0 | Swordsman | Cavalry |
+| Pikeman | 30g | 1.0 | Cavalry | Swordsman |
+| Cavalry | 40g | 1.0 | Archer | Pikeman |
+| Captain | 75g (50g w/ Heroic Fortitude) | 0.25 | None | None |
 
 Counter advantage: 2.0× effective strength (countered: 0.5×). Training: 1 turn per unit.
+
+**Captain (Support Unit):** +12% strength to all other units in army (non-stacking). Enables 2-hop movement to allied territories through an allied intermediate territory. Cannot attack across 2 territories. Keyboard shortcut: T.
 
 ---
 

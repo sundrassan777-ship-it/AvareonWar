@@ -36,6 +36,7 @@ _TRAINING_SHORTCUTS = {
     pygame.K_a: 'Archer',
     pygame.K_p: 'Pikeman',
     pygame.K_c: 'Cavalry',
+    pygame.K_t: 'Captain',
 }
 
 

@@ -2,6 +2,19 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-02 - Captain Unit Type
+
+- **New unit:** Captain — support unit trained in Barracks (75g, 1 turn, keyboard: T)
+  - 0.25 base strength (weaker than any combat unit, including countered ones at 0.5)
+  - No counter relationships (always neutral 1.0 effectiveness)
+  - +12% strength bonus to all other units in army (non-stacking — multiple Captains don't stack)
+  - Extended movement: army with Captain can move 2 territories to allied destination through allied intermediate
+  - Cannot attack across 2 territories (reinforcement only)
+  - Animation: bent 2-hop path through intermediate territory
+  - AI: strategic training when army ≥8 and no Captain present (25% chance)
+- **Enhancement:** Heroic Fortitude technology now also reduces Captain cost from 75g to 50g
+- **Files added:** `tests/test_captain.py` (23 tests)
+
 ## 2026-03-02 - Game Logging System
 
 - **New feature:** Per-game JSON logging for custom and multiplayer games

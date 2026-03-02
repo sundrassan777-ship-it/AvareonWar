@@ -1248,9 +1248,32 @@ class MapRenderer:
 
             progress = group_data['progress']
 
-            # Interpolate position based on animation progress
-            base_x = from_pos[0] + (to_pos[0] - from_pos[0]) * progress
-            base_y = from_pos[1] + (to_pos[1] - from_pos[1]) * progress
+            # Captain 2-hop movement: bent path through intermediate territory
+            # If intermediate_territory is set, animate source→intermediate→destination
+            intermediate_pos = None
+            if first_anim.intermediate_territory:
+                intermediate_pos = self.game.scaled_centers.get(first_anim.intermediate_territory)
+
+            if intermediate_pos:
+                # 2-segment path: progress 0.0→0.5 = source→intermediate, 0.5→1.0 = intermediate→destination
+                if progress <= 0.5:
+                    seg_progress = progress * 2.0  # 0.0 to 1.0 for first segment
+                    seg_from = from_pos
+                    seg_to = intermediate_pos
+                else:
+                    seg_progress = (progress - 0.5) * 2.0  # 0.0 to 1.0 for second segment
+                    seg_from = intermediate_pos
+                    seg_to = to_pos
+                base_x = seg_from[0] + (seg_to[0] - seg_from[0]) * seg_progress
+                base_y = seg_from[1] + (seg_to[1] - seg_from[1]) * seg_progress
+                dx = seg_to[0] - seg_from[0]
+                dy = seg_to[1] - seg_from[1]
+            else:
+                # Standard single-segment interpolation
+                base_x = from_pos[0] + (to_pos[0] - from_pos[0]) * progress
+                base_y = from_pos[1] + (to_pos[1] - from_pos[1]) * progress
+                dx = to_pos[0] - from_pos[0]
+                dy = to_pos[1] - from_pos[1]
 
             # Add wiggle effect - perpendicular to movement direction
             # Use sine wave for smooth oscillation
@@ -1258,8 +1281,6 @@ class MapRenderer:
             wiggle_frequency = 2  # Number of wiggles along the path
 
             # Calculate perpendicular direction
-            dx = to_pos[0] - from_pos[0]
-            dy = to_pos[1] - from_pos[1]
             length = math.sqrt(dx * dx + dy * dy)
 
             if length > 0:
@@ -1403,51 +1424,72 @@ class MapRenderer:
                 from_world = (from_cx, from_cy)
 
             to_world = self.game.scaled_centers[to_territory]
-            
+
+            # Captain 2-hop: check if first order has intermediate_territory for bent arrow path
+            intermediate_world = None
+            if first_order and getattr(first_order, 'intermediate_territory', None):
+                intermediate_world = self.game.scaled_centers.get(first_order.intermediate_territory)
+
             # Transform to screen coordinates (Phase 2D: camera transformation!)
             from_x, from_y = self.game.world_to_screen(from_world)
             to_x, to_y = self.game.world_to_screen(to_world)
-            
+
             # Arrow color - green for movement orders
             arrow_color = COLOR_ARROW_MOVEMENT
-            
-            # Draw main line (slightly thicker)
-            pygame.draw.line(self.game.screen, arrow_color, (int(from_x), int(from_y)), (int(to_x), int(to_y)), ARROW_LINE_WIDTH)
-            
+
+            if intermediate_world:
+                # Captain 2-hop: draw bent arrow from→intermediate→destination
+                inter_x, inter_y = self.game.world_to_screen(intermediate_world)
+                # Draw first segment (from → intermediate)
+                pygame.draw.line(self.game.screen, arrow_color, (int(from_x), int(from_y)), (int(inter_x), int(inter_y)), ARROW_LINE_WIDTH)
+                # Draw second segment (intermediate → destination) with arrowhead
+                pygame.draw.line(self.game.screen, arrow_color, (int(inter_x), int(inter_y)), (int(to_x), int(to_y)), ARROW_LINE_WIDTH)
+                # Use second segment direction for arrowhead
+                dx = to_x - inter_x
+                dy = to_y - inter_y
+            else:
+                # Standard single-segment arrow
+                pygame.draw.line(self.game.screen, arrow_color, (int(from_x), int(from_y)), (int(to_x), int(to_y)), ARROW_LINE_WIDTH)
+                dx = to_x - from_x
+                dy = to_y - from_y
+
             # Calculate arrowhead
-            dx = to_x - from_x
-            dy = to_y - from_y
             length = math.sqrt(dx*dx + dy*dy)
-            
+
             if length > 0:
                 # Normalize direction
                 dx /= length
                 dy /= length
-                
+
                 # Arrowhead size
                 arrow_size = ARROW_HEAD_SIZE
                 arrow_angle = ARROW_HEAD_ANGLE_RAD
-                
+
                 # Calculate arrowhead points
                 # Left point
                 left_x = to_x - arrow_size * (dx * math.cos(arrow_angle) - dy * math.sin(arrow_angle))
                 left_y = to_y - arrow_size * (dy * math.cos(arrow_angle) + dx * math.sin(arrow_angle))
-                
+
                 # Right point
                 right_x = to_x - arrow_size * (dx * math.cos(arrow_angle) + dy * math.sin(arrow_angle))
                 right_y = to_y - arrow_size * (dy * math.cos(arrow_angle) - dx * math.sin(arrow_angle))
-                
+
                 # Draw arrowhead
                 pygame.draw.polygon(self.game.screen, arrow_color, [
                     (int(to_x), int(to_y)),
                     (int(left_x), int(left_y)),
                     (int(right_x), int(right_y))
                 ])
-                
+
                 # Draw army count badge at midpoint (showing TOTAL count)
-                mid_x = int((from_x + to_x) / 2)
-                mid_y = int((from_y + to_y) / 2)
-                
+                if intermediate_world:
+                    inter_x_s, inter_y_s = self.game.world_to_screen(intermediate_world)
+                    mid_x = int((from_x + inter_x_s) / 2)  # Badge on first segment
+                    mid_y = int((from_y + inter_y_s) / 2)
+                else:
+                    mid_x = int((from_x + to_x) / 2)
+                    mid_y = int((from_y + to_y) / 2)
+
                 # Draw badge using helper (Phase 1D)
                 self.game.helpers.draw_circle_badge((mid_x, mid_y), total_count, border_color=arrow_color)
 
@@ -3493,7 +3535,7 @@ class MapRenderer:
                 plot_x, plot_y = int(screen_barracks_pos[0]), int(screen_barracks_pos[1])
                 
                 # Draw training icons in a circle around the Barracks
-                unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']
+                unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']
                 num_units = len(unit_types)
                 
                 # Get current gold and check conditions

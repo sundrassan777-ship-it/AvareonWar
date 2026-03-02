@@ -35,11 +35,13 @@ class ArmyComposer:
 
     # Counter system: S > P > C > A > S (each unit beats the next in the chain)
     # Swordsman defeats Pikeman, Pikeman defeats Cavalry, etc.
+    # Captain has no counter relationships (support unit)
     COUNTERS = {
         'Swordsman': 'Pikeman',
         'Pikeman': 'Cavalry',
         'Cavalry': 'Archer',
-        'Archer': 'Swordsman'
+        'Archer': 'Swordsman',
+        'Captain': None
     }
 
     # Reverse lookup: what unit type counters each unit
@@ -47,7 +49,8 @@ class ArmyComposer:
         'Swordsman': 'Archer',
         'Pikeman': 'Swordsman',
         'Cavalry': 'Pikeman',
-        'Archer': 'Cavalry'
+        'Archer': 'Cavalry',
+        'Captain': None
     }
 
     def calculate_counter_composition(self, enemy_composition, game_state):
@@ -117,17 +120,18 @@ class ArmyComposer:
             if garrison == 0:
                 return {}
 
-            # Assume balanced composition
+            # Assume balanced composition (no Captains in fallback estimate)
             per_type = garrison // 4
             return {
                 'Swordsman': per_type,
                 'Archer': per_type,
                 'Pikeman': per_type,
-                'Cavalry': garrison - (per_type * 3)  # Remainder
+                'Cavalry': garrison - (per_type * 3),  # Remainder
+                'Captain': 0
             }
 
         # Count actual units from all garrisons
-        composition = {'Swordsman': 0, 'Archer': 0, 'Pikeman': 0, 'Cavalry': 0}
+        composition = {'Swordsman': 0, 'Archer': 0, 'Pikeman': 0, 'Cavalry': 0, 'Captain': 0}
         for unit in all_units:
             unit_type = unit.get('type', 'Swordsman')
             composition[unit_type] = composition.get(unit_type, 0) + 1
@@ -951,9 +955,9 @@ class TrainingPlanner:
                     # Decide what unit to train
                     unit_type = self._select_unit_type(territory, game_state, player_index)
 
-                    # Check cost
-                    unit_costs = {'Swordsman': 25, 'Archer': 20, 'Pikeman': 30, 'Cavalry': 40}
-                    cost = game_state.get_effective_cost(unit_type, unit_costs[unit_type], player_index)
+                    # Check cost (use UNIT_TYPES for dynamic lookup including Captain)
+                    base_cost = game_state.UNIT_TYPES.get(unit_type, {}).get('cost', 25)
+                    cost = game_state.get_effective_cost(unit_type, base_cost, player_index)
 
                     if spent + cost > available_budget:
                         break  # Can't afford more units
@@ -989,10 +993,19 @@ class TrainingPlanner:
         - Enemy composition (counter system)
         - Current army balance
         - Cost efficiency
+        - Strategic Captain training (support unit with army bonus)
 
         Returns:
             str: Unit type to train
         """
+        # Strategic Captain training: if territory has ≥8 armies and no Captain, 25% chance
+        # Captain is a support unit — +12% army strength bonus, not a combat pick
+        territory_armies = game_state.get_territory_total_armies(territory)
+        if territory_armies >= 8:
+            comp = game_state.get_unit_composition(territory)
+            if comp.get('Captain', 0) == 0 and random.random() < 0.25:
+                return 'Captain'
+
         # Check enemy neighbors (H10 fix: exclude allies)
         neighbors = map_data.get_neighbors(territory)
         enemy_neighbors = [
@@ -1009,14 +1022,14 @@ class TrainingPlanner:
                 for unit_type, count in comp.items():
                     enemy_comp[unit_type] = enemy_comp.get(unit_type, 0) + count
 
-            # Get counter composition
+            # Get counter composition (excludes Captain — it's not a counter pick)
             ideal_comp = self.composer.calculate_counter_composition(enemy_comp, game_state)
 
             # Pick unit type with highest ratio
             unit_type = max(ideal_comp.items(), key=lambda x: x[1])[0]
             return unit_type
 
-        # No enemies nearby - balanced mix (weighted random)
+        # No enemies nearby - balanced mix (weighted random, excludes Captain)
         units = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']
         weights = [0.25, 0.25, 0.25, 0.25]
 

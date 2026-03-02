@@ -141,6 +141,45 @@ class MilitaryMixin:
             result[ut] = sum(levels) / len(levels) if levels else 0
         return result
 
+    def army_has_captain(self, territory, player=None):
+        """Check if a player's garrison in a territory contains at least one Captain.
+        Used for Captain extended movement (2-hop through allied territory)."""
+        if player is None:
+            player = self.current_player
+        garrison = self.territory_garrisons.get(territory, {}).get(player)
+        if not garrison:
+            return False
+        for unit in garrison.get('units', []):
+            if unit.get('type') == 'Captain':
+                return True
+        return False
+
+    def find_2hop_path(self, from_territory, to_territory, player):
+        """Find an intermediate allied territory connecting from_territory to to_territory.
+        For Captain extended movement: army can move 2 hops if intermediate and destination
+        are allied (own or ally). Does NOT allow 2-hop attacks on enemy territories.
+        Returns intermediate territory name, or None if no valid 2-hop path exists."""
+        # 2-hop only for non-adjacent territories (adjacent = use normal movement)
+        if map_data.are_adjacent(from_territory, to_territory):
+            return None
+
+        # Destination must be allied (own or ally) — no 2-hop attacks
+        dest_owner = self.territory_owners.get(to_territory, -1)
+        if dest_owner != player and not (dest_owner >= 0 and self.are_allies(player, dest_owner)):
+            return None
+
+        # Find intermediate territory: adjacent to both source and dest, and allied
+        from_neighbors = set(map_data.get_neighbors(from_territory))
+        to_neighbors = set(map_data.get_neighbors(to_territory))
+        candidates = from_neighbors & to_neighbors  # Must be adjacent to both
+
+        for intermediate in candidates:
+            inter_owner = self.territory_owners.get(intermediate, -1)
+            if inter_owner == player or (inter_owner >= 0 and self.are_allies(player, inter_owner)):
+                return intermediate
+
+        return None
+
     # R11: get_building_xp_data() and award_building_xp() moved to BuildingMixin (buildings.py)
     # — they belong with building logic alongside _tick_building_xp()
 
@@ -199,9 +238,17 @@ class MilitaryMixin:
             # No enemies, just return total count
             return float(sum(composition.values()))
 
+        # Captain Army Bonus: +12% strength to all non-Captain units (non-stacking)
+        # Having 1+ Captains in the army applies the bonus; multiple Captains don't stack
+        has_captain_bonus = composition.get('Captain', 0) > 0
+        captain_bonus_pct = self.UNIT_TYPES['Captain'].get('army_bonus', 0.12) if has_captain_bonus else 0.0
+
         total_strength = 0.0
         for unit_type, count in composition.items():
             effectiveness = self.calculate_unit_effectiveness(unit_type, enemy_composition)
+
+            # Base unit strength (Captain = 0.25, all others = 1.0)
+            unit_strength = self.UNIT_TYPES.get(unit_type, {}).get('strength', 1.0)
 
             # Apply base strength multiplier (default 1.0)
             base_multiplier = 1.0
@@ -248,7 +295,12 @@ class MilitaryMixin:
                 avg_level = unit_avg_levels[unit_type]
                 level_bonus = 1.0 + avg_level * self.UNIT_LEVEL_STRENGTH_BONUS
 
-            total_strength += count * effectiveness * base_multiplier * level_bonus
+            # Captain army bonus: +12% to non-Captain units when army has a Captain
+            captain_multiplier = 1.0
+            if unit_type != 'Captain' and captain_bonus_pct > 0:
+                captain_multiplier = 1.0 + captain_bonus_pct
+
+            total_strength += count * unit_strength * effectiveness * base_multiplier * level_bonus * captain_multiplier
 
         return total_strength
 
@@ -589,11 +641,17 @@ class MilitaryMixin:
         if from_territory != selected_territory:
             return False
         
-        # Validate: territories must be adjacent
-        if not map_data.are_adjacent(from_territory, to_territory):
-            self.add_message("Territories are not adjacent!")
-            return False
-        
+        # Validate: territories must be adjacent (or reachable via Captain 2-hop)
+        is_adjacent = map_data.are_adjacent(from_territory, to_territory)
+        intermediate_territory = None
+        if not is_adjacent:
+            # Check for Captain extended movement (2-hop through allied territory)
+            if self.army_has_captain(from_territory):
+                intermediate_territory = self.find_2hop_path(from_territory, to_territory, self.current_player)
+            if not intermediate_territory:
+                self.add_message("Territories are not adjacent!")
+                return False
+
         # R8 fix: Validate against current player's garrison, not territory owner's
         # In allied scenarios, a player may garrison in territory they don't own
         garrison = self.territory_garrisons.get(from_territory, {}).get(self.current_player)
@@ -641,7 +699,8 @@ class MilitaryMixin:
             from_territory=from_territory,
             to_territory=to_territory,
             army_count=army_count,
-            player=order_player
+            player=order_player,
+            intermediate_territory=intermediate_territory  # Captain 2-hop path
         )
         
         self.movement_orders.append(order)
@@ -782,16 +841,25 @@ class MilitaryMixin:
             self.add_message("Some selected armies are not ready to move")
             return False
 
-        # Validate: territories must be adjacent (with error handling)
+        # Validate: territories must be adjacent (or reachable via Captain 2-hop)
+        intermediate_territory = None
         try:
-            if not map_data.are_adjacent(from_territory, to_territory):
-                self.add_message("Territories are not adjacent!")
-                return False
+            is_adjacent = map_data.are_adjacent(from_territory, to_territory)
+            if not is_adjacent:
+                # Check Captain extended movement — Captain must be in the selected units
+                has_captain_in_selection = any(
+                    u.get('type') == 'Captain' for u in units if u['id'] in unit_ids
+                )
+                if has_captain_in_selection:
+                    intermediate_territory = self.find_2hop_path(from_territory, to_territory, player)
+                if not intermediate_territory:
+                    self.add_message("Territories are not adjacent!")
+                    return False
         except Exception as e:
             self.log_error(f"Failed to check adjacency between {from_territory} and {to_territory}", e)
             self.add_message("Error checking territory adjacency")
             return False
-        
+
         # Use the player parameter (which player is making this order)
         # In multi-garrison territories, this is the garrison owner, not territory owner
         order_player = player
@@ -817,7 +885,8 @@ class MilitaryMixin:
             to_territory=to_territory,
             army_count=len(unit_ids),
             player=order_player,
-            unit_ids=unit_ids
+            unit_ids=unit_ids,
+            intermediate_territory=intermediate_territory  # Captain 2-hop path
         )
         
         self.movement_orders.append(order)
@@ -1285,7 +1354,8 @@ class MilitaryMixin:
                 composition=order_composition,
                 from_pos=from_pos,
                 to_pos=to_pos,
-                units=extracted_units
+                units=extracted_units,
+                intermediate_territory=order.intermediate_territory  # Captain 2-hop path
             )
             self.active_animations.append(animation)
 

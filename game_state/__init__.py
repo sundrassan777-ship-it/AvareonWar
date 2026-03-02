@@ -123,17 +123,18 @@ logger = get_logger(__name__)
 
 class MovementOrder:
     """Represents a planned army movement order"""
-    def __init__(self, from_territory, to_territory, army_count, player, unit_ids=None):
+    def __init__(self, from_territory, to_territory, army_count, player, unit_ids=None, intermediate_territory=None):
         self.from_territory = from_territory
         self.to_territory = to_territory
         self.army_count = army_count
         self.player = player
         self.unit_ids = unit_ids or []  # List of specific unit IDs (Phase 3)
         self.order_id = id(self)  # Unique ID for this order
+        self.intermediate_territory = intermediate_territory  # For Captain 2-hop movement through allied territory
 
 class ArmyAnimation:
     """Represents an animated army movement"""
-    def __init__(self, from_territory, to_territory, army_count, player, unit_ids, composition, from_pos=None, to_pos=None, units=None):
+    def __init__(self, from_territory, to_territory, army_count, player, unit_ids, composition, from_pos=None, to_pos=None, units=None, intermediate_territory=None):
         self.from_territory = from_territory
         self.to_territory = to_territory
         self.army_count = army_count
@@ -149,6 +150,8 @@ class ArmyAnimation:
         # If None, will use territory centers
         self.from_pos = from_pos  # (x, y) in world coordinates
         self.to_pos = to_pos      # (x, y) in world coordinates
+        # Captain 2-hop movement: intermediate allied territory for bent animation path
+        self.intermediate_territory = intermediate_territory
 
 class Battle:
     """Represents a battle between armies in a territory"""
@@ -202,11 +205,13 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
     TRAINING_GROUNDS_UNIT_XP_PER_TURN = 15  # XP awarded to units in territory with Training Grounds
 
     # Unit type definitions (TIER 3: Multiple Unit Types)
+    # 'strength': base strength multiplier (default 1.0; Captain = 0.25 — weaker than even a countered unit at 0.5)
     UNIT_TYPES = {
         'Swordsman': {
             'cost': 25,
             'letter': 'S',
             'name': 'Swordsman',
+            'strength': 1.0,
             'counters': 'Pikeman',      # Swordsman > Pikeman
             'countered_by': 'Archer'    # Archer > Swordsman
         },
@@ -214,6 +219,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             'cost': 20,
             'letter': 'A',
             'name': 'Archer',
+            'strength': 1.0,
             'counters': 'Swordsman',    # Archer > Swordsman
             'countered_by': 'Cavalry'   # Cavalry > Archer
         },
@@ -221,6 +227,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             'cost': 30,
             'letter': 'P',
             'name': 'Pikeman',
+            'strength': 1.0,
             'counters': 'Cavalry',      # Pikeman > Cavalry
             'countered_by': 'Swordsman' # Swordsman > Pikeman
         },
@@ -228,8 +235,18 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             'cost': 40,
             'letter': 'C',
             'name': 'Cavalry',
+            'strength': 1.0,
             'counters': 'Archer',       # Cavalry > Archer
             'countered_by': 'Pikeman'   # Pikeman > Cavalry
+        },
+        'Captain': {
+            'cost': 75,
+            'letter': 'T',
+            'name': 'Captain',
+            'strength': 0.25,           # Weak combatant — support unit
+            'counters': None,           # No counter relationships
+            'countered_by': None,
+            'army_bonus': 0.12,         # +12% strength to all other units in army (non-stacking)
         }
     }
     
@@ -338,6 +355,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
                 'units_trained': 0, 'units_killed': 0,
                 'pikemen_trained': 0, 'archers_trained': 0,
                 'swordsmen_trained': 0, 'cavalry_trained': 0,
+                'captains_trained': 0,
                 'heroes_trained': 0, 'heroes_killed': 0,
                 'gold_acquired': 0, 'gold_spent': 0,
                 'gold_lost_to_taxation': 0, 'max_income_per_turn': 0,
@@ -406,6 +424,9 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
         # Animal Handling cost reduction (percentage) for Cavalry
         self.player_cavalry_cost_discount = [0] * num_players
+
+        # Heroic Fortitude cost reduction (percentage) for Captains (75g → 50g at 33%)
+        self.player_captain_cost_discount = [0] * num_players
 
         # Battlement Archery strength bonus (percentage) for Archers in territories with friendly Keep/Castle
         self.player_archer_keep_strength_bonus = [0] * num_players

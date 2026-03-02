@@ -125,21 +125,31 @@ building_types = {
        'cost': 35,
        'letter': 'Y',
        'name': 'YourUnit',
-       'counters': 'SomeUnit',      # Who this unit beats
-       'countered_by': 'OtherUnit', # Who beats this unit
-       'strength': 12               # Add if using strength system
+       'strength': 1.0,              # Base strength multiplier (Captain = 0.25)
+       'counters': 'SomeUnit',       # Who this unit beats (None for no counters)
+       'countered_by': 'OtherUnit',  # Who beats this unit (None for no counters)
    }
    ```
-2. Add icon to `assets/mapicons/YourUnit.png`
-3. Update counter chain to maintain balance (must be circular)
-4. Test training in `start_training()` method (`game_state/buildings.py`)
-5. Test combat in `resolve_battle()` method (`game_state/military.py`)
-6. Update `GAME_MECHANICS.md` and `QUICK_REFERENCE.md`
+2. Add icon to `assets/mapicons/YourUnitIcon.png`
+3. Update counter chain to maintain balance (must be circular for combat units)
+4. Update ALL hardcoded unit type lists (grep for `'Swordsman', 'Archer', 'Pikeman', 'Cavalry'`):
+   - `main.py`: icon loading, training UI, composition display, tooltips, click detection
+   - `ai_military.py`: COUNTERS, COUNTERED_BY, composition dicts, unit_costs
+   - `simultaneous/sim_phase_manager.py`: counter dict
+   - `rendering/map_renderer.py`: training icons
+   - `input/keyboard_handler.py`: training shortcuts
+5. Add stat tracking: `player_stats` init, `_unit_stat_map` in `buildings.py`, `game_logger.py`
+6. Test training in `start_training()` method (`game_state/buildings.py`)
+7. Test combat in `resolve_battle()` method (`game_state/military.py`)
+8. Update `GAME_MECHANICS.md`, `QUICK_REFERENCE.md`, `CHANGELOG.md`
+
+**Reference: Captain unit (support type)** — See `tests/test_captain.py` for comprehensive examples.
+Captain uses `strength: 0.25`, `counters: None`, `army_bonus: 0.20`, and has extended 2-hop movement via `army_has_captain()` / `find_2hop_path()` in `military.py`.
 
 **Methods to check:**
 - `start_training()` — Validates unit type, deducts cost (`game_state/buildings.py`)
 - `resolve_battle()` — Uses counter relationships (`game_state/military.py`)
-- `calculate_army_effective_strength()` — Computes unit matchups (`game_state/military.py`)
+- `calculate_army_effective_strength()` — Computes unit matchups, applies `strength` multiplier and Captain army bonus (`game_state/military.py`)
 
 #### ✅ Add New Building Type
 

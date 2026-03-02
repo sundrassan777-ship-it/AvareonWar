@@ -227,10 +227,17 @@ class SimPhaseManager:
         if not from_territory or not to_territory:
             return False
 
-        # Check adjacency
+        # Check adjacency (or Captain 2-hop through allied territory)
         adjacent = map_data.get_neighbors(from_territory)
         if to_territory not in adjacent:
-            return False
+            # Check for Captain extended movement
+            if self.gs.army_has_captain(from_territory, player_id):
+                intermediate = self.gs.find_2hop_path(from_territory, to_territory, player_id)
+                if intermediate is None:
+                    return False
+                # Valid 2-hop path — continue validation
+            else:
+                return False
 
         # In multiplayer mode, skip garrison validation for remote player orders
         # Remote orders were already validated on the sender's side before sending
@@ -1382,10 +1389,21 @@ class SimPhaseManager:
 
         for player_id, army_count in player_armies:
             composition = battle.army_compositions.get(player_id, {'Swordsman': army_count})
+            # Use 'strength' key (Captain = 0.25, all others = 1.0)
             base_strength = sum(
-                count * self.gs.UNIT_TYPES.get(unit_type, {}).get('base_strength', 1)
+                count * self.gs.UNIT_TYPES.get(unit_type, {}).get('strength', 1.0)
                 for unit_type, count in composition.items()
             )
+
+            # Captain army bonus: +12% strength to non-Captain units (non-stacking)
+            has_captain = composition.get('Captain', 0) > 0
+            if has_captain:
+                captain_bonus_pct = self.gs.UNIT_TYPES.get('Captain', {}).get('army_bonus', 0.12)
+                bonus_strength = sum(
+                    count * self.gs.UNIT_TYPES.get(ut, {}).get('strength', 1.0) * captain_bonus_pct
+                    for ut, count in composition.items() if ut != 'Captain'
+                )
+                base_strength += bonus_strength
 
             # Apply counter modifiers based on opponent compositions
             total_modifier = 0
@@ -1405,7 +1423,7 @@ class SimPhaseManager:
 
             # Add Keep defense bonus
             if battle.keep_bonus_player == player_id and battle.keep_bonus > 0:
-                base_strength += battle.keep_bonus * self.gs.UNIT_TYPES.get('Swordsman', {}).get('base_strength', 1)
+                base_strength += battle.keep_bonus * self.gs.UNIT_TYPES.get('Swordsman', {}).get('strength', 1.0)
 
             player_strengths[player_id] = base_strength
             sim_log.battle(f"Player {player_id}: {army_count} armies, strength={base_strength:.1f}")
@@ -1445,11 +1463,13 @@ class SimPhaseManager:
             Modifier (1.0 = neutral, >1.0 = advantage, <1.0 = disadvantage)
         """
         # Counter relationships (what each unit is strong against)
+        # Captain has no counter relationships (support unit)
         counters = {
             'Swordsman': 'Pikeman',
             'Pikeman': 'Cavalry',
             'Cavalry': 'Archer',
-            'Archer': 'Swordsman'
+            'Archer': 'Swordsman',
+            'Captain': None
         }
 
         total_attacker_units = sum(attacker_comp.values())

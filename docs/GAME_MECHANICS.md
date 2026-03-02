@@ -38,7 +38,9 @@ Turn Structure:
 
 ## ⚔️ Army System
 
-**4 Unit Types (Counter System):**
+**5 Unit Types:**
+
+*Combat Units (Counter System):*
 - **Swordsman** (25g) — Counters Pikeman, countered by Archer
 - **Archer** (20g) — Counters Swordsman, countered by Cavalry
 - **Pikeman** (30g) — Counters Cavalry, countered by Swordsman
@@ -46,9 +48,12 @@ Turn Structure:
 
 Counter advantage grants 2.0× effective strength in combat (countered units are 0.5×).
 
+*Support Unit:*
+- **Captain** (75g, 50g with Heroic Fortitude) — 0.25 base strength (weaker than any combat unit). No counter relationships. Provides +12% strength to all other units in army (non-stacking). Enables 2-hop movement to allied territories through an allied intermediate. Cannot attack across 2 territories. Keyboard: T.
+
 **Army Movement:**
 1. Select territory with your army
-2. Click adjacent territory
+2. Click adjacent territory (or 2-hop allied territory if army has Captain)
 3. Order arrow appears
 4. Click "End Turn" → armies move
 

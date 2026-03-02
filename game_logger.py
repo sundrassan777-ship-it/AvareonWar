@@ -35,7 +35,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Stat keys in player_stats used for per-turn delta computation
-_UNIT_STAT_KEYS = ['pikemen_trained', 'archers_trained', 'swordsmen_trained', 'cavalry_trained']
+_UNIT_STAT_KEYS = ['pikemen_trained', 'archers_trained', 'swordsmen_trained', 'cavalry_trained', 'captains_trained']
 _LOSS_STAT_KEY = 'units_killed'
 
 

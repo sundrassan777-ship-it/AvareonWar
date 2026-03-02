@@ -574,7 +574,8 @@ class BuildingMixin:
         self._track_stat(self.current_player, 'units_trained')
         # Track per-unit-type training for achievements
         _unit_stat_map = {'Pikeman': 'pikemen_trained', 'Archer': 'archers_trained',
-                          'Swordsman': 'swordsmen_trained', 'Cavalry': 'cavalry_trained'}
+                          'Swordsman': 'swordsmen_trained', 'Cavalry': 'cavalry_trained',
+                          'Captain': 'captains_trained'}
         if unit_type in _unit_stat_map:
             self._track_stat(self.current_player, _unit_stat_map[unit_type])
 
@@ -1161,9 +1162,10 @@ class BuildingMixin:
                     self.player_barracks_full_refund[self.current_player] = True
                     self.add_message(f"Research complete: {tech['name']}! Barracks cost reduced by {effect_value}%, demolish returns 100%")
                 elif effect_type == 'hero_limit' and effect_value:
-                    # Set hero limit to the new value
+                    # Set hero limit to the new value + Captain cost discount (Heroic Fortitude)
                     self.player_hero_limit[self.current_player] = effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Hero limit increased to {effect_value}")
+                    self.player_captain_cost_discount[self.current_player] = 33  # 75g → 50g
+                    self.add_message(f"Research complete: {tech['name']}! Hero limit increased to {effect_value}. Captain cost reduced to 50g.")
                 elif effect_type == 'hero_keep_defense' and effect_value:
                     # Set hero keep defense bonus
                     self.player_hero_keep_defense_bonus[self.current_player] = effect_value
