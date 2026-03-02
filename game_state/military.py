@@ -1992,6 +1992,10 @@ class MilitaryMixin:
         battle.winner = winner
         battle.surviving_armies = surviving_armies
 
+        # Game logger: record battle resolution event
+        if self.game_logger:
+            self.game_logger.record_battle(territory, battle.armies, winner, self.turn_number)
+
         # Track units_killed stats for recap screen
         if winner >= 0:
             # Winner killed all loser armies

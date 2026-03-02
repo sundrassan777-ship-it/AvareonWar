@@ -187,6 +187,9 @@ class HeroMixin:
                     self._track_stat(owner, 'heroes_trained')
                     # Player Level: award XP for training a hero
                     self._track_stat(owner, 'xp_earned', 4)
+                    # Game logger: record hero training event with turn number
+                    if self.game_logger:
+                        self.game_logger.record_hero_trained(owner, hero_type, self.turn_number)
 
                     # Play hero recruitment sound for human player only
                     # FIX: Check if owner is human (not AI) - sounds should never play for AI actions

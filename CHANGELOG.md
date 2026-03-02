@@ -2,6 +2,29 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-02 - Game Logging System
+
+- **New feature:** Per-game JSON logging for custom and multiplayer games
+  - Creates `Logs/` folder with log files named `{8-digit-ID}_{YYYY-MM-DD}.json`
+  - Game metadata: version, player count, total turns, duration, win condition, winner
+  - Per-player heroes trained with turn numbers, tech researched with turn numbers
+  - Per-turn data: units built per type (Pikeman/Archer/Swordsman/Cavalry), buildings built per type (Farm/Mine/Square/Barracks/Training Grounds/Keep), units lost, regions controlled, battles
+  - Hybrid data collection: snapshot-based deltas for units/losses + event-based for heroes/tech/buildings/battles
+  - Hooks in heroes.py, buildings.py, military.py, sim_state.py; wired in main.py
+  - Campaign missions excluded (no log created)
+  - `turn_number` now properly incremented as a round counter in sequential mode
+
+## 2026-03-02 - Network Security Hardening
+
+- **Security:** Removed debug logging of reconnection password (credential leak)
+- **Security:** Switched password comparison to `hmac.compare_digest()` (timing attack prevention)
+- **Security:** Increased reconnection password from 8 to 16 characters (stronger entropy)
+- **Security:** Added `validate_message_data()` in protocol.py — validates player_index (0-3), ai_difficulty (0-2), team (0-3), army_count (1-999), plot_index (0-10), victory/tax/turn-mode ranges, chat channel values
+- **Security:** Added chat message length cap (500 chars) to prevent oversized messages
+- **Security:** Added player name sanitization — strips Unicode control characters, null bytes, enforces 32-char limit
+- **Security:** Added per-client sequence number validation to reject replay/duplicate messages
+- **Security:** Added reconnection rate limiting (5 attempts per 30s per IP) to prevent brute-force
+
 ## 2026-03-01 - Campaign Mission 5: The First War
 
 - **New feature:** Implemented Campaign Mission 5 "The First War"

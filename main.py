@@ -12696,6 +12696,10 @@ if __name__ == "__main__":
         if not hasattr(game, 'game_state') or game.game_state.phase == 'setup':
             return
 
+        # Game logger: finalize and save log file (before recap, after game ends)
+        if hasattr(game.game_state, 'game_logger') and game.game_state.game_logger:
+            game.game_state.game_logger.finalize_and_save()
+
         # Player Level: record XP earned first so level achievements can detect new level
         from player_level import player_level_manager
         xp_result = player_level_manager.record_game_xp(game)
@@ -12968,6 +12972,11 @@ if __name__ == "__main__":
             loading = LoadingScreen(screen, game, setup_config)
             loading.run()
 
+            # Attach game logger for custom games (not campaign)
+            from game_logger import GameLogger
+            if hasattr(game, 'game_state') and game.game_state:
+                game.game_state.game_logger = GameLogger(game.game_state)
+
             # Run game
             result = game.run()
 
@@ -13037,6 +13046,11 @@ if __name__ == "__main__":
             loading = LoadingScreen(screen, game, setup_config,
                                     network_connection=network_connection)
             loading.run()
+
+            # Attach game logger for multiplayer games
+            from game_logger import GameLogger
+            if hasattr(game, 'game_state') and game.game_state:
+                game.game_state.game_logger = GameLogger(game.game_state)
 
             # Run game
             result = game.run()

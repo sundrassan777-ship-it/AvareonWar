@@ -382,6 +382,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Includes both active AND training heroes
         self.hero_ownership = {i: set() for i in range(num_players)}
 
+        # Game logger reference (set by main.py for custom/multiplayer games)
+        # When active, hooks in heroes/buildings/military call record_* methods
+        self.game_logger = None
+
         # Hero limit per player (can be modified by Technology research)
         # Default: 3 heroes max (active + training)
         self.player_hero_limit = [3] * num_players
@@ -753,6 +757,13 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         self.current_player = (self.current_player + 1) % self.num_players
         self.selected_territory = None
         self.selected_army = None  # Clear army selection
+
+        # Increment turn_number when a full round completes (all players acted once)
+        # and record a game log snapshot for the completed round
+        if self.current_player == 0 and self.phase == 'playing':
+            self.turn_number += 1
+            if self.game_logger:
+                self.game_logger.record_round_snapshot(self.turn_number)
 
         # NEW: Set turn announcement blocking flag (only during playing phase)
         # Turn start effects will execute after animation completes

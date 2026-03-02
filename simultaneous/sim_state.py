@@ -505,8 +505,14 @@ class SimultaneousGameState:
 
         # Increment round
         self.round_number += 1
+        # Sync turn_number with round_number for game logger consistency
+        self.gs.turn_number = self.round_number
         set_round(self.round_number)  # Update debug context
         sim_log.phase(f"Round complete. Starting round {self.round_number}")
+
+        # Game logger: record round snapshot for the completed round
+        if self.gs.game_logger:
+            self.gs.game_logger.record_round_snapshot(self.round_number)
 
         # Start new planning phase (resets all 'moved' units to 'ready')
         self.start_planning_phase()

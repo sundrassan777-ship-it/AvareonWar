@@ -362,6 +362,9 @@ class BuildingMixin:
             self.add_message(f"Player {owner + 1}: {building_type} completed in {territory}")
             # Player Level: award XP for completing a building
             self._track_stat(owner, 'xp_earned', 2)
+            # Game logger: record individual building type (Farm, Mine, Square, etc.)
+            if self.game_logger:
+                self.game_logger.record_building_completed(owner, building_type, territory, self.turn_number)
 
         # Return completed buildings for network synchronization
         return completed
@@ -1103,6 +1106,10 @@ class BuildingMixin:
 
                 # Player Level: award XP for completing technology research
                 self._track_stat(self.current_player, 'xp_earned', 4)
+
+                # Game logger: record tech research completion event
+                if self.game_logger:
+                    self.game_logger.record_tech_researched(self.current_player, tech_id, self.turn_number)
 
                 # Remove from available (already researched)
                 self.player_tech_available[self.current_player].discard(tech_id)
