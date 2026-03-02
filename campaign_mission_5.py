@@ -64,8 +64,8 @@ FACTION_NAMES = {
 
 # Starting gold per faction
 STARTING_GOLD = {
-    0: 600,    # Human: moderate starting gold (2 territories, allied)
-    1: 300,    # Ally: small economy (2 territories, AI)
+    0: 2000,   # Human: boosted starting gold (2 territories, allied)
+    1: 25000,  # Ally: massive gold reserve matching empire (2 territories, AI)
     2: 25000,  # Enemy: massive gold reserve for continuous unit production
 }
 
@@ -888,21 +888,26 @@ class Mission5:
         All movement respects GARRISON_REQUIREMENTS — units below the minimum
         for a territory are never moved away.
         Alliance-aware: AI uses game_state.are_allies() to determine enemies.
-        Attack ramp: limits units sent per turn, escalating over time.
+
+        Per-faction behavior:
+        - Elletic Rebels (player 1): Aggressive — no unit cap on reinforce/attack.
+        - Azincourne Empire (player 2): Defensive — reinforces freely, but only
+          sends token attacks (1 unit) each turn.
         """
         gs = self.game_state
 
         # Increment turn counter for this faction
         self.faction_turn_count[player_id] = self.faction_turn_count.get(player_id, 0) + 1
-        turn_n = self.faction_turn_count[player_id]
 
-        # Attack ramp: 1-1-1-2-2-3-4-5-6... (gradual escalation)
-        if turn_n <= 3:
-            max_units = 1
-        elif turn_n <= 5:
-            max_units = 2
+        # Per-faction caps: (max_reinforce, max_attack)
+        # Player 1 (Elletic Rebels): aggressive — unlimited reinforce and attack
+        # Player 2 (Azincourne Empire): defensive — unlimited reinforce, token 1-unit attacks
+        if player_id == 1:
+            max_reinforce = 999  # No practical limit — send everything forward
+            max_attack = 999     # Full aggression — attack with all available units
         else:
-            max_units = turn_n - 3  # turn 6→3, 7→4, 8→5, 9→6, ...
+            max_reinforce = 999  # Freely reinforce and fortify territories
+            max_attack = 1       # Token attacks only — defensive posture
 
         # Find territories owned by this faction
         my_territories = [t for t in MISSION_5_TERRITORIES
@@ -917,11 +922,11 @@ class Mission5:
         # Phase 2: Train units at all barracks
         self._ai_train(player_id, my_territories)
 
-        # Phase 3: Reinforce frontline from rear (respecting garrison requirements, capped by ramp)
-        self._ai_reinforce(player_id, my_territories, max_units)
+        # Phase 3: Reinforce frontline from rear (respecting garrison requirements)
+        self._ai_reinforce(player_id, my_territories, max_reinforce)
 
-        # Phase 4: Attack enemy territories (respecting garrison requirements, capped by ramp)
-        self._ai_attack(player_id, my_territories, max_units)
+        # Phase 4: Attack enemy territories (respecting garrison requirements)
+        self._ai_attack(player_id, my_territories, max_attack)
 
     def _get_available_units(self, territory, player_id):
         """Get units available to move (above garrison minimum).
