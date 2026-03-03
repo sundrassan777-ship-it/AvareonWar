@@ -20,6 +20,14 @@ Contents:
 """
 
 # ============================================================================
+# COMBAT CONSTANTS
+# ============================================================================
+
+# When the winner's effective strength is >= this ratio times the loser's,
+# the winner suffers 0 casualties (overwhelming advantage)
+OVERWHELMING_ADVANTAGE_RATIO = 10
+
+# ============================================================================
 # BUILDING_TYPES - Building costs and definitions
 # ============================================================================
 

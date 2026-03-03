@@ -13,6 +13,7 @@ import time
 import math
 import map_data
 from utils.logger import get_logger
+from game_state.data_definitions import OVERWHELMING_ADVANTAGE_RATIO
 
 logger = get_logger(__name__)
 
@@ -1569,7 +1570,11 @@ class MilitaryMixin:
                 # Attackers win Phase 1
                 # Casualties scale with strength ratio — dominant attackers lose fewer
                 strength_ratio = garrison_strength / attacker_strength if attacker_strength > 0 else 1.0
-                attacker_casualties = max(1, round(garrison_count * strength_ratio))
+                # Overwhelming advantage: 0 casualties if strength >= 10:1 ratio
+                if attacker_strength >= OVERWHELMING_ADVANTAGE_RATIO * garrison_strength:
+                    attacker_casualties = 0
+                else:
+                    attacker_casualties = max(1, round(garrison_count * strength_ratio))
                 remaining_attackers = max(0, attacker_count - attacker_casualties)
                 remaining_garrison = 0
 
@@ -1604,7 +1609,11 @@ class MilitaryMixin:
                 # Garrison wins Phase 1
                 # Casualties scale with strength ratio — dominant garrison loses fewer
                 strength_ratio = attacker_strength / garrison_strength if garrison_strength > 0 else 1.0
-                garrison_casualties = max(1, round(attacker_count * strength_ratio))
+                # Overwhelming advantage: 0 casualties if strength >= 10:1 ratio
+                if garrison_strength >= OVERWHELMING_ADVANTAGE_RATIO * attacker_strength:
+                    garrison_casualties = 0
+                else:
+                    garrison_casualties = max(1, round(attacker_count * strength_ratio))
                 remaining_attackers = 0
                 remaining_garrison = max(0, garrison_count - garrison_casualties)
 
@@ -1741,7 +1750,11 @@ class MilitaryMixin:
             winner_strength = player_effective_strengths.get(winner, 0)
             loser_strength = sum(s for p, s in player_effective_strengths.items() if p != winner)
             strength_ratio = loser_strength / winner_strength if winner_strength > 0 else 1.0
-            casualties_int = max(1, round(loser_count * strength_ratio))
+            # Overwhelming advantage: winner takes 0 casualties if strength >= 10:1 ratio
+            if winner_strength >= OVERWHELMING_ADVANTAGE_RATIO * loser_strength:
+                casualties_int = 0
+            else:
+                casualties_int = max(1, round(loser_count * strength_ratio))
         else:
             # Fallback: old behavior if no strength data available
             casualties_int = loser_count

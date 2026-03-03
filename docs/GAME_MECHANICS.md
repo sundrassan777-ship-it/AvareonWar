@@ -152,9 +152,10 @@ Winner = Higher total strength
 **Casualties (Strength-Scaled):**
 - Winner casualties = `loser_count * (loser_strength / winner_strength)`
 - Dominant forces lose far fewer units (counters matter)
-- Minimum 1 casualty per battle
+- Minimum 1 casualty per battle, UNLESS overwhelming advantage (10:1+ effective strength ratio → 0 winner casualties)
 - Equal strength → casualties = loser count (1:1 trade)
 - 6.5:1 advantage → ~15% of loser count as casualties
+- 10:1+ advantage → 0 casualties (overwhelming victory)
 - Winner keeps territory
 
 **Casualty Priority (Veterancy-Aware):**

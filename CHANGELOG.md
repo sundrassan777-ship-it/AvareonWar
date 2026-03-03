@@ -2,6 +2,12 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-04 - Overwhelming Advantage: Zero-Casualty Victories
+
+- **Balance change:** When the winner's effective strength is 10x or more the loser's, the winner suffers 0 casualties instead of the previous minimum of 1
+- Applies to normal battles and Keep Phase 1 (both attacker and garrison winning)
+- New constant `OVERWHELMING_ADVANTAGE_RATIO = 10` in `data_definitions.py` for easy tuning
+
 ## 2026-03-02 - Captain Unit Type
 
 - **New unit:** Captain — support unit trained in Barracks (75g, 1 turn, keyboard: T)
