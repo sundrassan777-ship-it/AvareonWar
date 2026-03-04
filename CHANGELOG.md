@@ -2,6 +2,16 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-04 - Expanded Main Menu Options Panel
+
+- Main menu Options now matches in-game Options with all the same settings
+- Added Edge Scrolling Mode toggle (Map Edge / Window Edge), conditional on Edge Scrolling enabled
+- Added Tooltip Delay cycle (0.3s / 0.5s / 0.7s / 1.0s / Never), conditional on Tooltips enabled
+- Added Pan Speed and Zoom Speed sliders with drag support
+- Added Audio section placeholder (Coming Soon)
+- Added scrollable content area with scrollbar for overflow at lower resolutions
+- File: `main_menu.py`
+
 ## 2026-03-04 - Overwhelming Advantage: Zero-Casualty Victories
 
 - **Balance change:** When the winner's effective strength is 10x or more the loser's, the winner suffers 0 casualties instead of the previous minimum of 1

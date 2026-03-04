@@ -16,7 +16,7 @@ The main menu is the entry point for the game, showing buttons for:
 
 import pygame
 import sys
-from config.constants import WHITE, BLACK, GRAY, DARK_GRAY
+from config.constants import WHITE, BLACK, GRAY, DARK_GRAY, GAME_VERSION
 from utils.colors import lighten_color, brighten_color
 from settings_manager import settings
 from global_sound import sound_manager  # Global sound manager for UI clicks
@@ -113,6 +113,10 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
         self.temp_tooltips_enabled = settings.get('tooltips_enabled', True)
         self.temp_show_fps = settings.get('show_fps', False)
+        self.temp_edge_scrolling_mode = settings.get('edge_scrolling_mode', 'map_edge')
+        self.temp_tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
+        self.temp_pan_speed = settings.get('camera_pan_speed', 10.0)
+        self.temp_zoom_speed = settings.get('camera_zoom_speed', 0.15)
 
         # Available resolutions
         self.available_resolutions = [
@@ -123,6 +127,16 @@ class MainMenu:
 
         # Dropdown state
         self.resolution_dropdown_open = False
+
+        # Options panel scroll state
+        self.options_scroll_offset = 0
+        self.options_max_scroll = 0
+
+        # Options slider drag state
+        self.options_dragging_slider = None  # 'pan_speed' or 'zoom_speed'
+        self.options_drag_offset = 0
+        self.options_pan_speed_slider = None  # (track_rect, min_val, max_val, thumb_rect)
+        self.options_zoom_speed_slider = None
 
         # Options UI elements
         self.options_ui_elements = {}
@@ -605,6 +619,34 @@ class MainMenu:
                         else:  # Scroll down
                             max_scroll = getattr(self, '_icon_max_scroll', 0)
                             self.icon_scroll_offset = min(max_scroll, self.icon_scroll_offset + scroll_amount)
+                elif event.button in (4, 5) and self.show_options:
+                    # Mouse wheel scroll for options panel content
+                    scroll_amount = int(30 * self.ui_scale)
+                    if event.button == 4:  # Scroll up
+                        self.options_scroll_offset = max(0, self.options_scroll_offset - scroll_amount)
+                    else:  # Scroll down
+                        self.options_scroll_offset = min(self.options_max_scroll, self.options_scroll_offset + scroll_amount)
+
+            elif event.type == pygame.MOUSEMOTION:
+                # Slider drag handling for options panel
+                if self.show_options and self.options_dragging_slider:
+                    mouse_x = event.pos[0]
+                    if self.options_dragging_slider == 'pan_speed' and self.options_pan_speed_slider:
+                        track_rect, min_val, max_val, _ = self.options_pan_speed_slider
+                        rel_x = (mouse_x - self.options_drag_offset) - track_rect.x
+                        slider_pos = max(0, min(1, rel_x / track_rect.width))
+                        self.temp_pan_speed = min_val + slider_pos * (max_val - min_val)
+                    elif self.options_dragging_slider == 'zoom_speed' and self.options_zoom_speed_slider:
+                        track_rect, min_val, max_val, _ = self.options_zoom_speed_slider
+                        rel_x = (mouse_x - self.options_drag_offset) - track_rect.x
+                        slider_pos = max(0, min(1, rel_x / track_rect.width))
+                        self.temp_zoom_speed = min_val + slider_pos * (max_val - min_val)
+
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 1:
+                    # Release slider drag
+                    self.options_dragging_slider = None
+                    self.options_drag_offset = 0
 
     def handle_click(self, pos):
         """Handle button clicks"""
@@ -738,10 +780,60 @@ class MainMenu:
                 self.temp_edge_scrolling_enabled = not self.temp_edge_scrolling_enabled
                 return
 
+            # Edge scrolling mode (click-to-cycle: map_edge <-> window_edge)
+            if 'edge_scroll_mode_dropdown' in self.options_ui_elements and self.options_ui_elements['edge_scroll_mode_dropdown']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                if self.temp_edge_scrolling_mode == "map_edge":
+                    self.temp_edge_scrolling_mode = "window_edge"
+                else:
+                    self.temp_edge_scrolling_mode = "map_edge"
+                return
+
             # Tooltips checkbox
             if 'tooltips_checkbox' in self.options_ui_elements and self.options_ui_elements['tooltips_checkbox']['rect'].collidepoint(pos):
                 sound_manager.play_ui_click()
                 self.temp_tooltips_enabled = not self.temp_tooltips_enabled
+                return
+
+            # Tooltip delay (click-to-cycle: 300 -> 500 -> 700 -> 1000 -> Never -> 300)
+            if 'tooltip_delay_dropdown' in self.options_ui_elements and self.options_ui_elements['tooltip_delay_dropdown']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                delay_cycle = [300, 500, 700, 1000, -1]
+                try:
+                    idx = delay_cycle.index(self.temp_tooltip_delay_ms)
+                    self.temp_tooltip_delay_ms = delay_cycle[(idx + 1) % len(delay_cycle)]
+                except ValueError:
+                    self.temp_tooltip_delay_ms = 300
+                return
+
+            # Pan Speed slider — thumb click starts drag, track click jumps
+            if 'pan_speed_thumb' in self.options_ui_elements and self.options_ui_elements['pan_speed_thumb']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                self.options_dragging_slider = 'pan_speed'
+                thumb_rect = self.options_ui_elements['pan_speed_thumb']['rect']
+                self.options_drag_offset = pos[0] - thumb_rect.centerx
+                return
+            if 'pan_speed_track' in self.options_ui_elements and self.options_ui_elements['pan_speed_track']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                track_rect = self.options_ui_elements['pan_speed_track']['rect']
+                rel_x = pos[0] - track_rect.x
+                slider_pos = max(0, min(1, rel_x / track_rect.width))
+                self.temp_pan_speed = 5.0 + slider_pos * (20.0 - 5.0)
+                return
+
+            # Zoom Speed slider — thumb click starts drag, track click jumps
+            if 'zoom_speed_thumb' in self.options_ui_elements and self.options_ui_elements['zoom_speed_thumb']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                self.options_dragging_slider = 'zoom_speed'
+                thumb_rect = self.options_ui_elements['zoom_speed_thumb']['rect']
+                self.options_drag_offset = pos[0] - thumb_rect.centerx
+                return
+            if 'zoom_speed_track' in self.options_ui_elements and self.options_ui_elements['zoom_speed_track']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                track_rect = self.options_ui_elements['zoom_speed_track']['rect']
+                rel_x = pos[0] - track_rect.x
+                slider_pos = max(0, min(1, rel_x / track_rect.width))
+                self.temp_zoom_speed = 0.05 + slider_pos * (0.30 - 0.05)
                 return
 
             # Show FPS checkbox
@@ -797,13 +889,22 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
         self.temp_tooltips_enabled = settings.get('tooltips_enabled', True)
         self.temp_show_fps = settings.get('show_fps', False)
+        self.temp_edge_scrolling_mode = settings.get('edge_scrolling_mode', 'map_edge')
+        self.temp_tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
+        self.temp_pan_speed = settings.get('camera_pan_speed', 10.0)
+        self.temp_zoom_speed = settings.get('camera_zoom_speed', 0.15)
         self.resolution_dropdown_open = False
+        self.options_scroll_offset = 0
+        self.options_dragging_slider = None
+        self.options_drag_offset = 0
 
     def _close_options(self):
         """Close the sliding options panel"""
         self.show_options = False
         self.options_panel_target_y = -self.options_panel_height  # Slide back up
         self.resolution_dropdown_open = False
+        self.options_dragging_slider = None
+        self.options_drag_offset = 0
 
     def _open_profile(self):
         """Open the sliding profile panel"""
@@ -853,6 +954,10 @@ class MainMenu:
         settings.set('edge_scrolling_enabled', self.temp_edge_scrolling_enabled)
         settings.set('tooltips_enabled', self.temp_tooltips_enabled)
         settings.set('show_fps', self.temp_show_fps)
+        settings.set('edge_scrolling_mode', self.temp_edge_scrolling_mode)
+        settings.set('tooltip_delay_ms', self.temp_tooltip_delay_ms)
+        settings.set('camera_pan_speed', self.temp_pan_speed)
+        settings.set('camera_zoom_speed', self.temp_zoom_speed)
 
         settings.save()
         logger.info("Settings applied and saved")
@@ -873,6 +978,10 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = True
         self.temp_tooltips_enabled = True
         self.temp_show_fps = False
+        self.temp_edge_scrolling_mode = "map_edge"
+        self.temp_tooltip_delay_ms = 500
+        self.temp_pan_speed = 10.0
+        self.temp_zoom_speed = 0.15
 
         logger.info(f"Settings reset to defaults: {default_resolution[0]}x{default_resolution[1]} (click Apply to save)")
 
@@ -919,6 +1028,10 @@ class MainMenu:
                 self._draw_tooltip(self.screen, "Profile", pygame.mouse.get_pos(), self.tooltip_font)
             elif self.hovered_button == 'achievements':
                 self._draw_tooltip(self.screen, "Achievements", pygame.mouse.get_pos(), self.tooltip_font)
+
+        # Draw version label in bottom-left corner
+        version_text = self.tooltip_font.render(f"Version: {GAME_VERSION}", True, GRAY)
+        self.screen.blit(version_text, (10, self.height - version_text.get_height() - 10))
 
         # Reset clicked state after render
         self.clicked_button = None
@@ -1015,7 +1128,7 @@ class MainMenu:
 
         # Content area (adjusted for ornate border, scaled)
         content_x = panel_x + padding_sides
-        content_y = panel_y + padding_top + int(30 * self.ui_scale)  # Reduced from 40
+        content_y = panel_y + padding_top + int(30 * self.ui_scale)
         label_x_offset = 0
         control_x_offset = int(280 * self.ui_scale)
 
@@ -1025,77 +1138,89 @@ class MainMenu:
         section_font = self._get_cached_font('assets/fonts/Cinzel-SemiBold.ttf', section_font_size)
         label_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', label_font_size)
 
-        # Display Section
-        y = content_y
-        section_text = section_font.render("Display:", True, WHITE)
-        self.screen.blit(section_text, (content_x, y))
-        y += int(35 * self.ui_scale)  # Reduced from 40
-
-        # Resolution dropdown (scaled)
-        label_text = label_font.render("Resolution:", True, WHITE)
-        self.screen.blit(label_text, (content_x + label_x_offset, y))
-
+        # Common control dimensions
+        checkbox_x = content_x + control_x_offset
+        checkbox_size = int(30 * self.ui_scale)
         dropdown_x = content_x + control_x_offset
         dropdown_width = int(180 * self.ui_scale)
         dropdown_height = int(35 * self.ui_scale)
-        dropdown_rect = pygame.Rect(dropdown_x, y - 5, dropdown_width, dropdown_height)
 
+        # Scrollable content area boundaries (between title and buttons)
+        content_area_top = content_y
+        buttons_y = panel_y + panel_h - padding_bottom - int(70 * self.ui_scale)
+        content_area_bottom = buttons_y - int(15 * self.ui_scale)
+        content_area_height = content_area_bottom - content_area_top
+        content_width = panel_w - 2 * padding_sides
+
+        # Set clip rect for scrollable content
+        content_clip_rect = pygame.Rect(content_x - 5, content_area_top, content_width + 10, content_area_height)
+        original_clip = self.screen.get_clip()
+        self.screen.set_clip(content_clip_rect)
+
+        # Apply scroll offset to y
+        y = content_area_top - self.options_scroll_offset
+        content_start_y = y
+
+        # === DISPLAY SECTION ===
+        section_text = section_font.render("Display:", True, WHITE)
+        self.screen.blit(section_text, (content_x, y))
+        y += int(42 * self.ui_scale)
+
+        # Resolution dropdown
+        label_text = label_font.render("Resolution:", True, WHITE)
+        self.screen.blit(label_text, (content_x + label_x_offset, y))
+
+        dropdown_rect = pygame.Rect(dropdown_x, y - 5, dropdown_width, dropdown_height)
         is_hovered = (self.hovered_option_element == 'resolution_dropdown')
         bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
         pygame.draw.rect(self.screen, bg_color, dropdown_rect, border_radius=5)
         pygame.draw.rect(self.screen, (100, 100, 100), dropdown_rect, 2, border_radius=5)
-
         dropdown_text = label_font.render(f"{self.temp_resolution[0]}x{self.temp_resolution[1]}", True, WHITE)
         dropdown_text_rect = dropdown_text.get_rect(center=dropdown_rect.center)
         self.screen.blit(dropdown_text, dropdown_text_rect)
-
         self.options_ui_elements['resolution_dropdown'] = {'rect': dropdown_rect}
 
-        # Store dropdown info for overlay rendering (don't increment y)
-        dropdown_overlay_y = y
-        y += int(40 * self.ui_scale)  # Reduced from 45
+        # Store dropdown info for overlay rendering (drawn after clip is restored)
+        res_dropdown_overlay_y = y
+        y += int(40 * self.ui_scale)
 
-        # Fullscreen checkbox (scaled)
+        # Fullscreen checkbox
         label_text = label_font.render("Fullscreen:", True, WHITE)
         self.screen.blit(label_text, (content_x + label_x_offset, y))
-
-        checkbox_x = content_x + control_x_offset
-        checkbox_size = int(30 * self.ui_scale)
         checkbox_rect = pygame.Rect(checkbox_x, y - 5, checkbox_size, checkbox_size)
-
         is_hovered = (self.hovered_option_element == 'fullscreen_checkbox')
         bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
         pygame.draw.rect(self.screen, bg_color, checkbox_rect, border_radius=5)
         pygame.draw.rect(self.screen, (100, 100, 100), checkbox_rect, 2, border_radius=5)
-
         if self.temp_fullscreen:
-            # Draw checkmark
             pygame.draw.line(self.screen, WHITE,
                            (checkbox_rect.left + 6, checkbox_rect.centery),
                            (checkbox_rect.centerx, checkbox_rect.bottom - 8), 3)
             pygame.draw.line(self.screen, WHITE,
                            (checkbox_rect.centerx, checkbox_rect.bottom - 8),
                            (checkbox_rect.right - 6, checkbox_rect.top + 6), 3)
-
         self.options_ui_elements['fullscreen_checkbox'] = {'rect': checkbox_rect}
-        y += int(40 * self.ui_scale)  # Reduced from 50
+        y += int(40 * self.ui_scale)
 
-        # Gameplay Section (scaled)
+        # === GAMEPLAY SECTION === (horizontal separator line)
+        separator_y = y + int(3 * self.ui_scale)
+        pygame.draw.line(self.screen, WHITE, (content_x, separator_y), (content_x + content_width, separator_y), 2)
+        y += int(12 * self.ui_scale)
         section_text = section_font.render("Gameplay:", True, WHITE)
         self.screen.blit(section_text, (content_x, y))
-        y += int(35 * self.ui_scale)  # Reduced from 40
+        y += int(42 * self.ui_scale)
 
-        # Edge scrolling checkbox (scaled)
+        # Edge scrolling checkbox (underlined to show sub-option relationship)
         label_text = label_font.render("Edge Scrolling:", True, WHITE)
         self.screen.blit(label_text, (content_x + label_x_offset, y))
-
+        underline_y = y + label_text.get_height() - int(2 * self.ui_scale)
+        pygame.draw.line(self.screen, WHITE, (content_x + label_x_offset, underline_y),
+                        (content_x + label_x_offset + label_text.get_width(), underline_y), 1)
         checkbox_rect = pygame.Rect(checkbox_x, y - 5, checkbox_size, checkbox_size)
-
         is_hovered = (self.hovered_option_element == 'edge_scrolling_checkbox')
         bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
         pygame.draw.rect(self.screen, bg_color, checkbox_rect, border_radius=5)
         pygame.draw.rect(self.screen, (100, 100, 100), checkbox_rect, 2, border_radius=5)
-
         if self.temp_edge_scrolling_enabled:
             pygame.draw.line(self.screen, WHITE,
                            (checkbox_rect.left + 6, checkbox_rect.centery),
@@ -1103,21 +1228,40 @@ class MainMenu:
             pygame.draw.line(self.screen, WHITE,
                            (checkbox_rect.centerx, checkbox_rect.bottom - 8),
                            (checkbox_rect.right - 6, checkbox_rect.top + 6), 3)
-
         self.options_ui_elements['edge_scrolling_checkbox'] = {'rect': checkbox_rect}
-        y += int(35 * self.ui_scale)  # Reduced from 45
+        y += int(35 * self.ui_scale)
 
-        # Tooltips checkbox (scaled)
+        # Edge scrolling mode (conditional — only shown when edge scrolling is enabled)
+        if self.temp_edge_scrolling_enabled:
+            mode_label = label_font.render("Mode:", True, WHITE)
+            self.screen.blit(mode_label, (content_x + label_x_offset, y))
+
+            mode_text = "Map Edge" if self.temp_edge_scrolling_mode == "map_edge" else "Window Edge"
+            mode_rect = pygame.Rect(dropdown_x, y - 5, dropdown_width, dropdown_height)
+            is_hovered = (self.hovered_option_element == 'edge_scroll_mode_dropdown')
+            bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
+            pygame.draw.rect(self.screen, bg_color, mode_rect, border_radius=5)
+            pygame.draw.rect(self.screen, (100, 100, 100), mode_rect, 2, border_radius=5)
+            # Use smaller font so "Window Edge" fits inside the dropdown
+            dropdown_label_size = max(14, int(22 * self.ui_scale))
+            dropdown_label_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', dropdown_label_size)
+            mode_dd_text = dropdown_label_font.render(mode_text, True, WHITE)
+            mode_dd_text_rect = mode_dd_text.get_rect(center=mode_rect.center)
+            self.screen.blit(mode_dd_text, mode_dd_text_rect)
+            self.options_ui_elements['edge_scroll_mode_dropdown'] = {'rect': mode_rect}
+            y += int(35 * self.ui_scale)
+
+        # Tooltips checkbox (underlined to show sub-option relationship)
         label_text = label_font.render("Tooltips:", True, WHITE)
         self.screen.blit(label_text, (content_x + label_x_offset, y))
-
+        underline_y = y + label_text.get_height() - int(2 * self.ui_scale)
+        pygame.draw.line(self.screen, WHITE, (content_x + label_x_offset, underline_y),
+                        (content_x + label_x_offset + label_text.get_width(), underline_y), 1)
         checkbox_rect = pygame.Rect(checkbox_x, y - 5, checkbox_size, checkbox_size)
-
         is_hovered = (self.hovered_option_element == 'tooltips_checkbox')
         bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
         pygame.draw.rect(self.screen, bg_color, checkbox_rect, border_radius=5)
         pygame.draw.rect(self.screen, (100, 100, 100), checkbox_rect, 2, border_radius=5)
-
         if self.temp_tooltips_enabled:
             pygame.draw.line(self.screen, WHITE,
                            (checkbox_rect.left + 6, checkbox_rect.centery),
@@ -1125,21 +1269,85 @@ class MainMenu:
             pygame.draw.line(self.screen, WHITE,
                            (checkbox_rect.centerx, checkbox_rect.bottom - 8),
                            (checkbox_rect.right - 6, checkbox_rect.top + 6), 3)
-
         self.options_ui_elements['tooltips_checkbox'] = {'rect': checkbox_rect}
-        y += int(35 * self.ui_scale)  # Reduced from 45
+        y += int(35 * self.ui_scale)
 
-        # Show FPS checkbox (scaled)
+        # Tooltip delay (conditional — only shown when tooltips are enabled)
+        if self.temp_tooltips_enabled:
+            delay_label = label_font.render("Delay:", True, WHITE)
+            self.screen.blit(delay_label, (content_x + label_x_offset, y))
+
+            if self.temp_tooltip_delay_ms == -1:
+                delay_text = "Never"
+            else:
+                delay_text = f"{self.temp_tooltip_delay_ms / 1000:.1f}s"
+            delay_rect = pygame.Rect(dropdown_x, y - 5, dropdown_width, dropdown_height)
+            is_hovered = (self.hovered_option_element == 'tooltip_delay_dropdown')
+            bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
+            pygame.draw.rect(self.screen, bg_color, delay_rect, border_radius=5)
+            pygame.draw.rect(self.screen, (100, 100, 100), delay_rect, 2, border_radius=5)
+            delay_dd_text = label_font.render(delay_text, True, WHITE)
+            delay_dd_text_rect = delay_dd_text.get_rect(center=delay_rect.center)
+            self.screen.blit(delay_dd_text, delay_dd_text_rect)
+            self.options_ui_elements['tooltip_delay_dropdown'] = {'rect': delay_rect}
+            y += int(35 * self.ui_scale)
+
+        # Pan Speed slider
+        pan_label = label_font.render(f"Pan Speed: {int(self.temp_pan_speed)}", True, WHITE)
+        self.screen.blit(pan_label, (content_x + label_x_offset, y))
+        y += int(42 * self.ui_scale)
+
+        slider_x = content_x + label_x_offset + int(10 * self.ui_scale)
+        slider_width = content_width - int(30 * self.ui_scale)
+        slider_height = int(6 * self.ui_scale)
+        pan_track_rect = pygame.Rect(slider_x, y, slider_width, slider_height)
+        pygame.draw.rect(self.screen, (60, 60, 70), pan_track_rect, border_radius=3)
+
+        pan_min, pan_max = 5.0, 20.0
+        pan_thumb_pos = (self.temp_pan_speed - pan_min) / (pan_max - pan_min)
+        pan_thumb_x = int(slider_x + pan_thumb_pos * slider_width)
+        thumb_w, thumb_h = int(16 * self.ui_scale), int(14 * self.ui_scale)
+        pan_thumb_rect = pygame.Rect(pan_thumb_x - thumb_w // 2, y - (thumb_h - slider_height) // 2, thumb_w, thumb_h)
+        is_hovered = (self.hovered_option_element == 'pan_speed_thumb')
+        thumb_color = (130, 180, 130) if is_hovered else (100, 150, 100)
+        pygame.draw.rect(self.screen, thumb_color, pan_thumb_rect, border_radius=3)
+        pygame.draw.rect(self.screen, (150, 150, 150), pan_thumb_rect, 1, border_radius=3)
+
+        self.options_ui_elements['pan_speed_track'] = {'rect': pan_track_rect}
+        self.options_ui_elements['pan_speed_thumb'] = {'rect': pan_thumb_rect}
+        self.options_pan_speed_slider = (pan_track_rect, pan_min, pan_max, pan_thumb_rect)
+        y += int(22 * self.ui_scale)
+
+        # Zoom Speed slider
+        zoom_label = label_font.render(f"Zoom Speed: {self.temp_zoom_speed:.2f}", True, WHITE)
+        self.screen.blit(zoom_label, (content_x + label_x_offset, y))
+        y += int(42 * self.ui_scale)
+
+        zoom_track_rect = pygame.Rect(slider_x, y, slider_width, slider_height)
+        pygame.draw.rect(self.screen, (60, 60, 70), zoom_track_rect, border_radius=3)
+
+        zoom_min, zoom_max = 0.05, 0.30
+        zoom_thumb_pos = (self.temp_zoom_speed - zoom_min) / (zoom_max - zoom_min)
+        zoom_thumb_x = int(slider_x + zoom_thumb_pos * slider_width)
+        zoom_thumb_rect = pygame.Rect(zoom_thumb_x - thumb_w // 2, y - (thumb_h - slider_height) // 2, thumb_w, thumb_h)
+        is_hovered = (self.hovered_option_element == 'zoom_speed_thumb')
+        thumb_color = (130, 180, 130) if is_hovered else (100, 150, 100)
+        pygame.draw.rect(self.screen, thumb_color, zoom_thumb_rect, border_radius=3)
+        pygame.draw.rect(self.screen, (150, 150, 150), zoom_thumb_rect, 1, border_radius=3)
+
+        self.options_ui_elements['zoom_speed_track'] = {'rect': zoom_track_rect}
+        self.options_ui_elements['zoom_speed_thumb'] = {'rect': zoom_thumb_rect}
+        self.options_zoom_speed_slider = (zoom_track_rect, zoom_min, zoom_max, zoom_thumb_rect)
+        y += int(22 * self.ui_scale)
+
+        # Show FPS checkbox
         label_text = label_font.render("Show FPS:", True, WHITE)
         self.screen.blit(label_text, (content_x + label_x_offset, y))
-
         checkbox_rect = pygame.Rect(checkbox_x, y - 5, checkbox_size, checkbox_size)
-
         is_hovered = (self.hovered_option_element == 'show_fps_checkbox')
         bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
         pygame.draw.rect(self.screen, bg_color, checkbox_rect, border_radius=5)
         pygame.draw.rect(self.screen, (100, 100, 100), checkbox_rect, 2, border_radius=5)
-
         if self.temp_show_fps:
             pygame.draw.line(self.screen, WHITE,
                            (checkbox_rect.left + 6, checkbox_rect.centery),
@@ -1147,16 +1355,65 @@ class MainMenu:
             pygame.draw.line(self.screen, WHITE,
                            (checkbox_rect.centerx, checkbox_rect.bottom - 8),
                            (checkbox_rect.right - 6, checkbox_rect.top + 6), 3)
-
         self.options_ui_elements['show_fps_checkbox'] = {'rect': checkbox_rect}
+        y += int(40 * self.ui_scale)
 
-        # Cancel and Apply buttons (accounting for ornate footer, scaled)
+        # === AUDIO SECTION (placeholder) === (horizontal separator line)
+        separator_y = y + int(3 * self.ui_scale)
+        pygame.draw.line(self.screen, WHITE, (content_x, separator_y), (content_x + content_width, separator_y), 2)
+        y += int(12 * self.ui_scale)
+        audio_header = section_font.render("Audio (Coming Soon):", True, (150, 150, 150))
+        self.screen.blit(audio_header, (content_x, y))
+        y += int(42 * self.ui_scale)
+
+        audio_box_height = int(90 * self.ui_scale)
+        audio_box = pygame.Rect(content_x, y, content_width, audio_box_height)
+        pygame.draw.rect(self.screen, (50, 35, 25), audio_box, border_radius=5)
+        pygame.draw.rect(self.screen, (80, 80, 80), audio_box, 2, border_radius=5)
+
+        placeholder_lines = [
+            "Master Volume: [########__] 80%",
+            "Music Volume:  [######____] 60%",
+            "SFX Volume:    [#######___] 70%"
+        ]
+        ph_font_size = max(12, int(20 * self.ui_scale))
+        ph_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', ph_font_size)
+        ph_y = y + int(10 * self.ui_scale)
+        for line in placeholder_lines:
+            ph_text = ph_font.render(line, True, (100, 100, 100))
+            self.screen.blit(ph_text, (content_x + int(15 * self.ui_scale), ph_y))
+            ph_y += int(22 * self.ui_scale)
+        y += audio_box_height + int(15 * self.ui_scale)
+
+        # Calculate total content height and max scroll
+        total_content_height = y - content_start_y
+        self.options_max_scroll = max(0, total_content_height - content_area_height)
+        self.options_scroll_offset = max(0, min(self.options_scroll_offset, self.options_max_scroll))
+
+        # Restore clip rect before drawing buttons and overlays
+        self.screen.set_clip(original_clip)
+
+        # Draw scrollbar if content overflows
+        if self.options_max_scroll > 0:
+            scrollbar_width = int(8 * self.ui_scale)
+            scrollbar_x = content_x + content_width + int(2 * self.ui_scale)
+            scrollbar_track_rect = pygame.Rect(scrollbar_x, content_area_top, scrollbar_width, content_area_height)
+            pygame.draw.rect(self.screen, (40, 40, 50), scrollbar_track_rect, border_radius=4)
+
+            # Thumb size proportional to visible area
+            thumb_ratio = content_area_height / total_content_height
+            scrollbar_thumb_h = max(int(30 * self.ui_scale), int(content_area_height * thumb_ratio))
+            scroll_ratio = self.options_scroll_offset / self.options_max_scroll if self.options_max_scroll > 0 else 0
+            scrollbar_thumb_y = content_area_top + int(scroll_ratio * (content_area_height - scrollbar_thumb_h))
+            scrollbar_thumb_rect = pygame.Rect(scrollbar_x, scrollbar_thumb_y, scrollbar_width, scrollbar_thumb_h)
+            pygame.draw.rect(self.screen, (100, 100, 120), scrollbar_thumb_rect, border_radius=4)
+
+        # === BUTTONS (fixed position, outside scroll area) ===
         button_width = int(150 * self.ui_scale)
         button_height = int(50 * self.ui_scale)
         button_spacing = int(20 * self.ui_scale)
         total_buttons_width = button_width * 2 + button_spacing
         buttons_start_x = panel_x + (panel_w - total_buttons_width) // 2
-        buttons_y = panel_y + panel_h - padding_bottom - int(70 * self.ui_scale)
 
         # Cancel button
         cancel_rect = pygame.Rect(buttons_start_x, buttons_y, button_width, button_height)
@@ -1164,11 +1421,9 @@ class MainMenu:
         cancel_bg = lighten_color((120, 50, 50), 0.2) if is_hovered else (120, 50, 50)
         pygame.draw.rect(self.screen, cancel_bg, cancel_rect, border_radius=8)
         pygame.draw.rect(self.screen, (150, 150, 150), cancel_rect, 2, border_radius=8)
-
         cancel_text = self.button_font.render("Cancel", True, WHITE)
         cancel_text_rect = cancel_text.get_rect(center=cancel_rect.center)
         self.screen.blit(cancel_text, cancel_text_rect)
-
         self.options_ui_elements['cancel_button'] = {'rect': cancel_rect}
 
         # Apply button
@@ -1178,47 +1433,39 @@ class MainMenu:
         apply_bg = lighten_color((50, 180, 50), 0.2) if is_hovered else (50, 180, 50)
         pygame.draw.rect(self.screen, apply_bg, apply_rect, border_radius=8)
         pygame.draw.rect(self.screen, (150, 150, 150), apply_rect, 2, border_radius=8)
-
         apply_text = self.button_font.render("Apply", True, WHITE)
         apply_text_rect = apply_text.get_rect(center=apply_rect.center)
         self.screen.blit(apply_text, apply_text_rect)
-
         self.options_ui_elements['apply_button'] = {'rect': apply_rect}
 
-        # Reset to Defaults button (centered, below Cancel/Apply buttons, scaled)
-        reset_button_width = int(300 * self.ui_scale)  # Extra wide to comfortably fit text
+        # Reset to Defaults button (centered, below Cancel/Apply buttons)
+        reset_button_width = int(300 * self.ui_scale)
         reset_button_height = int(40 * self.ui_scale)
         reset_button_x = panel_x + (panel_w - reset_button_width) // 2
-        reset_button_y = buttons_y + button_height + int(15 * self.ui_scale)  # Below main buttons
-
+        reset_button_y = buttons_y + button_height + int(15 * self.ui_scale)
         reset_rect = pygame.Rect(reset_button_x, reset_button_y, reset_button_width, reset_button_height)
         is_hovered = (self.hovered_option_element == 'reset_button')
         reset_bg = lighten_color((120, 120, 80), 0.2) if is_hovered else (120, 120, 80)
         pygame.draw.rect(self.screen, reset_bg, reset_rect, border_radius=8)
         pygame.draw.rect(self.screen, (150, 150, 150), reset_rect, 2, border_radius=8)
-
         reset_text = label_font.render("Reset to Defaults", True, WHITE)
         reset_text_rect = reset_text.get_rect(center=reset_rect.center)
         self.screen.blit(reset_text, reset_text_rect)
-
         self.options_ui_elements['reset_button'] = {'rect': reset_rect}
 
-        # Draw resolution dropdown overlay (on top of everything else)
+        # === DROPDOWN OVERLAYS (drawn last, on top of everything) ===
         if self.resolution_dropdown_open:
-            dropdown_y = dropdown_overlay_y
+            dropdown_y = res_dropdown_overlay_y
             for i, res in enumerate(self.available_resolutions):
                 option_rect = pygame.Rect(dropdown_x, dropdown_y, dropdown_width, dropdown_height)
                 option_key = f'resolution_option_{i}'
-
                 is_hovered = (self.hovered_option_element == option_key)
                 option_bg = lighten_color((60, 60, 70), 0.2) if is_hovered else (60, 60, 70)
                 pygame.draw.rect(self.screen, option_bg, option_rect, border_radius=5)
                 pygame.draw.rect(self.screen, (150, 150, 150), option_rect, 2, border_radius=5)
-
                 option_text = label_font.render(f"{res[0]}x{res[1]}", True, WHITE)
                 option_text_rect = option_text.get_rect(center=option_rect.center)
                 self.screen.blit(option_text, option_text_rect)
-
                 self.options_ui_elements[option_key] = {'rect': option_rect}
                 dropdown_y += dropdown_height + int(5 * self.ui_scale)
 
