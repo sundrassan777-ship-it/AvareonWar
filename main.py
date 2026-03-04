@@ -76,6 +76,7 @@ from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
 from global_sound import sound_manager, play_structure_sound  # Global sound manager instance
 from tutorial_mission import CameraAnimation  # Reuse for Custom Game / Multiplayer start zoom
 from utils.logger import get_logger, setup_logging
+from utils.cursor import draw_custom_cursor, invalidate_cursor_cache
 
 # Initialize structured logging before anything else logs output
 setup_logging()
@@ -186,6 +187,7 @@ class Game:
                 logger.info(f"Starting game in WINDOWED at {initial_width}x{initial_height}")
                 self.screen = pygame.display.set_mode((initial_width, initial_height))
         pygame.display.set_caption("War of Avareon")
+        pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
         self.clock = pygame.time.Clock()
 
         # CRITICAL FIX: Get the ACTUAL window size after creation
@@ -2998,6 +3000,8 @@ class Game:
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
             self._hero_overlay_cache = {}
+            invalidate_cursor_cache()  # Reload custom cursor after display mode change
+            pygame.mouse.set_visible(False)  # Re-hide system cursor after display recreation
 
             # H3 fix: Update ui_scale and fonts after resolution change
             REFERENCE_WIDTH = 1600
@@ -9516,10 +9520,6 @@ class Game:
             if self.show_disconnect_dialog:
                 self.draw_disconnect_dialog()
 
-            # Draw ability targeting cursor
-            if self.ability_targeting_active:
-                self.draw_targeting_cursor()
-
             # Draw invalid target message popup
             if self.invalid_target_message:
                 self.draw_invalid_target_popup()
@@ -9554,6 +9554,12 @@ class Game:
                 self.click_flash_timer -= dt
                 if self.click_flash_timer <= 0:
                     self.clicked_element = None  # Clear flash when timer expires
+
+            # Draw cursor last — targeting circle during ability targeting, custom cursor otherwise
+            if self.ability_targeting_active:
+                self.draw_targeting_cursor()
+            else:
+                draw_custom_cursor(self.screen)
 
             # Update display
             pygame.display.flip()
@@ -12758,6 +12764,7 @@ if __name__ == "__main__":
         screen = pygame.display.set_mode(initial_resolution)
 
     pygame.display.set_caption("War of Avareon")
+    pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
 
     # Main menu loop
     while True:
@@ -12783,6 +12790,7 @@ if __name__ == "__main__":
                 screen = pygame.display.set_mode(initial_resolution)
 
             pygame.display.set_caption("War of Avareon")
+            pygame.mouse.set_visible(False)  # Re-hide cursor after window recreation
             continue
         elif action == 'campaign':
             # Campaign loop: campaign screen <-> mission screens
@@ -13018,6 +13026,7 @@ if __name__ == "__main__":
                         screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
                     else:
                         screen = pygame.display.set_mode(initial_resolution)
+                    pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
 
                 continue
             else:
@@ -13093,6 +13102,7 @@ if __name__ == "__main__":
                         screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
                     else:
                         screen = pygame.display.set_mode(initial_resolution)
+                    pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
 
                 continue
             else:

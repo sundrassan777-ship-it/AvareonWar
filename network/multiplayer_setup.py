@@ -19,6 +19,7 @@ import map_data
 from network.territory_selector import TerritorySelector  # Updated import path
 from global_sound import sound_manager  # Global sound manager for UI clicks
 from utils.logger import get_logger
+from utils.cursor import draw_custom_cursor
 
 logger = get_logger(__name__)
 
@@ -193,6 +194,7 @@ class MultiplayerSetup:
 
             # Render
             self.render()
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
             clock.tick(60)
 
@@ -380,6 +382,7 @@ class MultiplayerSetup:
 
         # Show connecting screen
         self._render_connecting(host_ip)
+        draw_custom_cursor(self.screen)
         pygame.display.flip()
 
         # Use profile name from settings
@@ -751,6 +754,7 @@ class MultiplayerSetup:
             # Reset click flash after render
             clicked_btn = None
 
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
             clock.tick(60)
 
@@ -897,5 +901,6 @@ class MultiplayerSetup:
             inst_rect = inst_text.get_rect(center=(self.width // 2, self.height - 100))
             self.screen.blit(inst_text, inst_rect)
 
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
             clock.tick(60)

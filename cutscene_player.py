@@ -30,6 +30,7 @@ import os
 import math
 
 from utils.logger import get_logger
+from utils.cursor import draw_custom_cursor
 logger = get_logger(__name__)
 
 
@@ -301,6 +302,7 @@ class CutscenePlayer:
             self._handle_events()
             self._update(dt)
             self._render()
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
 
     # ========================================================================

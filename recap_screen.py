@@ -20,6 +20,7 @@ import math
 from config.constants import WHITE, BLACK, PLAYER_COLORS
 from global_sound import sound_manager
 from utils.surface_utils import crop_to_opaque
+from utils.cursor import draw_custom_cursor
 
 # Brass gold color for headers (matching campaign_screen)
 BRASS_COLOR = (181, 166, 66)
@@ -254,6 +255,7 @@ class RecapScreen:
             self._update_xp_bar(dt)
             self.handle_events()
             self.render()
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
         return self.result
 

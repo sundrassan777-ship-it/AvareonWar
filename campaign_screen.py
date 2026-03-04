@@ -17,6 +17,7 @@ from utils.surface_utils import crop_to_opaque
 import os
 from config.constants import WHITE, BLACK, GRAY
 from global_sound import sound_manager
+from utils.cursor import draw_custom_cursor
 
 # Brass gold color for special button text (matching integrated_setup)
 BRASS_COLOR = (181, 166, 66)
@@ -136,6 +137,7 @@ class CampaignScreen:
         while not self.cancelled and not self.selected_mission:
             self.handle_events()
             self.render()
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
             self.clock.tick(60)
 
@@ -474,6 +476,7 @@ class MissionScreen:
         while not self.done:
             self.handle_events()
             self.render()
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
             self.clock.tick(60)
 

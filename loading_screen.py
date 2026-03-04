@@ -21,6 +21,7 @@ from network_config import MessageType
 from network.protocol import NetworkProtocol
 from global_sound import get_game_sound_tasks
 from utils.logger import get_logger
+from utils.cursor import draw_custom_cursor
 
 logger = get_logger(__name__)
 
@@ -329,6 +330,7 @@ class LoadingScreen:
             label_rect = label_surface.get_rect(centerx=sw // 2, top=label_y)
             self.screen.blit(label_surface, label_rect)
 
+        draw_custom_cursor(self.screen)
         pygame.display.flip()
 
     def run(self):

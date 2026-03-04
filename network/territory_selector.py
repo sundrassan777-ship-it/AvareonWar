@@ -21,6 +21,7 @@ from config.constants import ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT
 from settings_manager import settings
 from global_sound import sound_manager
 from utils.logger import get_logger
+from utils.cursor import draw_custom_cursor
 
 logger = get_logger(__name__)
 
@@ -447,6 +448,7 @@ class TerritorySelector:
 
             # Render
             self.render()
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
             clock.tick(60)
 

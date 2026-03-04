@@ -23,6 +23,7 @@ from global_sound import sound_manager  # Global sound manager for UI clicks
 from achievement_manager import achievement_manager, ALL_REWARD_ICON_PATHS, ALL_TITLES
 from achievement_panel import AchievementPanel
 from utils.logger import get_logger
+from utils.cursor import draw_custom_cursor
 
 logger = get_logger(__name__)
 
@@ -483,6 +484,7 @@ class MainMenu:
 
             self.handle_events()
             self.render()
+            draw_custom_cursor(self.screen)
 
             pygame.display.flip()
 

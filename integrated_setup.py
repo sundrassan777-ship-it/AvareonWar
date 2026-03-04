@@ -26,6 +26,7 @@ from config.constants import (
 from utils.colors import lighten_color, brighten_color
 from global_sound import sound_manager  # Global sound manager for UI clicks
 from utils.logger import get_logger
+from utils.cursor import draw_custom_cursor
 
 logger = get_logger(__name__)
 
@@ -1812,6 +1813,7 @@ class IntegratedSetup:
             self.handle_events()
             self.update(dt)
             self.render()
+            draw_custom_cursor(self.screen)
             pygame.display.flip()
 
         if self.cancelled:
