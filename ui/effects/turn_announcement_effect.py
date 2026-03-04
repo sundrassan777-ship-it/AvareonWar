@@ -126,6 +126,9 @@ class TurnAnnouncementEffect:
         self.full_box_width = self.text_width + (self.box_padding * 2)
         self.full_box_height = self.text_height + (self.box_padding * 2)
 
+        # PERFORMANCE: Cache smoothscaled text surfaces by quantized size
+        self._scaled_text_cache = {}
+
         # Track phases for synchronized animation
         self.explosion_duration = wave_module.EXPLOSION_DURATION
         self.pause_duration = PAUSE_DURATION
@@ -182,29 +185,26 @@ class TurnAnnouncementEffect:
 
     def _render_overlay(self, screen):
         """Render semi-transparent black overlay to darken the screen."""
-        # P1 fix: reuse cached overlay surface instead of creating new one each frame
+        # PERFORMANCE: Non-SRCALPHA surface + set_alpha (per-surface alpha is faster than per-pixel)
         if not hasattr(self, '_cached_overlay') or self._cached_overlay is None:
-            self._cached_overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
-        self._cached_overlay.fill((0, 0, 0, 0))
+            self._cached_overlay = pygame.Surface((self.screen_width, self.screen_height))
+            self._cached_overlay.fill((0, 0, 0))
         overlay = self._cached_overlay
 
         # Calculate overlay opacity based on phase
         if self.elapsed < self.explosion_duration:
-            # Fade in during explosion
             progress = self.elapsed / self.explosion_duration
             opacity = progress * OVERLAY_DARKNESS
         elif self.elapsed < self.explosion_duration + self.pause_duration:
-            # Full darkness during pause
             opacity = OVERLAY_DARKNESS
         else:
-            # Fade out during recede
             recede_time = self.elapsed - (self.explosion_duration + self.pause_duration)
             progress = recede_time / self.recede_duration
             opacity = (1.0 - progress) * OVERLAY_DARKNESS
 
-        # Draw overlay
+        # Per-surface alpha: single multiply during blit instead of per-pixel
         alpha = int(255 * opacity)
-        overlay.fill((0, 0, 0, alpha))
+        overlay.set_alpha(alpha)
         screen.blit(overlay, (0, 0))
 
     def _render_text_box(self, screen):
@@ -267,10 +267,14 @@ class TurnAnnouncementEffect:
             # Only render if text is visible
             if scaled_text_width > 5 and scaled_text_height > 5:
                 # Scale the text surface
-                scaled_text = pygame.transform.smoothscale(
-                    self.text_surface,
-                    (scaled_text_width, scaled_text_height)
-                )
+                # PERFORMANCE: Cache smoothscale by quantized size (avoid per-frame smoothscale)
+                q_tw = max(5, ((scaled_text_width + 2) // 5) * 5)
+                q_th = max(5, ((scaled_text_height + 2) // 5) * 5)
+                cache_key = (q_tw, q_th)
+                if cache_key not in self._scaled_text_cache:
+                    self._scaled_text_cache[cache_key] = pygame.transform.smoothscale(
+                        self.text_surface, (q_tw, q_th))
+                scaled_text = self._scaled_text_cache[cache_key]
 
                 # Apply opacity to scaled text
                 scaled_text.set_alpha(int(255 * text_opacity))

@@ -351,6 +351,7 @@ class KeyboardHandler:
                 # Set territory owner if not already owned
                 if game_state.territory_owners.get(territory, -1) == -1:
                     game_state.territory_owners[territory] = player_index
+                    game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                     game_state.invalidate_territorial_bonus_cache()  # Ownership changed
                     logger.info(f"Cheat: Claimed {territory} for Player {player_num}")
 
@@ -462,6 +463,7 @@ class KeyboardHandler:
                 if current_owner != player_index:
                     logger.info(f"Cheat: Claiming {territory} for Player {player_num} (was Player {current_owner + 1 if current_owner >= 0 else 'neutral'})")
                     game_state.territory_owners[territory] = player_index
+                    game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                     game_state.invalidate_territorial_bonus_cache()  # Ownership changed
 
                 # Instantly build a Keep (add to completed buildings)

@@ -70,6 +70,7 @@ class MapRenderer:
         # Dictionary to store active production glow effects: {(territory, plot_index): ProductionGlowEffect}
         # Tracks Barracks with units in training queue, and Keep/Castle with hero in training
         self.production_glow_effects = {}
+        self._production_glow_version = -1  # FPS OPT: Track training version for dirty check
         # List to store active hero ability visual effects (burst + arc particles)
         self.ability_effects = []
         # Embargo persistent effects: {territory_name: AbilityPolygonBurstEffect}
@@ -95,7 +96,17 @@ class MapRenderer:
         # H8 fix: Track overlay size so they can be rebuilt on window resize
         self._overlay_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
         self.fullscreen_overlay = pygame.Surface(self._overlay_size, pygame.SRCALPHA)
-        self.hover_overlay = pygame.Surface(self._overlay_size, pygame.SRCALPHA)
+        # FPS OPT Phase 1B: Dirty-flag cache for territory ownership overlay
+        # Skip fill+draw+blit when camera and ownership haven't changed (static gameplay)
+        self._overlay_cache_surface = None  # Cached rendered overlay
+        self._overlay_cache_camera = None  # (offset_x, offset_y, zoom) when cached
+        self._overlay_cache_version = -1  # game_state._territory_owners_version when cache was built
+        # FPS OPT: Hover overlay uses small clipped surface, no longer full-screen
+        # Cached between frames when same territory is hovered with same camera state
+        self._hover_surface = None  # Small SRCALPHA surface for hover polygon
+        self._hover_blit_pos = (0, 0)  # Screen position to blit hover surface
+        self._last_hover_territory = None  # Track for cache invalidation
+        self._last_hover_camera_state = None  # Track for cache invalidation
         # Pools of reusable surfaces by size for overlays, glows, and effects
         self.surface_pool = {}  # key = (width, height), value = list of surfaces
         self.max_pool_size = 50  # Limit pool size to prevent memory bloat
@@ -693,8 +704,8 @@ class MapRenderer:
         """
         Draw a colored overlay on a territory (Phase 2D: camera-aware).
 
-        Transforms territory polygon from world to screen coordinates
-        before drawing, so overlay follows camera movement and zoom.
+        FPS OPT: Uses small clipped SRCALPHA surface sized to polygon bbox
+        instead of full-screen 5.44MB surface. Typical surface ~200x150 pixels.
 
         Args:
             territory: Name of territory to draw overlay on
@@ -702,27 +713,29 @@ class MapRenderer:
             alpha: Transparency (0-255)
             outline: Whether to draw border
         """
-        # PERFORMANCE OPTIMIZATION: Use cached screen coordinates
-        # Old: Transform 30-80 vertices per territory per frame
-        # New: O(1) cache lookup, transform only when camera changes
         screen_polygon = self.get_cached_screen_polygon(territory)
-
         if not screen_polygon:
             return
 
-        # PERFORMANCE: Reuse the fullscreen overlay surface instead of creating new one
-        # Clear it for this territory
-        self.fullscreen_overlay.fill((0, 0, 0, 0))
+        # FPS OPT: Compute screen-space bbox for small clipped surface
+        border_width = max(1, int(1.5 * self.game.camera_zoom)) if outline else 0
+        margin = border_width + 2
+        xs = [p[0] for p in screen_polygon]
+        ys = [p[1] for p in screen_polygon]
+        bbox_x = max(0, int(min(xs) - margin))
+        bbox_y = max(0, int(min(ys) - margin))
+        bbox_w = max(1, int(max(xs) - min(xs) + margin * 2))
+        bbox_h = max(1, int(max(ys) - min(ys) + margin * 2))
 
-        # Draw filled polygon with transparency (now in screen coordinates)
-        pygame.draw.polygon(self.fullscreen_overlay, (*color, alpha), screen_polygon)
+        # Small SRCALPHA surface (supports mixed alphas for fill + outline)
+        overlay = pygame.Surface((bbox_w, bbox_h), pygame.SRCALPHA)
+        local_polygon = [(p[0] - bbox_x, p[1] - bbox_y) for p in screen_polygon]
 
-        # Draw outline if requested (scales with zoom for visibility)
+        pygame.draw.polygon(overlay, (*color, alpha), local_polygon)
         if outline:
-            border_width = max(1, int(1.5 * self.game.camera_zoom))
-            pygame.draw.lines(self.fullscreen_overlay, (*color, 255), True, screen_polygon, border_width)
+            pygame.draw.lines(overlay, (*color, 255), True, local_polygon, border_width)
 
-        self.game.screen.blit(self.fullscreen_overlay, (0, 0))
+        self.game.screen.blit(overlay, (bbox_x, bbox_y))
     def draw_territories(self):
         """Draw territory overlays, markers and ownership colors"""
         # H8 fix: Rebuild overlay surfaces if window was resized
@@ -730,83 +743,124 @@ class MapRenderer:
         if current_size != self._overlay_size:
             self._overlay_size = current_size
             self.fullscreen_overlay = pygame.Surface(current_size, pygame.SRCALPHA)
-            self.hover_overlay = pygame.Surface(current_size, pygame.SRCALPHA)
+            # Invalidate caches on resize
+            self._overlay_cache_surface = None
+            self._hover_surface = None
+            self._last_hover_territory = None
 
         # PHASE 1 OPTIMIZATION: Pre-compute values used multiple times per frame
         # Cache mouse position in world coordinates (used for all hover checks)
         mouse_screen_x, mouse_screen_y = self.game.mouse_pos
         self.cached_mouse_world_pos = self.game.screen_to_world((mouse_screen_x, mouse_screen_y))
 
-        # PERFORMANCE OPTIMIZATION: Batch all territory overlays into single surface
-        # Old: Clear+draw+blit fullscreen surface for EACH territory (13-14 territories = 13-14 fullscreen ops)
-        # New: Draw all polygons to one surface, blit once (1 fullscreen op)
-        self.fullscreen_overlay.fill((0, 0, 0, 0))  # Clear once
+        # FPS OPT Phase 1B: Dirty-flag cache for territory ownership overlay
+        # Skip fill+draw+blit when camera and ownership haven't changed (saves ~5ms during static view)
+        current_camera = (self.game.camera_offset[0], self.game.camera_offset[1], self.game.camera_zoom)
+        owners_version = self.game.game_state._territory_owners_version
+        cache_valid = (
+            self._overlay_cache_surface is not None and
+            self._overlay_cache_camera == current_camera and
+            self._overlay_cache_version == owners_version
+        )
 
-        # First pass: Draw all territory overlays to batch surface
-        for territory in self.game.scaled_polygons.keys():
-            # Skip disabled territories (campaign mission filtering)
-            if not map_data.is_territory_enabled(territory):
-                continue
-            # PERFORMANCE: Skip off-screen territories
-            if not self.is_territory_on_screen(territory):
-                continue
+        if not cache_valid:
+            # Cache miss — rebuild territory ownership overlay
+            self.fullscreen_overlay.fill((0, 0, 0, 0))  # Clear once
 
-            owner = self.game.game_state.territory_owners.get(territory, -1)
-            if owner >= 0:
-                # Territory is owned - draw colored overlay
-                color = self.game.game_state.get_player_color(owner)
+            for territory in self.game.scaled_polygons.keys():
+                # Skip disabled territories (campaign mission filtering)
+                if not map_data.is_territory_enabled(territory):
+                    continue
+                # PERFORMANCE: Skip off-screen territories
+                if not self.is_territory_on_screen(territory):
+                    continue
 
-                # Check if this is a starting territory (capital) - darken the color
-                is_starting_territory = (
-                    hasattr(self.game.game_state, 'player_starting_territories') and
-                    territory == self.game.game_state.player_starting_territories.get(owner)
-                )
+                owner = self.game.game_state.territory_owners.get(territory, -1)
+                if owner >= 0:
+                    color = self.game.game_state.get_player_color(owner)
 
-                if is_starting_territory:
-                    # Darken the color by 30% for starting territories
-                    color = (
-                        int(color[0] * 0.7),
-                        int(color[1] * 0.7),
-                        int(color[2] * 0.7)
+                    # Check if this is a starting territory (capital) - darken the color
+                    is_starting_territory = (
+                        hasattr(self.game.game_state, 'player_starting_territories') and
+                        territory == self.game.game_state.player_starting_territories.get(owner)
                     )
 
-                # Draw directly to batch surface (no clear/blit per territory)
-                screen_polygon = self.get_cached_screen_polygon(territory)
-                if screen_polygon:
-                    pygame.draw.polygon(self.fullscreen_overlay, (*color, 80), screen_polygon)
+                    if is_starting_territory:
+                        color = (
+                            int(color[0] * 0.7),
+                            int(color[1] * 0.7),
+                            int(color[2] * 0.7)
+                        )
 
-        # Blit the entire batch surface ONCE
-        self.game.screen.blit(self.fullscreen_overlay, (0, 0))
+                    screen_polygon = self.get_cached_screen_polygon(territory)
+                    if screen_polygon:
+                        pygame.draw.polygon(self.fullscreen_overlay, (*color, 80), screen_polygon)
+
+            # Store cache state
+            self._overlay_cache_surface = self.fullscreen_overlay.copy()
+            self._overlay_cache_camera = current_camera
+            self._overlay_cache_version = owners_version
+            self.game.screen.blit(self.fullscreen_overlay, (0, 0))
+        else:
+            # Cache hit — just blit the cached surface (skip fill+draw entirely)
+            self.game.screen.blit(self._overlay_cache_surface, (0, 0))
         
         # Second pass: Draw hover highlight (semi-transparent owner color)
-        # Use separate surface for proper alpha blending (subtle interior + prominent border)
-        if self.game.hovered_territory and self.game.hovered_territory in self.game.scaled_polygons:
-            hover_owner = self.game.game_state.territory_owners.get(self.game.hovered_territory, -1)
-            screen_polygon = self.get_cached_screen_polygon(self.game.hovered_territory)
+        # FPS OPT: Use small clipped SRCALPHA surface sized to polygon bbox (~200x150)
+        # instead of full-screen 5.44MB surface. Cached when same territory + camera state.
+        hovered = self.game.hovered_territory
+        if hovered and hovered in self.game.scaled_polygons:
+            screen_polygon = self.get_cached_screen_polygon(hovered)
 
             if screen_polygon:
-                # FPS OPTIMIZATION: Reuse pre-created hover overlay instead of allocating new surface
-                # Old: Create 5.44MB surface every frame (WINDOW_WIDTH × WINDOW_HEIGHT × 4 bytes)
-                # New: Clear and reuse pre-created surface
-                self.hover_overlay.fill((0, 0, 0, 0))
+                # Check if hover cache is valid (same territory + camera state)
+                current_camera = (self.game.camera_offset[0], self.game.camera_offset[1], self.game.camera_zoom)
+                if (hovered != self._last_hover_territory or
+                        current_camera != self._last_hover_camera_state):
+                    # Cache miss — rebuild small hover surface
+                    self._last_hover_territory = hovered
+                    self._last_hover_camera_state = current_camera
 
-                # Border width scales with zoom for visibility when zoomed in
-                hover_border_width = max(1, int(1.5 * self.game.camera_zoom))
+                    # Compute screen-space bounding box of polygon with margin for border
+                    hover_border_width = max(1, int(1.5 * self.game.camera_zoom))
+                    margin = hover_border_width + 2
+                    xs = [p[0] for p in screen_polygon]
+                    ys = [p[1] for p in screen_polygon]
+                    bbox_x = min(xs) - margin
+                    bbox_y = min(ys) - margin
+                    bbox_w = max(xs) - min(xs) + margin * 2
+                    bbox_h = max(ys) - min(ys) + margin * 2
 
-                if hover_owner >= 0:
-                    # Owned territory - use owner's color for hover
-                    hover_color = self.game.game_state.get_player_color(hover_owner)
-                    # Draw subtle filled polygon
-                    pygame.draw.polygon(self.hover_overlay, (*hover_color, 60), screen_polygon)
-                    # Draw prominent outline
-                    pygame.draw.lines(self.hover_overlay, (*hover_color, 255), True, screen_polygon, hover_border_width)
-                else:
-                    # Neutral territory - use white/light gray
-                    pygame.draw.polygon(self.hover_overlay, (200, 200, 200, 60), screen_polygon)
-                    pygame.draw.lines(self.hover_overlay, (200, 200, 200, 255), True, screen_polygon, hover_border_width)
+                    # Clamp to screen bounds to avoid negative-size surfaces
+                    bbox_x = max(0, int(bbox_x))
+                    bbox_y = max(0, int(bbox_y))
+                    bbox_w = max(1, int(bbox_w))
+                    bbox_h = max(1, int(bbox_h))
 
-                # Blit hover surface to screen
-                self.game.screen.blit(self.hover_overlay, (0, 0))
+                    # Create small SRCALPHA surface (needs two alphas: fill=60, border=255)
+                    self._hover_surface = pygame.Surface((bbox_w, bbox_h), pygame.SRCALPHA)
+                    self._hover_blit_pos = (bbox_x, bbox_y)
+
+                    # Offset polygon to local surface coordinates
+                    local_polygon = [(p[0] - bbox_x, p[1] - bbox_y) for p in screen_polygon]
+
+                    hover_owner = self.game.game_state.territory_owners.get(hovered, -1)
+                    if hover_owner >= 0:
+                        hover_color = self.game.game_state.get_player_color(hover_owner)
+                        pygame.draw.polygon(self._hover_surface, (*hover_color, 60), local_polygon)
+                        pygame.draw.lines(self._hover_surface, (*hover_color, 255), True, local_polygon, hover_border_width)
+                    else:
+                        pygame.draw.polygon(self._hover_surface, (200, 200, 200, 60), local_polygon)
+                        pygame.draw.lines(self._hover_surface, (200, 200, 200, 255), True, local_polygon, hover_border_width)
+
+                # Blit cached hover surface (tiny surface, fast blit)
+                if self._hover_surface is not None:
+                    self.game.screen.blit(self._hover_surface, self._hover_blit_pos)
+        else:
+            # No territory hovered — invalidate cache
+            if self._last_hover_territory is not None:
+                self._last_hover_territory = None
+                self._hover_surface = None
         
         # Third pass: Draw selected territory highlight (prominent border)
         # Border width scales with zoom for visibility when zoomed in
@@ -2351,12 +2405,16 @@ class MapRenderer:
         """
         Sync production glow effects with current training queues.
 
-        Creates effects for buildings that started production and removes
-        effects for buildings that finished or cancelled production.
-        Only shows effects for buildings owned by the current player or their allies.
-        Called each frame to keep effects in sync with game state.
+        FPS OPT: Skips full building scan when dirty flag is clean.
+        Dirty flag set by start_training, finish_training, cancel_training,
+        start_hero_training, finish_hero_training, territory capture.
         """
         gs = self.game.game_state
+        # FPS OPT: Skip full scan if training queues haven't changed
+        current_version = gs._training_version
+        if current_version == self._production_glow_version:
+            return
+        self._production_glow_version = current_version
         currently_training = set()  # Set of (territory, plot_index) with active training
 
         # Use the local human player for visibility check (not current_player,

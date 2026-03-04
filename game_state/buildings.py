@@ -366,6 +366,16 @@ class BuildingMixin:
             if self.game_logger:
                 self.game_logger.record_building_completed(owner, building_type, territory, self.turn_number)
 
+        # FPS OPT: Buildings affect income — invalidate cache for owners of completed buildings
+        if completed:
+            affected_players = set()
+            for territory, building_type, plot_index in completed:
+                owner = self.territory_owners.get(territory, -1)
+                if owner >= 0:
+                    affected_players.add(owner)
+            for p in affected_players:
+                self.invalidate_income_cache(p)
+
         # Return completed buildings for network synchronization
         return completed
 
@@ -585,6 +595,9 @@ class BuildingMixin:
         self.training_queue[territory][barracks_plot_index].append((unit_type, 1, unit_cost))
 
         self.add_message(f"Player {self.current_player + 1} started training {unit_type} in {territory} ({unit_cost} gold, 1 turn)")
+        # FPS OPT: Training affects army count and production glow
+        self.invalidate_army_count_cache(self.current_player)
+        self._training_version += 1
 
         # Tutorial hook: notify that training started
         if self.tutorial_mission:
@@ -626,6 +639,7 @@ class BuildingMixin:
             del self.training_queue[territory]
 
         self.add_message(f"Training canceled, {unit_cost} gold refunded")
+        self._training_version += 1  # FPS OPT: Production glow sync
         return True
 
     def clear_training_queue(self, territory, barracks_plot_index=None):
@@ -777,6 +791,11 @@ class BuildingMixin:
 
         for territory in territories_to_remove:
             del self.training_queue[territory]
+
+        # FPS OPT: Training affects army counts and production glow
+        if completed_units:
+            self.invalidate_army_count_cache(self.current_player)
+            self._training_version += 1
 
         # Return completed units for network synchronization
         return completed_units
@@ -1192,6 +1211,8 @@ class BuildingMixin:
 
             # Remove from research tracking
             del self.research_in_progress[self.current_player]
+            # FPS OPT: Tech affects income (e.g. Laws of Trade) — invalidate cache
+            self.invalidate_income_cache(self.current_player)
         else:
             # Update turns remaining
             self.research_in_progress[self.current_player]['turns_remaining'] = turns_remaining

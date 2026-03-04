@@ -23,6 +23,11 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# PERFORMANCE: Pre-computed sin/cos lookup table (avoids 1400+ trig calls per frame)
+_TRIG_LUT_SIZE = 360
+_SIN_LUT = [math.sin(math.radians(i)) for i in range(_TRIG_LUT_SIZE)]
+_COS_LUT = [math.cos(math.radians(i)) for i in range(_TRIG_LUT_SIZE)]
+
 # ========================================
 # CONSTANTS
 # ========================================
@@ -45,7 +50,7 @@ class BattleHurricaneEffect:
     """
     Hurricane-style particle effect for battle indicators.
 
-    Renders dense particles (1000) in multiple curved spiral arms that converge on
+    Renders dense particles (700) in multiple curved spiral arms that converge on
     a center point, mimicking a hurricane viewed from space.
     Uses logarithmic spiral for authentic curved arms.
     Continuously grows and shrinks with the BattleIcon overlay.
@@ -53,14 +58,14 @@ class BattleHurricaneEffect:
     """
 
     def __init__(self, center_pos, battle_icon_path="assets/mapicons/BattleIcon1.png",
-                 num_particles=1000, duration=3.0, num_arms=4, greyed_out=False):
+                 num_particles=700, duration=3.0, num_arms=4, greyed_out=False):
         """
         Initialize the battle hurricane particle effect.
 
         Args:
             center_pos: (x, y) tuple for hurricane center (battle location)
             battle_icon_path: Path to BattleIcon1.png image
-            num_particles: Number of particles (1000 for dense effect)
+            num_particles: Number of particles (700 for dense effect)
             duration: Duration of one grow/shrink cycle in seconds
             num_arms: Number of spiral arms (4 for hurricane look)
             greyed_out: If True, use grey colors (for non-clickable battles)
@@ -231,9 +236,10 @@ class BattleHurricaneEffect:
         rotation_speed = 1.2  # 20% slower rotation
         current_angle = particle['angle_offset'] + (self.elapsed * rotation_speed)
 
-        # Calculate final screen position using polar coordinates
-        x = self.center_x + spiral_radius * math.cos(current_angle)
-        y = self.center_y + spiral_radius * math.sin(current_angle)
+        # PERFORMANCE: Use pre-computed LUT instead of per-particle math.cos/sin
+        deg_idx = int(math.degrees(current_angle)) % _TRIG_LUT_SIZE
+        x = self.center_x + spiral_radius * _COS_LUT[deg_idx]
+        y = self.center_y + spiral_radius * _SIN_LUT[deg_idx]
 
         return (int(x), int(y))
 
@@ -244,30 +250,37 @@ class BattleHurricaneEffect:
         Args:
             screen: Pygame surface to render to
         """
-        # PERFORMANCE OPTIMIZATION: Reuse particle surface instead of creating new one every frame
-        # Create surface once on first render, then reuse by clearing it
-        if self.particle_surface is None:
-            self.particle_surface = pygame.Surface(
-                (screen.get_width(), screen.get_height()), pygame.SRCALPHA)
+        # PERFORMANCE: Use small clipped surface (~120x120) instead of full-screen (1920x1080)
+        # Hurricane max radius = 40 * 1.35 = 54px, plus margin for particle size
+        max_radius = 60
+        surface_half = max_radius
+        surface_size = surface_half * 2
 
-        # Clear the reusable surface (transparent clear)
+        # Reuse small particle surface (120x120 vs 1920x1080 = ~145x smaller)
+        if self.particle_surface is None or self.particle_surface.get_width() != surface_size:
+            self.particle_surface = pygame.Surface((surface_size, surface_size), pygame.SRCALPHA)
+
         self.particle_surface.fill((0, 0, 0, 0))
 
-        # Draw particles to reusable surface
+        # Pre-compute constant alpha for all particles (65% opacity)
+        particle_alpha = int(255 * 0.65)
+
+        # Draw particles with local coordinates relative to hurricane center
         for particle in self.particles:
-            # Calculate current position
             x, y = self.get_particle_position(particle, self.progress)
+            # Convert screen coords to surface-local coords
+            local_x = int(x - self.center_x) + surface_half
+            local_y = int(y - self.center_y) + surface_half
 
-            # Add 35% transparency: 65% opacity = 166 alpha (out of 255)
-            r, g, b = particle['color']
-            alpha = int(255 * 0.65)  # 65% opacity (35% transparent)
-            color_with_alpha = (r, g, b, alpha)
+            # Clip to surface bounds
+            if 0 <= local_x < surface_size and 0 <= local_y < surface_size:
+                r, g, b = particle['color']
+                pygame.draw.circle(self.particle_surface, (r, g, b, particle_alpha),
+                                   (local_x, local_y), particle['size'])
 
-            # Draw particle as a circle on reusable surface
-            pygame.draw.circle(self.particle_surface, color_with_alpha, (x, y), particle['size'])
-
-        # Blit the particle surface onto the main screen
-        screen.blit(self.particle_surface, (0, 0))
+        # Blit small surface centered on hurricane position
+        screen.blit(self.particle_surface,
+                     (int(self.center_x) - surface_half, int(self.center_y) - surface_half))
 
         # Draw BattleIcon overlay with grow/shrink animation (20% growth)
         if self.battle_icon and self.battle_icon_base_size:

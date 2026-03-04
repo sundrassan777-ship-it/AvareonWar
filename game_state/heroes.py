@@ -102,6 +102,7 @@ class HeroMixin:
         self.hero_ownership[self.current_player].add(hero_type)
 
         self.add_message(f"Player {self.current_player + 1} started training {hero_type} ({hero_cost} gold, {training_time} turns)")
+        self._training_version += 1  # FPS OPT: Production glow sync
         return True
 
     def cancel_hero_training(self, territory, keep_plot_index):
@@ -135,6 +136,7 @@ class HeroMixin:
         self.hero_ownership[owner].discard(hero_type)
 
         self.add_message(f"Hero training canceled, {hero_cost} gold refunded (100%)")
+        self._training_version += 1  # FPS OPT: Production glow sync
         return True
 
     def finish_hero_training(self):
@@ -225,6 +227,9 @@ class HeroMixin:
 
         for territory in territories_to_remove:
             del self.hero_training_queue[territory]
+
+        # FPS OPT: Always bump version — called once per turn, negligible cost
+        self._training_version += 1
 
     def kill_heroes_in_keep(self, territory, keep_plot_index, previous_owner):
         """
@@ -721,6 +726,9 @@ class HeroMixin:
 
         # Claim the territory
         self.territory_owners[target_territory] = owner
+        self._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
+        self.invalidate_income_cache()  # FPS OPT: Ownership affects income
+        self.invalidate_army_count_cache()  # FPS OPT: Army counts change
         self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
         # Build message

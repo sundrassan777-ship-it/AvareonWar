@@ -222,7 +222,7 @@ class UIRenderer:
         # Title - use display name for campaign mission territory renaming
         territory_name = battle.territory if battle else self.game.battle_result.get('territory', 'Unknown')
         display_territory = map_data.get_display_name(territory_name)
-        title_text = self.game.large_font.render(f"Battle at {display_territory}", True, WHITE)
+        title_text = self.game._get_cached_text(f"Battle at {display_territory}", self.game.large_font, WHITE)
         title_rect = title_text.get_rect(center=(self.WINDOW_WIDTH // 2, modal_y + 30))
         self.game.screen.blit(title_text, title_rect)
         
@@ -868,16 +868,16 @@ class UIRenderer:
         self.game.screen.blit(fullscreen_label, (checkbox_x + checkbox_size + 10, checkbox_y + 3))
         
         # Current resolution indicator
-        current_text = self.game.small_font.render(
+        current_text = self.game._get_cached_text(
             f"Current: {self.game.current_resolution[0]}x{self.game.current_resolution[1]} {'(Fullscreen)' if self.game.is_fullscreen else '(Windowed)'}",
-            True, (200, 200, 200)
+            self.game.small_font, (200, 200, 200)
         )
         self.game.screen.blit(current_text, (section_x + 15, checkbox_y + 35))
-        
+
         # Note about fullscreen using native resolution
-        note_text = self.game.small_font.render(
+        note_text = self.game._get_cached_text(
             f"Note: Fullscreen always uses native resolution ({self.game.native_resolution[0]}x{self.game.native_resolution[1]})",
-            True, (150, 150, 150)
+            self.game.small_font, (150, 150, 150)
         )
         self.game.screen.blit(note_text, (section_x + 15, checkbox_y + 55))
         
@@ -902,7 +902,7 @@ class UIRenderer:
         ]
         placeholder_y = content_y + 15
         for line in placeholder_lines:
-            placeholder_text = self.game.small_font.render(line, True, (100, 100, 100))
+            placeholder_text = self.game._get_cached_text(line, self.game.small_font, (100, 100, 100))
             self.game.screen.blit(placeholder_text, (section_x + 15, placeholder_y))
             placeholder_y += 25
         
@@ -1026,7 +1026,7 @@ class UIRenderer:
             self.game.gameplay_tooltip_delay_dropdown = None
         
         # 5. Camera Pan Speed slider
-        pan_label = self.game.small_font.render(f"Pan Speed: {int(self.game.temp_camera_pan_speed)}", True, WHITE)
+        pan_label = self.game._get_cached_text(f"Pan Speed: {int(self.game.temp_camera_pan_speed)}", self.game.small_font, WHITE)
         self.game.screen.blit(pan_label, (gp_x, gp_y))
         gp_y += 20
         
@@ -1053,7 +1053,7 @@ class UIRenderer:
         gp_y += 22
         
         # 6. Camera Zoom Speed slider
-        zoom_label = self.game.small_font.render(f"Zoom Speed: {self.game.temp_camera_zoom_speed:.2f}", True, WHITE)
+        zoom_label = self.game._get_cached_text(f"Zoom Speed: {self.game.temp_camera_zoom_speed:.2f}", self.game.small_font, WHITE)
         self.game.screen.blit(zoom_label, (gp_x, gp_y))
         gp_y += 20
         
@@ -2539,7 +2539,7 @@ class UIRenderer:
 
             # R3 fix: cache rotated tab text (font.render + rotate are expensive per-frame)
             if tab_id not in self.game._rotated_tab_text_cache:
-                tab_text = self.game.small_font.render(tab_names[tab_id], True, WHITE)
+                tab_text = self.game._get_cached_text(tab_names[tab_id], self.game.small_font, WHITE)
                 self.game._rotated_tab_text_cache[tab_id] = pygame.transform.rotate(tab_text, -90)
             rotated_text = self.game._rotated_tab_text_cache[tab_id]
             text_rect = rotated_text.get_rect(center=(tab_x + tab_width // 2, current_y + actual_tab_height // 2))

@@ -305,6 +305,11 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         
         # Territory ownership: territory_name -> player_index (-1 = neutral)
         self.territory_owners = {territory: -1 for territory in map_data.get_all_territories()}
+        # FPS OPT: Version counter for territory overlay cache invalidation
+        # Incremented whenever territory_owners is modified (capture, elimination, etc.)
+        self._territory_owners_version = 0
+        # FPS OPT: Version counter for production glow sync (training queue changes)
+        self._training_version = 0
 
         # Track starting territories for Capital Assault victory condition
         # Format: {player_index: territory_name}
@@ -970,6 +975,9 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             return False  # Player has claimed max territories
 
         self.territory_owners[territory] = player_index
+        self._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
+        self.invalidate_income_cache()  # FPS OPT: Ownership affects income
+        self.invalidate_army_count_cache()  # FPS OPT: Army counts change
         self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
         self.armies[territory] = 3  # Start with 3 armies
         self.armies_unmoved[territory] = 3  # All can move immediately

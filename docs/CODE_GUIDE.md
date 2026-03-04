@@ -1311,26 +1311,37 @@ if self.sim_state is not None:
 
 The codebase uses several performance patterns. Follow these when adding new rendering code:
 
-**Caching:**
+**Dirty-flag caching (skip work entirely when state unchanged):**
+- `_overlay_cache_surface` (map_renderer.py) - Cached territory overlay, keyed by `(camera_offset, camera_zoom, territory_owners_version)`
+- `_income_cache` / `_army_count_cache` (economy.py / military.py) - Cached per-player calculations, invalidated via `invalidate_income_cache()` / `invalidate_army_count_cache()` with 30-frame periodic fallback
+- `_training_version` (game_state/__init__.py) - Version counter for production glow sync; map_renderer skips `sync_production_glow_effects()` when unchanged
+- **Pattern:** Increment `game_state._territory_owners_version` or `_training_version` at every mutation site; consumers check version and skip work when unchanged
+
+**Surface caching:**
 - `_ui_icon_cache` (main.py) - Cache scaled icons/portraits: `cache_key = ("prefix_name", size)`
-- `_text_cache` (main.py) - Cache static text: `self._get_cached_text(text, font, color)`
+- `_text_cache` (main.py) - Cache static text: `self._get_cached_text(text, font, color)` — used by 128+ call sites
 - `_rotated_tab_text_cache` (main.py) - Cache rotated text surfaces
 - `text_cache` (ui_renderer.py) - UIRenderer's own text cache: `self._get_cached_text(text, font, color)`
-- `_cached_surface` (production_glow_effect.py) - Reuse temp surfaces per effect instance
+- `_sprite_cache` (production_glow_effect.py) - 16 pre-rendered rotation frames, rebuilt on zoom change
+- `_scaled_text_cache` (turn_announcement_effect.py) - Smoothscale cache by quantized (width, height)
 
 **Surface reuse:**
 - `_get_overlay_surface()` (ui_renderer.py) - Reusable full-screen SRCALPHA surface for modals
+- Small clipped SRCALPHA surfaces instead of full-screen where possible (hover overlay ~200x150, battle hurricane ~120x120)
 - Never create `pygame.Surface((width, height), SRCALPHA)` in a per-frame method without reuse
+- Prefer non-SRCALPHA + `set_alpha()` over SRCALPHA when per-pixel alpha isn't needed (faster blit)
 
 **Algorithmic:**
 - Pre-index lookups (e.g., `route_first_order` dict in map_renderer.py) instead of nested loops
-- Use bounding box rejection before expensive polygon containment checks
+- AABB bounding box pre-check in `get_territory_at_pos()` before expensive polygon ray-casting
+- Pre-computed sin/cos lookup table in battleeffect.py (360 entries, avoids 1400+ trig calls per frame)
 - `crop_to_circle()` uses BLEND_RGBA_MULT (never per-pixel get_at/set_at)
 
 **Benchmarking:**
 - Run `python -m pytest tests/test_fps_benchmark.py -v -s` to measure FPS
 - Use `tools/stress_test_generator.py` to create worst-case scenarios
-- Thresholds: Idle 60+ FPS, Stress 30+ FPS
+- Thresholds: Idle 60+ FPS, Stress 50+ FPS
+- Current (2026-03-04): Idle 67.8 FPS, Late Game Stress 59.6 FPS, Movement Arrows 57.7 FPS
 
 ### When NOT to Modify Rendering
 

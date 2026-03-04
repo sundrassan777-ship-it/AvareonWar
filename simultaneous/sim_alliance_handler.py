@@ -140,6 +140,7 @@ class SimAllianceHandler:
         """
         # Set new owner
         self.gs.territory_owners[territory] = new_owner
+        self.gs._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
         self.gs.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
         # Check for army overflow

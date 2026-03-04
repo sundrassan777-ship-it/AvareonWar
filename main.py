@@ -556,6 +556,7 @@ class Game:
                 territory = setup_config.get(territory_key)
             if territory:
                 self.game_state.territory_owners[territory] = player_index
+                self.game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                 self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
 
                 # Store starting territory for Capital Assault victory condition
@@ -1323,6 +1324,7 @@ class Game:
             # Apply the battle result to our game state
             if territory:
                 self.game_state.territory_owners[territory] = new_owner
+                self.game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                 self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
 
                 # IMPORTANT: Clear ALL garrisons in this territory first (losers' armies are destroyed)
@@ -1613,6 +1615,7 @@ class Game:
 
                 if territory and new_owner is not None:
                     self.game_state.territory_owners[territory] = new_owner
+                    self.game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                     self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
                     self.game_state.set_garrison_armies(territory, new_owner,
                                                        unmoved=0, moved=surviving_armies, units=None)
@@ -1749,6 +1752,7 @@ class Game:
             if self.sim_state is not None and territory:
                 # Assign territory ownership
                 self.game_state.territory_owners[territory] = new_owner
+                self.game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                 self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
 
                 # Remove from alliance arrivals
@@ -1818,7 +1822,8 @@ class Game:
                         if self.game_state.territory_owners.get(territory) != owner:
                             logger.debug(f"[NETWORK] Sync: {territory} owner {self.game_state.territory_owners.get(territory)} -> {owner}")
                         self.game_state.territory_owners[territory] = owner
-                    # Invalidate bonus cache once after bulk sync (not per territory)
+                    # Invalidate caches once after bulk sync (not per territory)
+                    self.game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                     self.game_state.invalidate_territorial_bonus_cache()
 
                 if 'eliminated_players' in data:
@@ -2560,21 +2565,23 @@ class Game:
     def get_territory_at_pos(self, pos):
         """
         Find which territory the mouse is over using polygon detection.
-        
+
+        FPS OPT: AABB pre-check skips ~90% of territories before expensive ray-casting.
+        Uses pre-computed bounding boxes from map_renderer.territory_bounding_boxes.
+
         Args:
             pos: (x, y) tuple in WORLD coordinates (not screen coordinates!)
-                 Caller should convert screen to world before calling this.
-        
-        Returns:
-            Territory name or None if no territory at position
-        
-        Note:
-            Phase 2D: Now expects world coordinates. Callers must use
-            screen_to_world() before calling this method.
         """
+        x, y = pos
+        bboxes = self.map_renderer.territory_bounding_boxes
         # Check from end to start to handle overlaps better
-        # scaled_polygons are in world coordinates, so pos must also be world coords
         for territory in reversed(list(self.scaled_polygons.keys())):
+            # FPS OPT: AABB pre-check (4 comparisons) before O(n) ray-casting
+            bbox = bboxes.get(territory)
+            if bbox:
+                min_x, min_y, max_x, max_y = bbox
+                if x < min_x or x > max_x or y < min_y or y > max_y:
+                    continue
             polygon = self.scaled_polygons[territory]
             if map_data.point_in_polygon(pos, polygon):
                 return territory
@@ -3479,7 +3486,7 @@ class Game:
         pygame.draw.rect(self.screen, border_color, rect, border_width)
         
         # Draw centered letter
-        letter_surf = self.large_font.render(letter, True, letter_color)
+        letter_surf = self._get_cached_text(letter, self.large_font, letter_color)
         letter_rect = letter_surf.get_rect(center=rect.center)
         self.screen.blit(letter_surf, letter_rect)
     
@@ -4052,7 +4059,7 @@ class Game:
         # PERFORMANCE: Cache instruction text and background (static content)
         if self._cached_targeting_text is None:
             instruction_text = "Click territory to target | ESC or Right-Click to cancel"
-            self._cached_targeting_text = self.small_font.render(instruction_text, True, (255, 255, 255))
+            self._cached_targeting_text = self._get_cached_text(instruction_text, self.small_font, (255, 255, 255))
             bg_rect = self._cached_targeting_text.get_rect().inflate(10, 5)
             self._cached_targeting_text_bg = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
             pygame.draw.rect(self._cached_targeting_text_bg, (0, 0, 0, 180),
@@ -4088,7 +4095,7 @@ class Game:
         # Calculate box size
         max_text_width = 0
         for line in message_lines:
-            text_surface = self.font.render(line, True, WHITE)
+            text_surface = self._get_cached_text(line, self.font, WHITE)
             max_text_width = max(max_text_width, text_surface.get_width())
 
         box_width = max_text_width + padding * 2
@@ -4112,7 +4119,7 @@ class Game:
         # Draw text lines
         text_y = box_rect.y + padding
         for line in message_lines:
-            text_surface = self.font.render(line, True, (255, 100, 100))
+            text_surface = self._get_cached_text(line, self.font, (255, 100, 100))
             text_rect = text_surface.get_rect(center=(map_center_x, text_y + line_height // 2))
             self.screen.blit(text_surface, text_rect)
             text_y += line_height
@@ -4731,18 +4738,18 @@ class Game:
             if player in battle.army_compositions:
                 comp = battle.army_compositions[player]
                 comp_str = ", ".join([f"{c} {ut}" for ut, c in sorted(comp.items())])
-                player_text = self.font.render(f"{player_name}: {comp_str}", True, player_color)
+                player_text = self._get_cached_text(f"{player_name}: {comp_str}", self.font, player_color)
             else:
-                player_text = self.font.render(f"{player_name}: {count} armies", True, player_color)
-            
+                player_text = self._get_cached_text(f"{player_name}: {count} armies", self.font, player_color)
+
             player_rect = player_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
             self.screen.blit(player_text, player_rect)
             y_pos += 40
-        
+
         y_pos += 20
-        
+
         # Show tactical prediction based on unit types
-        pred_text = self.small_font.render("(Unit types and counters will determine victor)", True, (150, 150, 150))
+        pred_text = self._get_cached_text("(Unit types and counters will determine victor)", self.small_font, (150, 150, 150))
         pred_rect = pred_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
         self.screen.blit(pred_text, pred_rect)
         
@@ -4847,20 +4854,20 @@ class Game:
                         eff_str = self.game_state.calculate_army_effective_strength(comp, enemy_comp)
                         effective_strengths[player] = eff_str
 
-                        player_text = self.small_font.render(
+                        player_text = self._get_cached_text(
                             f"{player_name}: {comp_str}",
-                            True, player_color
+                            self.small_font, player_color
                         )
-                        strength_text = self.small_font.render(
+                        strength_text = self._get_cached_text(
                             f"Effective Strength: {eff_str:.1f}",
-                            True, (200, 200, 200)
+                            self.small_font, (200, 200, 200)
                         )
                     else:
-                        player_text = self.small_font.render(f"{player_name}: {comp_str}", True, player_color)
+                        player_text = self._get_cached_text(f"{player_name}: {comp_str}", self.small_font, player_color)
                         strength_text = None
                 else:
                     player_name = self.game_state.get_player_name(player)
-                    player_text = self.small_font.render(f"{player_name}: {count} armies", True, player_color)
+                    player_text = self._get_cached_text(f"{player_name}: {count} armies", self.small_font, player_color)
                     strength_text = None
                 
                 player_rect = player_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
@@ -4883,14 +4890,14 @@ class Game:
                     leader = leaders[0]
                     leader_color = self.game_state.get_player_color(leader)
                     leader_name = self.game_state.get_player_name(leader)
-                    advantage_text = self.font.render(
+                    advantage_text = self._get_cached_text(
                         f"{leader_name} has superior strength!",
-                        True, leader_color
+                        self.font, leader_color
                     )
                     advantage_rect = advantage_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
                     self.screen.blit(advantage_text, advantage_rect)
                 else:
-                    tie_text = self.font.render("Perfect tie - dice will decide!", True, (255, 200, 0))
+                    tie_text = self._get_cached_text("Perfect tie - dice will decide!", self.font, (255, 200, 0))
                     tie_rect = tie_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
                     self.screen.blit(tie_text, tie_rect)
     
@@ -4914,41 +4921,41 @@ class Game:
         if winner != -1:
             winner_color = self.game_state.get_player_color(winner)
             winner_name = self.game_state.get_player_name(winner)
-            winner_text = self.large_font.render(f"{winner_name} WINS!", True, winner_color)
+            winner_text = self._get_cached_text(f"{winner_name} WINS!", self.large_font, winner_color)
             winner_rect = winner_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
             self.screen.blit(winner_text, winner_rect)
             y_pos += 50
-            
+
             if surviving > 0:
-                surv_text = self.font.render(f"{surviving} armies remain", True, WHITE)
+                surv_text = self._get_cached_text(f"{surviving} armies remain", self.font, WHITE)
                 surv_rect = surv_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
                 self.screen.blit(surv_text, surv_rect)
                 y_pos += 40
         else:
-            tie_text = self.large_font.render("PERFECT TIE!", True, (255, 200, 0))
+            tie_text = self._get_cached_text("PERFECT TIE!", self.large_font, (255, 200, 0))
             tie_rect = tie_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
             self.screen.blit(tie_text, tie_rect)
             y_pos += 50
-            
-            neutral_text = self.font.render("Territory becomes neutral", True, WHITE)
+
+            neutral_text = self._get_cached_text("Territory becomes neutral", self.font, WHITE)
             neutral_rect = neutral_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
             self.screen.blit(neutral_text, neutral_rect)
             y_pos += 40
-        
+
         # Battle Summary Section
         y_pos += 10
-        summary_title = self.font.render("Battle Summary:", True, (200, 200, 200))
+        summary_title = self._get_cached_text("Battle Summary:", self.font, (200, 200, 200))
         summary_rect = summary_title.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
         self.screen.blit(summary_title, summary_rect)
         y_pos += 30
-        
+
         if has_keep:
             # Keep battle summary
-            summary_line1 = self.small_font.render("Two-phase Keep battle", True, (255, 200, 100))
+            summary_line1 = self._get_cached_text("Two-phase Keep battle", self.small_font, (255, 200, 100))
             line1_rect = summary_line1.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
             self.screen.blit(summary_line1, line1_rect)
             y_pos += 25
-            
+
             # Show participants
             for player, count in armies.items():
                 player_color = self.game_state.get_player_color(player)
@@ -4957,29 +4964,29 @@ class Game:
                     comp = compositions[player]
                     comp_str = ", ".join([f"{c} {ut}" for ut, c in sorted(comp.items())])
                     role = "Defender (+Keep)" if player == self.battle_result.get('defender', -1) else "Attacker"
-                    player_text = self.small_font.render(f"{player_name} ({role}): {comp_str}", True, player_color)
+                    player_text = self._get_cached_text(f"{player_name} ({role}): {comp_str}", self.small_font, player_color)
                 else:
-                    player_text = self.small_font.render(f"{player_name}: {count} armies", True, player_color)
-                
+                    player_text = self._get_cached_text(f"{player_name}: {count} armies", self.small_font, player_color)
+
                 player_rect = player_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
                 self.screen.blit(player_text, player_rect)
                 y_pos += 22
-            
+
         else:
             # Normal battle summary
-            summary_line1 = self.small_font.render("Unit counters determined outcome", True, (150, 200, 255))
+            summary_line1 = self._get_cached_text("Unit counters determined outcome", self.small_font, (150, 200, 255))
             line1_rect = summary_line1.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
             self.screen.blit(summary_line1, line1_rect)
             y_pos += 25
-            
+
             # Show participants with effective strengths
             for player, count in armies.items():
                 player_color = self.game_state.get_player_color(player)
-                
+
                 if player in compositions:
                     comp = compositions[player]
                     comp_str = ", ".join([f"{c} {ut}" for ut, c in sorted(comp.items())])
-                    
+
                     # Calculate effective strength
                     enemy_comp = {}
                     for enemy_player in armies.keys():
@@ -4987,21 +4994,21 @@ class Game:
                             enemy_c = compositions[enemy_player]
                             for ut, uc in enemy_c.items():
                                 enemy_comp[ut] = enemy_comp.get(ut, 0) + uc
-                    
+
                     if enemy_comp:
                         eff_str = self.game_state.calculate_army_effective_strength(comp, enemy_comp)
                         victory_mark = " [W]" if player == winner else ""  # H4 fix: ASCII winner mark (replaces garbled Unicode)
                         player_name = self.game_state.get_player_name(player)
-                        player_text = self.small_font.render(
-                            f"{player_name}: {comp_str} (Str: {eff_str:.1f}){victory_mark}", 
-                            True, player_color
+                        player_text = self._get_cached_text(
+                            f"{player_name}: {comp_str} (Str: {eff_str:.1f}){victory_mark}",
+                            self.small_font, player_color
                         )
                     else:
                         player_name = self.game_state.get_player_name(player)
-                        player_text = self.small_font.render(f"{player_name}: {comp_str}", True, player_color)
+                        player_text = self._get_cached_text(f"{player_name}: {comp_str}", self.small_font, player_color)
                 else:
                     player_name = self.game_state.get_player_name(player)
-                    player_text = self.small_font.render(f"{player_name}: {count} armies", True, player_color)
+                    player_text = self._get_cached_text(f"{player_name}: {count} armies", self.small_font, player_color)
                 
                 player_rect = player_text.get_rect(center=(WINDOW_WIDTH // 2, y_pos))
                 self.screen.blit(player_text, player_rect)
@@ -5127,7 +5134,7 @@ class Game:
             # PERFORMANCE: Cache rotated text - pygame.transform.rotate is expensive
             active_tab_name = tab_names[self.game_state.active_sidebar_tab]
             if active_tab_name not in self._rotated_tab_text_cache:
-                text_surface = self.small_font.render(active_tab_name, True, WHITE)
+                text_surface = self._get_cached_text(active_tab_name, self.small_font, WHITE)
                 self._rotated_tab_text_cache[active_tab_name] = pygame.transform.rotate(text_surface, -90)
             rotated_text = self._rotated_tab_text_cache[active_tab_name]
             text_rect = rotated_text.get_rect(center=(tab_x + tab_width // 2, tab_y + tab_height // 2 - 10))
@@ -5143,7 +5150,7 @@ class Game:
                     pygame.draw.circle(self.screen, WHITE, (tab_x + tab_width // 2, badge_y), 10, 2)
                     
                     # Count number
-                    count_text = self.small_font.render(str(order_count), True, WHITE)
+                    count_text = self._get_cached_text(str(order_count), self.small_font, WHITE)
                     count_rect = count_text.get_rect(center=(tab_x + tab_width // 2, badge_y))
                     self.screen.blit(count_text, count_rect)
             
@@ -5901,15 +5908,15 @@ class Game:
         title_lines = self.helpers.wrap_text_smart(display_territory, self.large_font_bold, max_title_width)
 
         for line in title_lines:
-            title_text = self.large_font_bold.render(line, True, BROWN_TEXT_HEADING)
+            title_text = self._get_cached_text(line, self.large_font_bold, BROWN_TEXT_HEADING)
             self.screen.blit(title_text, (panel_x, panel_y))
             panel_y += 28  # Line height for wrapped titles
 
         panel_y += 7  # Extra spacing after title
-        
+
         # Draw owner (with smart wrapping for long AI names like "Empire of X")
         if owner == -1:
-            owner_text = self.font.render("Owner: Neutral", True, BROWN_TEXT_PRIMARY)
+            owner_text = self._get_cached_text("Owner: Neutral", self.font, BROWN_TEXT_PRIMARY)
             self.screen.blit(owner_text, (panel_x, panel_y))
             panel_y += 28
         else:
@@ -5922,14 +5929,14 @@ class Game:
             owner_lines = self.helpers.wrap_text_smart(full_owner_text, self.font, max_owner_width)
 
             for line in owner_lines:
-                owner_text = self.font.render(line, True, owner_color)
+                owner_text = self._get_cached_text(line, self.font, owner_color)
                 self.screen.blit(owner_text, (panel_x, panel_y))
                 panel_y += 22  # Line height for wrapped owner
 
             panel_y += 6  # Extra spacing after owner
-        
+
         # Draw income
-        income_text = self.small_font.render(f"Income: +{total_income}G/turn", True, BROWN_GOLD)
+        income_text = self._get_cached_text(f"Income: +{total_income}G/turn", self.small_font, BROWN_GOLD)
         self.screen.blit(income_text, (panel_x, panel_y))
         panel_y += 22  # Move down for next line
 
@@ -5945,7 +5952,7 @@ class Game:
             bonus_lines = self.helpers.wrap_text_smart(f"Bonus: {formatted_bonus}", self.small_font, max_bonus_width)
 
             for line in bonus_lines:
-                bonus_text = self.small_font.render(line, True, WHITE)
+                bonus_text = self._get_cached_text(line, self.small_font, WHITE)
                 self.screen.blit(bonus_text, (panel_x, panel_y))
                 panel_y += 20  # Line height for wrapped bonus
 
@@ -6056,14 +6063,14 @@ class Game:
                             pygame.draw.circle(self.screen, BLACK, (plot_center_x, plot_center_y), plot_radius, 2)
 
                         if building == 'Farm':
-                            icon = self.font.render("F", True, (50, 150, 50))
+                            icon = self._get_cached_text("F", self.font, (50, 150, 50))
                         elif building == 'Mine':
-                            icon = self.font.render("M", True, (100, 100, 150))
+                            icon = self._get_cached_text("M", self.font, (100, 100, 150))
                         elif building == 'Keep':
                             display_letter, _ = self.game_state.get_keep_display_info(territory, plot_index)
-                            icon = self.font.render(display_letter, True, (150, 50, 50))
+                            icon = self._get_cached_text(display_letter, self.font, (150, 50, 50))
                         else:
-                            icon = self.font.render(building[0], True, BLACK)
+                            icon = self._get_cached_text(building[0], self.font, BLACK)
                         icon_rect = icon.get_rect(center=(plot_center_x, plot_center_y))
                         self.screen.blit(icon, icon_rect)
 
@@ -6157,7 +6164,7 @@ class Game:
                         else:
                             pygame.draw.circle(self.screen, BLACK, (plot_center_x, plot_center_y), plot_radius, 2)
 
-                        progress_text = self.font.render(f"{turns_remaining}", True, BLACK)
+                        progress_text = self._get_cached_text(f"{turns_remaining}", self.font, BLACK)
                         progress_rect = progress_text.get_rect(center=(plot_center_x, plot_center_y))
                         self.screen.blit(progress_text, progress_rect)
                     
@@ -6206,7 +6213,7 @@ class Game:
                             pygame.draw.circle(self.screen, (100, 100, 100), (plot_center_x, plot_center_y), plot_radius, 2)
 
                         if owner == self.game_state.current_player:
-                            plus_text = self.font.render("+", True, (100, 100, 100))
+                            plus_text = self._get_cached_text("+", self.font, (100, 100, 100))
                             plus_rect = plus_text.get_rect(center=(plot_center_x, plot_center_y))
                             self.screen.blit(plus_text, plus_rect)
                 
@@ -6228,7 +6235,7 @@ class Game:
         army_info_y += 32  # Increased spacing by 2px (was 30)
 
         # Total armies - 25% larger text, bold font
-        armies_text = self.font.render(f"Total: {armies}", True, BROWN_TEXT_PRIMARY)
+        armies_text = self._get_cached_text(f"Total: {armies}", self.font, BROWN_TEXT_PRIMARY)
         self.screen.blit(armies_text, (army_info_x, army_info_y))
         army_info_y += 24  # Increased spacing by 2px (was 22)
 
@@ -6241,7 +6248,7 @@ class Game:
                         count = composition[unit_type]
                         # Use Battalion terminology
                         battalion_name = f"{unit_type} Battalion" if count == 1 else f"{unit_type} Battalions"
-                        comp_text = self.small_font.render(f"  {battalion_name}: {count}", True, BROWN_TEXT_SECONDARY)
+                        comp_text = self._get_cached_text(f"  {battalion_name}: {count}", self.small_font, BROWN_TEXT_SECONDARY)
                         self.screen.blit(comp_text, (army_info_x, army_info_y))
                         army_info_y += 20  # Increased spacing by 2px (was 18)
 
@@ -6249,9 +6256,9 @@ class Game:
 
         # Draw army limit indicator - same size and color as Total
         if armies >= self.game_state.MAX_ARMIES_PER_TERRITORY:
-            limit_text = self.font.render(f"Army Limit: {armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", True, (180, 0, 0))
+            limit_text = self._get_cached_text(f"Army Limit: {armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", self.font, (180, 0, 0))
         else:
-            limit_text = self.font.render(f"Army Limit: {armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", True, BROWN_TEXT_PRIMARY)
+            limit_text = self._get_cached_text(f"Army Limit: {armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", self.font, BROWN_TEXT_PRIMARY)
         self.screen.blit(limit_text, (army_info_x, army_info_y))
         
         # Track button hover for plot tooltips (will be drawn with delay in main loop)
@@ -6328,7 +6335,7 @@ class Game:
             player_name = self.game_state.get_player_name(self.game_state.current_player)
             # Max width: End Turn button width (matches the element directly below)
             max_name_width = self.scale(180 if WINDOW_HEIGHT == 720 else 210)
-            player_text = self.large_font_bold.render(player_name, True, player_color)
+            player_text = self._get_cached_text(player_name, self.large_font_bold, player_color)
             if player_text.get_width() <= max_name_width:
                 # Fits in one line at full size
                 self.screen.blit(player_text, (ui_x, ui_y))
@@ -6344,10 +6351,10 @@ class Game:
                         break
                     line1_words.append(word)
                 line2_words = words[len(line1_words):]
-                line1_surface = name_font.render(' '.join(line1_words), True, player_color)
+                line1_surface = self._get_cached_text(' '.join(line1_words), name_font, player_color)
                 self.screen.blit(line1_surface, (ui_x, ui_y))
                 if line2_words:
-                    line2_surface = name_font.render(' '.join(line2_words), True, player_color)
+                    line2_surface = self._get_cached_text(' '.join(line2_words), name_font, player_color)
                     self.screen.blit(line2_surface, (ui_x, ui_y + self.scale(20)))
                 ui_y += self.scale(50)
 
@@ -6423,7 +6430,7 @@ class Game:
                     waiting_y = ui_y + self.scale(50)
                     line_height = self.scale(16)
                     for i, line in enumerate(waiting_lines):
-                        waiting_surface = self.small_font.render(line, True, (180, 180, 180))
+                        waiting_surface = self._get_cached_text(line, self.small_font, (180, 180, 180))
                         waiting_rect = waiting_surface.get_rect(center=(
                             ui_x + self.scale(button_width) // 2,
                             waiting_y + i * line_height
@@ -6564,7 +6571,7 @@ class Game:
             pygame.draw.rect(self.screen, bar_color, progress_bar)
 
         # Draw timer text centered on the rectangle (black for visibility)
-        timer_surface = self.font.render(timer_text, True, (0, 0, 0))
+        timer_surface = self._get_cached_text(timer_text, self.font, (0, 0, 0))
         timer_text_rect = timer_surface.get_rect(center=(timer_rect_x + timer_rect_width // 2, timer_rect_y + timer_rect_height // 2))
         self.screen.blit(timer_surface, timer_text_rect)
 
@@ -6595,10 +6602,10 @@ class Game:
         # Header
         owner = self.game_state.territory_owners.get(selected_territory, -1)
         owner_color = self.game_state.get_player_color(owner) if owner != -1 else BROWN_TEXT_PRIMARY
-        title_text = self.large_font.render(f"Selected Army", True, owner_color)
+        title_text = self._get_cached_text("Selected Army", self.large_font, owner_color)
         self.screen.blit(title_text, (panel_x, panel_y))
         panel_y += UI_SECTION_SPACING
-        
+
         # Territory name (with smart wrapping for long names)
         # Use display name for campaign mission territory renaming
         display_territory = map_data.get_display_name(selected_territory)
@@ -6607,54 +6614,54 @@ class Game:
         territory_lines = self.helpers.wrap_text_smart(full_territory_text, self.font, max_territory_width)
 
         for line in territory_lines:
-            territory_text = self.font.render(line, True, BROWN_TEXT_HEADING)
+            territory_text = self._get_cached_text(line, self.font, BROWN_TEXT_HEADING)
             self.screen.blit(territory_text, (panel_x, panel_y))
             panel_y += 22  # Line height for wrapped text
 
         panel_y += 8  # Extra spacing after territory name
-        
+
         # Army count breakdown
         unmoved = self.game_state.armies_unmoved.get(selected_territory, 0)
         moved = self.game_state.armies_moved.get(selected_territory, 0)
         total = unmoved + moved
-        
+
         # Total armies
-        total_text = self.font.render(f"Total Armies: {total}", True, BROWN_TEXT_PRIMARY)
+        total_text = self._get_cached_text(f"Total Armies: {total}", self.font, BROWN_TEXT_PRIMARY)
         self.screen.blit(total_text, (panel_x, panel_y))
         panel_y += 28
-        
+
         # Army limit indicator
         limit_color = (180, 0, 0) if total >= self.game_state.MAX_ARMIES_PER_TERRITORY else (100, 100, 100)
-        limit_text = self.small_font.render(f"Army Limit: {total}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", True, limit_color)
+        limit_text = self._get_cached_text(f"Army Limit: {total}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", self.small_font, limit_color)
         self.screen.blit(limit_text, (panel_x + 10, panel_y))
         panel_y += 24
-        
+
         if unmoved > 0:
             # Ready to move (green)
-            ready_text = self.small_font.render(f"â€¢ {unmoved} ready to move", True, (0, 150, 0))
+            ready_text = self._get_cached_text(f"\u2022 {unmoved} ready to move", self.small_font, (0, 150, 0))
             self.screen.blit(ready_text, (panel_x + 10, panel_y))
             panel_y += UI_LINE_SPACING_SMALL
-            
+
             if moved > 0:
                 # Already moved (gray)
-                moved_text = self.small_font.render(f"â€¢ {moved} already moved this turn", True, (120, 120, 120))
+                moved_text = self._get_cached_text(f"\u2022 {moved} already moved this turn", self.small_font, (120, 120, 120))
                 self.screen.blit(moved_text, (panel_x + 10, panel_y))
                 panel_y += UI_LINE_SPACING_SMALL
         else:
             # All moved (red warning)
-            all_moved_text = self.small_font.render(f"â€¢ All {moved} armies already moved", True, (180, 0, 0))
+            all_moved_text = self._get_cached_text(f"\u2022 All {moved} armies already moved", self.small_font, (180, 0, 0))
             self.screen.blit(all_moved_text, (panel_x + 10, panel_y))
             panel_y += UI_LINE_SPACING_SMALL
-        
+
         panel_y += 10
-        
+
         # Instructions
-        hint_text = self.small_font.render("Right-click adjacent territory to move", True, (100, 100, 100))
+        hint_text = self._get_cached_text("Right-click adjacent territory to move", self.small_font, (100, 100, 100))
         self.screen.blit(hint_text, (panel_x, panel_y))
         panel_y += 20
-        
+
         # Deselect hint
-        deselect_text = self.small_font.render("Click elsewhere to deselect", True, (100, 100, 100))
+        deselect_text = self._get_cached_text("Click elsewhere to deselect", self.small_font, (100, 100, 100))
         self.screen.blit(deselect_text, (panel_x, panel_y))
     
     def _draw_instruction_message(self):
@@ -6675,7 +6682,7 @@ class Game:
         # Battle instruction during battles
         if self.game_state.turn_phase == 'battles' and len(self.game_state.pending_battles) > 0:
             if not self.battle_popup_visible:
-                instruction = self.font.render("Click on a battlefield to resolve battle", True, BLACK)
+                instruction = self._get_cached_text("Click on a battlefield to resolve battle", self.font, BLACK)
                 instruction_rect = instruction.get_rect(center=(WINDOW_WIDTH // 2, BOTTOM_UI_Y + BOTTOM_UI_HEIGHT // 2))
                 self.screen.blit(instruction, instruction_rect)
             self.train_buttons = {}  # Bug 5 fix: clear plural train_buttons dict, not dead singular
@@ -6684,16 +6691,16 @@ class Game:
         # Default instructions when nothing selected
         elif self.game_state.phase != 'playing' or (not self.selected_plot and not self.selected_barracks and not self.selected_keep and not self.selected_hero and not self.game_state.selected_army):
             if self.game_state.phase == 'playing':
-                instruction = self.font.render("Click a building plot, Barracks, or Keep to interact", True, GRAY)
+                instruction = self._get_cached_text("Click a building plot, Barracks, or Keep to interact", self.font, GRAY)
             elif self.game_state.phase == 'setup':
                 chosen = self.game_state.territories_chosen[self.game_state.current_player]
                 max_territories = self.game_state.max_starting_territories
                 if self.game_state.is_ai_player():
-                    instruction = self.large_font.render(f"SETUP: Click a territory for AI Player {self.game_state.current_player + 1} ({chosen}/{max_territories})", True, BLACK)
+                    instruction = self._get_cached_text(f"SETUP: Click a territory for AI Player {self.game_state.current_player + 1} ({chosen}/{max_territories})", self.large_font, BLACK)
                 else:
-                    instruction = self.large_font.render(f"SETUP: Claim {chosen}/{max_territories} territories", True, BLACK)
+                    instruction = self._get_cached_text(f"SETUP: Claim {chosen}/{max_territories} territories", self.large_font, BLACK)
             else:
-                instruction = self.font.render("", True, BLACK)
+                instruction = self._get_cached_text("", self.font, BLACK)
 
             instruction_rect = instruction.get_rect(center=(WINDOW_WIDTH // 2, BOTTOM_UI_Y + BOTTOM_UI_HEIGHT // 2))
             self.screen.blit(instruction, instruction_rect)
@@ -6742,7 +6749,7 @@ class Game:
             building_info = self.game_state.building_types[building]
 
             # Large building name (same format as Keep)
-            building_title = self.large_font.render(building, True, BROWN_TEXT_HEADING)
+            building_title = self._get_cached_text(building, self.large_font, BROWN_TEXT_HEADING)
             self.screen.blit(building_title, (build_ui_x, build_ui_y))
             build_ui_y += 40
 
@@ -6751,8 +6758,8 @@ class Game:
             effect = building_info['effect']
             value = building_info['value']
 
-            effect_text = self.small_font.render(
-                self._get_building_effect_text(effect, value), True, effect_color)
+            effect_text = self._get_cached_text(
+                self._get_building_effect_text(effect, value), self.small_font, effect_color)
             self.screen.blit(effect_text, (build_ui_x, build_ui_y))
             build_ui_y += 25
 
@@ -6774,15 +6781,15 @@ class Game:
                         self.screen.blit(cached_s, (sx, build_ui_y))
                         sx += s_size + 1
                     # Level text after shields
-                    level_label = self.small_font.render(f" Level {bldg_level}", True, gold_color)
+                    level_label = self._get_cached_text(f" Level {bldg_level}", self.small_font, gold_color)
                     self.screen.blit(level_label, (sx, build_ui_y))
                     # Income bonus text
                     bonus_pct = int(bldg_level * self.game_state.BUILDING_LEVEL_INCOME_BONUS * 100)
                     if bonus_pct > 0:
-                        bonus_text = self.small_font.render(f"  (+{bonus_pct}% income)", True, (150, 200, 150))
+                        bonus_text = self._get_cached_text(f"  (+{bonus_pct}% income)", self.small_font, (150, 200, 150))
                         self.screen.blit(bonus_text, (sx + level_label.get_width(), build_ui_y))
                 else:
-                    level_label = self.small_font.render(f"Level {bldg_level}", True, (200, 200, 200))
+                    level_label = self._get_cached_text(f"Level {bldg_level}", self.small_font, (200, 200, 200))
                     self.screen.blit(level_label, (build_ui_x, build_ui_y))
                 build_ui_y += 22
 
@@ -6813,7 +6820,7 @@ class Game:
                 pygame.draw.rect(self.screen, (100, 90, 70), (bar_x, bar_y, bar_w, bar_h), 1)
 
                 # XP text to the right of bar
-                xp_text = self.small_font.render(xp_label, True, (200, 200, 200))
+                xp_text = self._get_cached_text(xp_label, self.small_font, (200, 200, 200))
                 self.screen.blit(xp_text, (bar_x + bar_w + 8, bar_y - 2))
                 build_ui_y += bar_h + 10
 
@@ -6861,7 +6868,7 @@ class Game:
             building_info = self.game_state.building_types[building_type]
 
             # Large building name with "Under Construction" suffix
-            building_title = self.large_font.render(f"{building_type} (Under Construction)", True, BROWN_TEXT_HEADING)
+            building_title = self._get_cached_text(f"{building_type} (Under Construction)", self.large_font, BROWN_TEXT_HEADING)
             self.screen.blit(building_title, (build_ui_x, build_ui_y))
             build_ui_y += 40
 
@@ -6870,13 +6877,13 @@ class Game:
             effect = building_info['effect']
             value = building_info['value']
 
-            effect_text = self.small_font.render(
-                self._get_building_effect_text(effect, value), True, effect_color)
+            effect_text = self._get_cached_text(
+                self._get_building_effect_text(effect, value), self.small_font, effect_color)
             self.screen.blit(effect_text, (build_ui_x, build_ui_y))
             build_ui_y += 22
 
             # Turns remaining info
-            turns_text = self.small_font.render(f"- Completes in {turns_remaining} turn{'s' if turns_remaining != 1 else ''}.", True, effect_color)
+            turns_text = self._get_cached_text(f"- Completes in {turns_remaining} turn{'s' if turns_remaining != 1 else ''}.", self.small_font, effect_color)
             self.screen.blit(turns_text, (build_ui_x, build_ui_y))
             build_ui_y += 30
 
@@ -6903,15 +6910,15 @@ class Game:
         else:
             # Empty plot - show building options
             # Show plot title for empty plots only
-            plot_title = self.font.render(f"{territory} - Plot {plot_index + 1}", True, BROWN_TEXT_HEADING)
+            plot_title = self._get_cached_text(f"{territory} - Plot {plot_index + 1}", self.font, BROWN_TEXT_HEADING)
             self.screen.blit(plot_title, (build_ui_x, build_ui_y))
             build_ui_y += 30
 
             # Check if can build this turn
             can_build = territory not in self.game_state.buildings_started_this_turn
-            
+
             if not can_build:
-                limit_text = self.small_font.render("Building limit reached this turn", True, (180, 0, 0))
+                limit_text = self._get_cached_text("Building limit reached this turn", self.small_font, (180, 0, 0))
                 self.screen.blit(limit_text, (build_ui_x, build_ui_y))
                 build_ui_y += UI_LINE_SPACING_SMALL
             
@@ -7038,7 +7045,7 @@ class Game:
                     # Fallback to circular button with letter if icon not available
                     pygame.draw.circle(self.screen, final_color, (button_center_x, button_center_y), button_radius)
                     pygame.draw.circle(self.screen, BLACK, (button_center_x, button_center_y), button_radius, 2)
-                    text_surf = self.font.render(letter, True, WHITE)
+                    text_surf = self._get_cached_text(letter, self.font, WHITE)
                     text_rect = text_surf.get_rect(center=(button_center_x, button_center_y))
                     self.screen.blit(text_surf, text_rect)
 
@@ -7196,7 +7203,7 @@ class Game:
             pygame.draw.rect(self.screen, hero_color, icon_rect, border_radius=8)
             pygame.draw.rect(self.screen, (200, 200, 100), icon_rect, 3, border_radius=8)
             # Draw hero letter
-            hero_letter_surface = self.large_font.render(hero_letter, True, WHITE)
+            hero_letter_surface = self._get_cached_text(hero_letter, self.large_font, WHITE)
             hero_letter_rect = hero_letter_surface.get_rect(center=icon_rect.center)
             self.screen.blit(hero_letter_surface, hero_letter_rect)
 
@@ -7210,7 +7217,7 @@ class Game:
         silvery_color = (192, 192, 192)
 
         # Hero name (larger font)
-        name_text = self.large_font.render(hero_name, True, BROWN_TEXT_HEADING)
+        name_text = self._get_cached_text(hero_name, self.large_font, BROWN_TEXT_HEADING)
         self.screen.blit(name_text, (name_x, name_y))
         name_y += 35  # Increased spacing
 
@@ -7218,14 +7225,14 @@ class Game:
         hero_info = self.game_state.HERO_TYPES[hero_name]
         description_lines = hero_info.get('description', ['Unknown hero'])
         for line in description_lines:
-            desc_text = self.small_font_italic.render(line, True, bronze_color)
+            desc_text = self._get_cached_text(line, self.small_font_italic, bronze_color)
             self.screen.blit(desc_text, (name_x, name_y))
             name_y += 22  # Increased spacing
 
         # Hero location with bold silvery "Location:" label
         name_y += 8  # Extra spacing before location
-        location_label = self.small_font_bold.render("Location:", True, silvery_color)
-        location_value = self.small_font.render(f" {hero_data['keep_territory']}", True, cream_color)
+        location_label = self._get_cached_text("Location:", self.small_font_bold, silvery_color)
+        location_value = self._get_cached_text(f" {hero_data['keep_territory']}", self.small_font, cream_color)
         self.screen.blit(location_label, (name_x, name_y))
         self.screen.blit(location_value, (name_x + location_label.get_width(), name_y))
 
@@ -7343,16 +7350,16 @@ class Game:
                             self.screen.blit(light_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
                 else:
                     # Fallback: Draw ability number
-                    number_text = self.font.render(str(i + 1), True, WHITE if not is_disabled else GRAY)
+                    number_text = self._get_cached_text(str(i + 1), self.font, WHITE if not is_disabled else GRAY)
                     number_rect = number_text.get_rect(center=ability_rect.center)
                     self.screen.blit(number_text, number_rect)
 
                 # Draw cooldown number if on cooldown
                 if cooldown_remaining > 0:
-                    cooldown_text = self.large_font.render(str(cooldown_remaining), True, (255, 200, 200))
+                    cooldown_text = self._get_cached_text(str(cooldown_remaining), self.large_font, (255, 200, 200))
                     cooldown_rect = cooldown_text.get_rect(center=(ability_rect.centerx, ability_rect.bottom - 15))
                     # Draw shadow for readability
-                    shadow_text = self.large_font.render(str(cooldown_remaining), True, BLACK)
+                    shadow_text = self._get_cached_text(str(cooldown_remaining), self.large_font, BLACK)
                     self.screen.blit(shadow_text, (cooldown_rect.x + 2, cooldown_rect.y + 2))
                     self.screen.blit(cooldown_text, cooldown_rect)
             else:
@@ -7389,7 +7396,7 @@ class Game:
         ]
 
         for line in info_lines:
-            info_text = self.small_font.render(line, True, cream_color)
+            info_text = self._get_cached_text(line, self.small_font, cream_color)
             self.screen.blit(info_text, (info_x, info_y))
             info_y += 20  # Line spacing
 
@@ -7406,14 +7413,14 @@ class Game:
         info_y = panel_y
 
         # Draw title
-        title_text = self.large_font.render("Barracks", True, BROWN_TEXT_HEADING)
+        title_text = self._get_cached_text("Barracks", self.large_font, BROWN_TEXT_HEADING)
         self.screen.blit(title_text, (info_x, info_y))
         info_y += 35
 
         # Draw current gold and income
         current_gold = self.game_state.player_gold[self.game_state.current_player]
         current_income = self.game_state.calculate_player_income(self.game_state.current_player)
-        gold_text = self.small_font.render(f"Gold: {current_gold}G (+{current_income}/turn)", True, (218, 165, 32))
+        gold_text = self._get_cached_text(f"Gold: {current_gold}G (+{current_income}/turn)", self.small_font, (218, 165, 32))
         self.screen.blit(gold_text, (info_x, info_y))
         info_y += 22
 
@@ -7424,13 +7431,13 @@ class Game:
             queue_count = len(self.game_state.training_queue[territory][barracks_plot_index])
 
         # Display units in queue
-        queue_text = self.small_font.render(f"Queue: {queue_count}/4", True, BROWN_TEXT_SECONDARY)
+        queue_text = self._get_cached_text(f"Queue: {queue_count}/4", self.small_font, BROWN_TEXT_SECONDARY)
         self.screen.blit(queue_text, (info_x, info_y))
         info_y += 22
 
         # Display armies in territory (include ALL garrisons)
         current_armies = self.game_state.get_territory_total_armies(territory)
-        armies_text = self.small_font.render(f"Armies: {current_armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", True, BROWN_TEXT_SECONDARY)
+        armies_text = self._get_cached_text(f"Armies: {current_armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", self.small_font, BROWN_TEXT_SECONDARY)
         self.screen.blit(armies_text, (info_x, info_y))
 
         # Training buttons - sized to fit 5 unit types (Swordsman, Archer, Pikeman, Cavalry, Captain)
@@ -7564,13 +7571,13 @@ class Game:
         # Status messages below the buttons (if needed)
         status_x = button_x
         if at_army_limit:
-            status_text = self.small_font.render(f"ARMY LIMIT REACHED", True, (180, 0, 0))
+            status_text = self._get_cached_text("ARMY LIMIT REACHED", self.small_font, (180, 0, 0))
             self.screen.blit(status_text, (status_x, panel_y))
         elif not any_affordable:  # Bug 4 fix: check if ANY unit is affordable, not just last one
-            status_text = self.small_font.render("Not enough gold", True, (150, 0, 0))
+            status_text = self._get_cached_text("Not enough gold", self.small_font, (150, 0, 0))
             self.screen.blit(status_text, (status_x, panel_y))
         elif not can_queue:
-            status_text = self.small_font.render("Queue full", True, (150, 0, 0))
+            status_text = self._get_cached_text("Queue full", self.small_font, (150, 0, 0))
             self.screen.blit(status_text, (status_x, panel_y))
         panel_y += UI_LINE_SPACING_SMALL
 
@@ -7608,14 +7615,14 @@ class Game:
                     # First in queue - currently training
                     if turns_remaining == 0:
                         # Training paused due to army limit
-                        unit_text = self.small_font.render(f"{unit_type} (Army Limit Reached)", True, (180, 0, 0))
+                        unit_text = self._get_cached_text(f"{unit_type} (Army Limit Reached)", self.small_font, (180, 0, 0))
                     else:
-                        unit_text = self.small_font.render(f"{unit_type} (training... {turns_remaining} turn)", True, (0, 100, 0))
+                        unit_text = self._get_cached_text(f"{unit_type} (training... {turns_remaining} turn)", self.small_font, (0, 100, 0))
                 else:
                     # Waiting in queue
-                    unit_text = self.small_font.render(f"{unit_type} (waiting)", True, GRAY)
+                    unit_text = self._get_cached_text(f"{unit_type} (waiting)", self.small_font, GRAY)
                 self.screen.blit(unit_text, (queue_x + 5, queue_y + 7))
-                
+
                 # Cancel button
                 cancel_rect = pygame.Rect(queue_x + 250, queue_y + 5, 20, 20)
 
@@ -7643,16 +7650,16 @@ class Game:
                 pygame.draw.rect(self.screen, button_color, cancel_rect)
                 pygame.draw.rect(self.screen, BLACK, cancel_rect, 1)
                 cancel_text_color = (120, 120, 120) if _tutorial_cancel_locked else WHITE
-                cancel_text = self.small_font.render("X", True, cancel_text_color)
+                cancel_text = self._get_cached_text("X", self.small_font, cancel_text_color)
                 cancel_text_rect = cancel_text.get_rect(center=cancel_rect.center)
                 self.screen.blit(cancel_text, cancel_text_rect)
-                
+
                 # Store for click detection
                 self.queue_cancel_buttons.append((cancel_rect, i))
-                
+
                 queue_y += 35
         else:
-            empty_text = self.small_font.render("No units in queue", True, BROWN_TEXT_SECONDARY)
+            empty_text = self._get_cached_text("No units in queue", self.small_font, BROWN_TEXT_SECONDARY)
             self.screen.blit(empty_text, (queue_x, queue_y))
         
         # Draw second vertical divider line (between queue and tips)
@@ -7737,7 +7744,7 @@ class Game:
 
         # Get display name (Keep or Castle)
         _, display_name = self.game_state.get_keep_display_info(territory, keep_plot_index)
-        title_text = self.large_font.render(display_name, True, BROWN_TEXT_HEADING)
+        title_text = self._get_cached_text(display_name, self.large_font, BROWN_TEXT_HEADING)
         self.screen.blit(title_text, (info_x + 15, info_y))  # Title 15px to the right
 
         # Get current gold for hero affordability checks
@@ -7936,11 +7943,11 @@ class Game:
                 pygame.draw.rect(self.screen, button_color, upgrade_rect)
                 pygame.draw.rect(self.screen, (218, 165, 32), upgrade_rect, 3, border_radius=5)
 
-                icon_text = self.font.render("UPGRADE", True, BLACK)
+                icon_text = self._get_cached_text("UPGRADE", self.font, BLACK)
                 icon_text_rect = icon_text.get_rect(center=(upgrade_rect.centerx, upgrade_rect.centery - 10))
                 self.screen.blit(icon_text, icon_text_rect)
 
-                subtext = self.small_font.render("TO CASTLE", True, BLACK)
+                subtext = self._get_cached_text("TO CASTLE", self.small_font, BLACK)
                 subtext_rect = subtext.get_rect(center=(upgrade_rect.centerx, upgrade_rect.centery + 10))
                 self.screen.blit(subtext, subtext_rect)
 
@@ -7957,9 +7964,9 @@ class Game:
             # Text: "X turn/s" - very small text
             # C1 fix: Use cached extra_small_font instead of per-frame Font() creation
             turn_text = "turn" if turns_remaining == 1 else "turns"
-            upgrade_text = self.extra_small_font.render(
+            upgrade_text = self._get_cached_text(
                 f"{turns_remaining} {turn_text}",
-                True, (100, 100, 0)
+                self.extra_small_font, (100, 100, 0)
             )
             # Center the text vertically in the taller bar
             text_y = bar_y + (bar_height - upgrade_text.get_height()) // 2
@@ -7982,7 +7989,7 @@ class Game:
 
             pygame.draw.rect(self.screen, cancel_color, cancel_rect)
             pygame.draw.rect(self.screen, BLACK, cancel_rect, 1)
-            cancel_text = self.small_font.render("X", True, WHITE)
+            cancel_text = self._get_cached_text("X", self.small_font, WHITE)
             cancel_text_rect = cancel_text.get_rect(center=cancel_rect.center)
             self.screen.blit(cancel_text, cancel_text_rect)
 
@@ -8045,12 +8052,12 @@ class Game:
                 pygame.draw.rect(self.screen, BLACK, upgrade_rect, 3, border_radius=5)
 
                 # Draw icon/text - use "UPGRADE" text
-                icon_text = self.font.render("UPGRADE", True, WHITE)
+                icon_text = self._get_cached_text("UPGRADE", self.font, WHITE)
                 icon_text_rect = icon_text.get_rect(center=(upgrade_rect.centerx, upgrade_rect.centery - 10))
                 self.screen.blit(icon_text, icon_text_rect)
 
                 # Draw "TO CASTLE" below
-                subtext = self.small_font.render("TO CASTLE", True, WHITE)
+                subtext = self._get_cached_text("TO CASTLE", self.small_font, WHITE)
                 subtext_rect = subtext.get_rect(center=(upgrade_rect.centerx, upgrade_rect.centery + 10))
                 self.screen.blit(subtext, subtext_rect)
 
@@ -8095,9 +8102,9 @@ class Game:
 
             # Hero name and progress
             turn_text = "turn" if turns_remaining == 1 else "turns"
-            hero_text = self.small_font.render(
+            hero_text = self._get_cached_text(
                 f"{hero_type} (training... {turns_remaining} {turn_text})",
-                True, (0, 100, 0)
+                self.small_font, (0, 100, 0)
             )
             self.screen.blit(hero_text, (queue_x + 5, queue_y + 7))
 
@@ -8117,13 +8124,13 @@ class Game:
 
             pygame.draw.rect(self.screen, button_color, cancel_rect)
             pygame.draw.rect(self.screen, BLACK, cancel_rect, 1)
-            cancel_text = self.small_font.render("X", True, WHITE)
+            cancel_text = self._get_cached_text("X", self.small_font, WHITE)
             cancel_text_rect = cancel_text.get_rect(center=cancel_rect.center)
             self.screen.blit(cancel_text, cancel_text_rect)
 
             self.hero_cancel_button = cancel_rect
         else:
-            empty_text = self.small_font.render("No hero in training", True, BROWN_TEXT_SECONDARY)
+            empty_text = self._get_cached_text("No hero in training", self.small_font, BROWN_TEXT_SECONDARY)
             self.screen.blit(empty_text, (queue_x, queue_y))
 
         # === SEPARATOR BEFORE HERO INFO ===
@@ -8134,7 +8141,7 @@ class Game:
         tips_x = separator3_x + 20
         tips_y = BOTTOM_UI_Y + 30
 
-        tips_title = self.font.render("Hero Info", True, WHITE)
+        tips_title = self._get_cached_text("Hero Info", self.font, WHITE)
         self.screen.blit(tips_title, (tips_x, tips_y))
         tips_y += 35
 
@@ -8143,21 +8150,21 @@ class Game:
         info_color = (200, 200, 200)  # Light gray, distinct from white header
         info_font = self.extra_small_font if WINDOW_HEIGHT == 720 else self.small_font
 
-        rule1 = info_font.render("- Each Hero can only be trained once.", True, info_color)
+        rule1 = self._get_cached_text("- Each Hero can only be trained once.", info_font, info_color)
         self.screen.blit(rule1, (tips_x, tips_y))
         tips_y += 22
 
-        rule2 = info_font.render("- Each Keep or Castle can only have", True, info_color)
+        rule2 = self._get_cached_text("- Each Keep or Castle can only have", info_font, info_color)
         self.screen.blit(rule2, (tips_x, tips_y))
         tips_y += 20
-        rule2b = info_font.render("  one Hero.", True, info_color)
+        rule2b = self._get_cached_text("  one Hero.", info_font, info_color)
         self.screen.blit(rule2b, (tips_x, tips_y))
         tips_y += 22
 
-        rule3 = info_font.render("- Heroes are slain upon Keep or", True, info_color)
+        rule3 = self._get_cached_text("- Heroes are slain upon Keep or", info_font, info_color)
         self.screen.blit(rule3, (tips_x, tips_y))
         tips_y += 20
-        rule3b = info_font.render("  Castle's destruction.", True, info_color)
+        rule3b = self._get_cached_text("  Castle's destruction.", info_font, info_color)
         self.screen.blit(rule3b, (tips_x, tips_y))
         tips_y += 30
 
@@ -8233,27 +8240,27 @@ class Game:
         # Use display name for campaign mission territory renaming
         display_territory = map_data.get_display_name(territory)
         player_color = self.game_state.get_player_color(player) if player != -1 else BROWN_TEXT_PRIMARY
-        title_text = self.large_font.render(f"Army: {display_territory}", True, player_color)
+        title_text = self._get_cached_text(f"Army: {display_territory}", self.large_font, player_color)
         self.screen.blit(title_text, (middle_x, panel_y))
         panel_y += UI_SECTION_SPACING
-        
+
         # Total and status summary
-        summary_text = self.font.render(f"Total: {total} armies", True, BROWN_TEXT_PRIMARY)
+        summary_text = self._get_cached_text(f"Total: {total} armies", self.font, BROWN_TEXT_PRIMARY)
         self.screen.blit(summary_text, (middle_x, panel_y))
         panel_y += UI_LINE_SPACING_SMALL
-        
-        status_text = self.small_font.render(
-            f"({ready_count} ready, {moved_count} moved, {ordered_count} ordered)", 
-            True, BROWN_TEXT_SECONDARY
+
+        status_text = self._get_cached_text(
+            f"({ready_count} ready, {moved_count} moved, {ordered_count} ordered)",
+            self.small_font, BROWN_TEXT_SECONDARY
         )
         self.screen.blit(status_text, (middle_x, panel_y))
         panel_y += UI_LINE_SPACING
-        
+
         # Selection count
         if self.selected_army_units:
-            selected_text = self.small_font.render(
-                f"Selected: {len(self.selected_army_units)} armies", 
-                True, (0, 120, 180)
+            selected_text = self._get_cached_text(
+                f"Selected: {len(self.selected_army_units)} armies",
+                self.small_font, (0, 120, 180)
             )
             self.screen.blit(selected_text, (middle_x, panel_y))
             panel_y += UI_LINE_SPACING_SMALL
@@ -8288,31 +8295,31 @@ class Game:
 
         pygame.draw.rect(self.screen, button_color, select_all_rect)
         pygame.draw.rect(self.screen, BLACK, select_all_rect, 2)
-        select_all_text = self.small_font.render("Select All", True, WHITE)
+        select_all_text = self._get_cached_text("Select All", self.small_font, WHITE)
         text_rect = select_all_text.get_rect(center=select_all_rect.center)
         self.screen.blit(select_all_text, text_rect)
         self.select_all_button = select_all_rect
 
         # Deselect All button (next to Select All) - scaled
         deselect_all_rect = pygame.Rect(middle_x + self.scale(120), button_y, self.scale(110), self.scale(25))
-        
+
         # Base color
         button_color = (150, 100, 100)
         # Check hover
         is_hovering = deselect_all_rect.collidepoint(self.mouse_pos)
         # Check click
-        is_clicking = (self.clicked_element and 
-                      self.clicked_element[0] == 'army_comp' and 
+        is_clicking = (self.clicked_element and
+                      self.clicked_element[0] == 'army_comp' and
                       self.clicked_element[1] == 'deselect_all')
         # Apply feedback
         if is_clicking:
             button_color = brighten_color(button_color, 0.4)
         elif is_hovering:
             button_color = lighten_color(button_color, 0.2)
-        
+
         pygame.draw.rect(self.screen, button_color, deselect_all_rect)
         pygame.draw.rect(self.screen, BLACK, deselect_all_rect, 2)
-        deselect_all_text = self.small_font.render("Deselect All", True, WHITE)
+        deselect_all_text = self._get_cached_text("Deselect All", self.small_font, WHITE)
         text_rect = deselect_all_text.get_rect(center=deselect_all_rect.center)
         self.screen.blit(deselect_all_text, text_rect)
         self.deselect_all_button = deselect_all_rect
@@ -8434,7 +8441,7 @@ class Game:
                 pygame.draw.rect(self.screen, border_color, button_rect, border_width)
 
                 # Draw unit type letter (centered)
-                unit_text = self.font.render(unit_letter, True, BLACK)
+                unit_text = self._get_cached_text(unit_letter, self.font, BLACK)
                 text_rect = unit_text.get_rect(center=button_rect.center)
                 self.screen.blit(unit_text, text_rect)
 
@@ -8588,7 +8595,7 @@ class Game:
         winner_color = self.game_state.get_player_color(self.game_state.winner)
         victory_font = self.font_manager.get_bold_font(72)
         winner_name = self.game_state.get_player_name(self.game_state.winner)
-        victory_text = victory_font.render(f"{winner_name} WINS!", True, winner_color)
+        victory_text = self._get_cached_text(f"{winner_name} WINS!", victory_font, winner_color)
         victory_rect = victory_text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 50))
         self.screen.blit(victory_text, victory_rect)
 
@@ -8604,7 +8611,7 @@ class Game:
         pygame.draw.rect(self.screen, (100, 150, 200), menu_button_rect)
         pygame.draw.rect(self.screen, WHITE, menu_button_rect, 3)
 
-        menu_button_text = self.large_font.render("Return to Main Menu", True, WHITE)
+        menu_button_text = self._get_cached_text("Return to Main Menu", self.large_font, WHITE)
         text_rect = menu_button_text.get_rect(center=menu_button_rect.center)
         self.screen.blit(menu_button_text, text_rect)
 
@@ -11303,7 +11310,7 @@ class Game:
 
         # Draw title "Choose the Territory Owner"
         title_font = self.font_manager.get_font(int(20 * scale), 'bold')
-        title_text = title_font.render("Choose the Territory Owner", True, WHITE)
+        title_text = self._get_cached_text("Choose the Territory Owner", title_font, WHITE)
         title_rect = title_text.get_rect(centerx=popup_x + popup_width // 2,
                                          top=popup_y + int(32 * scale))
         self.screen.blit(title_text, title_rect)
@@ -11346,10 +11353,10 @@ class Game:
 
             # Truncate player name if too long
             display_name = player_name
-            name_surface = label_font.render(display_name, True, player_color)
+            name_surface = self._get_cached_text(display_name, label_font, player_color)
             while name_surface.get_width() > text_area_width and len(display_name) > 10:
                 display_name = display_name[:-4] + "..."
-                name_surface = label_font.render(display_name, True, player_color)
+                name_surface = self._get_cached_text(display_name, label_font, player_color)
 
             # Center text vertically within button
             name_rect = name_surface.get_rect(
@@ -11514,7 +11521,7 @@ class Game:
         # Draw title
         title_font = self.font  # Use default font
         title_text = "Attack Stopped!"
-        title_surface = title_font.render(title_text, True, (255, 80, 80))
+        title_surface = self._get_cached_text(title_text, title_font, (255, 80, 80))
         title_x = popup_x + (popup_width - title_surface.get_width()) // 2
         title_y = popup_y + int(15 * scale)
         self.screen.blit(title_surface, (title_x, title_y))
@@ -11529,7 +11536,7 @@ class Game:
         line_height = int(25 * scale)
 
         for line in [line1, line2, line3]:
-            line_surface = msg_font.render(line, True, (220, 210, 190))
+            line_surface = self._get_cached_text(line, msg_font, (220, 210, 190))
             line_x = popup_x + (popup_width - line_surface.get_width()) // 2
             self.screen.blit(line_surface, (line_x, msg_y))
             msg_y += line_height
@@ -11551,7 +11558,7 @@ class Game:
 
         # Button text
         btn_text = "Close"
-        btn_surface = msg_font.render(btn_text, True, (220, 210, 190))
+        btn_surface = self._get_cached_text(btn_text, msg_font, (220, 210, 190))
         btn_text_x = button_x + (button_width - btn_surface.get_width()) // 2
         btn_text_y = button_y + (button_height - btn_surface.get_height()) // 2
         self.screen.blit(btn_surface, (btn_text_x, btn_text_y))
@@ -12566,7 +12573,7 @@ class Game:
         current_player_num = self.game_state.current_player + 1
         banner_text = f"Player {current_player_num}'s Turn - Spectating..."
         if self._cached_spectator_text is None or self._cached_spectator_text[0] != banner_text:
-            text_surface = self.large_font.render(banner_text, True, (255, 255, 100))
+            text_surface = self._get_cached_text(banner_text, self.large_font, (255, 255, 100))
             self._cached_spectator_text = (banner_text, text_surface)
         text_surface = self._cached_spectator_text[1]
         text_rect = text_surface.get_rect(center=(banner_x + banner_width // 2, banner_y + banner_height // 2))

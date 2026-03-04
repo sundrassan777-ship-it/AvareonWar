@@ -268,6 +268,9 @@ class VictoryMixin:
 
             # 3. Convert to neutral
             self.territory_owners[territory] = -1
+            self._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
+            self.invalidate_income_cache()  # FPS OPT: Ownership affects income
+            self.invalidate_army_count_cache()  # FPS OPT: Army counts change
 
             # Ownership changed — refresh territorial bonus cache
             # (done once after loop would suffice, but keeping here for safety

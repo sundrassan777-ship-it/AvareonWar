@@ -43,6 +43,9 @@ PULSE_MAX_ALPHA = 1.0  # Maximum opacity during pulse (full brightness)
 RAY_SEGMENTS = 8  # Number of segments per ray (for gradient fade)
 RAY_BASE_BRIGHTNESS = 0.5  # Minimum brightness at ray tip (0.0-1.0, higher = brighter tips)
 
+# PERFORMANCE: Number of pre-rendered rotation frames for sprite caching
+NUM_CACHED_FRAMES = 16
+
 
 # ========================================
 # PRODUCTION GLOW EFFECT CLASS
@@ -89,9 +92,10 @@ class ProductionGlowEffect:
         self.ray_pulse_speeds = [random.uniform(PULSE_SPEED_MIN, PULSE_SPEED_MAX) for _ in range(NUM_RAYS)]
         self.ray_pulse_phases = [random.uniform(0, 2 * math.pi) for _ in range(NUM_RAYS)]
 
-        # PERFORMANCE: Reuse rendering surface instead of creating new one each frame
-        self._cached_surface = None
-        self._cached_surface_size = 0
+        # PERFORMANCE: Pre-rendered sprite cache (16 rotation frames, rebuilt on zoom change)
+        self._sprite_cache = []  # List of pre-rendered SRCALPHA surfaces
+        self._sprite_cache_zoom = None  # Zoom level when cache was built
+        self._sprite_cache_size = 0  # Surface size of cached frames
 
     def update(self, delta_time):
         """
@@ -131,9 +135,34 @@ class ProductionGlowEffect:
         alpha_range = PULSE_MAX_ALPHA - PULSE_MIN_ALPHA
         return PULSE_MIN_ALPHA + (pulse_progress + 1) * 0.5 * alpha_range
 
+    def _build_sprite_cache(self, zoom_scale):
+        """Pre-render rotation frames for fast rendering (avoids 64 polygon draws per frame)."""
+        scaled_ray_length = RAY_LENGTH * zoom_scale
+        surface_size = max(50, int(scaled_ray_length * 2.5))
+        surface_center = surface_size // 2
+        scaled_base_width = RAY_BASE_WIDTH * zoom_scale
+        scaled_tip_width = RAY_TIP_WIDTH * zoom_scale
+
+        self._sprite_cache = []
+        self._sprite_cache_zoom = zoom_scale
+        self._sprite_cache_size = surface_size
+
+        for frame_idx in range(NUM_CACHED_FRAMES):
+            rotation = frame_idx * (2 * math.pi / NUM_CACHED_FRAMES)
+            surface = pygame.Surface((surface_size, surface_size), pygame.SRCALPHA)
+
+            for ray_index, base_angle in enumerate(self.ray_base_angles):
+                current_angle = base_angle + rotation
+                # Render at full alpha — pulse variation (0.85-1.0) is subtle enough to skip
+                self._draw_ray(surface, surface_center, surface_center,
+                               current_angle, scaled_ray_length, scaled_base_width,
+                               scaled_tip_width, 1.0)
+
+            self._sprite_cache.append(surface)
+
     def render(self, screen, world_to_screen_func=None, zoom_scale=1.0):
         """
-        Render the rotating sunrays.
+        Render the rotating sunrays using pre-rendered sprite cache.
 
         Args:
             screen: Pygame surface to render to
@@ -152,36 +181,20 @@ class ProductionGlowEffect:
             self.center_y < -margin or self.center_y > screen.get_height() + margin):
             return
 
-        # Scale ray dimensions based on zoom
-        scaled_ray_length = RAY_LENGTH * zoom_scale
-        scaled_base_width = RAY_BASE_WIDTH * zoom_scale
-        scaled_tip_width = RAY_TIP_WIDTH * zoom_scale
+        # PERFORMANCE: Rebuild sprite cache when zoom changes (16 pre-rendered frames)
+        if self._sprite_cache_zoom != zoom_scale:
+            self._build_sprite_cache(zoom_scale)
 
-        # PERFORMANCE: Reuse temporary surface for alpha blending
-        # Size it to fit all rays plus margin (minimum 50px to ensure visibility)
-        surface_size = max(50, int(scaled_ray_length * 2.5))
-        if self._cached_surface is None or self._cached_surface_size != surface_size:
-            self._cached_surface = pygame.Surface((surface_size, surface_size), pygame.SRCALPHA)
-            self._cached_surface_size = surface_size
-        temp_surface = self._cached_surface
-        temp_surface.fill((0, 0, 0, 0))  # Clear for reuse
-        surface_center = surface_size // 2
-
-        # Draw each ray with independent pulse timing
-        for ray_index, base_angle in enumerate(self.ray_base_angles):
-            current_angle = base_angle + self.rotation_angle
-            # Each ray has its own pulse alpha
-            pulse_alpha = self._calculate_pulse_alpha(ray_index)
-            self._draw_ray(
-                temp_surface, surface_center, surface_center,
-                current_angle, scaled_ray_length, scaled_base_width,
-                scaled_tip_width, pulse_alpha
-            )
+        # Pick nearest cached frame by rotation angle (single blit instead of 64 polygon draws)
+        normalized_angle = self.rotation_angle % (2 * math.pi)
+        frame_index = int(normalized_angle / (2 * math.pi) * NUM_CACHED_FRAMES) % NUM_CACHED_FRAMES
+        cached_frame = self._sprite_cache[frame_index]
+        surface_center = self._sprite_cache_size // 2
 
         # Blit centered on building position
         blit_x = int(self.center_x - surface_center)
         blit_y = int(self.center_y - surface_center)
-        screen.blit(temp_surface, (blit_x, blit_y))
+        screen.blit(cached_frame, (blit_x, blit_y))
 
     def _draw_ray(self, surface, cx, cy, angle, length, base_width, tip_width, pulse_alpha):
         """

@@ -2,6 +2,19 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-04 - FPS Performance Optimization (5-Phase)
+
+- **Phase 1 - Territory Overlay:** Dirty-flag cache for territory overlay (version counter skips redraw when camera/ownership unchanged), small clipped hover surface (~200x150) instead of full-screen (1920x1080)
+- **Phase 2 - Calculation Caching:** Income and army count calculations cached with dirty-flag invalidation + 30-frame periodic fallback safety net; event-driven production glow sync via `_training_version` counter
+- **Phase 3 - AABB Hit-Testing:** Bounding box pre-check on `get_territory_at_pos()` skips ~90% of polygon ray-casting tests
+- **Phase 4 - Font Caching:** 128 `font.render()` calls in main.py + 6 in ui_renderer.py replaced with `_get_cached_text()` lookups
+- **Phase 5 - Effect Optimizations:**
+  - TurnAnnouncementEffect: Non-SRCALPHA overlay + cached smoothscale text by quantized size
+  - BattleHurricaneEffect: 1000→700 particles, pre-computed sin/cos LUT (360 entries), small ~120x120 surface instead of full-screen
+  - ProductionGlowEffect: 16 pre-rendered rotation frames (single blit instead of 64 polygon draws per frame), rebuilt on zoom change
+- **Results (1600x900):** Late Game Stress 41.3→59.6 FPS (+44%), Movement Arrows 35.9→57.7 FPS (+61%)
+- **Files modified:** `rendering/map_renderer.py`, `game_state/__init__.py`, `game_state/economy.py`, `game_state/military.py`, `game_state/buildings.py`, `game_state/heroes.py`, `game_state/victory.py`, `main.py`, `rendering/ui_renderer.py`, `ui/effects/turn_announcement_effect.py`, `ui/effects/battleeffect.py`, `ui/effects/production_glow_effect.py`
+
 ## 2026-03-04 - Expanded Main Menu Options Panel
 
 - Main menu Options now matches in-game Options with all the same settings

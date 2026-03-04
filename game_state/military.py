@@ -26,28 +26,49 @@ class MilitaryMixin:
         Get total number of armies controlled by a player across the entire map.
         This includes armies in territories and armies in training.
 
-        Args:
-            player_index: The player index to count armies for
-
-        Returns:
-            int: Total number of armies for the player
+        FPS OPT: Cached with dirty-flag + 30-frame periodic fallback.
+        Called every frame from draw_top_panel(); without caching iterates all 57 territories.
         """
+        # FPS OPT: Lazy init cache structures
+        if not hasattr(self, '_army_count_cache'):
+            self._army_count_cache = {}
+            self._army_count_dirty = set()
+            self._army_count_frame = {}
+            self._army_count_frame_counter = 0
+
+        self._army_count_frame_counter += 1
+
+        # Return cached value if clean and within 30-frame safety window
+        if (player_index in self._army_count_cache and
+                player_index not in self._army_count_dirty and
+                self._army_count_frame_counter - self._army_count_frame.get(player_index, 0) < 30):
+            return self._army_count_cache[player_index]
+
+        # Cache miss or dirty — recompute
+        self._army_count_dirty.discard(player_index)
         total = 0
 
-        # Count armies in territories owned by the player
         for territory, owner in self.territory_owners.items():
             if owner == player_index:
-                # Add armies in territory
                 total += self.armies.get(territory, 0)
 
-        # Count armies currently being trained
         for territory, training_data in self.training_queue.items():
             if self.territory_owners.get(territory, -1) == player_index:
                 for unit_type, turns_left in training_data.items():
-                    # Each entry represents one unit being trained
                     total += len(turns_left)
 
+        self._army_count_cache[player_index] = total
+        self._army_count_frame[player_index] = self._army_count_frame_counter
         return total
+
+    def invalidate_army_count_cache(self, player_index=None):
+        """FPS OPT: Mark army count cache dirty. Call on army add/remove/train/kill."""
+        if not hasattr(self, '_army_count_dirty'):
+            return
+        if player_index is None:
+            self._army_count_dirty = set(range(self.num_players))
+        else:
+            self._army_count_dirty.add(player_index)
 
     def select_army(self, territory):
         """Select an army for issuing movement orders"""
@@ -1843,6 +1864,9 @@ class MilitaryMixin:
             self.destroy_buildings(territory, battle.original_owner, new_owner=-1)
 
             self.territory_owners[territory] = -1  # Neutral
+            self._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
+            self.invalidate_income_cache()  # FPS OPT: Ownership affects income
+            self.invalidate_army_count_cache()  # FPS OPT: Army counts change on ownership change
             self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
             self.armies[territory] = 0
             self.armies_unmoved[territory] = 0
@@ -1963,6 +1987,9 @@ class MilitaryMixin:
 
         # Set territory ownership
         self.territory_owners[territory] = winner
+        self._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
+        self.invalidate_income_cache()  # FPS OPT: Ownership affects income
+        self.invalidate_army_count_cache()  # FPS OPT: Army counts change on ownership change
         self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
         # Tutorial hook: notify territory conquered (only if ownership changed)
@@ -2532,6 +2559,7 @@ class MilitaryMixin:
 
                     # Update ownership
                     self.territory_owners[territory] = winner
+                    self._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                     self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
                     # Campaign hook: notify territory conquered (uncontested takeover)
@@ -2634,6 +2662,7 @@ class MilitaryMixin:
                         # Neutral territory - assign to team leader
                         team_leader = list(team_armies.keys())[0]
                         self.territory_owners[territory] = team_leader
+                        self._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
                         self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
                         owner_msg = f"Player {team_leader + 1} captures"
                     else:

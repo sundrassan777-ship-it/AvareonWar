@@ -210,15 +210,30 @@ class EconomyMixin:
         """
         Calculate total income for a player from their territories.
 
-        Phase 2F: Now delegates per-territory calculation to calculate_territory_income()
-        to eliminate ~80 lines of duplicated income logic. The only logic that remains here
-        is the iteration over owned territories and the territorial bonus applied at the end.
+        FPS OPT: Cached with dirty-flag + 30-frame periodic fallback.
+        Called every frame from draw_top_panel(); without caching, iterates all 57 territories
+        and their buildings (~hundreds of dict lookups in late game).
         """
+        # FPS OPT: Check if cached value is still valid
+        if not hasattr(self, '_income_cache'):
+            self._income_cache = {}  # {player_index: cached_income}
+            self._income_cache_dirty = set()  # Player indices needing recompute
+            self._income_cache_frame = {}  # {player_index: frame_count_at_cache_time}
+            self._income_frame_counter = 0
+
+        self._income_frame_counter += 1
+
+        # Return cached value if clean and within 30-frame safety window
+        if (player_index in self._income_cache and
+                player_index not in self._income_cache_dirty and
+                self._income_frame_counter - self._income_cache_frame.get(player_index, 0) < 30):
+            return self._income_cache[player_index]
+
+        # Cache miss or dirty — recompute
+        self._income_cache_dirty.discard(player_index)
         total_income = 0
         for territory, owner in self.territory_owners.items():
             if owner == player_index:
-                # Phase 2F: Delegate to calculate_territory_income with player_index
-                # to apply hero bonuses (Narn, Nithieln) in addition to base + tech bonuses
                 total_income += self.calculate_territory_income(territory, player_index)
 
         # Apply territorial income bonus to total (applies AFTER all territory income calculated)
@@ -227,7 +242,20 @@ class EconomyMixin:
         if income_bonus_pct > 0:
             total_income = int(total_income * (100 + income_bonus_pct) / 100)
 
+        self._income_cache[player_index] = total_income
+        self._income_cache_frame[player_index] = self._income_frame_counter
         return total_income
+
+    def invalidate_income_cache(self, player_index=None):
+        """FPS OPT: Mark income cache dirty. Call on territory capture, building completion,
+        tech research, hero training/death, taxation change.
+        If player_index is None, invalidate all players."""
+        if not hasattr(self, '_income_cache_dirty'):
+            return
+        if player_index is None:
+            self._income_cache_dirty = set(range(self.num_players))
+        else:
+            self._income_cache_dirty.add(player_index)
 
     def collect_income(self, player_index):
         """Collect income for a player and add to their gold"""
