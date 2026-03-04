@@ -98,6 +98,12 @@ def get_game_sound_tasks(is_campaign=False):
     tasks.append(("Loading structure sounds",
                   _make_sound_loader('structures', 'assets/sounds/structures', 1.0)))
 
+    # Spell ability sounds (5 non-targeted + 7 targeted)
+    tasks.append(("Loading spell sounds",
+                  _make_sound_loader('spells', 'assets/sounds/spells', 1.0)))
+    tasks.append(("Loading targeted spell sounds",
+                  _make_sound_loader('spells_targeted', 'assets/sounds/spells/targeted', 1.0)))
+
     # Campaign transmission voice lines (~75 files) — only for campaign missions
     if is_campaign:
         def _load_transmissions():
@@ -140,6 +146,38 @@ def play_structure_sound(building_type):
     index = _STRUCTURE_SOUND_INDEX.get(building_type)
     if index is not None:
         sound_manager.play_specific('structures', index, allow_overlap=True)
+
+# Alphabetical index mapping for spell sounds in assets/sounds/spells/
+_SPELL_SOUND_INDEX = {
+    'Embargo': 0,            # EmbargoSound.mp3
+    'ExtortPopulace': 1,     # ExtortPopulaceSound.mp3
+    'MasterNegotiator': 2,   # MasterNegotiatorSound.mp3
+    'Reinforce': 3,          # ReinforceSound.mp3
+    'VowOfSilence': 4,       # VowOfSilenceSound.mp3
+}
+
+def play_spell_sound(spell_name):
+    """Play the sound for a non-targeted spell ability activation."""
+    index = _SPELL_SOUND_INDEX.get(spell_name)
+    if index is not None:
+        sound_manager.play_specific('spells', index, allow_overlap=True)
+
+# Alphabetical index mapping for targeted spell sounds in assets/sounds/spells/targeted/
+_TARGETED_SPELL_SOUND_INDEX = {
+    'Aggressive Diplomacy': 0,  # AggressiveDiplomacySound.mp3
+    'Decisive Strike': 1,       # DecisiveStrikeSound.mp3
+    'Levy': 2,                  # LevySound.mp3
+    'Regicide': 3,              # RegicideSound.mp3
+    'Relentless Charge': 4,     # RelentlessChargeSound.mp3
+    'Royal Charisma': 5,        # RoyalCharismaSound.mp3
+    'Valorous Charge': 6,       # ValorousChargeSound.mp3
+}
+
+def play_targeted_spell_sound(ability_name):
+    """Play the sound for a targeted spell ability activation."""
+    index = _TARGETED_SPELL_SOUND_INDEX.get(ability_name)
+    if index is not None:
+        sound_manager.play_specific('spells_targeted', index, allow_overlap=True)
 
 def play_hero_recruit_sound(hero_name, use_queue=False):
     """

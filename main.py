@@ -852,7 +852,7 @@ class Game:
         # Each full-screen SRCALPHA surface is ~5.44MB — reuse instead of recreating
         self._cached_silence_fog = None          # Silence fog overlay (WINDOW_WIDTH x MAP_HEIGHT)
         self._cached_negotiator_surface = None   # Master Negotiator particles (full-screen)
-        self._cached_targeting_cursor = None     # Targeting cursor circle (60x60)
+        self._cached_targeting_cursor = None     # Targeting cursor image (TargetCircle.png, 60x60)
         self._cached_targeting_text_bg = None    # Targeting cursor text background
         self._cached_targeting_text = None       # Cached targeting instruction text
         self._cached_spectator_banner = None     # Spectator banner surface (500x50)
@@ -4023,49 +4023,38 @@ class Game:
     def draw_targeting_cursor(self):
         """
         Draw a targeting circle cursor when an ability is being targeted.
+        Uses TargetCircle.png image, visible anywhere on screen.
         """
         mouse_pos = pygame.mouse.get_pos()
 
-        # Only draw if mouse is in map area
-        if mouse_pos[1] < TOP_PANEL_HEIGHT or mouse_pos[1] >= BOTTOM_UI_Y:
-            return
-
-        # Draw targeting circle at mouse position
-        circle_radius = 30
-
-        # PERFORMANCE: Cache the targeting cursor surface (static, same every frame)
+        # PERFORMANCE: Cache the targeting cursor image (load once)
         if self._cached_targeting_cursor is None:
-            circle_color = (255, 255, 0)  # Yellow
-            circle_alpha = 150
-            self._cached_targeting_cursor = pygame.Surface((circle_radius * 2, circle_radius * 2), pygame.SRCALPHA)
-            color_with_alpha = circle_color + (circle_alpha,)
-            pygame.draw.circle(self._cached_targeting_cursor, color_with_alpha,
-                             (circle_radius, circle_radius), circle_radius)
-            border_color = (255, 200, 0, 255)  # Solid orange
-            pygame.draw.circle(self._cached_targeting_cursor, border_color,
-                             (circle_radius, circle_radius), circle_radius, 2)
-            # Draw crosshair
-            pygame.draw.line(self._cached_targeting_cursor, border_color,
-                            (circle_radius - 10, circle_radius),
-                            (circle_radius + 10, circle_radius), 2)
-            pygame.draw.line(self._cached_targeting_cursor, border_color,
-                            (circle_radius, circle_radius - 10),
-                            (circle_radius, circle_radius + 10), 2)
+            try:
+                img = pygame.image.load('assets/TargetCircle.png').convert_alpha()
+                # Scale to 120x120 targeting cursor size
+                self._cached_targeting_cursor = pygame.transform.smoothscale(img, (120, 120))
+            except pygame.error:
+                # Fallback: draw a simple yellow circle if image missing
+                self._cached_targeting_cursor = pygame.Surface((120, 120), pygame.SRCALPHA)
+                pygame.draw.circle(self._cached_targeting_cursor, (255, 255, 0, 150), (60, 60), 60)
+                pygame.draw.circle(self._cached_targeting_cursor, (255, 200, 0, 255), (60, 60), 60, 2)
 
-        # Blit cached cursor to screen
+        # Blit cached cursor centered on mouse position
+        half_w = self._cached_targeting_cursor.get_width() // 2
+        half_h = self._cached_targeting_cursor.get_height() // 2
         self.screen.blit(self._cached_targeting_cursor,
-                       (mouse_pos[0] - circle_radius, mouse_pos[1] - circle_radius))
+                       (mouse_pos[0] - half_w, mouse_pos[1] - half_h))
 
         # PERFORMANCE: Cache instruction text and background (static content)
         if self._cached_targeting_text is None:
-            instruction_text = "Click territory to target | ESC to cancel"
+            instruction_text = "Click territory to target | ESC or Right-Click to cancel"
             self._cached_targeting_text = self.small_font.render(instruction_text, True, (255, 255, 255))
             bg_rect = self._cached_targeting_text.get_rect().inflate(10, 5)
             self._cached_targeting_text_bg = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
             pygame.draw.rect(self._cached_targeting_text_bg, (0, 0, 0, 180),
                            self._cached_targeting_text_bg.get_rect(), border_radius=5)
 
-        text_rect = self._cached_targeting_text.get_rect(center=(mouse_pos[0], mouse_pos[1] + circle_radius + 20))
+        text_rect = self._cached_targeting_text.get_rect(center=(mouse_pos[0], mouse_pos[1] + half_h + 20))
         bg_rect = text_rect.inflate(10, 5)
         self.screen.blit(self._cached_targeting_text_bg, bg_rect)
         self.screen.blit(self._cached_targeting_text, text_rect)
@@ -4215,6 +4204,10 @@ class Game:
                     success, error_msg = execute_fn(clicked_territory, current_player)
 
                     if success:
+                        # Play targeted spell sound effect
+                        from global_sound import play_targeted_spell_sound
+                        play_targeted_spell_sound(self.ability_targeting_ability_name)
+
                         # Ability succeeded — put on cooldown and exit targeting mode
                         hero_name = self.ability_targeting_hero
                         ability_index = self.ability_targeting_ability_index
@@ -9283,6 +9276,13 @@ class Game:
                     elif event.button == 3:  # Right click
                         # Block right-clicks when enhanced battle UI is active
                         if self.enhanced_battle_ui is not None:
+                            continue
+                        # Cancel ability targeting on right-click (same as ESC)
+                        if self.ability_targeting_active:
+                            self.ability_targeting_active = False
+                            self.ability_targeting_hero = None
+                            self.ability_targeting_ability_index = None
+                            self.ability_targeting_ability_name = None
                             continue
                         # Right-click for movement orders (only in planning phase)
                         if self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning':

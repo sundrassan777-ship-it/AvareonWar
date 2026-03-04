@@ -413,6 +413,10 @@ class HeroMixin:
         except Exception:
             self.silence_activation_time = 0
 
+        # Play spell sound effect
+        from global_sound import play_spell_sound
+        play_spell_sound('VowOfSilence')
+
         # Add message to action log
         self.add_message(f"Player {current_player + 1}: {caster_hero_name} casts Vow of Silence!")
         self.add_message("All enemy heroes are silenced until next turn!")
@@ -435,6 +439,14 @@ class HeroMixin:
             self.master_negotiator_activation_time = 0
         self.master_negotiator_active_player = player_index
 
+        # Play spell sound only for the casting player (personal buff)
+        should_play_sound = not self.player_is_ai[player_index]
+        if self.network_mode and should_play_sound:
+            should_play_sound = (player_index == self.local_player_index)
+        if should_play_sound:
+            from global_sound import play_spell_sound
+            play_spell_sound('MasterNegotiator')
+
         # Add message to action log
         self.add_message(f"Player {player_index + 1}: Master Negotiator activated!")
         self.add_message("Farms, Mines, and Squares cost 75% less this turn!")
@@ -451,6 +463,10 @@ class HeroMixin:
             if i != player_index:
                 if i not in self.embargo_blocked_players:
                     self.embargo_blocked_players.append(i)
+
+        # Play spell sound effect
+        from global_sound import play_spell_sound
+        play_spell_sound('Embargo')
 
         # Add message to action log
         self.add_message(f"Player {player_index + 1}: Embargo activated!")
@@ -610,6 +626,14 @@ class HeroMixin:
 
         # Sync to legacy system
         self.sync_legacy_garrison_data(keep_territory)
+
+        # Play spell sound only for the casting player (personal buff)
+        should_play_sound = not self.player_is_ai[owner]
+        if self.network_mode and should_play_sound:
+            should_play_sound = (owner == self.local_player_index)
+        if should_play_sound:
+            from global_sound import play_spell_sound
+            play_spell_sound('Reinforce')
 
         # Add message to action log
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
@@ -793,6 +817,14 @@ class HeroMixin:
 
         # Add gold to player
         self.player_gold[owner] += gold_gained
+
+        # Play spell sound only for the casting player (personal buff)
+        should_play_sound = not self.player_is_ai[owner]
+        if self.network_mode and should_play_sound:
+            should_play_sound = (owner == self.local_player_index)
+        if should_play_sound:
+            from global_sound import play_spell_sound
+            play_spell_sound('ExtortPopulace')
 
         # Add message to action log
         self.add_message(f"Player {owner + 1}: Extort Populace gained {gold_gained} Gold from {keeps_and_castles} Keep(s)/Castle(s)!")

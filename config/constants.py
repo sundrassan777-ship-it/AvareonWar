@@ -30,6 +30,9 @@ Color4 = Tuple[int, int, int, int]   # RGBA color (with alpha)
 # WINDOW & RESOLUTION
 # ===========================================
 
+# Game version displayed on main menu
+GAME_VERSION = "1.0.0"
+
 # Window Size - ADJUST THESE TO FIT YOUR SCREEN
 WINDOW_WIDTH = 1600  # Adjust this to your screen width
 WINDOW_HEIGHT = 850  # Adjust this to your screen height
