@@ -76,7 +76,7 @@ from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
 from global_sound import sound_manager, play_structure_sound  # Global sound manager instance
 from tutorial_mission import CameraAnimation  # Reuse for Custom Game / Multiplayer start zoom
 from utils.logger import get_logger, setup_logging
-from utils.cursor import draw_custom_cursor, invalidate_cursor_cache
+from utils.cursor import draw_custom_cursor, draw_attack_cursor, invalidate_cursor_cache
 
 # Initialize structured logging before anything else logs output
 setup_logging()
@@ -4069,6 +4069,24 @@ class Game:
         bg_rect = text_rect.inflate(10, 5)
         self.screen.blit(self._cached_targeting_text_bg, bg_rect)
         self.screen.blit(self._cached_targeting_text, text_rect)
+
+    def _should_show_attack_cursor(self):
+        """Check if attack cursor should be shown (hovering enemy/neutral with army selected)."""
+        # Must have army composition UI open with units selected, and hovering a territory
+        if not self.show_army_composition or not self.selected_army_units:
+            return False
+        if not self.hovered_territory:
+            return False
+        gs = self.game_state
+        current = gs.current_player
+        # Hovered territory must not be ours
+        hover_owner = gs.territory_owners.get(self.hovered_territory, -1)
+        if hover_owner == current:
+            return False
+        # Hovered territory must not be allied (skip check for neutral -1)
+        if hover_owner >= 0 and gs.are_allies(current, hover_owner):
+            return False
+        return True
 
     def draw_invalid_target_popup(self):
         """
@@ -9562,9 +9580,13 @@ class Game:
                 if self.click_flash_timer <= 0:
                     self.clicked_element = None  # Clear flash when timer expires
 
-            # Draw cursor last — targeting circle during ability targeting, custom cursor otherwise
+            # Draw cursor last — targeting circle during ability targeting,
+            # attack cursor over enemy/neutral territories with army selected,
+            # custom cursor otherwise
             if self.ability_targeting_active:
                 self.draw_targeting_cursor()
+            elif self._should_show_attack_cursor():
+                draw_attack_cursor(self.screen)
             else:
                 draw_custom_cursor(self.screen)
 
