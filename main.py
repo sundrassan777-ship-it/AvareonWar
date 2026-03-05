@@ -460,6 +460,7 @@ class Game:
         self._sim_last_timer_sync = 0
         self._ai_battle_delay_timer = 0.0
         self._ai_battle_territory = None
+        self._battle_sound_played = False  # Once-per-turn guard for battle sound
         self._ai_alliance_delay_timer = 0.0
         self._ai_alliance_territory = None
 
@@ -8896,6 +8897,34 @@ class Game:
                     if self._sim_last_timer_sync >= 2.0:
                         self._sim_send_timer_update()
                         self._sim_last_timer_sync = 0
+
+            # BATTLE SOUND: Play once when battles are created for the local (human) player
+            if not self.is_game_paused and self.game_state.pending_battles and not self._battle_sound_played:
+                local_player = self.get_local_player()
+                should_play = False
+
+                if self.sim_state is not None:
+                    # Simultaneous mode: play if any pending battle has local player as resolver
+                    if self.sim_state.sim_phase == 'resolving':
+                        for battle in self.game_state.pending_battles:
+                            if getattr(battle, 'resolver', None) == local_player:
+                                should_play = True
+                                break
+                else:
+                    # Sequential mode: play if current player is the local human player
+                    if self.game_state.turn_phase == 'battles':
+                        if self.game_state.current_player == local_player:
+                            should_play = True
+
+                if should_play:
+                    from global_sound import play_battle_sound
+                    play_battle_sound()
+                    self._battle_sound_played = True
+
+            # Reset battle sound flag when not in battle phase
+            if self.game_state.turn_phase != 'battles':
+                if self.sim_state is None or self.sim_state.sim_phase != 'resolving':
+                    self._battle_sound_played = False
 
             # SIMULTANEOUS MODE: Auto-resolve battles where AI is the resolver (with delay)
             if (not self.is_game_paused and

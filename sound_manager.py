@@ -240,10 +240,10 @@ class SoundManager:
         Returns:
             bool: True if sound played successfully, False otherwise
         """
-        # Play DefaultMouseClick.mp3 (alphabetically: CastleCompleted, DefaultMouseClick, ResearchCompleted)
-        # Index 1 in the general category
+        # Play DefaultMouseClick.mp3 (alphabetically: BattleSound, CastleCompleted, DefaultMouseClick, ResearchCompleted)
+        # Index 2 in the general category
         # Allow overlap since mouse clicks are short
-        return self.play_specific('general', 1, allow_overlap=True)
+        return self.play_specific('general', 2, allow_overlap=True)
 
     def queue_sound(self, category, index):
         """

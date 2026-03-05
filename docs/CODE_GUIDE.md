@@ -1564,7 +1564,7 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' ‚Ü
 ### Architecture
 
 **Sound Categories:**
-- `general` - UI clicks, event notifications (CastleCompleted, DefaultMouseClick, ResearchCompleted)
+- `general` - UI clicks, event notifications (BattleSound, CastleCompleted, DefaultMouseClick, ResearchCompleted)
 - `armycomp` - Army composition sounds (7 random files)
 - `seledra` - Hero Seledra voice lines (SeledraRecruit + SeledraSpeech1-5)
 
@@ -1576,6 +1576,9 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' ‚Ü
 - Player-specific sounds (only local player hears their actions)
 
 ### When to Modify
+
+#### ‚ö†Ô∏è Adding Files to `general` Category
+Adding/removing files from `assets/sounds/general/` shifts alphabetical indices used by `play_ui_click()`, `play_castle_complete_sound()`, `play_research_complete_sound()`, and `play_battle_sound()`. Update ALL index references in `global_sound.py` and `sound_manager.py`.
 
 #### ‚úÖ Add New Sound Category
 

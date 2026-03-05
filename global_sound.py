@@ -41,11 +41,13 @@ def initialize_menu_sounds():
     num_general = sound_manager.load_sounds_from_folder('general', 'assets/sounds/general')
 
     # Set volume for general category sounds
+    # Alphabetical order: BattleSound(0), CastleCompleted(1), DefaultMouseClick(2), ResearchCompleted(3)
     sounds = sound_manager.sound_categories.get('general', [])
-    if len(sounds) >= 3:
-        sounds[0].set_volume(sound_manager.volume * 1.5)  # CastleCompleted - moderate volume
-        sounds[1].set_volume(sound_manager.volume * 2.5)  # DefaultMouseClick - loud
-        sounds[2].set_volume(sound_manager.volume * 2.0)  # ResearchCompleted - very loud
+    if len(sounds) >= 4:
+        sounds[0].set_volume(sound_manager.volume * 1.5)  # BattleSound - moderate volume
+        sounds[1].set_volume(sound_manager.volume * 1.5)  # CastleCompleted - moderate volume
+        sounds[2].set_volume(sound_manager.volume * 2.5)  # DefaultMouseClick - loud
+        sounds[3].set_volume(sound_manager.volume * 2.0)  # ResearchCompleted - very loud
 
     logger.info(f"Loaded {num_general} menu sounds (general category)")
     return sound_manager
@@ -131,12 +133,13 @@ def initialize_sounds():
 
 # Alphabetical index mapping for structure sounds in assets/sounds/structures/
 _STRUCTURE_SOUND_INDEX = {
-    'Barracks': 0,      # Barracks Sound.mp3
-    'Construction': 1,  # Construction Sound.mp3 (empty plots & under-construction)
-    'Farm': 2,          # Farm Sound.mp3
-    'Keep': 3,          # Keep Sound.mp3
-    'Mine': 4,          # Mine Sound.mp3
-    'Square': 5,        # Square Sound.mp3
+    'Barracks': 0,          # Barracks Sound.mp3
+    'Training Grounds': 0,  # Reuses Barracks sound
+    'Construction': 1,      # Construction Sound.mp3 (empty plots & under-construction)
+    'Farm': 2,              # Farm Sound.mp3
+    'Keep': 3,              # Keep Sound.mp3
+    'Mine': 4,              # Mine Sound.mp3
+    'Square': 5,            # Square Sound.mp3
 }
 
 def play_structure_sound(building_type):
@@ -262,6 +265,18 @@ def play_hero_recruit_sound(hero_name, use_queue=False):
             return sound_manager.play_specific('silvyr', 0)
     return False
 
+def play_battle_sound():
+    """
+    Play the battle sound when battles are created for the local player.
+    Uses allow_overlap=False to prevent multiple instances.
+
+    Returns:
+        bool: True if sound played successfully
+    """
+    # BattleSound.mp3 (alphabetically first in 'general', index 0)
+    return sound_manager.play_specific('general', 0, allow_overlap=False)
+
+
 def play_research_complete_sound(use_queue=False):
     """
     Play the research completion sound.
@@ -272,13 +287,13 @@ def play_research_complete_sound(use_queue=False):
     Returns:
         bool: True if sound played/queued successfully
     """
-    # ResearchCompleted.mp3 (alphabetically: CastleCompleted, DefaultMouseClick, ResearchCompleted)
-    # Index 2 in the general category
+    # ResearchCompleted.mp3 (alphabetically: BattleSound, CastleCompleted, DefaultMouseClick, ResearchCompleted)
+    # Index 3 in the general category
     if use_queue:
-        sound_manager.queue_sound('general', 2)
+        sound_manager.queue_sound('general', 3)
         return True
     else:
-        return sound_manager.play_specific('general', 2)
+        return sound_manager.play_specific('general', 3)
 
 def play_castle_complete_sound(use_queue=False):
     """
@@ -290,13 +305,13 @@ def play_castle_complete_sound(use_queue=False):
     Returns:
         bool: True if sound played/queued successfully
     """
-    # CastleCompleted.mp3 (alphabetically first in 'general')
-    # Index 0 in the general category
+    # CastleCompleted.mp3 (alphabetically: BattleSound, CastleCompleted, DefaultMouseClick, ResearchCompleted)
+    # Index 1 in the general category
     if use_queue:
-        sound_manager.queue_sound('general', 0)
+        sound_manager.queue_sound('general', 1)
         return True
     else:
-        return sound_manager.play_specific('general', 0)
+        return sound_manager.play_specific('general', 1)
 
 def play_hero_select_sound(hero_name):
     """

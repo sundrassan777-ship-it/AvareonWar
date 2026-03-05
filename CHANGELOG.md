@@ -2,6 +2,14 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-05 - Battle Sound Effect
+
+- Play BattleSound.mp3 once when battles are created for the local player at end of turn
+- Sequential mode: plays when current player is the local human player
+- Simultaneous mode: plays only when local player is the battle resolver
+- Fixed sound index shift bug caused by adding BattleSound.mp3 to general/ folder (CastleCompleted, DefaultMouseClick, ResearchCompleted indices were all off by 1)
+- Files: `global_sound.py`, `sound_manager.py`, `main.py`
+
 ## 2026-03-04 - FPS Performance Optimization (5-Phase)
 
 - **Phase 1 - Territory Overlay:** Dirty-flag cache for territory overlay (version counter skips redraw when camera/ownership unchanged), small clipped hover surface (~200x150) instead of full-screen (1920x1080)
