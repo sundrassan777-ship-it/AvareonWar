@@ -721,8 +721,11 @@ class BuildingMixin:
                         if territory not in self.army_units:
                             self.army_units[territory] = []
 
-                        # Find next available ID
-                        existing_ids = [u['id'] for u in self.army_units[territory]]
+                        # Find next available ID using garrison system (authoritative)
+                        # army_units (legacy) can have stale IDs after execute_all_orders() reassignment
+                        garrison_data = self.territory_garrisons.get(territory, {}).get(owner, {})
+                        garrison_units = garrison_data.get('units', []) if garrison_data else []
+                        existing_ids = [u['id'] for u in garrison_units] if garrison_units else [u['id'] for u in self.army_units[territory]]
                         next_id = 0
                         while next_id in existing_ids:
                             next_id += 1

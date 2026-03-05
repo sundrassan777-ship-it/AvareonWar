@@ -923,6 +923,10 @@ class SimPhaseManager:
                     self.gs.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
                     sim_log.sync(f"Player {sole_player} captured undefended territory {territory} (was P{current_owner})")
 
+                    # Destroy buildings on conquest (respects Seledra's Champion of the People)
+                    # Matches single-turn behavior in military.py _process_arrivals()
+                    self.gs.destroy_buildings(territory, current_owner, new_owner=sole_player)
+
                     # Capital Assault: Check if captured territory is enemy's capital
                     self._check_capital_assault_eliminations(territory, sole_player)
 
