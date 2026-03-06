@@ -41,6 +41,15 @@ class BuildingMixin:
                 return True
         return False
 
+    def has_square(self, territory):
+        """Check if territory has a completed Square building"""
+        if territory not in self.buildings:
+            return False
+        for plot_index, building_type in self.buildings[territory].items():
+            if building_type == 'Square':
+                return True
+        return False
+
     def is_castle(self, territory, plot_index):
         """Check if a Keep at this location has been upgraded to Castle"""
         if territory not in self.castle_upgrades:
@@ -155,6 +164,17 @@ class BuildingMixin:
                 for plot_idx, entry in self.under_construction[territory].items():
                     if entry[0] == 'Training Grounds':
                         self.add_message("Already building Training Grounds in this territory!")
+                        return False
+
+        # Special rule: Only one Square allowed per territory
+        if building_type == 'Square':
+            if self.has_square(territory):
+                self.add_message("Only one Square allowed per territory!")
+                return False
+            if territory in self.under_construction:
+                for plot_idx, entry in self.under_construction[territory].items():
+                    if entry[0] == 'Square':
+                        self.add_message("Already building a Square in this territory!")
                         return False
 
         # Check if plot is empty

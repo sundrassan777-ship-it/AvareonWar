@@ -5419,7 +5419,7 @@ class Game:
                 else:
                     description = "Provides defense bonus."
             elif effect == 'multiplier':
-                description = f"Multiplies territory income x{value}."
+                description = f"Multiplies territory income x{value}. (Limit 1 per territory)"
             elif effect == 'recruitment':
                 description = "Train military units."
             elif effect == 'training':
@@ -6973,7 +6973,16 @@ class Game:
                             if entry[0] == 'Training Grounds':
                                 can_build_this_building = False
                                 break
-                
+                elif building_name == 'Square':
+                    # Check if already has Square (completed or under construction)
+                    if self.game_state.has_square(territory):
+                        can_build_this_building = False
+                    if territory in self.game_state.under_construction:
+                        for plot_idx, entry in self.game_state.under_construction[territory].items():
+                            if entry[0] == 'Square':
+                                can_build_this_building = False
+                                break
+
                 # Button color - consider affordability, building limit, AND one-per-territory restriction
                 if can_build and can_afford and can_build_this_building:
                     button_color = (100, 200, 100)  # Green

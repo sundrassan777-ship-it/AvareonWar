@@ -33,6 +33,7 @@ logs/
 
 # Game save data
 config.json
+Replays/
 
 # Claude
 .claude/

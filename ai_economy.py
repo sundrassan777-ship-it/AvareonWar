@@ -423,7 +423,18 @@ class BuildingPlanner:
         """
         Base score for Square: 0 if fewer than 2 income buildings, otherwise
         income_building_count * 15.0
+        Returns 0 if territory already has a Square (completed or under construction).
         """
+        # One-per-territory check (limit 1 Square per territory)
+        if territory in game_state.buildings:
+            for bt in game_state.buildings[territory].values():
+                if bt == 'Square':
+                    return 0.0
+        if territory in game_state.under_construction:
+            for entry in game_state.under_construction[territory].values():
+                if entry[0] == 'Square':
+                    return 0.0
+
         income_building_count = 0
         if territory in game_state.buildings:
             for bt in game_state.buildings[territory].values():
