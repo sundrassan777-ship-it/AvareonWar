@@ -514,6 +514,10 @@ class SimultaneousGameState:
         if self.gs.game_logger:
             self.gs.game_logger.record_round_snapshot(self.round_number)
 
+        # Replay recorder: snapshot at end of each simultaneous round
+        if self.gs.replay_recorder:
+            self.gs.replay_recorder.record_snapshot()
+
         # Start new planning phase (resets all 'moved' units to 'ready')
         self.start_planning_phase()
 

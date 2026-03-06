@@ -2196,3 +2196,22 @@ The player level system tracks persistent XP across games. XP is accumulated dur
 - `QUICK_REFERENCE.md` - Values and constants
 - `DEVELOPMENT_GUIDE.md` - Development workflows
 - `USER_STORIES_PROGRESS.md` - Feature status
+
+## Replay System
+
+**Files:** `replay_recorder.py` (recording), `replay_viewer.py` (viewer), `replay_browser.py` (browser)
+**Integration:** `game_state/__init__.py` (snapshot hook), `simultaneous/sim_state.py` (sim mode hook), `main.py` (attach recorder + browser/viewer routing), `recap_screen.py` (Save Replay button), `main_menu.py` (Replays button)
+
+**When to modify:**
+- Add new game state fields → update `replay_recorder.py` `_serialize_state()` to include the new field
+- Change movement order format → update `_serialize_state()` movement_orders section
+- Add new event types → use `replay_recorder.buffer_event()` from the relevant game_state mixin
+- Change replay viewer UI → modify `replay_viewer.py` `_render_*()` methods
+- Change replay file format → increment `version` field in `finalize_and_save()`, handle migration in `load_replay()`
+
+**Architecture notes:**
+- State Snapshot approach: records full GameState at turn boundaries (not action replay)
+- Snapshots stored in memory during gameplay, saved to disk on user request from Recap screen
+- Replay files: gzip-compressed JSON in `Replays/` folder
+- Viewer is standalone (own rendering, no MapRenderer/UIRenderer dependency)
+- Zero FPS impact: snapshot runs once per turn boundary via `_advance_to_next_player()` hook

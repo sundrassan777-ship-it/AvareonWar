@@ -2,6 +2,18 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-06 - Replay System
+
+- **New feature: Game replay recording and playback** for custom games (vs AI) and multiplayer
+- `replay_recorder.py`: Records full game state snapshots at each turn boundary in memory. Snapshots include territory ownership, armies, garrisons, buildings, heroes, tech, economy, movement orders, and player stats. Saved on demand from Recap screen as gzip-compressed JSON to `Replays/` folder.
+- `replay_viewer.py`: Standalone replay viewer with own map rendering. Features: timeline scrubber, play/pause/step/speed controls, player POV switching, right-side info panel (player stats, turn events, action log), territory hover tooltips, camera pan/zoom.
+- `replay_browser.py`: File browser listing saved replays with metadata (date, players, turns, winner, duration). Watch and delete actions with confirmation dialog.
+- "Save Replay" button added to Recap screen (left side, grays out to "Replay Saved" after save)
+- "Replays" button added to main menu (between Multiplayer and Options)
+- Hook points: `game_state/__init__.py` `_advance_to_next_player()`, `simultaneous/sim_state.py` `_advance_round()`
+- Zero FPS impact during gameplay — snapshots run once per turn boundary, not per frame
+- Files: `replay_recorder.py` (new), `replay_viewer.py` (new), `replay_browser.py` (new), `recap_screen.py`, `main_menu.py`, `main.py`, `game_state/__init__.py`, `simultaneous/sim_state.py`
+
 ## 2026-03-05 - Battle Sound Effect
 
 - Play BattleSound.mp3 once when battles are created for the local player at end of turn

@@ -81,7 +81,7 @@ class RecapScreen:
     }
 
     def __init__(self, screen, player_stats, player_names, player_colors, winner_index, num_players,
-                 newly_earned_achievements=None, xp_result=None):
+                 newly_earned_achievements=None, xp_result=None, replay_recorder=None):
         """
         Args:
             screen: Pygame display surface
@@ -93,6 +93,7 @@ class RecapScreen:
             newly_earned_achievements: List of achievement dicts earned this game (or None)
             xp_result: Dict from player_level_manager.record_game_xp() with xp_earned,
                        old_level, new_level, old_xp, new_xp (or None)
+            replay_recorder: ReplayRecorder instance for saving replays (or None)
         """
         self.screen = screen
         self.width = screen.get_width()
@@ -156,6 +157,18 @@ class RecapScreen:
             self.width - bottom_btn_width - bottom_margin, bottom_y,
             bottom_btn_width, bottom_btn_height
         )
+
+        # "Save Replay" button (left side, only shown if replay_recorder is available)
+        self.replay_recorder = replay_recorder
+        self.replay_saved = False  # Tracks if replay was already saved
+        self.replay_save_path = None  # Path to saved replay file
+        if self.replay_recorder:
+            self.save_replay_button_rect = pygame.Rect(
+                bottom_margin, bottom_y,
+                bottom_btn_width, bottom_btn_height
+            )
+        else:
+            self.save_replay_button_rect = None
 
         # Content panel (between tabs and bottom button)
         panel_margin = int(60 * self.ui_scale)
@@ -267,6 +280,8 @@ class RecapScreen:
         self.hovered_button = None
         if self.return_button_rect.collidepoint(mouse_pos):
             self.hovered_button = 'return'
+        elif self.save_replay_button_rect and self.save_replay_button_rect.collidepoint(mouse_pos):
+            self.hovered_button = 'save_replay'
         else:
             for tab_id, rect in self.tab_buttons.items():
                 if rect.collidepoint(mouse_pos):
@@ -300,6 +315,18 @@ class RecapScreen:
                         self.result = 'main_menu'
                         self.done = True
                         return
+
+                    # Save Replay button (only if recorder available and not yet saved)
+                    if (self.save_replay_button_rect and
+                            self.save_replay_button_rect.collidepoint(mouse_pos) and
+                            not self.replay_saved):
+                        sound_manager.play_ui_click()
+                        self.clicked_button = 'save_replay'
+                        # Save the replay to disk
+                        path = self.replay_recorder.finalize_and_save()
+                        if path:
+                            self.replay_saved = True
+                            self.replay_save_path = path
 
                     # Tab buttons
                     for tab_id, rect in self.tab_buttons.items():
@@ -342,8 +369,17 @@ class RecapScreen:
         # Table content
         self._draw_table()
 
-        # Bottom button
+        # Bottom buttons
         self._draw_btn(self.return_button_rect, 'Main Menu', 'return', self.btn_font)
+
+        # Save Replay button (left side, grayed out after save)
+        if self.save_replay_button_rect:
+            if self.replay_saved:
+                self._draw_btn(self.save_replay_button_rect, 'Replay Saved', 'save_replay',
+                               self.btn_font, is_selected=True)
+            else:
+                self._draw_btn(self.save_replay_button_rect, 'Save Replay', 'save_replay',
+                               self.btn_font)
 
         # Achievement preview popup (drawn on top of everything)
         self._draw_achievement_preview()

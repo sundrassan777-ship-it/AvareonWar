@@ -12786,6 +12786,10 @@ if __name__ == "__main__":
         player_names = [game.game_state.get_player_name(i) for i in range(game.game_state.num_players)]
         player_colors = game.game_state.player_colors[:game.game_state.num_players]
         winner = getattr(game.game_state, 'winner', -1)
+
+        # Pass replay recorder to recap screen for "Save Replay" button
+        replay_recorder = getattr(game.game_state, 'replay_recorder', None)
+
         recap = RecapScreen(
             screen=game.screen,
             player_stats=end_stats,
@@ -12794,7 +12798,8 @@ if __name__ == "__main__":
             winner_index=winner,
             num_players=game.game_state.num_players,
             newly_earned_achievements=newly_earned,
-            xp_result=xp_result
+            xp_result=xp_result,
+            replay_recorder=replay_recorder
         )
         recap.run()
 
@@ -13054,6 +13059,11 @@ if __name__ == "__main__":
             if hasattr(game, 'game_state') and game.game_state:
                 game.game_state.game_logger = GameLogger(game.game_state)
 
+            # Attach replay recorder for custom games (not campaign)
+            from replay_recorder import ReplayRecorder
+            if hasattr(game, 'game_state') and game.game_state:
+                game.game_state.replay_recorder = ReplayRecorder(game.game_state)
+
             # Run game
             result = game.run()
 
@@ -13130,6 +13140,11 @@ if __name__ == "__main__":
             if hasattr(game, 'game_state') and game.game_state:
                 game.game_state.game_logger = GameLogger(game.game_state)
 
+            # Attach replay recorder for multiplayer games
+            from replay_recorder import ReplayRecorder
+            if hasattr(game, 'game_state') and game.game_state:
+                game.game_state.replay_recorder = ReplayRecorder(game.game_state)
+
             # Run game
             result = game.run()
 
@@ -13166,3 +13181,25 @@ if __name__ == "__main__":
             else:
                 pygame.quit()
                 sys.exit()
+        elif action == 'replays':
+            # Replay browser and viewer flow
+            from replay_browser import ReplayBrowser
+            from replay_viewer import ReplayViewer
+
+            while True:
+                browser = ReplayBrowser(screen)
+                browser_result = browser.run()
+
+                if not browser_result or browser_result.get('action') == 'back':
+                    # Return to main menu
+                    break
+
+                if browser_result.get('action') == 'watch':
+                    replay_path = browser_result.get('path')
+                    if replay_path:
+                        viewer = ReplayViewer(screen, replay_path)
+                        viewer.run()
+                        # After viewer exits, loop back to browser
+                        continue
+                break
+            continue

@@ -409,6 +409,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # When active, hooks in heroes/buildings/military call record_* methods
         self.game_logger = None
 
+        # Replay recorder reference (set by main.py for custom/multiplayer games)
+        # Records full state snapshots at turn boundaries for replay playback
+        self.replay_recorder = None
+
         # Hero limit per player (can be modified by Technology research)
         # Default: 3 heroes max (active + training)
         self.player_hero_limit = [3] * num_players
@@ -790,6 +794,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             self.turn_number += 1
             if self.game_logger:
                 self.game_logger.record_round_snapshot(self.turn_number)
+
+        # Replay recorder: snapshot after every player turn for rich replay granularity
+        if self.phase == 'playing' and self.replay_recorder:
+            self.replay_recorder.record_snapshot()
 
         # NEW: Set turn announcement blocking flag (only during playing phase)
         # Turn start effects will execute after animation completes

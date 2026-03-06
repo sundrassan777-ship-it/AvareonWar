@@ -336,6 +336,14 @@ class MainMenu:
         except Exception as e:
             logger.warning(f"Error loading achievement icon: {e}")
 
+        # Load replays button icon (bottom-left corner)
+        self.replays_button_icon = None
+        try:
+            replays_icon = pygame.image.load('assets/ReplaysIcon.png').convert_alpha()
+            self.replays_button_icon = replays_icon  # Will be pre-scaled in _calculate_layout
+        except Exception as e:
+            logger.warning(f"Error loading replays icon: {e}")
+
         # Load achievement panel background (same as options)
         try:
             ach_bg = pygame.image.load('assets/OptionsMenuBG.png').convert_alpha()
@@ -456,6 +464,22 @@ class MainMenu:
         else:
             self.achievement_button_icon_scaled = None
 
+        # Replays button in bottom-right corner (same size as profile/achievement buttons)
+        self.replays_button_rect = pygame.Rect(
+            self.width - profile_button_size - profile_button_margin,
+            self.height - profile_button_size - profile_button_margin,
+            profile_button_size,
+            profile_button_size
+        )
+
+        # Pre-scale replays button icon
+        if self.replays_button_icon:
+            self.replays_button_icon_scaled = pygame.transform.smoothscale(
+                self.replays_button_icon, (profile_button_size, profile_button_size)
+            )
+        else:
+            self.replays_button_icon_scaled = None
+
         # Pre-scale reward icons for profile panel
         self.reward_icons_panel_scaled = {}
         for path, raw_icon in self.reward_icons_raw.items():
@@ -566,6 +590,10 @@ class MainMenu:
             # Check achievement button hover
             if self.achievement_button_rect.collidepoint(mouse_pos):
                 self.hovered_button = 'achievements'
+
+            # Check replays button hover (bottom-left)
+            if self.replays_button_rect.collidepoint(mouse_pos):
+                self.hovered_button = 'replays'
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -847,6 +875,13 @@ class MainMenu:
             # Don't handle menu button clicks if options panel is open
             return
 
+        # Handle replays button click (bottom-left)
+        if self.replays_button_rect.collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.clicked_button = 'replays'
+            self.result = 'replays'
+            return
+
         # Handle achievement button click (top-left)
         if self.achievement_button_rect.collidepoint(pos):
             sound_manager.play_ui_click()
@@ -1012,6 +1047,9 @@ class MainMenu:
         # Draw achievement button in top left corner
         self._draw_achievement_button()
 
+        # Draw replays button in bottom left corner
+        self._draw_replays_button()
+
         # Draw sliding options panel
         if self.options_panel_y > -self.options_panel_height:
             self._draw_options_panel()
@@ -1030,6 +1068,8 @@ class MainMenu:
                 self._draw_tooltip(self.screen, "Profile", pygame.mouse.get_pos(), self.tooltip_font)
             elif self.hovered_button == 'achievements':
                 self._draw_tooltip(self.screen, "Achievements", pygame.mouse.get_pos(), self.tooltip_font)
+            elif self.hovered_button == 'replays':
+                self._draw_tooltip(self.screen, "Replays", pygame.mouse.get_pos(), self.tooltip_font)
 
         # Draw version label in bottom-left corner
         version_text = self.tooltip_font.render(f"Version: {GAME_VERSION}", True, GRAY)
@@ -1545,6 +1585,42 @@ class MainMenu:
             icon_surface.blit(star_text, star_rect)
 
         # Apply hover/click effects
+        if is_clicked:
+            bright_overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            bright_overlay.fill((100, 100, 100, 100))
+            icon_surface.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        elif is_hovered:
+            light_overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            light_overlay.fill((50, 50, 50, 50))
+            icon_surface.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+        self.screen.blit(icon_surface, rect)
+
+        # Draw border frame overlay
+        if self.icon_border_button_scaled:
+            self.screen.blit(self.icon_border_button_scaled, rect)
+
+    def _draw_replays_button(self):
+        """Draw replays button in bottom-left corner with icon and border"""
+        rect = self.replays_button_rect
+
+        is_hovered = (self.hovered_button == 'replays')
+        is_clicked = (self.clicked_button == 'replays')
+
+        # Draw icon background
+        icon_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+
+        if self.replays_button_icon_scaled:
+            icon_surface.blit(self.replays_button_icon_scaled, (0, 0))
+        else:
+            # Fallback: dark background with play symbol
+            icon_surface.fill((60, 60, 80))
+            play_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', 30)
+            play_text = play_font.render("▶", True, WHITE)
+            play_rect = play_text.get_rect(center=(rect.width // 2, rect.height // 2))
+            icon_surface.blit(play_text, play_rect)
+
+        # Apply hover/click effects (same as achievement/profile buttons)
         if is_clicked:
             bright_overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
             bright_overlay.fill((100, 100, 100, 100))
