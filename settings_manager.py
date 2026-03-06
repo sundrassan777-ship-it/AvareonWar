@@ -55,6 +55,10 @@ SETTING_TYPES = {
     'camera_pan_speed': (int, float),
     'camera_zoom_speed': (int, float),
     'show_fps': (bool,),
+    # Audio settings
+    'master_volume': (int, float),
+    'music_volume': (int, float),
+    'sfx_volume': (int, float),
     'player_name': (str,),
     'player_icon': (int, str),  # int for hero icons (0-7), str path for reward icons
     # Achievement system persistence
@@ -112,6 +116,11 @@ class SettingsManager:
             'camera_pan_speed': 10.0,
             'camera_zoom_speed': 1.1,
             'show_fps': False,
+
+            # Audio settings
+            'master_volume': 0.8,
+            'music_volume': 0.5,
+            'sfx_volume': 0.5,
 
             # Profile settings
             'player_name': 'Human',
@@ -427,6 +436,11 @@ class SettingsManager:
         game.camera_zoom_speed = self.get('camera_zoom_speed', 1.1)
         game.show_fps = self.get('show_fps', False)
 
+        # Audio settings
+        game.master_volume = self.get('master_volume', 0.8)
+        game.music_volume = self.get('music_volume', 0.5)
+        game.sfx_volume = self.get('sfx_volume', 0.5)
+
         # Also update temp settings for options menu
         game.temp_resolution = game.current_resolution
         game.temp_fullscreen = game.is_fullscreen
@@ -437,6 +451,9 @@ class SettingsManager:
         game.temp_camera_pan_speed = game.camera_pan_speed
         game.temp_camera_zoom_speed = game.camera_zoom_speed
         game.temp_show_fps = game.show_fps
+        game.temp_master_volume = game.master_volume
+        game.temp_music_volume = game.music_volume
+        game.temp_sfx_volume = game.sfx_volume
 
     def update_from_game(self, game):
         """
@@ -456,6 +473,11 @@ class SettingsManager:
         self.set('camera_pan_speed', game.camera_pan_speed)
         self.set('camera_zoom_speed', game.camera_zoom_speed)
         self.set('show_fps', game.show_fps)
+
+        # Audio settings
+        self.set('master_volume', game.master_volume)
+        self.set('music_volume', game.music_volume)
+        self.set('sfx_volume', game.sfx_volume)
 
         # Save immediately
         self.save()

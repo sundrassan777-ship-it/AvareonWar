@@ -2,6 +2,24 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-06 - Background Music System & Volume Controls
+
+- **New feature: Background music** with 3 categories (menu, game, recap)
+- `music_manager.py` (new): MusicManager class using pygame.mixer.music for streaming playback
+  - Menu Music: plays across all menus uninterrupted, intro track first on fresh session
+  - Game Music: starts after loading screen, random track order
+  - Recap Music: loops "Northern Honour - Recap Screen.mp3" during post-game recap
+  - No-repeat-within-2-songs shuffling for menu and game categories
+  - MUSIC_END_EVENT forwarding in all screen event loops
+- **Functional volume sliders** replacing "Coming Soon" placeholders in both options menus
+  - Master Volume: multiplier on both music and SFX (default 80%)
+  - Music Volume: controls background music (default 50%)
+  - SFX Volume: controls all sound effects (default 50%)
+  - Live preview while dragging sliders, revert on Cancel
+  - Persisted to config.json via settings_manager
+- Music transition points: menu→loading (stop), loading→game (start game), game→recap (start recap), recap→menu (restart menu)
+- Files: `music_manager.py` (new), `settings_manager.py`, `main.py`, `main_menu.py`, `rendering/ui_renderer.py`, `campaign_screen.py`, `integrated_setup.py`, `recap_screen.py`, `replay_browser.py`, `replay_viewer.py`, `network/multiplayer_setup.py`, `network/territory_selector.py`
+
 ## 2026-03-06 - Replay System
 
 - **New feature: Game replay recording and playback** for custom games (vs AI) and multiplayer

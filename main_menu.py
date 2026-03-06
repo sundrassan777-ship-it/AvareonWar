@@ -44,6 +44,10 @@ class MainMenu:
         self.width = screen.get_width()
         self.height = screen.get_height()
 
+        # Music end event constant for forwarding to music manager
+        from music_manager import MUSIC_END_EVENT
+        self._music_end_event = MUSIC_END_EVENT
+
         # P8 fix: font cache to avoid per-frame pygame.font.Font() filesystem I/O
         self._font_cache = {}
 
@@ -118,6 +122,14 @@ class MainMenu:
         self.temp_tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
         self.temp_pan_speed = settings.get('camera_pan_speed', 10.0)
         self.temp_zoom_speed = settings.get('camera_zoom_speed', 0.15)
+        # Audio volume temp settings
+        self.temp_master_volume = settings.get('master_volume', 0.8)
+        self.temp_music_volume = settings.get('music_volume', 0.5)
+        self.temp_sfx_volume = settings.get('sfx_volume', 0.5)
+        # Audio slider data (populated during draw)
+        self.options_master_volume_slider = None
+        self.options_music_volume_slider = None
+        self.options_sfx_volume_slider = None
 
         # Available resolutions
         self.available_resolutions = [
@@ -599,6 +611,11 @@ class MainMenu:
             if event.type == pygame.QUIT:
                 self.result = 'quit'
 
+            # Music track ended — advance to next track
+            elif event.type == self._music_end_event:
+                from music_manager import music_manager
+                music_manager.handle_music_end_event()
+
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     # If any panel is open, close it; otherwise quit
@@ -671,6 +688,25 @@ class MainMenu:
                         rel_x = (mouse_x - self.options_drag_offset) - track_rect.x
                         slider_pos = max(0, min(1, rel_x / track_rect.width))
                         self.temp_zoom_speed = min_val + slider_pos * (max_val - min_val)
+                    # Audio volume slider dragging with live preview
+                    elif self.options_dragging_slider == 'master_volume' and self.options_master_volume_slider:
+                        track_rect = self.options_master_volume_slider[0]
+                        rel_x = (mouse_x - self.options_drag_offset) - track_rect.x
+                        self.temp_master_volume = max(0.0, min(1.0, rel_x / track_rect.width))
+                        from music_manager import music_manager as _mm
+                        _mm.set_master_volume(self.temp_master_volume)
+                        sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
+                    elif self.options_dragging_slider == 'music_volume' and self.options_music_volume_slider:
+                        track_rect = self.options_music_volume_slider[0]
+                        rel_x = (mouse_x - self.options_drag_offset) - track_rect.x
+                        self.temp_music_volume = max(0.0, min(1.0, rel_x / track_rect.width))
+                        from music_manager import music_manager as _mm
+                        _mm.set_music_volume(self.temp_music_volume)
+                    elif self.options_dragging_slider == 'sfx_volume' and self.options_sfx_volume_slider:
+                        track_rect = self.options_sfx_volume_slider[0]
+                        rel_x = (mouse_x - self.options_drag_offset) - track_rect.x
+                        self.temp_sfx_volume = max(0.0, min(1.0, rel_x / track_rect.width))
+                        sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
 
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
@@ -872,6 +908,51 @@ class MainMenu:
                 self.temp_show_fps = not self.temp_show_fps
                 return
 
+            # Master Volume slider
+            if 'master_volume_thumb' in self.options_ui_elements and self.options_ui_elements['master_volume_thumb']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                self.options_dragging_slider = 'master_volume'
+                self.options_drag_offset = pos[0] - self.options_ui_elements['master_volume_thumb']['rect'].centerx
+                return
+            if 'master_volume_track' in self.options_ui_elements and self.options_ui_elements['master_volume_track']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                track_rect = self.options_ui_elements['master_volume_track']['rect']
+                rel_x = pos[0] - track_rect.x
+                self.temp_master_volume = max(0.0, min(1.0, rel_x / track_rect.width))
+                from music_manager import music_manager as _mm
+                _mm.set_master_volume(self.temp_master_volume)
+                sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
+                return
+
+            # Music Volume slider
+            if 'music_volume_thumb' in self.options_ui_elements and self.options_ui_elements['music_volume_thumb']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                self.options_dragging_slider = 'music_volume'
+                self.options_drag_offset = pos[0] - self.options_ui_elements['music_volume_thumb']['rect'].centerx
+                return
+            if 'music_volume_track' in self.options_ui_elements and self.options_ui_elements['music_volume_track']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                track_rect = self.options_ui_elements['music_volume_track']['rect']
+                rel_x = pos[0] - track_rect.x
+                self.temp_music_volume = max(0.0, min(1.0, rel_x / track_rect.width))
+                from music_manager import music_manager as _mm
+                _mm.set_music_volume(self.temp_music_volume)
+                return
+
+            # SFX Volume slider
+            if 'sfx_volume_thumb' in self.options_ui_elements and self.options_ui_elements['sfx_volume_thumb']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                self.options_dragging_slider = 'sfx_volume'
+                self.options_drag_offset = pos[0] - self.options_ui_elements['sfx_volume_thumb']['rect'].centerx
+                return
+            if 'sfx_volume_track' in self.options_ui_elements and self.options_ui_elements['sfx_volume_track']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                track_rect = self.options_ui_elements['sfx_volume_track']['rect']
+                rel_x = pos[0] - track_rect.x
+                self.temp_sfx_volume = max(0.0, min(1.0, rel_x / track_rect.width))
+                sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
+                return
+
             # Don't handle menu button clicks if options panel is open
             return
 
@@ -936,12 +1017,20 @@ class MainMenu:
         self.options_drag_offset = 0
 
     def _close_options(self):
-        """Close the sliding options panel"""
+        """Close the sliding options panel — revert audio volumes to saved values"""
         self.show_options = False
         self.options_panel_target_y = -self.options_panel_height  # Slide back up
         self.resolution_dropdown_open = False
         self.options_dragging_slider = None
         self.options_drag_offset = 0
+        # Revert audio volumes to saved values (undo live preview)
+        self.temp_master_volume = settings.get('master_volume', 0.8)
+        self.temp_music_volume = settings.get('music_volume', 0.5)
+        self.temp_sfx_volume = settings.get('sfx_volume', 0.5)
+        from music_manager import music_manager as _mm
+        _mm.set_master_volume(self.temp_master_volume)
+        _mm.set_music_volume(self.temp_music_volume)
+        sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
 
     def _open_profile(self):
         """Open the sliding profile panel"""
@@ -995,6 +1084,15 @@ class MainMenu:
         settings.set('tooltip_delay_ms', self.temp_tooltip_delay_ms)
         settings.set('camera_pan_speed', self.temp_pan_speed)
         settings.set('camera_zoom_speed', self.temp_zoom_speed)
+        # Audio settings
+        settings.set('master_volume', self.temp_master_volume)
+        settings.set('music_volume', self.temp_music_volume)
+        settings.set('sfx_volume', self.temp_sfx_volume)
+        # Apply audio volumes (already previewing live, but persist the final values)
+        from music_manager import music_manager as _mm
+        _mm.set_master_volume(self.temp_master_volume)
+        _mm.set_music_volume(self.temp_music_volume)
+        sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
 
         settings.save()
         logger.info("Settings applied and saved")
@@ -1019,6 +1117,15 @@ class MainMenu:
         self.temp_tooltip_delay_ms = 500
         self.temp_pan_speed = 10.0
         self.temp_zoom_speed = 0.15
+        # Audio volume defaults
+        self.temp_master_volume = 0.8
+        self.temp_music_volume = 0.5
+        self.temp_sfx_volume = 0.5
+        # Live preview the reset
+        from music_manager import music_manager as _mm
+        _mm.set_master_volume(0.8)
+        _mm.set_music_volume(0.5)
+        sound_manager.set_volume(0.5 * 0.8)
 
         logger.info(f"Settings reset to defaults: {default_resolution[0]}x{default_resolution[1]} (click Apply to save)")
 
@@ -1400,32 +1507,70 @@ class MainMenu:
         self.options_ui_elements['show_fps_checkbox'] = {'rect': checkbox_rect}
         y += int(40 * self.ui_scale)
 
-        # === AUDIO SECTION (placeholder) === (horizontal separator line)
+        # === AUDIO SECTION === (horizontal separator line)
         separator_y = y + int(3 * self.ui_scale)
         pygame.draw.line(self.screen, WHITE, (content_x, separator_y), (content_x + content_width, separator_y), 2)
         y += int(12 * self.ui_scale)
-        audio_header = section_font.render("Audio (Coming Soon):", True, (150, 150, 150))
+        audio_header = section_font.render("Audio:", True, WHITE)
         self.screen.blit(audio_header, (content_x, y))
         y += int(42 * self.ui_scale)
 
-        audio_box_height = int(90 * self.ui_scale)
-        audio_box = pygame.Rect(content_x, y, content_width, audio_box_height)
-        pygame.draw.rect(self.screen, (50, 35, 25), audio_box, border_radius=5)
-        pygame.draw.rect(self.screen, (80, 80, 80), audio_box, 2, border_radius=5)
+        # Master Volume slider
+        master_label = label_font.render(f"Master Volume: {int(self.temp_master_volume * 100)}%", True, WHITE)
+        self.screen.blit(master_label, (content_x + label_x_offset, y))
+        y += int(42 * self.ui_scale)
 
-        placeholder_lines = [
-            "Master Volume: [########__] 80%",
-            "Music Volume:  [######____] 60%",
-            "SFX Volume:    [#######___] 70%"
-        ]
-        ph_font_size = max(12, int(20 * self.ui_scale))
-        ph_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', ph_font_size)
-        ph_y = y + int(10 * self.ui_scale)
-        for line in placeholder_lines:
-            ph_text = ph_font.render(line, True, (100, 100, 100))
-            self.screen.blit(ph_text, (content_x + int(15 * self.ui_scale), ph_y))
-            ph_y += int(22 * self.ui_scale)
-        y += audio_box_height + int(15 * self.ui_scale)
+        master_track_rect = pygame.Rect(slider_x, y, slider_width, slider_height)
+        pygame.draw.rect(self.screen, (60, 60, 70), master_track_rect, border_radius=3)
+        master_thumb_pos = self.temp_master_volume
+        master_thumb_x = int(slider_x + master_thumb_pos * slider_width)
+        master_thumb_rect = pygame.Rect(master_thumb_x - thumb_w // 2, y - (thumb_h - slider_height) // 2, thumb_w, thumb_h)
+        is_hovered = (self.hovered_option_element == 'master_volume_thumb')
+        thumb_color = (130, 180, 130) if is_hovered else (100, 150, 100)
+        pygame.draw.rect(self.screen, thumb_color, master_thumb_rect, border_radius=3)
+        pygame.draw.rect(self.screen, (150, 150, 150), master_thumb_rect, 1, border_radius=3)
+        self.options_ui_elements['master_volume_track'] = {'rect': master_track_rect}
+        self.options_ui_elements['master_volume_thumb'] = {'rect': master_thumb_rect}
+        self.options_master_volume_slider = (master_track_rect, 0.0, 1.0, master_thumb_rect)
+        y += int(22 * self.ui_scale)
+
+        # Music Volume slider
+        music_label = label_font.render(f"Music Volume: {int(self.temp_music_volume * 100)}%", True, WHITE)
+        self.screen.blit(music_label, (content_x + label_x_offset, y))
+        y += int(42 * self.ui_scale)
+
+        music_track_rect = pygame.Rect(slider_x, y, slider_width, slider_height)
+        pygame.draw.rect(self.screen, (60, 60, 70), music_track_rect, border_radius=3)
+        music_thumb_pos = self.temp_music_volume
+        music_thumb_x = int(slider_x + music_thumb_pos * slider_width)
+        music_thumb_rect = pygame.Rect(music_thumb_x - thumb_w // 2, y - (thumb_h - slider_height) // 2, thumb_w, thumb_h)
+        is_hovered = (self.hovered_option_element == 'music_volume_thumb')
+        thumb_color = (130, 180, 130) if is_hovered else (100, 150, 100)
+        pygame.draw.rect(self.screen, thumb_color, music_thumb_rect, border_radius=3)
+        pygame.draw.rect(self.screen, (150, 150, 150), music_thumb_rect, 1, border_radius=3)
+        self.options_ui_elements['music_volume_track'] = {'rect': music_track_rect}
+        self.options_ui_elements['music_volume_thumb'] = {'rect': music_thumb_rect}
+        self.options_music_volume_slider = (music_track_rect, 0.0, 1.0, music_thumb_rect)
+        y += int(22 * self.ui_scale)
+
+        # SFX Volume slider
+        sfx_label = label_font.render(f"SFX Volume: {int(self.temp_sfx_volume * 100)}%", True, WHITE)
+        self.screen.blit(sfx_label, (content_x + label_x_offset, y))
+        y += int(42 * self.ui_scale)
+
+        sfx_track_rect = pygame.Rect(slider_x, y, slider_width, slider_height)
+        pygame.draw.rect(self.screen, (60, 60, 70), sfx_track_rect, border_radius=3)
+        sfx_thumb_pos = self.temp_sfx_volume
+        sfx_thumb_x = int(slider_x + sfx_thumb_pos * slider_width)
+        sfx_thumb_rect = pygame.Rect(sfx_thumb_x - thumb_w // 2, y - (thumb_h - slider_height) // 2, thumb_w, thumb_h)
+        is_hovered = (self.hovered_option_element == 'sfx_volume_thumb')
+        thumb_color = (130, 180, 130) if is_hovered else (100, 150, 100)
+        pygame.draw.rect(self.screen, thumb_color, sfx_thumb_rect, border_radius=3)
+        pygame.draw.rect(self.screen, (150, 150, 150), sfx_thumb_rect, 1, border_radius=3)
+        self.options_ui_elements['sfx_volume_track'] = {'rect': sfx_track_rect}
+        self.options_ui_elements['sfx_volume_thumb'] = {'rect': sfx_thumb_rect}
+        self.options_sfx_volume_slider = (sfx_track_rect, 0.0, 1.0, sfx_thumb_rect)
+        y += int(22 * self.ui_scale)
 
         # Calculate total content height and max scroll
         total_content_height = y - content_start_y

@@ -20,6 +20,7 @@ from network_config import MessageType
 from config.constants import ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT
 from settings_manager import settings
 from global_sound import sound_manager
+from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 
@@ -406,6 +407,10 @@ class TerritorySelector:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     return None
+
+                # Music track ended — advance to next track
+                if event.type == _MUSIC_END_EVENT:
+                    _music_manager.handle_music_end_event()
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:

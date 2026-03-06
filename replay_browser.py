@@ -19,6 +19,7 @@ import pygame
 from config.constants import WHITE, BLACK
 from replay_recorder import ReplayRecorder
 from global_sound import sound_manager
+from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.cursor import draw_custom_cursor
 from utils.logger import get_logger
 
@@ -207,6 +208,10 @@ class ReplayBrowser:
                 self.result = {'action': 'back'}
                 self.done = True
                 return
+
+            # Music track ended — advance to next track
+            elif event.type == _MUSIC_END_EVENT:
+                _music_manager.handle_music_end_event()
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:

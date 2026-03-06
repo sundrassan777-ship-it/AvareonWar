@@ -19,6 +19,7 @@ import random
 import math
 from config.constants import WHITE, BLACK, PLAYER_COLORS
 from global_sound import sound_manager
+from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.surface_utils import crop_to_opaque
 from utils.cursor import draw_custom_cursor
 
@@ -300,6 +301,10 @@ class RecapScreen:
                 self.result = 'main_menu'
                 self.done = True
                 return
+
+            # Music track ended — safety net for recap (loops, but handles edge cases)
+            elif event.type == _MUSIC_END_EVENT:
+                _music_manager.handle_music_end_event()
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:

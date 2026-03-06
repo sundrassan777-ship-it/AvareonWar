@@ -17,6 +17,7 @@ from utils.surface_utils import crop_to_opaque
 import os
 from config.constants import WHITE, BLACK, GRAY
 from global_sound import sound_manager
+from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.cursor import draw_custom_cursor
 
 # Brass gold color for special button text (matching integrated_setup)
@@ -166,6 +167,10 @@ class CampaignScreen:
                 # S3 fix: graceful exit instead of hard sys.exit() — let caller handle cleanup
                 self.cancelled = True
                 return
+
+            # Music track ended — advance to next track
+            elif event.type == _MUSIC_END_EVENT:
+                _music_manager.handle_music_end_event()
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -503,6 +508,10 @@ class MissionScreen:
                 self.result = 'return'
                 self.done = True
                 return
+
+            # Music track ended — advance to next track
+            elif event.type == _MUSIC_END_EVENT:
+                _music_manager.handle_music_end_event()
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:

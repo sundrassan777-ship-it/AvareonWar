@@ -1549,17 +1549,18 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' �
 
 ---
 
-## Sound System
+## Sound & Music System
 
-**What it does:** Audio playback for UI interactions, game events, and hero voice lines
-**Size:** 281 lines (sound_manager.py) + ~525 lines (global_sound.py)
-**Dependencies:** pygame.mixer
+**What it does:** Audio playback for UI interactions, game events, hero voice lines, and background music
+**Size:** 281 lines (sound_manager.py) + ~525 lines (global_sound.py) + ~140 lines (music_manager.py)
+**Dependencies:** pygame.mixer (SFX channels), pygame.mixer.music (streaming music)
 **Used by:** main.py, game_state package, all menu modules
 
 ### Files
 
-- [sound_manager.py](../sound_manager.py) - Core sound system with playback, queuing, volume control
-- [global_sound.py](../global_sound.py) - Global instance and helper functions
+- [sound_manager.py](../sound_manager.py) - SFX system with playback, queuing, volume control
+- [global_sound.py](../global_sound.py) - Global SFX instance and helper functions
+- [music_manager.py](../music_manager.py) - Background music system (3 categories: menu, game, recap)
 
 ### Architecture
 
@@ -1602,6 +1603,20 @@ Adding/removing files from `assets/sounds/general/` shifts alphabetical indices 
 **Files affected:**
 - `global_sound.py` - Add loading and helper functions
 - Game logic file (e.g., `game_state/buildings.py`) - Add trigger points
+
+#### ✅ Change Background Music
+
+**Music categories:** menu (all menus), game (during gameplay), recap (post-game recap screen)
+**Music files:** `assets/music/` — all tracks play for menu and game except `Northern Honour - Recap Screen.mp3` (recap only)
+**Key class:** `MusicManager` in `music_manager.py` — uses `pygame.mixer.music` for streaming
+
+**To add a new music track:** Drop MP3 into `assets/music/`. It auto-discovers on startup.
+**To change category behavior:** Edit `start_menu_music()`, `start_game_music()`, `start_recap_music()` in `music_manager.py`
+**To change transition timing:** Edit `main.py` main loop (search for `music_manager.stop()` / `music_manager.start_`)
+
+**Volume pipeline:** `effective_volume = music_volume * master_volume` (set via options sliders)
+**SFX volume pipeline:** `effective_volume = sfx_volume * master_volume` applied via `sound_manager.set_volume()`
+**Settings persistence:** `master_volume`, `music_volume`, `sfx_volume` in `settings_manager.py`
 
 #### ✅ Add New Hero Voice Lines
 

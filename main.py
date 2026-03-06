@@ -74,6 +74,7 @@ from config.font_manager import FontManager
 # Import sparkle version of turn announcement (can switch back to turn_announcement_effect if needed)
 from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
 from global_sound import sound_manager, play_structure_sound  # Global sound manager instance
+from music_manager import music_manager, MUSIC_END_EVENT  # Background music system
 from tutorial_mission import CameraAnimation  # Reuse for Custom Game / Multiplayer start zoom
 from utils.logger import get_logger, setup_logging
 from utils.cursor import draw_custom_cursor, draw_attack_cursor, invalidate_cursor_cache
@@ -454,6 +455,10 @@ class Game:
         self.gameplay_pan_speed_slider = None
         self.gameplay_zoom_speed_slider = None
         self.gameplay_fps_checkbox = None
+        # Audio volume sliders (populated by ui_renderer when options panel is drawn)
+        self.audio_master_slider = None
+        self.audio_music_slider = None
+        self.audio_sfx_slider = None
 
         # State flags and timers (set lazily in run loop)
         self.castle_button_is_hovering = False
@@ -948,7 +953,12 @@ class Game:
         self.camera_pan_speed = settings.get('camera_pan_speed', 10.0)
         self.camera_zoom_speed = settings.get('camera_zoom_speed', 1.1)
         self.show_fps = settings.get('show_fps', False)
-        
+
+        # Audio volume settings
+        self.master_volume = settings.get('master_volume', 0.8)
+        self.music_volume = settings.get('music_volume', 0.5)
+        self.sfx_volume = settings.get('sfx_volume', 0.5)
+
         # Temporary gameplay settings (for Options menu - applied on Apply button)
         self.temp_edge_scrolling_enabled = self.edge_scrolling_enabled
         self.temp_edge_scrolling_mode = self.edge_scrolling_mode
@@ -957,7 +967,10 @@ class Game:
         self.temp_camera_pan_speed = self.camera_pan_speed
         self.temp_camera_zoom_speed = self.camera_zoom_speed
         self.temp_show_fps = self.show_fps
-        
+        self.temp_master_volume = self.master_volume
+        self.temp_music_volume = self.music_volume
+        self.temp_sfx_volume = self.sfx_volume
+
         # Hover delay system (0.5 seconds before showing tooltips)
         self.hover_start_time = None  # When hover began (for map: army/territory)
         self.hover_target_territory = None  # What territory we're hovering over
@@ -9183,6 +9196,10 @@ class Game:
                 if event.type == pygame.QUIT:
                     running = False
 
+                # Music track ended — advance to next track (always process, even during blocking)
+                elif event.type == MUSIC_END_EVENT:
+                    music_manager.handle_music_end_event()
+
                 # Block all input during turn announcement
                 elif self.game_state.turn_announcement_active:
                     continue  # Ignore all events during turn announcement
@@ -9387,6 +9404,30 @@ class Game:
                             rel_x = adjusted_x - slider_track.x
                             slider_pos = max(0, min(1, rel_x / slider_track.width))
                             self.temp_camera_zoom_speed = min_zoom_speed + slider_pos * (max_zoom_speed - min_zoom_speed)
+
+                        # Audio volume slider dragging with live preview
+                        elif self.dragging_slider == 'master_volume' and self.audio_master_slider:
+                            slider_track = self.audio_master_slider[0]
+                            adjusted_x = mouse_x - self.drag_offset
+                            rel_x = adjusted_x - slider_track.x
+                            self.temp_master_volume = max(0.0, min(1.0, rel_x / slider_track.width))
+                            # Live preview: apply volume change immediately
+                            music_manager.set_master_volume(self.temp_master_volume)
+                            sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
+
+                        elif self.dragging_slider == 'music_volume' and self.audio_music_slider:
+                            slider_track = self.audio_music_slider[0]
+                            adjusted_x = mouse_x - self.drag_offset
+                            rel_x = adjusted_x - slider_track.x
+                            self.temp_music_volume = max(0.0, min(1.0, rel_x / slider_track.width))
+                            music_manager.set_music_volume(self.temp_music_volume)
+
+                        elif self.dragging_slider == 'sfx_volume' and self.audio_sfx_slider:
+                            slider_track = self.audio_sfx_slider[0]
+                            adjusted_x = mouse_x - self.drag_offset
+                            rel_x = adjusted_x - slider_track.x
+                            self.temp_sfx_volume = max(0.0, min(1.0, rel_x / slider_track.width))
+                            sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
                 
                 elif event.type == pygame.KEYDOWN:
                     # ESC skips visible campaign transmission before normal handling
@@ -9904,7 +9945,54 @@ class Game:
                 self.trigger_click_flash('gameplay_control', 'show_fps')
                 self.temp_show_fps = not self.temp_show_fps
                 return (True, False)
-        
+
+        # ===== AUDIO VOLUME SLIDERS =====
+        # Master Volume slider
+        if self.audio_master_slider:
+            slider_track, min_val, max_val, thumb_rect = self.audio_master_slider
+            if thumb_rect.collidepoint(pos):
+                self.trigger_click_flash('audio_slider', 'master_volume')
+                self.dragging_slider = 'master_volume'
+                self.drag_offset = pos[0] - thumb_rect.centerx
+                return (True, False)
+            elif slider_track.collidepoint(pos):
+                self.trigger_click_flash('audio_slider', 'master_volume')
+                rel_x = pos[0] - slider_track.x
+                self.temp_master_volume = max(0.0, min(1.0, rel_x / slider_track.width))
+                music_manager.set_master_volume(self.temp_master_volume)
+                sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
+                return (True, False)
+
+        # Music Volume slider
+        if self.audio_music_slider:
+            slider_track, min_val, max_val, thumb_rect = self.audio_music_slider
+            if thumb_rect.collidepoint(pos):
+                self.trigger_click_flash('audio_slider', 'music_volume')
+                self.dragging_slider = 'music_volume'
+                self.drag_offset = pos[0] - thumb_rect.centerx
+                return (True, False)
+            elif slider_track.collidepoint(pos):
+                self.trigger_click_flash('audio_slider', 'music_volume')
+                rel_x = pos[0] - slider_track.x
+                self.temp_music_volume = max(0.0, min(1.0, rel_x / slider_track.width))
+                music_manager.set_music_volume(self.temp_music_volume)
+                return (True, False)
+
+        # SFX Volume slider
+        if self.audio_sfx_slider:
+            slider_track, min_val, max_val, thumb_rect = self.audio_sfx_slider
+            if thumb_rect.collidepoint(pos):
+                self.trigger_click_flash('audio_slider', 'sfx_volume')
+                self.dragging_slider = 'sfx_volume'
+                self.drag_offset = pos[0] - thumb_rect.centerx
+                return (True, False)
+            elif slider_track.collidepoint(pos):
+                self.trigger_click_flash('audio_slider', 'sfx_volume')
+                rel_x = pos[0] - slider_track.x
+                self.temp_sfx_volume = max(0.0, min(1.0, rel_x / slider_track.width))
+                sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
+                return (True, False)
+
         # ===== END GAMEPLAY CONTROLS =====
         
         # Apply button
@@ -9925,7 +10013,15 @@ class Game:
                 self.camera_pan_speed = self.temp_camera_pan_speed
                 self.camera_zoom_speed = self.temp_camera_zoom_speed
                 self.show_fps = self.temp_show_fps
-                
+
+                # Apply audio settings
+                self.master_volume = self.temp_master_volume
+                self.music_volume = self.temp_music_volume
+                self.sfx_volume = self.temp_sfx_volume
+                music_manager.set_master_volume(self.master_volume)
+                music_manager.set_music_volume(self.music_volume)
+                sound_manager.set_volume(self.sfx_volume * self.master_volume)
+
                 # Save settings to config.json
                 self.save_settings()
                 
@@ -9973,6 +10069,13 @@ class Game:
                 self.temp_camera_pan_speed = self.camera_pan_speed
                 self.temp_camera_zoom_speed = self.camera_zoom_speed
                 self.temp_show_fps = self.show_fps
+                # Revert audio volumes to saved values (undo live preview)
+                self.temp_master_volume = self.master_volume
+                self.temp_music_volume = self.music_volume
+                self.temp_sfx_volume = self.sfx_volume
+                music_manager.set_master_volume(self.master_volume)
+                music_manager.set_music_volume(self.music_volume)
+                sound_manager.set_volume(self.sfx_volume * self.master_volume)
                 return (True, False)
         
         # Click was on menu overlay but not on any control - consume click anyway
@@ -12479,6 +12582,15 @@ class Game:
         self.temp_camera_zoom_speed = 0.15
         self.temp_show_fps = False
 
+        # Audio settings — defaults match settings_manager
+        self.temp_master_volume = 0.8
+        self.temp_music_volume = 0.5
+        self.temp_sfx_volume = 0.5
+        # Live preview the reset
+        music_manager.set_master_volume(0.8)
+        music_manager.set_music_volume(0.5)
+        sound_manager.set_volume(0.5 * 0.8)
+
         logger.info(f"🔄 Settings reset to defaults: {self.default_resolution[0]}x{self.default_resolution[1]} (click Apply to save)")
 
     def update_master_negotiator_particles(self, delta_time):
@@ -12799,6 +12911,9 @@ if __name__ == "__main__":
         # Pass replay recorder to recap screen for "Save Replay" button
         replay_recorder = getattr(game.game_state, 'replay_recorder', None)
 
+        # Start recap music (Northern Honour on loop)
+        music_manager.start_recap_music()
+
         recap = RecapScreen(
             screen=game.screen,
             player_stats=end_stats,
@@ -12812,6 +12927,10 @@ if __name__ == "__main__":
         )
         recap.run()
 
+        # Stop recap music, restart menu music
+        music_manager.stop()
+        music_manager.start_menu_music()
+
     # Load settings first
     logger.info("\n" + "="*60)
     logger.info("LOADING SETTINGS")
@@ -12823,8 +12942,20 @@ if __name__ == "__main__":
     pygame.init()
 
     # Initialize menu-only sounds for fast startup (game sounds deferred to loading screen)
-    from global_sound import initialize_menu_sounds
+    from global_sound import initialize_menu_sounds, sound_manager
     initialize_menu_sounds()
+
+    # Initialize music system and apply saved volume settings
+    from music_manager import music_manager, MUSIC_END_EVENT
+    master_vol = settings.get('master_volume', 0.8)
+    music_vol = settings.get('music_volume', 0.5)
+    sfx_vol = settings.get('sfx_volume', 0.5)
+    music_manager.set_master_volume(master_vol)
+    music_manager.set_music_volume(music_vol)
+    # Apply effective SFX volume (sfx * master) to sound effects
+    sound_manager.set_volume(sfx_vol * master_vol)
+    # Start menu music (intro track plays first)
+    music_manager.start_menu_music()
 
     # Create initial window for main menu using settings
     initial_resolution = settings.get_resolution()
@@ -12850,6 +12981,11 @@ if __name__ == "__main__":
             # Display settings changed in options - recreate window
             pygame.display.quit()
             pygame.init()
+
+            # Re-register music end event after pygame reinit
+            pygame.mixer.music.set_endevent(MUSIC_END_EVENT)
+            # Restart menu music (pygame reinit kills mixer state)
+            music_manager.start_menu_music()
 
             # Reload settings and recreate window
             settings.load()
@@ -12882,6 +13018,9 @@ if __name__ == "__main__":
                 # Check if user launched a mission
                 if result and result.startswith('launch_'):
                     launched_mission = result[len('launch_'):]
+
+                    # Stop menu music before cutscene/loading
+                    music_manager.stop()
 
                     # Play pre-mission cutscene if one exists for this mission
                     from cutscene_player import CutscenePlayer
@@ -13006,12 +13145,18 @@ if __name__ == "__main__":
                                                 mission_id=launched_mission)
                         loading.run()
 
+                        # Start game music after loading completes
+                        music_manager.start_game_music()
+
                         mission_obj = MissionClass(game.game_state, game)
                         game.tutorial_mission = mission_obj
                         game.game_state.tutorial_mission = mission_obj
                         _map_data.set_tutorial_mission(mission_obj)
 
                         game_result = game.run()
+
+                        # Stop game music before outro cutscene / recap
+                        music_manager.stop()
 
                         # Post-mission outro cutscene (only after victory)
                         if game_result == 'campaign':
@@ -13059,9 +13204,15 @@ if __name__ == "__main__":
                 # Screen already exists, just continue to main menu
                 continue
 
+            # Stop menu music before loading screen
+            music_manager.stop()
+
             # Show loading screen (deferred asset loading + "click to start")
             loading = LoadingScreen(screen, game, setup_config)
             loading.run()
+
+            # Start game music after loading completes
+            music_manager.start_game_music()
 
             # Attach game logger for custom games (not campaign)
             from game_logger import GameLogger
@@ -13075,6 +13226,9 @@ if __name__ == "__main__":
 
             # Run game
             result = game.run()
+
+            # Stop game music before recap
+            music_manager.stop()
 
             # Show post-game recap screen if game ended with a winner
             show_recap_if_ended(game)
@@ -13139,10 +13293,16 @@ if __name__ == "__main__":
             elif mode == 'client':
                 game.local_player_index = network_connection.get_player_index()  # Get from server
 
+            # Stop menu music before multiplayer loading
+            music_manager.stop()
+
             # Show loading screen with multiplayer readiness sync
             loading = LoadingScreen(screen, game, setup_config,
                                     network_connection=network_connection)
             loading.run()
+
+            # Start game music after loading completes
+            music_manager.start_game_music()
 
             # Attach game logger for multiplayer games
             from game_logger import GameLogger
@@ -13156,6 +13316,9 @@ if __name__ == "__main__":
 
             # Run game
             result = game.run()
+
+            # Stop game music before recap
+            music_manager.stop()
 
             # Show post-game recap screen if game ended with a winner
             show_recap_if_ended(game)

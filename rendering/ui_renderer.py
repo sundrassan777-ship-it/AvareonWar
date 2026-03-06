@@ -883,30 +883,77 @@ class UIRenderer:
         
         content_y += 155  # Adjusted for extra line
         
-        # ===== AUDIO SETTINGS SECTION (Placeholder) =====
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        audio_header = self.get_cached_text("Audio Settings (Coming Soon)", self.game.font, (150, 150, 150), "font")
+        # ===== AUDIO SETTINGS SECTION =====
+        audio_header = self.get_cached_text("Audio Settings", self.game.font, WHITE, "font")
         self.game.screen.blit(audio_header, (section_x, content_y))
         content_y += 35
-        
-        # Audio settings box (grayed out) - dark brown background
-        audio_box = pygame.Rect(section_x, content_y, section_width, 110)
-        pygame.draw.rect(self.game.screen, (50, 35, 25), audio_box, border_radius=5)  # Darker brown (grayed out)
-        pygame.draw.rect(self.game.screen, (80, 80, 80), audio_box, 2, border_radius=5)
-        
-        # Placeholder text
-        placeholder_lines = [
-            "Master Volume: [████████░░] 80%",
-            "Music Volume:  [██████░░░░] 60%",
-            "SFX Volume:    [███████░░░] 70%"
-        ]
-        placeholder_y = content_y + 15
-        for line in placeholder_lines:
-            placeholder_text = self.game._get_cached_text(line, self.game.small_font, (100, 100, 100))
-            self.game.screen.blit(placeholder_text, (section_x + 15, placeholder_y))
-            placeholder_y += 25
-        
-        content_y += 125
+
+        # Audio settings box
+        audio_box_height = 155
+        audio_box = pygame.Rect(section_x, content_y, section_width, audio_box_height)
+        pygame.draw.rect(self.game.screen, (60, 40, 30), audio_box, border_radius=5)
+        pygame.draw.rect(self.game.screen, (100, 80, 60), audio_box, 2, border_radius=5)
+
+        audio_x = section_x + 15
+        audio_y = content_y + 12
+        audio_slider_x = audio_x + 10
+        audio_slider_width = section_width - 60
+        audio_slider_height = 6
+
+        # Master Volume slider
+        master_label = self.game._get_cached_text(
+            f"Master Volume: {int(self.game.temp_master_volume * 100)}%", self.game.small_font, WHITE)
+        self.game.screen.blit(master_label, (audio_x, audio_y))
+        audio_y += 20
+
+        slider_track = pygame.Rect(audio_slider_x, audio_y, audio_slider_width, audio_slider_height)
+        pygame.draw.rect(self.game.screen, (60, 60, 70), slider_track, border_radius=3)
+        thumb_pos = self.game.temp_master_volume
+        thumb_x = int(audio_slider_x + thumb_pos * audio_slider_width)
+        thumb_rect = pygame.Rect(thumb_x - 8, audio_y - 4, 16, 14)
+        self.game.helpers.draw_feedback_button(thumb_rect, (100, 150, 100),
+                                  self.game.mouse_pos, self.game.clicked_element,
+                                  'audio_slider', 'master_volume',
+                                  text="", border_width=1)
+        self.game.audio_master_slider = (slider_track, 0.0, 1.0, thumb_rect)
+        audio_y += 22
+
+        # Music Volume slider
+        music_label = self.game._get_cached_text(
+            f"Music Volume: {int(self.game.temp_music_volume * 100)}%", self.game.small_font, WHITE)
+        self.game.screen.blit(music_label, (audio_x, audio_y))
+        audio_y += 20
+
+        slider_track = pygame.Rect(audio_slider_x, audio_y, audio_slider_width, audio_slider_height)
+        pygame.draw.rect(self.game.screen, (60, 60, 70), slider_track, border_radius=3)
+        thumb_pos = self.game.temp_music_volume
+        thumb_x = int(audio_slider_x + thumb_pos * audio_slider_width)
+        thumb_rect = pygame.Rect(thumb_x - 8, audio_y - 4, 16, 14)
+        self.game.helpers.draw_feedback_button(thumb_rect, (100, 150, 100),
+                                  self.game.mouse_pos, self.game.clicked_element,
+                                  'audio_slider', 'music_volume',
+                                  text="", border_width=1)
+        self.game.audio_music_slider = (slider_track, 0.0, 1.0, thumb_rect)
+        audio_y += 22
+
+        # SFX Volume slider
+        sfx_label = self.game._get_cached_text(
+            f"SFX Volume: {int(self.game.temp_sfx_volume * 100)}%", self.game.small_font, WHITE)
+        self.game.screen.blit(sfx_label, (audio_x, audio_y))
+        audio_y += 20
+
+        slider_track = pygame.Rect(audio_slider_x, audio_y, audio_slider_width, audio_slider_height)
+        pygame.draw.rect(self.game.screen, (60, 60, 70), slider_track, border_radius=3)
+        thumb_pos = self.game.temp_sfx_volume
+        thumb_x = int(audio_slider_x + thumb_pos * audio_slider_width)
+        thumb_rect = pygame.Rect(thumb_x - 8, audio_y - 4, 16, 14)
+        self.game.helpers.draw_feedback_button(thumb_rect, (100, 150, 100),
+                                  self.game.mouse_pos, self.game.clicked_element,
+                                  'audio_slider', 'sfx_volume',
+                                  text="", border_width=1)
+        self.game.audio_sfx_slider = (slider_track, 0.0, 1.0, thumb_rect)
+
+        content_y += audio_box_height + 15
         
         # ===== GAMEPLAY SETTINGS SECTION ===== (FPS OPTIMIZATION 4.1: cached)
         gameplay_header = self.get_cached_text("Gameplay Settings", self.game.font, WHITE, "font")

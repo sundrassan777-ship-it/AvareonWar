@@ -18,6 +18,7 @@ from network_config import MessageType
 import map_data
 from network.territory_selector import TerritorySelector  # Updated import path
 from global_sound import sound_manager  # Global sound manager for UI clicks
+from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 
@@ -161,6 +162,10 @@ class MultiplayerSetup:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     return None
+
+                # Music track ended — advance to next track
+                if event.type == _MUSIC_END_EVENT:
+                    _music_manager.handle_music_end_event()
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
