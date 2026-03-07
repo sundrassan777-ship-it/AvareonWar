@@ -12954,9 +12954,6 @@ if __name__ == "__main__":
     music_manager.set_music_volume(music_vol)
     # Apply effective SFX volume (sfx * master) to sound effects
     sound_manager.set_volume(sfx_vol * master_vol)
-    # Start menu music (intro track plays first)
-    music_manager.start_menu_music()
-
     # Create initial window for main menu using settings
     initial_resolution = settings.get_resolution()
     initial_fullscreen = settings.is_fullscreen()
@@ -12972,6 +12969,10 @@ if __name__ == "__main__":
     # Main menu loop
     while True:
         main_menu = MainMenu(screen)
+        # Start menu music after MainMenu is loaded (avoids playing over black screen).
+        # Guard with is_playing() so returning from recap/recreate doesn't restart.
+        if not music_manager.is_playing():
+            music_manager.start_menu_music()
         action = main_menu.run()
 
         if action == 'quit':
