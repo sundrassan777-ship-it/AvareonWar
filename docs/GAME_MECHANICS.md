@@ -324,9 +324,10 @@ Each of the 57 territories on the map grants one permanent bonus to its owner. B
   - Helps identify valuable conquest targets
 
 **Assignment:**
-- Territory bonuses are pre-configured in `territory_bonuses.json`
+- Territory bonuses are pre-configured in `territory_bonuses.json` (default/fixed mode)
 - Can be modified using `Bonus_Tool.py` (development tool)
 - All 57 territories must have exactly one bonus assigned
+- **Randomize option:** Toggle "Randomize Territory Bonuses" in Additional Options during game setup to shuffle bonus assignments each game. Distribution is balanced: 6 territories per bonus type + 3 random extras. Campaign missions always use fixed bonuses
 
 ---
 

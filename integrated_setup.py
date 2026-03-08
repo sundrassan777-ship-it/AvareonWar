@@ -555,6 +555,11 @@ class ConfigPanel:
             self.overlay_bg_image = pygame.image.load('assets/InGameMenuBG.png').convert_alpha()
         except (FileNotFoundError, pygame.error, OSError):
             self.overlay_bg_image = None
+        # Load overlay button background (GMenuButton.png)
+        try:
+            self.overlay_button_bg = pygame.image.load('assets/GMenuButton.png').convert_alpha()
+        except (FileNotFoundError, pygame.error, OSError):
+            self.overlay_button_bg = None
 
         # Layout
         self._calculate_layout()
@@ -728,18 +733,17 @@ class ConfigPanel:
         y = turn_mode_y + turn_mode_label_height + turn_mode_dropdown_height + int(20 * scale)  # Update y position
 
         # Additional Options button (between turn mode and bottom buttons)
-        options_button_height = int(50 * scale)
+        options_button_height = int(38 * scale)
         options_button_y = y + int(10 * scale)
         self.ui_elements['additional_options_button'] = pygame.Rect(
             margin, options_button_y, panel_width - 2*margin, options_button_height
         )
         y = options_button_y + options_button_height + int(10 * scale)
 
-        # Buttons (bottom of panel, positioned using base_margin to align with border)
-        # 33% taller: 50 * 1.33 ≈ 67
-        button_height = int(67 * scale)
-        button_spacing = int(80 * scale)  # Increased from 60 to 80 for more space between buttons
-        button_y = panel_height - int(167 * scale)  # Adjusted for taller buttons and increased spacing
+        # Buttons (bottom of panel) - Launch and Return grouped closely together
+        button_height = int(50 * scale)
+        button_spacing = int(60 * scale)  # Tight spacing between Launch and Return
+        button_y = panel_height - int(127 * scale)  # Position from bottom for the pair
         self.ui_elements['launch_button'] = pygame.Rect(margin, button_y, panel_width - 2*margin, button_height)
         button_y += button_spacing
         self.ui_elements['return_button'] = pygame.Rect(margin, button_y, panel_width - 2*margin, button_height)
@@ -1507,9 +1511,8 @@ class ConfigPanel:
         else:
             text_color = GRAY if not enabled else WHITE
 
-        # Text (size 29 scaled - matching Main Menu)
-        # Use Cinzel-Bold for Launch Game button, Cinzel-Regular for Return button
-        button_font_size = max(16, int(29 * self.ui_scale))
+        # Text - Use Cinzel-Bold for Launch Game button, Cinzel-Regular for others
+        button_font_size = max(14, int(22 * self.ui_scale))
         if key == 'launch_button':
             button_font = pygame.font.Font('assets/fonts/Cinzel-Bold.ttf', button_font_size)
         else:
@@ -1790,8 +1793,8 @@ class ConfigPanel:
 
     def _draw_overlay_button(self, rect, text, hovered, clicked):
         """Draw a button for the Additional Options overlay"""
-        if self.button_bg_image:
-            scaled_bg = pygame.transform.smoothscale(self.button_bg_image, (rect.width, rect.height))
+        if self.overlay_button_bg:
+            scaled_bg = pygame.transform.smoothscale(self.overlay_button_bg, (rect.width, rect.height))
             button_surface = scaled_bg.copy()
             # Darken base
             button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)

@@ -4,6 +4,7 @@
 
 import json
 import os
+import random
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -181,6 +182,29 @@ def load_territory_bonuses():
 def get_territory_bonus(territory):
     """Get the bonus type for a territory (returns None if no bonus assigned)"""
     return TERRITORY_BONUSES.get(territory, None)
+
+def randomize_territory_bonuses():
+    """Randomly assign bonuses to all territories with equal distribution.
+    57 territories / 9 bonus types = 6 each + 3 random extras.
+    Mutates TERRITORY_BONUSES in-place and returns the new mapping."""
+    global TERRITORY_BONUSES
+    from game_state.data_definitions import BONUS_TYPES
+    territories = list(TERRITORY_BONUSES.keys())
+    bonus_types = list(BONUS_TYPES.keys())
+    # Build balanced pool: 6 of each type + 3 random extras
+    base_count = len(territories) // len(bonus_types)
+    remainder = len(territories) % len(bonus_types)
+    pool = bonus_types * base_count + random.sample(bonus_types, remainder)
+    random.shuffle(pool)
+    TERRITORY_BONUSES = {t: b for t, b in zip(territories, pool)}
+    logger.info(f"Randomized territorial bonuses for {len(territories)} territories")
+    return dict(TERRITORY_BONUSES)
+
+def apply_territory_bonuses(mapping):
+    """Replace territory bonuses with a provided mapping (for multiplayer client sync)."""
+    global TERRITORY_BONUSES
+    TERRITORY_BONUSES = dict(mapping)
+    logger.info(f"Applied territory bonus mapping for {len(TERRITORY_BONUSES)} territories")
 
 def get_plots(territory):
     """Get list of plot positions for a territory"""

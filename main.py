@@ -515,6 +515,16 @@ class Game:
         self.neutral_armies = setup_config.get('neutral_armies', False)
         self.randomize_bonuses = setup_config.get('randomize_bonuses', False)
 
+        # Randomize territory bonuses if enabled (not used in campaign — campaign never sets this flag)
+        if self.randomize_bonuses:
+            bonus_mapping = setup_config.get('bonus_mapping')
+            if bonus_mapping:
+                # Multiplayer client: apply host-provided mapping
+                map_data.apply_territory_bonuses(bonus_mapping)
+            else:
+                # Single-player or multiplayer host: generate random mapping
+                map_data.randomize_territory_bonuses()
+
         # Debug: Log player configuration
         logger.info(f"Game init: num_players={setup_config['num_players']}, player_is_ai={setup_config['player_is_ai']}, game_mode={game_mode}")
 

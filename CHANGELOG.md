@@ -2,6 +2,15 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-08 - Randomize Territory Bonuses Feature
+
+- **New feature:** Activate the existing "Randomize Territory Bonuses" Additional Options toggle
+- `map_data.py`: Added `randomize_territory_bonuses()` (balanced distribution: 6 per type + 3 random) and `apply_territory_bonuses()` (multiplayer client sync)
+- `main.py`: `initialize_game()` now acts on `randomize_bonuses` flag — generates or applies randomized mapping
+- `network/territory_selector.py`: Host generates mapping in `_launch_game()`, injects into LOBBY_LAUNCH settings; client extracts and stores it
+- `network/multiplayer_setup.py`: Passes `bonus_mapping` through to setup config for client-side application
+- Campaign missions unaffected (they never set `randomize_bonuses=True`)
+
 ## 2026-03-08 - Fix Hero Training Bypass in Campaign Mission 3
 
 - **Bug fix:** Hero training buttons were visible and clickable in campaign mission 3, allowing players to train heroes when only pre-assigned Serthus Diarcess should be available

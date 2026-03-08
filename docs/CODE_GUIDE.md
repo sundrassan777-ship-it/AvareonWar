@@ -396,12 +396,13 @@ if hasattr(self, 'player_teams') and self.player_teams:
 **What it does:** Each territory grants one of 9 bonus types to its owner. Bonuses stack globally.
 
 **Files involved:**
-- `territory_bonuses.json` - Territory → bonus_type mappings (57 territories)
+- `territory_bonuses.json` - Territory → bonus_type mappings (57 territories, used as default/fixed assignments)
 - `game_state/data_definitions.py` - BONUS_TYPES definition (line ~347)
 - `game_state/economy.py` - Cost reduction and income bonus integration
 - `game_state/military.py` - Unit strength bonus integration
-- `map_data.py` - Bonus loading (line 136+)
-- `Bonus_Tool.py` - Assignment tool for configuring bonuses
+- `map_data.py` - Bonus loading, `randomize_territory_bonuses()`, `apply_territory_bonuses()`
+- `Bonus_Tool.py` - Assignment tool for configuring fixed bonuses
+- `main.py` - `initialize_game()` acts on `randomize_bonuses` flag
 
 **Bonus types and values:**
 ```python
@@ -418,12 +419,18 @@ BONUS_TYPES = {
 }
 ```
 
-**To change bonus assignments:**
+**To change fixed bonus assignments:**
 1. Run `Bonus_Tool.py` (interactive GUI tool)
 2. Navigate territories with arrow keys or click
 3. Press number keys 1-9 to assign bonus type
 4. Press S to save (validates all 57 territories assigned)
 5. Restart game to load new bonuses
+
+**Randomized bonuses (Additional Options toggle):**
+- Enabled via "Randomize Territory Bonuses" checkbox in Additional Options (custom + multiplayer setup)
+- `map_data.randomize_territory_bonuses()` distributes 9 bonus types equally (6 each + 3 random extras)
+- Campaign missions always use fixed bonuses (they never set `randomize_bonuses=True`)
+- Multiplayer: host generates mapping in `territory_selector._launch_game()`, sends via LOBBY_LAUNCH settings; client applies via `map_data.apply_territory_bonuses()`
 
 **To add new bonus type:**
 1. Add entry to `BONUS_TYPES` in `game_state/data_definitions.py` (line ~347)

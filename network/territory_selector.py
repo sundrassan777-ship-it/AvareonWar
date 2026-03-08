@@ -184,6 +184,7 @@ class TerritorySelector:
         # Additional options (host can modify, synced to clients)
         self.neutral_armies = False
         self.randomize_bonuses = False
+        self.bonus_mapping = None  # Host-generated randomized bonus mapping for multiplayer sync
 
         # Additional Options overlay state
         self.overlay_open = False
@@ -472,9 +473,9 @@ class TerritorySelector:
 
             # Check if ready to start
             if self.ready_to_start:
-                # Return lobby_state, settings, and additional options
+                # Return lobby_state, settings, additional options, and bonus mapping
                 return (self.lobby_state, self.victory_condition, self.taxation_level, self.turn_mode,
-                        self.neutral_armies, self.randomize_bonuses)
+                        self.neutral_armies, self.randomize_bonuses, self.bonus_mapping)
 
             # Tick down "Copied!" feedback timer
             dt = clock.get_time()
@@ -893,6 +894,13 @@ class TerritorySelector:
         final_slots = [slot.to_dict() for slot in self.lobby_state.slots]
         settings = self.lobby_state.get_settings()
 
+        # Host generates randomized bonus mapping and includes it in launch settings
+        if self.randomize_bonuses:
+            import map_data
+            self.bonus_mapping = map_data.randomize_territory_bonuses()
+            map_data.load_territory_bonuses()  # Restore defaults; initialize_game() re-applies
+            settings['bonus_mapping'] = self.bonus_mapping
+
         message = self.protocol.create_lobby_launch(final_slots, settings)
         self.network_connection.broadcast_message(message)
 
@@ -1189,6 +1197,9 @@ class TerritorySelector:
                     self.turn_mode = self.lobby_state.turn_mode
                     self.neutral_armies = self.lobby_state.neutral_armies
                     self.randomize_bonuses = self.lobby_state.randomize_bonuses
+                    # Extract host-generated bonus mapping for randomized bonuses
+                    if 'bonus_mapping' in data['settings']:
+                        self.bonus_mapping = data['settings']['bonus_mapping']
                 self._sync_from_lobby_state()
                 self.ready_to_start = True
                 logger.info("Game launching!")
