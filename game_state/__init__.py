@@ -783,6 +783,13 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Clear the ready_to_advance_turn flag
         self.ready_to_advance_turn = False
 
+        # DEBUG: Track who called _advance_to_next_player and the state at the time
+        import traceback
+        caller = traceback.extract_stack()[-2]
+        logger.info(f"[TURN_DEBUG] _advance_to_next_player called from {caller.filename}:{caller.lineno} ({caller.name})")
+        logger.info(f"[TURN_DEBUG]   current_player: {self.current_player} -> {(self.current_player + 1) % self.num_players}, "
+                     f"turn_number: {self.turn_number}, pending_battles: {len(self.pending_battles)}")
+
         # Switch to next player
         self.current_player = (self.current_player + 1) % self.num_players
         self.selected_territory = None
@@ -1029,6 +1036,11 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         """Check if planning timer has expired and auto-execute if so."""
         if self.turn_phase != 'planning':
             return False
+        # DEBUG: Log when timer actually fires
+        remaining = self.get_remaining_planning_time()
+        if remaining is not None and remaining <= 0:
+            logger.info(f"[TURN_DEBUG] Planning timer expired! player={self.current_player}, turn_phase={self.turn_phase}, "
+                        f"pending_battles={len(self.pending_battles)}, ready_to_advance={self.ready_to_advance_turn}")
 
         # Check if mission allows timer expiry (tutorial disables, Mission 2 enables)
         if self.tutorial_mission:

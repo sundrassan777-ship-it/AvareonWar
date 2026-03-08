@@ -2,6 +2,19 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-08 - Neutral Armies Game Mode
+
+- **New feature:** Activate the "Neutral Armies" Additional Options toggle for custom games and multiplayer
+- All unclaimed territories start with 1-2 hostile units (random Swordsman/Archer/Pikeman/Cavalry composition)
+- Territories adjacent to player starts get 1 unit; others get 2
+- Neutral garrisons defend when attacked (trigger battles) but never move, build, or take turns
+- Once defeated, neutral armies are gone permanently (no respawn)
+- `main.py`: Placement logic after territory assignment using seeded RNG for multiplayer determinism
+- `game_state/military.py`: `has_neutral_garrison` check in `_process_arrivals()`, neutral defender branch, player -1 guards in battle resolution
+- `main.py`: Gray flag icons created by tinting player 0's flags
+- `network/multiplayer_setup.py`: Added `game_seed` to setup config for deterministic sync
+- AI, victory conditions, simultaneous mode all work without changes (existing -1 guards sufficient)
+
 ## 2026-03-08 - Randomize Territory Bonuses Feature
 
 - **New feature:** Activate the existing "Randomize Territory Bonuses" Additional Options toggle

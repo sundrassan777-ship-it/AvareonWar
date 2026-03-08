@@ -913,7 +913,7 @@ class SimPhaseManager:
                 # If that player is NOT the owner and is an enemy, they capture it
                 sole_player = players_present[0]
                 owner_team = self.gs.player_teams[current_owner] if current_owner >= 0 else -1
-                sole_player_team = self.gs.player_teams[sole_player]
+                sole_player_team = -1 if sole_player == -1 else self.gs.player_teams[sole_player]
 
                 # Check if sole player is NOT allied with owner (enemy capture)
                 if owner_team != sole_player_team:
@@ -988,7 +988,7 @@ class SimPhaseManager:
         """
         garrison = self.gs.territory_garrisons.get(territory, {})
 
-        # Get all players with armies in this territory
+        # Get all players with armies in this territory (including neutral player -1)
         players_present = [
             player_id for player_id, player_garrison in garrison.items()
             if (player_garrison.get('unmoved', 0) + player_garrison.get('moved', 0)) > 0
@@ -998,9 +998,14 @@ class SimPhaseManager:
             return None  # No conflict
 
         # Check if all players are allies
+        # Player -1 (neutral armies) is always hostile — use team -1 instead of
+        # player_teams[-1] which would use Python negative indexing (returning last player's team)
         teams = set()
         for player_id in players_present:
-            team = self.gs.player_teams[player_id]
+            if player_id == -1:
+                team = -1  # Neutral armies are hostile to all players
+            else:
+                team = self.gs.player_teams[player_id]
             teams.add(team)
 
         if len(teams) == 1:
@@ -1027,19 +1032,24 @@ class SimPhaseManager:
         owner_team = self.gs.player_teams[territory_owner] if territory_owner >= 0 else -1
 
         # Identify attackers (non-owners/non-allies) vs defenders (owner/allies)
+        # Player -1 (neutral) is always a defender in their own territory, never an attacker
         attackers = []
         defenders = []
         for player_id in players:
-            player_team = self.gs.player_teams[player_id]
-            if territory_owner >= 0 and player_team == owner_team:
+            if player_id == -1:
+                # Neutral garrison is always a defender in neutral-owned territory
                 defenders.append(player_id)
             else:
-                attackers.append(player_id)
+                player_team = self.gs.player_teams[player_id]
+                if territory_owner >= 0 and player_team == owner_team:
+                    defenders.append(player_id)
+                else:
+                    attackers.append(player_id)
 
         # Check if attackers are from multiple teams (multi-way battle)
         attacker_teams = set()
         for attacker_id in attackers:
-            attacker_teams.add(self.gs.player_teams[attacker_id])
+            attacker_teams.add(-1 if attacker_id == -1 else self.gs.player_teams[attacker_id])
 
         is_multi_way_battle = len(attacker_teams) > 1
         sim_log.battle(f"{territory}: owner={territory_owner}, attackers={attackers}, defenders={defenders}, multi-way={is_multi_way_battle}")
@@ -1071,12 +1081,12 @@ class SimPhaseManager:
         #    (dice roll determines battle order, but strongest player controls the UI)
 
         if is_multi_way_battle:
-            # Multi-way battle: consider ALL participants for resolver
-            resolver_candidates = players
-            sim_log.detail(f"Multi-way battle - considering all {len(players)} participants for resolver")
+            # Multi-way battle: consider ALL real participants for resolver (never neutral -1)
+            resolver_candidates = [p for p in players if p != -1]
+            sim_log.detail(f"Multi-way battle - considering all {len(resolver_candidates)} participants for resolver")
         else:
-            # Standard attack: resolver chosen from attackers only
-            resolver_candidates = attackers if attackers else players
+            # Standard attack: resolver chosen from attackers only (never neutral -1)
+            resolver_candidates = [p for p in attackers if p != -1] if attackers else [p for p in players if p != -1]
 
         if len(resolver_candidates) == 1:
             # Single attacker - they are the resolver (regardless of strength)
@@ -1091,10 +1101,10 @@ class SimPhaseManager:
                 my_composition = player_compositions.get(player_id, {})
 
                 # Aggregate all enemy compositions (opponents from different teams)
-                my_team = self.gs.player_teams[player_id]
+                my_team = -1 if player_id == -1 else self.gs.player_teams[player_id]
                 enemy_composition = {}
                 for opp_id in players:
-                    opp_team = self.gs.player_teams[opp_id]
+                    opp_team = -1 if opp_id == -1 else self.gs.player_teams[opp_id]
                     if opp_team != my_team:
                         opp_comp = player_compositions.get(opp_id, {})
                         for unit_type, count in opp_comp.items():
@@ -1291,9 +1301,9 @@ class SimPhaseManager:
             # Map each player to their team leader (lowest player index on same team)
             player_to_team_leader = {}
             for player_id in players:
-                team = self.gs.player_teams[player_id]
+                team = -1 if player_id == -1 else self.gs.player_teams[player_id]
                 # Find team leader (lowest index player on same team in this battle)
-                team_members = [p for p in players if self.gs.player_teams[p] == team]
+                team_members = [p for p in players if (-1 if p == -1 else self.gs.player_teams[p]) == team]
                 team_leader = min(team_members)
                 player_to_team_leader[player_id] = team_leader
 
@@ -1634,7 +1644,7 @@ class SimPhaseManager:
         # Check for player elimination (0 territories or capital lost)
         elimination_occurred = False
         for player_id in players:
-            if player_id != winner:
+            if player_id != winner and player_id != -1:  # Neutral player -1 can't be "eliminated"
                 if self._is_player_eliminated(player_id):
                     self.sim_state.eliminate_player(player_id)
                     sim_log.sync(f"Player {player_id} ELIMINATED!")

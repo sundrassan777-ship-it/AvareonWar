@@ -154,8 +154,9 @@ class SimConflictResolver:
             return False
 
         # Check if players are enemies
-        team1 = self.gs.player_teams[player1]
-        team2 = self.gs.player_teams[player2]
+        # Player -1 (neutral) is always hostile — avoid negative indexing into player_teams list
+        team1 = -1 if player1 == -1 else self.gs.player_teams[player1]
+        team2 = -1 if player2 == -1 else self.gs.player_teams[player2]
 
         return team1 != team2
 
@@ -357,7 +358,7 @@ class SimConflictResolver:
         # Group by team
         teams: Dict[int, List[int]] = {}
         for player_id in armies.keys():
-            team = self.gs.player_teams[player_id]
+            team = -1 if player_id == -1 else self.gs.player_teams[player_id]
             if team not in teams:
                 teams[team] = []
             teams[team].append(player_id)

@@ -331,6 +331,22 @@ Each of the 57 territories on the map grants one permanent bonus to its owner. B
 
 ---
 
+## Neutral Armies (Game Mode)
+
+Toggle "Neutral Armies" in Additional Options during custom game or multiplayer setup. When enabled:
+
+- All unclaimed territories start with small hostile garrisons (player index -1)
+- **Army size:** 1 unit if adjacent to any player's starting territory, 2 units otherwise
+- **Composition:** Random from Swordsman, Archer, Pikeman, Cavalry (no Captains)
+- Neutral armies **defend** their territory when attacked (trigger battles like normal defenders)
+- They **never move**, build, earn income, or take turns
+- Once defeated, neutral armies are **gone permanently** (no respawn)
+- Neutral territories appear with gray flags and gray territory color
+- Not available in campaign missions
+- In multiplayer, placement uses a seeded RNG (`game_seed` in setup config) for deterministic sync across all clients
+
+---
+
 ## 📝 Order System
 
 **Movement Orders:**

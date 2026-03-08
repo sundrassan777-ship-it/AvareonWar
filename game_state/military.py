@@ -1475,7 +1475,8 @@ class MilitaryMixin:
             
             # Log composition and strength
             comp_str = self._format_unit_composition(player_composition)
-            self.add_message(f"  Player {player + 1}: {comp_str} (Effective Strength: {effective_strength:.1f})")
+            player_name = "Neutral" if player == -1 else f"Player {player + 1}"
+            self.add_message(f"  {player_name}: {comp_str} (Effective Strength: {effective_strength:.1f})")
         
         # Veterancy: Pre-calculate bonus XP from enemy levels for each player
         # Stored on battle object so _update_battle_results can award XP after casualties
@@ -1509,7 +1510,8 @@ class MilitaryMixin:
         # If only one player has the most effective strength, they win
         if len(players_with_max) == 1:
             winner = players_with_max[0]
-            self.add_message(f"  Player {winner + 1} WINS with superior effective strength!")
+            winner_name = "Neutral" if winner == -1 else f"Player {winner + 1}"
+            self.add_message(f"  {winner_name} WINS with superior effective strength!")
             return winner, players_with_max
         else:
             # Tie - will need dice roll
@@ -1845,7 +1847,8 @@ class MilitaryMixin:
             army_count = battle.armies[player]
             roll = sum(random.randint(1, 6) for _ in range(army_count))
             results[player] = roll
-            self.add_message(f"  Player {player + 1} ({army_count} armies) rolls: {roll}")
+            player_label = "Neutral" if player == -1 else f"Player {player + 1}"
+            self.add_message(f"  {player_label} ({army_count} armies) rolls: {roll}")
         
         # Store roll results for display
         battle.dice_results = results
@@ -1887,10 +1890,11 @@ class MilitaryMixin:
             surviving_armies = 1  # Winner keeps 1 army
             casualties = winner_count - 1
             
+            winner_name = "Neutral" if winner == -1 else f"Player {winner + 1}"
             if casualties > 0:
-                self.add_message(f"  Player {winner + 1} WINS! Lost {casualties} battalions, {surviving_armies} remains")
+                self.add_message(f"  {winner_name} WINS! Lost {casualties} battalions, {surviving_armies} remains")
             else:
-                self.add_message(f"  Player {winner + 1} WINS! {surviving_armies} battalion remains")
+                self.add_message(f"  {winner_name} WINS! {surviving_armies} battalion remains")
             
             return winner, surviving_armies
 
@@ -1900,11 +1904,12 @@ class MilitaryMixin:
         
         Phase 6: Extracted from resolve_battle() for maintainability.
         """
-        if winner == -1:
-            # Perfect tie handled in dice method
+        if winner == -1 and surviving_armies == 0:
+            # Perfect tie handled in dice method (all armies destroyed, territory neutral)
             battle.resolved = True
             battle.winner = -1
             return
+        # Note: winner == -1 with surviving_armies > 0 means neutral garrison won — continue with normal cleanup
         
         # Veterancy: Check if territory's Keep has a Hero BEFORE buildings are destroyed
         # (destroy_buildings kills heroes, so we must check first)
@@ -1927,6 +1932,8 @@ class MilitaryMixin:
         for loser_player, loser_army_count in battle.armies.items():
             if loser_player == winner:
                 continue  # Skip winner
+            if loser_player == -1:
+                continue  # Neutral armies have no heroes, gold, or abilities
 
             # Only trigger if loser had armies (actual battle, not empty territory capture)
             if loser_army_count > 0:
@@ -2042,8 +2049,9 @@ class MilitaryMixin:
 
             # If we couldn't find actual units (edge case), create from composition
             if not survivor_units:
+                winner_label = "Neutral" if winner == -1 else f"Player {winner + 1}"
                 logger.warning(f"[UNIT_TYPE_DIAG] _update_battle_results fallback: no survivor units found "
-                               f"for Player {winner + 1} at {territory} ({surviving_armies} should survive). "
+                               f"for {winner_label} at {territory} ({surviving_armies} should survive). "
                                f"Reconstructing from composition.")
                 winner_comp = player_compositions.get(winner, {})
                 unit_id = 0
@@ -2262,6 +2270,7 @@ class MilitaryMixin:
             # Set flag to indicate turn should advance after popup closes
             # Don't advance immediately - wait for player to close battle results popup
             self.ready_to_advance_turn = True
+            logger.info(f"[TURN_DEBUG] ready_to_advance_turn set to True (all battles resolved, turn_phase={self.turn_phase})")
 
         return True
 
@@ -2337,13 +2346,21 @@ class MilitaryMixin:
                                 keep_plot_with_hero = plot_index
                         break
 
+            # Check if neutral territory has a garrison (Neutral Armies game mode)
+            has_neutral_garrison = (
+                current_owner == -1 and
+                territory in self.territory_garrisons and
+                -1 in self.territory_garrisons[territory] and
+                (self.territory_garrisons[territory][-1].get('unmoved', 0) +
+                 self.territory_garrisons[territory][-1].get('moved', 0)) > 0
+            )
+
             # Add defender's forces (garrison + Keep) ONLY if there will be a battle
-            # Check if there will be a battle (multiple players arriving)
-            # We need to check this before adding defender's forces
+            # Check if there will be a battle (multiple players arriving, or attacker vs defender/neutral)
             potential_battle = len(incoming_armies[territory]) > 1 or (
                 len(incoming_armies[territory]) == 1 and
-                current_owner != -1 and
-                current_owner not in incoming_armies[territory]
+                ((current_owner != -1 and current_owner not in incoming_armies[territory]) or
+                 has_neutral_garrison)
             )
 
             # Add ALL allied garrisons to battle (owner + allies with garrisons)
@@ -2393,6 +2410,21 @@ class MilitaryMixin:
                         self.add_message(f"Keep in {territory} provides +{keep_bonus} defense bonus!")
                     else:
                         self.add_message(f"Keep in {territory} defends alone with {keep_bonus} armies!")
+
+            # Neutral armies defend their territory (no Keep, no allies — just garrison)
+            elif has_neutral_garrison and potential_battle:
+                neutral_garrison = self.territory_garrisons[territory][-1]
+                neutral_count = neutral_garrison.get('unmoved', 0) + neutral_garrison.get('moved', 0)
+                if neutral_count > 0:
+                    player_armies[-1] = neutral_count
+                    # Add neutral army composition for battle resolution
+                    neutral_units = neutral_garrison.get('units', [])
+                    if neutral_units:
+                        comp_key = (territory, -1)
+                        moving_compositions[comp_key] = {}
+                        for unit in neutral_units:
+                            unit_type = unit.get('type', 'Swordsman')
+                            moving_compositions[comp_key][unit_type] = moving_compositions[comp_key].get(unit_type, 0) + 1
 
             # Count unique players involved
             unique_players = len(player_armies)
@@ -2891,8 +2923,10 @@ class MilitaryMixin:
         if self.pending_battles:
             self.turn_phase = 'battles'
             self.add_message(f"{len(self.pending_battles)} battles detected! Resolve them to continue.")
+            logger.info(f"[TURN_DEBUG] _process_arrivals: {len(self.pending_battles)} battles → turn_phase='battles'")
         else:
             # No battles - animations complete, advance to next player immediately
+            logger.info(f"[TURN_DEBUG] _process_arrivals: no battles, turn_phase={self.turn_phase}")
             if self.turn_phase == 'execution':
                 self._advance_to_next_player()
 

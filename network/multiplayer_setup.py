@@ -880,6 +880,7 @@ class MultiplayerSetup:
             'neutral_armies': neutral_armies,
             'randomize_bonuses': randomize_bonuses,
             'bonus_mapping': bonus_mapping,  # Host-generated mapping for client sync
+            'game_seed': int(time.time() * 1000) % (2**31),  # Deterministic seed for neutral army placement
 
             # Full lobby state for reference
             'lobby_state': lobby_state

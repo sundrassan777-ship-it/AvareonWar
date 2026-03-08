@@ -131,6 +131,10 @@ class EconomyMixin:
         Returns:
             dict: {bonus_type: total_percent} mapping (e.g., {'income_bonus': 6, 'unit_cost': -10})
         """
+        # Neutral player (-1) never gets territorial bonuses
+        if player_index == -1:
+            return {}
+
         # Cache per player — invalidated explicitly when territory_owners changes
         # (via invalidate_territorial_bonus_cache)
         if not hasattr(self, '_territorial_bonus_cache'):

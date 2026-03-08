@@ -432,6 +432,15 @@ BONUS_TYPES = {
 - Campaign missions always use fixed bonuses (they never set `randomize_bonuses=True`)
 - Multiplayer: host generates mapping in `territory_selector._launch_game()`, sends via LOBBY_LAUNCH settings; client applies via `map_data.apply_territory_bonuses()`
 
+**Neutral Armies (Additional Options toggle):**
+- Placement logic in `main.py` after player territory assignment (~line 606)
+- Uses player_index `-1` in garrison system (`game_state.add_garrison(territory, -1, ...)`)
+- Battle detection in `game_state/military.py` `_process_arrivals()` — `has_neutral_garrison` variable + `elif` defender branch
+- Player -1 guards in battle resolution: skip hero abilities/gold, use "Neutral" in log messages
+- Gray flag icons: tinted from player 0's flags in `main.py` flag loading section
+- Multiplayer sync: `game_seed` in `setup_config` seeds deterministic `random.Random`
+- Campaign excluded implicitly (never sets `neutral_armies=True`)
+
 **To add new bonus type:**
 1. Add entry to `BONUS_TYPES` in `game_state/data_definitions.py` (line ~347)
 2. Add integration point:

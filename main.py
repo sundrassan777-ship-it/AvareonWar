@@ -603,6 +603,39 @@ class Game:
 
                 self.game_state.territories_chosen[player_index] = 1
 
+        # Neutral Armies: place small hostile garrisons on all unclaimed territories
+        if self.neutral_armies:
+            # Use seeded RNG for multiplayer determinism (all clients get same seed via setup_config)
+            neutral_seed = setup_config.get('game_seed', int(time.time() * 1000) % (2**31))
+            neutral_rng = random.Random(neutral_seed)
+            combat_unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']
+
+            # Collect player-owned territories to check adjacency
+            player_territories = {t for t, owner in self.game_state.territory_owners.items() if owner != -1}
+
+            for territory, owner in self.game_state.territory_owners.items():
+                if owner != -1:
+                    continue  # Skip player-owned territories
+
+                # Territories adjacent to a player start get 1 unit, others get 2
+                neighbors = map_data.get_neighbors(territory)
+                adjacent_to_player = any(n in player_territories for n in neighbors)
+                num_units = 1 if adjacent_to_player else 2
+
+                # Build random army composition from the 4 combat unit types
+                army_units = []
+                for i in range(num_units):
+                    unit_type = neutral_rng.choice(combat_unit_types)
+                    army_units.append({
+                        'type': unit_type, 'status': 'ready', 'order': None,
+                        'id': i, 'xp': 0, 'level': 0
+                    })
+
+                # Place neutral garrison (player_index = -1)
+                self.game_state.add_garrison(territory, -1, unmoved=num_units, moved=0, units=army_units)
+
+            logger.info(f"[NEUTRAL ARMIES] Placed neutral garrisons on {sum(1 for o in self.game_state.territory_owners.values() if o == -1)} unclaimed territories (seed={neutral_seed})")
+
         # Start in playing phase
         self.game_state.current_player = 0
         self.game_state.planning_phase_start_time = time.time()
@@ -692,6 +725,28 @@ class Game:
                 except pygame.error as e:
                     logger.warning(f"Could not load {flag_path}: {e}. Flag icon will not be displayed for Player {player_index + 1} tier {tier}")
                     self.army_flag_icons[player_index][tier] = None
+
+        # Neutral armies use NeutralFlag.png, scaled to match each tier's flag size
+        self.army_flag_icons[-1] = {}
+        try:
+            neutral_flag_base = pygame.image.load("assets/NeutralFlag.png").convert_alpha()
+            for tier in range(1, 4):
+                source_flag = self.army_flag_icons.get(0, {}).get(tier)
+                if source_flag:
+                    scaled = pygame.transform.smoothscale(neutral_flag_base, source_flag.get_size())
+                    self.army_flag_icons[-1][tier] = scaled
+                else:
+                    self.army_flag_icons[-1][tier] = neutral_flag_base.copy()
+        except pygame.error as e:
+            logger.warning(f"Could not load NeutralFlag.png: {e}. Falling back to gray-tinted flags.")
+            for tier in range(1, 4):
+                source_flag = self.army_flag_icons.get(0, {}).get(tier)
+                if source_flag:
+                    gray_flag = source_flag.copy()
+                    gray_flag.fill((150, 150, 150, 255), special_flags=pygame.BLEND_RGBA_MULT)
+                    self.army_flag_icons[-1][tier] = gray_flag
+                else:
+                    self.army_flag_icons[-1][tier] = None
 
         # Load building icons for map display
         # Format: {building_name: pygame.Surface}
@@ -8971,7 +9026,7 @@ class Game:
                 # Check if the next battle's resolver is an AI
                 next_battle = self.game_state.pending_battles[0]
                 resolver = getattr(next_battle, 'resolver', None)
-                if resolver is not None and self.game_state.player_is_ai[resolver]:
+                if resolver is not None and resolver >= 0 and self.game_state.player_is_ai[resolver]:
                     # Track when this AI battle was first detected (for 2-second delay)
                     if self._ai_battle_delay_timer is None:
                         self._ai_battle_delay_timer = 0.0
@@ -9015,9 +9070,9 @@ class Game:
                                 winning_team_members = battle.team_members_map[winner]
                                 original_owner = getattr(battle, 'original_owner', -1)
                                 original_owner_team = self.game_state.player_teams[original_owner] if original_owner >= 0 else -1
-                                winner_team = self.game_state.player_teams[winner]
+                                winner_team = -1 if winner == -1 else self.game_state.player_teams[winner]
                                 is_defensive = (original_owner >= 0 and original_owner_team == winner_team)
-                                if len(winning_team_members) > 1 and not is_defensive:
+                                if winner != -1 and len(winning_team_members) > 1 and not is_defensive:
                                     alliance_marker = {
                                         'type': 'alliance',
                                         'territory': territory,
@@ -10356,11 +10411,12 @@ class Game:
                     # Check if all battles are resolved and turn should advance
                     # Skip in simultaneous mode - sim mode uses complete_round() instead
                     if self.game_state.ready_to_advance_turn and self.sim_state is None:
+                        logger.info(f"[TURN_DEBUG] battle_popup close (close_btn): advancing turn")
                         self.game_state._advance_to_next_player()
 
                         # MULTIPLAYER: Send TURN_END to remote player
                         if self.multiplayer_mode:
-                    
+
                             self._send_action_to_remote(MessageType.TURN_END, {})
 
                             # Send state checksum for desync detection (client to host)
@@ -10382,11 +10438,12 @@ class Game:
             # Check if all battles are resolved and turn should advance
             # Skip in simultaneous mode - sim mode uses complete_round() instead
             if self.game_state.ready_to_advance_turn and self.sim_state is None:
+                logger.info(f"[TURN_DEBUG] battle_popup close (click_outside): advancing turn")
                 self.game_state._advance_to_next_player()
 
                 # MULTIPLAYER: Send TURN_END to remote player
                 if self.multiplayer_mode:
-            
+
                     self._send_action_to_remote(MessageType.TURN_END, {})
 
                     # Send state checksum for desync detection (client to host)
@@ -10442,11 +10499,14 @@ class Game:
                     # Check if this was a defensive victory (original owner is on winning team)
                     original_owner = getattr(battle, 'original_owner', -1)
                     original_owner_team = self.game_state.player_teams[original_owner] if original_owner >= 0 else -1
-                    winner_team = self.game_state.player_teams[winner]
+                    winner_team = -1 if winner == -1 else self.game_state.player_teams[winner]
 
                     is_defensive_victory = (original_owner >= 0 and original_owner_team == winner_team)
 
-                    if len(winning_team_members) > 1 and not is_defensive_victory:
+                    if winner == -1:
+                        # Neutral won the battle — no alliance markers needed
+                        pass
+                    elif len(winning_team_members) > 1 and not is_defensive_victory:
                         # Multiple allies captured enemy/neutral territory - create alliance marker
                         logger.info(f"[SIM] Allied offensive victory at {territory}! Team members: {winning_team_members}")
                         alliance_marker = {
@@ -10512,9 +10572,12 @@ class Game:
                         logger.info(f"[SIM] Synced elimination of Player {pid + 1} to sim_state after battle")
 
             if len(self.game_state.pending_battles) == 0:
-                logger.info(f"[SIM] All battles resolved. Alliance markers: {len(self.sim_state.phase_manager.pending_alliance_markers)}")
-                # Check for alliance markers - if any, don't complete round yet
-                if self.sim_state.phase_manager and not self.sim_state.phase_manager.pending_alliance_markers:
+                logger.info(f"[SIM] All battles resolved. Alliance markers: {len(self.sim_state.phase_manager.pending_alliance_markers)}, sim_phase: {self.sim_state.sim_phase}")
+                # Guard: only complete round if still in 'resolving' phase
+                # Prevents double round advancement if round was already completed (e.g. by alliance marker auto-resolve)
+                if self.sim_state.sim_phase != 'resolving':
+                    logger.info(f"[SIM] Skipping complete_round - sim_phase already '{self.sim_state.sim_phase}'")
+                elif self.sim_state.phase_manager and not self.sim_state.phase_manager.pending_alliance_markers:
                     # In multiplayer, only host calls complete_round (broadcasts SIM_ROUND_COMPLETE)
                     # Client waits for SIM_ROUND_COMPLETE from host
                     if not self.multiplayer_mode or self.local_player_index == 0:
@@ -10525,6 +10588,7 @@ class Game:
 
         # SEQUENTIAL MODE: Check if all battles resolved and turn should advance
         if self.game_state.ready_to_advance_turn:
+            logger.info(f"[TURN_DEBUG] _finalize_enhanced_battle: advancing turn (ready_to_advance={self.game_state.ready_to_advance_turn})")
             self.game_state._advance_to_next_player()
 
             # MULTIPLAYER: Send TURN_END to remote player
