@@ -511,6 +511,10 @@ class Game:
             game_mode=game_mode  # Turn mode: 'sequential' or 'simultaneous'
         )
 
+        # Store additional options from setup for future game logic use
+        self.neutral_armies = setup_config.get('neutral_armies', False)
+        self.randomize_bonuses = setup_config.get('randomize_bonuses', False)
+
         # Debug: Log player configuration
         logger.info(f"Game init: num_players={setup_config['num_players']}, player_is_ai={setup_config['player_is_ai']}, game_mode={game_mode}")
 
@@ -10893,6 +10897,11 @@ class Game:
 
         # Hero training buttons (only when Keep is actually selected)
         if self.selected_keep and self.hero_train_buttons:
+            # Campaign mission hook: block hero training when mission disallows it
+            if (self.tutorial_mission
+                    and self.tutorial_mission.active
+                    and not self.tutorial_mission.is_action_allowed('train_hero')):
+                return True  # Silently block
             for hero_type, button_rect in self.hero_train_buttons.items():
                 if button_rect.collidepoint(pos):
                     self.trigger_click_flash('hero_training', hero_type)

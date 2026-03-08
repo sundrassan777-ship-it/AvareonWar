@@ -181,6 +181,18 @@ class TerritorySelector:
             "Simultaneous": "All players plan at once, then orders execute together"
         }
 
+        # Additional options (host can modify, synced to clients)
+        self.neutral_armies = False
+        self.randomize_bonuses = False
+
+        # Additional Options overlay state
+        self.overlay_open = False
+        self.overlay_neutral_armies = False  # Temp checkbox state while overlay open
+        self.overlay_randomize_bonuses = False  # Temp checkbox state while overlay open
+        self.overlay_hovered = None  # Hovered overlay element
+        self.overlay_clicked = None  # Clicked overlay element (one-frame flash)
+        self.overlay_rects = {}  # Computed rects for overlay elements
+
         # Dropdown state for game settings
         self.victory_dropdown_open = False
         self.taxation_dropdown_open = False
@@ -258,6 +270,12 @@ class TerritorySelector:
             self.bottom_bar_image = pygame.image.load("assets/BottomBar.jpg")
         except (FileNotFoundError, pygame.error, OSError):
             self.bottom_bar_image = None
+
+        # Load overlay background image for Additional Options popup
+        try:
+            self.overlay_bg_image = pygame.image.load('assets/InGameMenuBG.png').convert_alpha()
+        except (FileNotFoundError, pygame.error, OSError):
+            self.overlay_bg_image = None
 
     def _initialize_map(self):
         """Load and scale map with left panel layout (35% panel, 65% map)."""
@@ -373,6 +391,13 @@ class TerritorySelector:
             content_width, dropdown_height
         )
 
+        # Additional Options button - below turn mode, above bottom buttons
+        options_btn_y = self.turn_mode_dropdown_rect.bottom + int(15 * self.ui_scale)
+        options_btn_height = int(40 * self.ui_scale)
+        self.additional_options_rect = pygame.Rect(
+            margin, options_btn_y, content_width, options_btn_height
+        )
+
         # Buttons at bottom
         button_height = int(45 * self.ui_scale)
         button_spacing = int(12 * self.ui_scale)
@@ -414,7 +439,11 @@ class TerritorySelector:
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        return None
+                        # Close overlay first (acts as Cancel), otherwise exit selector
+                        if self.overlay_open:
+                            self.overlay_open = False
+                        else:
+                            return None
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
@@ -443,8 +472,9 @@ class TerritorySelector:
 
             # Check if ready to start
             if self.ready_to_start:
-                # Return lobby_state and settings
-                return (self.lobby_state, self.victory_condition, self.taxation_level, self.turn_mode)
+                # Return lobby_state, settings, and additional options
+                return (self.lobby_state, self.victory_condition, self.taxation_level, self.turn_mode,
+                        self.neutral_armies, self.randomize_bonuses)
 
             # Tick down "Copied!" feedback timer
             dt = clock.get_time()
@@ -455,6 +485,8 @@ class TerritorySelector:
             self.render()
             draw_custom_cursor(self.screen)
             pygame.display.flip()
+            # Reset overlay click flash after frame
+            self.overlay_clicked = None
             clock.tick(60)
 
         return None
@@ -469,6 +501,11 @@ class TerritorySelector:
 
     def handle_click(self, pos):
         """Handle mouse click."""
+        # Route clicks to overlay handler while overlay is open
+        if self.overlay_open:
+            self._handle_overlay_click(pos)
+            return
+
         # Check if host clicked on the IP address to copy to clipboard
         if self.is_host and self._ip_click_rect and self._ip_click_rect.collidepoint(pos):
             server = self.network_connection
@@ -557,6 +594,15 @@ class TerritorySelector:
                 self.turn_mode_dropdown_open = not self.turn_mode_dropdown_open
                 self.victory_dropdown_open = False
                 self.taxation_dropdown_open = False
+                return
+
+            # Additional Options button (host only)
+            if self.additional_options_rect.collidepoint(pos):
+                sound_manager.play_ui_click()
+                # Copy current values to temp overlay state
+                self.overlay_neutral_armies = self.neutral_armies
+                self.overlay_randomize_bonuses = self.randomize_bonuses
+                self.overlay_open = True
                 return
 
         # Check if clicked on map (right side)
@@ -840,6 +886,8 @@ class TerritorySelector:
         self.lobby_state.victory_condition = self.victory_condition
         self.lobby_state.taxation_level = self.taxation_level
         self.lobby_state.turn_mode = self.turn_mode
+        self.lobby_state.neutral_armies = self.neutral_armies
+        self.lobby_state.randomize_bonuses = self.randomize_bonuses
 
         # Send LOBBY_LAUNCH to all clients with final state
         final_slots = [slot.to_dict() for slot in self.lobby_state.slots]
@@ -860,12 +908,19 @@ class TerritorySelector:
             'victory_condition': self.victory_condition,
             'taxation_level': self.taxation_level,
             'turn_mode': self.turn_mode,
-            'host_name': self.player_names[0]  # Include host's name for client display
+            'host_name': self.player_names[0],  # Include host's name for client display
+            'neutral_armies': self.neutral_armies,
+            'randomize_bonuses': self.randomize_bonuses,
         })
         self.network_connection.send_message(message)
 
     def handle_hover(self, pos):
         """Handle mouse hover."""
+        # Block normal hover while overlay is open
+        if self.overlay_open:
+            self._update_overlay_hover(pos)
+            return
+
         # Track hover over clickable IP address (host only)
         self._ip_hovered = (self.is_host and self._ip_click_rect is not None
                             and self._ip_click_rect.collidepoint(pos))
@@ -1002,6 +1057,8 @@ class TerritorySelector:
                     self.victory_condition = self.lobby_state.victory_condition
                     self.taxation_level = self.lobby_state.taxation_level
                     self.turn_mode = self.lobby_state.turn_mode
+                    self.neutral_armies = self.lobby_state.neutral_armies
+                    self.randomize_bonuses = self.lobby_state.randomize_bonuses
 
                     # Find our slot by name (host may have reassigned us)
                     # Skip slot 0 (host) - client is never the host
@@ -1130,6 +1187,8 @@ class TerritorySelector:
                     self.victory_condition = self.lobby_state.victory_condition
                     self.taxation_level = self.lobby_state.taxation_level
                     self.turn_mode = self.lobby_state.turn_mode
+                    self.neutral_armies = self.lobby_state.neutral_armies
+                    self.randomize_bonuses = self.lobby_state.randomize_bonuses
                 self._sync_from_lobby_state()
                 self.ready_to_start = True
                 logger.info("Game launching!")
@@ -1144,6 +1203,9 @@ class TerritorySelector:
                     self.lobby_state.victory_condition = self.victory_condition
                     self.lobby_state.taxation_level = self.taxation_level
                     self.lobby_state.turn_mode = self.turn_mode
+                    # Additional options
+                    self.neutral_armies = data.get('neutral_armies', False)
+                    self.randomize_bonuses = data.get('randomize_bonuses', False)
                     # Update host's player name if provided
                     if 'host_name' in data:
                         host_slot = self.lobby_state.get_slot(0)
@@ -1171,6 +1233,12 @@ class TerritorySelector:
                 if 'turn_mode' in data:
                     self.turn_mode = data.get('turn_mode')
                     self.lobby_state.turn_mode = self.turn_mode
+                if 'neutral_armies' in data:
+                    self.neutral_armies = data.get('neutral_armies')
+                    self.lobby_state.neutral_armies = self.neutral_armies
+                if 'randomize_bonuses' in data:
+                    self.randomize_bonuses = data.get('randomize_bonuses')
+                    self.lobby_state.randomize_bonuses = self.randomize_bonuses
                 self._sync_from_lobby_state()
                 self.ready_to_start = True
                 logger.info("Setup complete - starting game!")
@@ -1215,6 +1283,10 @@ class TerritorySelector:
         # Draw warning tooltip for AI slots without territories (host only)
         if self.is_host:
             self._draw_warning_tooltips()
+
+        # Draw Additional Options overlay on top of everything (if open)
+        if self.overlay_open:
+            self._draw_additional_options_overlay()
 
         # Draw floating "Copied to Clipboard!" text near mouse, fading out
         if self._ip_copied_timer > 0:
@@ -2025,10 +2097,204 @@ class TerritorySelector:
             ))
             self.screen.blit(text_surface, text_rect)
 
+    def _handle_overlay_click(self, pos):
+        """Handle clicks within the Additional Options overlay"""
+        # Check checkbox clicks
+        if 'neutral_cb' in self.overlay_rects and self.overlay_rects['neutral_cb'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_neutral_armies = not self.overlay_neutral_armies
+            self.overlay_clicked = 'neutral_cb'
+            return
+
+        if 'randomize_cb' in self.overlay_rects and self.overlay_rects['randomize_cb'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_randomize_bonuses = not self.overlay_randomize_bonuses
+            self.overlay_clicked = 'randomize_cb'
+            return
+
+        # Check Confirm button
+        if 'confirm_btn' in self.overlay_rects and self.overlay_rects['confirm_btn'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_clicked = 'confirm_btn'
+            # Apply temp values to actual state
+            self.neutral_armies = self.overlay_neutral_armies
+            self.randomize_bonuses = self.overlay_randomize_bonuses
+            self.overlay_open = False
+            # Sync new settings to client
+            if self.is_host:
+                self._sync_settings_to_client()
+            return
+
+        # Check Cancel button
+        if 'cancel_btn' in self.overlay_rects and self.overlay_rects['cancel_btn'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_clicked = 'cancel_btn'
+            # Discard temp values
+            self.overlay_open = False
+            return
+
+    def _update_overlay_hover(self, mouse_pos):
+        """Update hover state for the Additional Options overlay"""
+        self.hovered_territory = None  # Clear normal hover
+        self.overlay_hovered = None
+        for element_name, rect in self.overlay_rects.items():
+            if rect.collidepoint(mouse_pos):
+                self.overlay_hovered = element_name
+                return
+
+    def _draw_additional_options_overlay(self):
+        """Draw the Additional Options modal overlay"""
+        screen_w, screen_h = self.screen.get_size()
+
+        # Semi-transparent dark overlay covering entire screen
+        dark_overlay = pygame.Surface((screen_w, screen_h))
+        dark_overlay.set_alpha(180)
+        dark_overlay.fill((0, 0, 0))
+        self.screen.blit(dark_overlay, (0, 0))
+
+        # Overlay panel dimensions (scaled from reference 400x300 at 1600x900)
+        scale = self.ui_scale
+        panel_w = int(400 * scale)
+        panel_h = int(300 * scale)
+        panel_x = (screen_w - panel_w) // 2
+        panel_y = (screen_h - panel_h) // 2
+
+        # Draw InGameMenuBG.png as background, or fallback to solid color
+        if self.overlay_bg_image:
+            scaled_bg = pygame.transform.smoothscale(self.overlay_bg_image, (panel_w, panel_h))
+            self.screen.blit(scaled_bg, (panel_x, panel_y))
+        else:
+            pygame.draw.rect(self.screen, (40, 40, 50), (panel_x, panel_y, panel_w, panel_h))
+            pygame.draw.rect(self.screen, BRASS_COLOR, (panel_x, panel_y, panel_w, panel_h), 2)
+
+        # Title
+        title_font_size = max(16, int(26 * scale))
+        try:
+            title_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf', title_font_size)
+        except (FileNotFoundError, pygame.error, OSError):
+            title_font = self.text_font
+        title_surface = title_font.render("Additional Options", True, TEXT_COLOR)
+        title_rect = title_surface.get_rect(centerx=panel_x + panel_w // 2, top=panel_y + int(25 * scale))
+        self.screen.blit(title_surface, title_rect)
+
+        # Separator line below title
+        sep_y = title_rect.bottom + int(10 * scale)
+        sep_margin = int(30 * scale)
+        pygame.draw.line(self.screen, BRASS_COLOR,
+                         (panel_x + sep_margin, sep_y),
+                         (panel_x + panel_w - sep_margin, sep_y), 1)
+
+        # Checkbox rows — checkboxes aligned to same x position
+        label_font_size = max(13, int(20 * scale))
+        try:
+            label_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', label_font_size)
+        except (FileNotFoundError, pygame.error, OSError):
+            label_font = self.small_font
+        cb_size = int(22 * scale)
+        row_x = panel_x + int(40 * scale)
+        row_start_y = sep_y + int(25 * scale)
+        row_spacing = int(45 * scale)
+        # Fixed checkbox x: right side of panel with margin
+        cb_x = panel_x + panel_w - int(40 * scale) - cb_size
+
+        # Row 1: Neutral Armies
+        row1_y = row_start_y
+        neutral_label = label_font.render("Neutral Armies:", True, TEXT_COLOR)
+        self.screen.blit(neutral_label, (row_x, row1_y + (cb_size - neutral_label.get_height()) // 2))
+        neutral_cb_rect = pygame.Rect(cb_x, row1_y, cb_size, cb_size)
+        self.overlay_rects['neutral_cb'] = neutral_cb_rect
+        self._draw_overlay_checkbox(neutral_cb_rect, self.overlay_neutral_armies,
+                                     self.overlay_hovered == 'neutral_cb')
+
+        # Row 2: Randomize Territory Bonuses (split across two lines)
+        row2_y = row_start_y + row_spacing
+        bonus_line1 = label_font.render("Randomize Territory", True, TEXT_COLOR)
+        bonus_line2 = label_font.render("Bonuses:", True, TEXT_COLOR)
+        line_gap = int(3 * scale)
+        total_text_h = bonus_line1.get_height() + line_gap + bonus_line2.get_height()
+        line1_y = row2_y
+        line2_y = line1_y + bonus_line1.get_height() + line_gap
+        self.screen.blit(bonus_line1, (row_x, line1_y))
+        self.screen.blit(bonus_line2, (row_x, line2_y))
+        # Checkbox at same x as row 1, vertically centered with two-line block
+        bonus_cb_y = line1_y + (total_text_h - cb_size) // 2
+        bonus_cb_rect = pygame.Rect(cb_x, bonus_cb_y, cb_size, cb_size)
+        self.overlay_rects['randomize_cb'] = bonus_cb_rect
+        self._draw_overlay_checkbox(bonus_cb_rect, self.overlay_randomize_bonuses,
+                                     self.overlay_hovered == 'randomize_cb')
+
+        # Buttons at bottom: Cancel (left) and Confirm (right)
+        btn_w = int(130 * scale)
+        btn_h = int(45 * scale)
+        btn_y = panel_y + panel_h - int(55 * scale)
+        btn_gap = int(20 * scale)
+        total_btn_width = 2 * btn_w + btn_gap
+        btn_start_x = panel_x + (panel_w - total_btn_width) // 2
+
+        cancel_rect = pygame.Rect(btn_start_x, btn_y, btn_w, btn_h)
+        confirm_rect = pygame.Rect(btn_start_x + btn_w + btn_gap, btn_y, btn_w, btn_h)
+        self.overlay_rects['cancel_btn'] = cancel_rect
+        self.overlay_rects['confirm_btn'] = confirm_rect
+
+        self._draw_overlay_button(cancel_rect, "Cancel",
+                                   self.overlay_hovered == 'cancel_btn',
+                                   self.overlay_clicked == 'cancel_btn')
+        self._draw_overlay_button(confirm_rect, "Confirm",
+                                   self.overlay_hovered == 'confirm_btn',
+                                   self.overlay_clicked == 'confirm_btn')
+
+    def _draw_overlay_checkbox(self, rect, checked, hovered):
+        """Draw a checkbox for the Additional Options overlay"""
+        from utils.colors import lighten_color
+        bg_color = lighten_color((40, 40, 50), 0.3) if hovered else lighten_color((40, 40, 50), 0.1)
+        pygame.draw.rect(self.screen, bg_color, rect, border_radius=3)
+        pygame.draw.rect(self.screen, TEXT_COLOR, rect, 1, border_radius=3)
+        if checked:
+            # Draw checkmark (X shape) matching integrated_setup style
+            RADIO_SELECTED = (100, 200, 100)
+            pygame.draw.line(self.screen, RADIO_SELECTED,
+                             (rect.x + 4, rect.y + 4), (rect.right - 4, rect.bottom - 4), 2)
+            pygame.draw.line(self.screen, RADIO_SELECTED,
+                             (rect.right - 4, rect.y + 4), (rect.x + 4, rect.bottom - 4), 2)
+
+    def _draw_overlay_button(self, rect, text, hovered, clicked):
+        """Draw a button for the Additional Options overlay"""
+        if self.button_bg_image:
+            scaled_bg = pygame.transform.smoothscale(self.button_bg_image, (rect.width, rect.height))
+            button_surface = scaled_bg.copy()
+            button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            if clicked:
+                button_surface.fill((80, 80, 80, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            elif hovered:
+                button_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            self.screen.blit(button_surface, rect)
+        else:
+            bg_color = PARCHMENT_CLICK if clicked else (PARCHMENT_HOVER if hovered else PARCHMENT_COLOR)
+            pygame.draw.rect(self.screen, bg_color, rect, border_radius=5)
+            pygame.draw.rect(self.screen, BRASS_COLOR, rect, 2, border_radius=5)
+
+        btn_font_size = max(14, int(22 * self.ui_scale))
+        try:
+            btn_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', btn_font_size)
+        except (FileNotFoundError, pygame.error, OSError):
+            btn_font = self.button_font_regular
+        text_surface = btn_font.render(text, True, TEXT_COLOR)
+        text_rect = text_surface.get_rect(center=rect.center)
+        self.screen.blit(text_surface, text_rect)
+
     def _draw_buttons(self):
         """Draw Launch Game and Return to Main Menu buttons."""
         mouse_pos = pygame.mouse.get_pos()
         can_launch = self._can_launch()
+
+        # Additional Options button (visible for all, enabled only for host)
+        self._draw_button(
+            self.additional_options_rect,
+            "Additional Options",
+            enabled=self.is_host,
+            hovered=self.additional_options_rect.collidepoint(mouse_pos) and self.is_host,
+            is_launch_button=False
+        )
 
         # Launch Game button (brass text, bold font)
         self._draw_button(

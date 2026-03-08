@@ -108,6 +108,10 @@ class SetupConfig:
             "Simultaneous": "All players plan at once, then orders execute together"
         }
 
+        # Additional options (set via Additional Options overlay)
+        self.neutral_armies = False
+        self.randomize_bonuses = False
+
     @property
     def num_players(self):
         """Get number of active players"""
@@ -538,6 +542,20 @@ class ConfigPanel:
         self.active_dropdown = None  # Which dropdown is open: 'slot0_player', 'slot1_color', etc.
         self.hovered_dropdown_item = None  # Which item in the dropdown is hovered
 
+        # Additional Options overlay state
+        self.overlay_open = False
+        self.overlay_neutral_armies = False  # Temp checkbox state while overlay open
+        self.overlay_randomize_bonuses = False  # Temp checkbox state while overlay open
+        self.overlay_hovered = None  # Hovered overlay element: 'neutral_cb', 'randomize_cb', 'confirm_btn', 'cancel_btn'
+        self.overlay_clicked = None  # Clicked overlay element (one-frame flash)
+        self.overlay_rects = {}  # Computed rects for overlay elements
+
+        # Load overlay background image (InGameMenuBG.png)
+        try:
+            self.overlay_bg_image = pygame.image.load('assets/InGameMenuBG.png').convert_alpha()
+        except (FileNotFoundError, pygame.error, OSError):
+            self.overlay_bg_image = None
+
         # Layout
         self._calculate_layout()
 
@@ -709,6 +727,14 @@ class ConfigPanel:
 
         y = turn_mode_y + turn_mode_label_height + turn_mode_dropdown_height + int(20 * scale)  # Update y position
 
+        # Additional Options button (between turn mode and bottom buttons)
+        options_button_height = int(50 * scale)
+        options_button_y = y + int(10 * scale)
+        self.ui_elements['additional_options_button'] = pygame.Rect(
+            margin, options_button_y, panel_width - 2*margin, options_button_height
+        )
+        y = options_button_y + options_button_height + int(10 * scale)
+
         # Buttons (bottom of panel, positioned using base_margin to align with border)
         # 33% taller: 50 * 1.33 ≈ 67
         button_height = int(67 * scale)
@@ -751,6 +777,11 @@ class ConfigPanel:
 
     def update_hover(self, mouse_pos):
         """Update hover state"""
+        # Block normal hover while overlay is open
+        if self.overlay_open:
+            self._update_overlay_hover(mouse_pos)
+            return
+
         if not self.bounds.collidepoint(mouse_pos):
             self.hovered_element = None
             self.hovered_dropdown_item = None
@@ -786,6 +817,10 @@ class ConfigPanel:
 
     def handle_click(self, pos):
         """Handle click on UI element - TABLE VERSION"""
+        # Route clicks to overlay handler while overlay is open
+        if self.overlay_open:
+            return self._handle_overlay_click(pos)
+
         if not self.bounds.collidepoint(pos):
             # Click outside panel - close any open dropdown
             if self.active_dropdown:
@@ -900,6 +935,15 @@ class ConfigPanel:
                 if element_name == 'turn_mode_dropdown':
                     sound_manager.play_ui_click()
                     self.active_dropdown = 'turn_mode'
+                    return None
+
+                # Handle Additional Options button
+                if element_name == 'additional_options_button':
+                    sound_manager.play_ui_click()
+                    # Copy current config values to temp overlay state
+                    self.overlay_neutral_armies = self.config.neutral_armies
+                    self.overlay_randomize_bonuses = self.config.randomize_bonuses
+                    self.overlay_open = True
                     return None
 
                 # Handle buttons
@@ -1116,6 +1160,9 @@ class ConfigPanel:
         # Turn mode dropdown (below victory condition)
         self._draw_turn_mode_section()
 
+        # Additional Options button (below turn mode)
+        self._draw_button('additional_options_button', "Additional Options", enabled=True)
+
         # Buttons
         self._draw_button('return_button', "Return to Main Menu", enabled=True)
         self._draw_button('launch_button', "Launch Game", enabled=self.config.is_ready())
@@ -1123,6 +1170,10 @@ class ConfigPanel:
         # Draw active dropdown on top of everything
         if self.active_dropdown:
             self._draw_dropdown_menu()
+
+        # Draw Additional Options overlay on top of everything (if open)
+        if self.overlay_open:
+            self._draw_additional_options_overlay()
 
     def _draw_table(self):
         """Draw the player configuration table"""
@@ -1585,6 +1636,181 @@ class ConfigPanel:
         ]
         pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
 
+    def _handle_overlay_click(self, pos):
+        """Handle clicks within the Additional Options overlay"""
+        # Check checkbox clicks
+        if 'neutral_cb' in self.overlay_rects and self.overlay_rects['neutral_cb'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_neutral_armies = not self.overlay_neutral_armies
+            self.overlay_clicked = 'neutral_cb'
+            return None
+
+        if 'randomize_cb' in self.overlay_rects and self.overlay_rects['randomize_cb'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_randomize_bonuses = not self.overlay_randomize_bonuses
+            self.overlay_clicked = 'randomize_cb'
+            return None
+
+        # Check Confirm button
+        if 'confirm_btn' in self.overlay_rects and self.overlay_rects['confirm_btn'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_clicked = 'confirm_btn'
+            # Apply temp values to config
+            self.config.neutral_armies = self.overlay_neutral_armies
+            self.config.randomize_bonuses = self.overlay_randomize_bonuses
+            self.overlay_open = False
+            return None
+
+        # Check Cancel button
+        if 'cancel_btn' in self.overlay_rects and self.overlay_rects['cancel_btn'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_clicked = 'cancel_btn'
+            # Discard temp values
+            self.overlay_open = False
+            return None
+
+        # Click outside overlay elements does nothing (blocks background clicks)
+        return None
+
+    def _update_overlay_hover(self, mouse_pos):
+        """Update hover state for the Additional Options overlay"""
+        self.hovered_element = None  # Clear normal hover
+        self.overlay_hovered = None
+        for element_name, rect in self.overlay_rects.items():
+            if rect.collidepoint(mouse_pos):
+                self.overlay_hovered = element_name
+                return
+
+    def _draw_additional_options_overlay(self):
+        """Draw the Additional Options modal overlay on top of the setup panel"""
+        screen_w, screen_h = self.screen.get_size()
+
+        # Semi-transparent dark overlay covering entire screen
+        dark_overlay = pygame.Surface((screen_w, screen_h))
+        dark_overlay.set_alpha(180)
+        dark_overlay.fill((0, 0, 0))
+        self.screen.blit(dark_overlay, (0, 0))
+
+        # Overlay panel dimensions (scaled from reference 400x300 at 1600x900)
+        scale = self.ui_scale
+        panel_w = int(400 * scale)
+        panel_h = int(300 * scale)
+        panel_x = (screen_w - panel_w) // 2
+        panel_y = (screen_h - panel_h) // 2
+
+        # Draw InGameMenuBG.png as background, or fallback to solid color
+        if self.overlay_bg_image:
+            scaled_bg = pygame.transform.smoothscale(self.overlay_bg_image, (panel_w, panel_h))
+            self.screen.blit(scaled_bg, (panel_x, panel_y))
+        else:
+            pygame.draw.rect(self.screen, PANEL_BG, (panel_x, panel_y, panel_w, panel_h))
+            pygame.draw.rect(self.screen, BRASS_COLOR, (panel_x, panel_y, panel_w, panel_h), 2)
+
+        # Title
+        title_font_size = max(16, int(26 * scale))
+        title_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf', title_font_size)
+        title_surface = title_font.render("Additional Options", True, TEXT_COLOR)
+        title_rect = title_surface.get_rect(centerx=panel_x + panel_w // 2, top=panel_y + int(25 * scale))
+        self.screen.blit(title_surface, title_rect)
+
+        # Separator line below title
+        sep_y = title_rect.bottom + int(10 * scale)
+        sep_margin = int(30 * scale)
+        pygame.draw.line(self.screen, BRASS_COLOR,
+                         (panel_x + sep_margin, sep_y),
+                         (panel_x + panel_w - sep_margin, sep_y), 1)
+
+        # Checkbox rows — checkboxes aligned to same x position
+        label_font_size = max(13, int(20 * scale))
+        label_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', label_font_size)
+        cb_size = int(22 * scale)  # Checkbox box size
+        row_x = panel_x + int(40 * scale)
+        row_start_y = sep_y + int(25 * scale)
+        row_spacing = int(45 * scale)
+        # Fixed checkbox x: right side of panel with margin
+        cb_x = panel_x + panel_w - int(40 * scale) - cb_size
+
+        # Row 1: Neutral Armies
+        row1_y = row_start_y
+        neutral_label = label_font.render("Neutral Armies:", True, TEXT_COLOR)
+        self.screen.blit(neutral_label, (row_x, row1_y + (cb_size - neutral_label.get_height()) // 2))
+        neutral_cb_rect = pygame.Rect(cb_x, row1_y, cb_size, cb_size)
+        self.overlay_rects['neutral_cb'] = neutral_cb_rect
+        self._draw_overlay_checkbox(neutral_cb_rect, self.overlay_neutral_armies,
+                                     self.overlay_hovered == 'neutral_cb')
+
+        # Row 2: Randomize Territory Bonuses (split across two lines)
+        row2_y = row_start_y + row_spacing
+        bonus_line1 = label_font.render("Randomize Territory", True, TEXT_COLOR)
+        bonus_line2 = label_font.render("Bonuses:", True, TEXT_COLOR)
+        line_gap = int(3 * scale)
+        total_text_h = bonus_line1.get_height() + line_gap + bonus_line2.get_height()
+        line1_y = row2_y
+        line2_y = line1_y + bonus_line1.get_height() + line_gap
+        self.screen.blit(bonus_line1, (row_x, line1_y))
+        self.screen.blit(bonus_line2, (row_x, line2_y))
+        # Checkbox at same x as row 1, vertically centered with two-line block
+        bonus_cb_y = line1_y + (total_text_h - cb_size) // 2
+        bonus_cb_rect = pygame.Rect(cb_x, bonus_cb_y, cb_size, cb_size)
+        self.overlay_rects['randomize_cb'] = bonus_cb_rect
+        self._draw_overlay_checkbox(bonus_cb_rect, self.overlay_randomize_bonuses,
+                                     self.overlay_hovered == 'randomize_cb')
+
+        # Buttons at bottom: Cancel (left) and Confirm (right)
+        btn_w = int(130 * scale)
+        btn_h = int(45 * scale)
+        btn_y = panel_y + panel_h - int(55 * scale)
+        btn_gap = int(20 * scale)
+        total_btn_width = 2 * btn_w + btn_gap
+        btn_start_x = panel_x + (panel_w - total_btn_width) // 2
+
+        cancel_rect = pygame.Rect(btn_start_x, btn_y, btn_w, btn_h)
+        confirm_rect = pygame.Rect(btn_start_x + btn_w + btn_gap, btn_y, btn_w, btn_h)
+        self.overlay_rects['cancel_btn'] = cancel_rect
+        self.overlay_rects['confirm_btn'] = confirm_rect
+
+        self._draw_overlay_button(cancel_rect, "Cancel",
+                                   self.overlay_hovered == 'cancel_btn',
+                                   self.overlay_clicked == 'cancel_btn')
+        self._draw_overlay_button(confirm_rect, "Confirm",
+                                   self.overlay_hovered == 'confirm_btn',
+                                   self.overlay_clicked == 'confirm_btn')
+
+    def _draw_overlay_checkbox(self, rect, checked, hovered):
+        """Draw a checkbox for the Additional Options overlay"""
+        bg_color = lighten_color(PANEL_BG, 0.3) if hovered else lighten_color(PANEL_BG, 0.1)
+        pygame.draw.rect(self.screen, bg_color, rect, border_radius=3)
+        pygame.draw.rect(self.screen, TEXT_COLOR, rect, 1, border_radius=3)
+        if checked:
+            # Draw checkmark (X shape)
+            pygame.draw.line(self.screen, RADIO_SELECTED,
+                             (rect.x + 4, rect.y + 4), (rect.right - 4, rect.bottom - 4), 2)
+            pygame.draw.line(self.screen, RADIO_SELECTED,
+                             (rect.right - 4, rect.y + 4), (rect.x + 4, rect.bottom - 4), 2)
+
+    def _draw_overlay_button(self, rect, text, hovered, clicked):
+        """Draw a button for the Additional Options overlay"""
+        if self.button_bg_image:
+            scaled_bg = pygame.transform.smoothscale(self.button_bg_image, (rect.width, rect.height))
+            button_surface = scaled_bg.copy()
+            # Darken base
+            button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            if clicked:
+                button_surface.fill((80, 80, 80, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            elif hovered:
+                button_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            self.screen.blit(button_surface, rect)
+        else:
+            bg_color = PARCHMENT_CLICK if clicked else (PARCHMENT_HOVER if hovered else PARCHMENT_COLOR)
+            pygame.draw.rect(self.screen, bg_color, rect, border_radius=5)
+            pygame.draw.rect(self.screen, BRASS_COLOR, rect, 2, border_radius=5)
+
+        btn_font_size = max(14, int(22 * self.ui_scale))
+        btn_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', btn_font_size)
+        text_surface = btn_font.render(text, True, TEXT_COLOR)
+        text_rect = text_surface.get_rect(center=rect.center)
+        self.screen.blit(text_surface, text_rect)
+
     def _draw_dropdown_menu(self):
         """Draw the active dropdown menu overlaying content"""
         if not self.active_dropdown:
@@ -1840,18 +2066,24 @@ class IntegratedSetup:
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    self.cancelled = True
+                    # Close overlay first (acts as Cancel), otherwise cancel setup
+                    if self.config_panel.overlay_open:
+                        self.config_panel.overlay_open = False
+                    else:
+                        self.cancelled = True
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left click
+                    # While overlay is open, route all clicks to overlay handler
+                    if self.config_panel.overlay_open:
+                        self.config_panel.handle_click(mouse_pos)
                     # Priority 1: Config panel
-                    if mouse_pos[0] < self.left_panel_width:
+                    elif mouse_pos[0] < self.left_panel_width:
                         result = self.config_panel.handle_click(mouse_pos)
                         if result == 'cancel':
                             self.cancelled = True
                         elif result == 'launch':
                             self.setup_complete = True
-
                     # Priority 2: Map territory selection
                     else:
                         self.map_preview.handle_territory_click(mouse_pos)
@@ -1862,6 +2094,7 @@ class IntegratedSetup:
 
         # Reset clicked state after a frame
         self.config_panel.clicked_element = None
+        self.config_panel.overlay_clicked = None
 
     def render(self):
         """Render setup window"""
@@ -1885,7 +2118,9 @@ class IntegratedSetup:
             'player_teams': [slot['team'] for slot in active_slots],    # NEW: team assignments
             'win_condition': self.config.victory_options[self.config.victory_condition],  # Victory condition string
             'taxation_level': self.config.taxation_level,  # Integer 0-4 (0=0%, 1=25%, 2=50%, 3=75%, 4=100%)
-            'game_mode': 'simultaneous' if self.config.turn_mode == 1 else 'sequential'  # Turn mode
+            'game_mode': 'simultaneous' if self.config.turn_mode == 1 else 'sequential',  # Turn mode
+            'neutral_armies': self.config.neutral_armies,  # Additional option: neutral armies on territories
+            'randomize_bonuses': self.config.randomize_bonuses,  # Additional option: randomize territory bonuses
         }
 
         # Add territory keys dynamically (for backwards compatibility)

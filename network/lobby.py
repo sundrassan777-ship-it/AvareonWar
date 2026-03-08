@@ -138,6 +138,8 @@ class LobbyState:
         self.victory_condition: int = 0  # 0=Domination, 1=Capital Assault, 2=Total Conquest
         self.taxation_level: int = 0     # 0-4 (0%/25%/50%/75%/100%)
         self.turn_mode: int = 0          # 0=Sequential, 1=Simultaneous
+        self.neutral_armies: bool = False  # Additional option: neutral armies on territories
+        self.randomize_bonuses: bool = False  # Additional option: randomize territory bonuses
 
         # Initialize all 4 slots
         for i in range(self.MAX_PLAYERS):
@@ -451,15 +453,17 @@ class LobbyState:
 
         return True
 
-    def get_settings(self) -> Dict[str, int]:
+    def get_settings(self) -> dict:
         """Get game settings dict."""
         return {
             "victory_condition": self.victory_condition,
             "taxation_level": self.taxation_level,
-            "turn_mode": self.turn_mode
+            "turn_mode": self.turn_mode,
+            "neutral_armies": self.neutral_armies,
+            "randomize_bonuses": self.randomize_bonuses,
         }
 
-    def set_settings(self, settings: Dict[str, int]) -> None:
+    def set_settings(self, settings: dict) -> None:
         """Update game settings from dict."""
         if "victory_condition" in settings:
             self.victory_condition = settings["victory_condition"]
@@ -467,6 +471,10 @@ class LobbyState:
             self.taxation_level = settings["taxation_level"]
         if "turn_mode" in settings:
             self.turn_mode = settings["turn_mode"]
+        if "neutral_armies" in settings:
+            self.neutral_armies = settings["neutral_armies"]
+        if "randomize_bonuses" in settings:
+            self.randomize_bonuses = settings["randomize_bonuses"]
 
     def serialize(self) -> Dict[str, Any]:
         """Serialize full lobby state for network transmission."""

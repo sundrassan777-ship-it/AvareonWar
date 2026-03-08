@@ -355,11 +355,12 @@ class MultiplayerSetup:
             server.stop()
             return None
 
-        # Unpack the new return format: (lobby_state, victory_condition, taxation_level, turn_mode)
-        lobby_state, victory_condition, taxation_level, turn_mode = result
+        # Unpack return format: (lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses)
+        lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses = result
 
         # Build config from LobbyState
-        config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode)
+        config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode,
+                                                neutral_armies, randomize_bonuses)
 
         # Log configuration
         active_players = lobby_state.get_active_players()
@@ -430,8 +431,8 @@ class MultiplayerSetup:
             self._show_error(f"You were kicked from the lobby: {kick_reason}")
             return None
 
-        # Unpack the new return format: (lobby_state, victory_condition, taxation_level, turn_mode)
-        lobby_state, victory_condition, taxation_level, turn_mode = result
+        # Unpack return format: (lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses)
+        lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses = result
 
         # Get the potentially updated local_player_index from selector
         # (may have changed from LOBBY_STATE sync if host reassigned us to a different slot)
@@ -443,7 +444,8 @@ class MultiplayerSetup:
         client.player_index = final_player_index
 
         # Build config from LobbyState
-        config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode)
+        config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode,
+                                                neutral_armies, randomize_bonuses)
 
         # Log configuration
         active_players = lobby_state.get_active_players()
@@ -801,7 +803,8 @@ class MultiplayerSetup:
         self.screen.blit(button_text, button_text_rect)
 
     def _build_config_from_lobby(self, lobby_state: LobbyState, victory_condition: int,
-                                  taxation_level: int, turn_mode: int) -> Dict:
+                                  taxation_level: int, turn_mode: int,
+                                  neutral_armies: bool = False, randomize_bonuses: bool = False) -> Dict:
         """
         Build game configuration dict from LobbyState.
 
@@ -810,6 +813,8 @@ class MultiplayerSetup:
             victory_condition: Victory condition index (0-2)
             taxation_level: Taxation level index (0-4)
             turn_mode: Turn mode index (0=Sequential, 1=Simultaneous)
+            neutral_armies: Whether neutral armies are enabled
+            randomize_bonuses: Whether territory bonuses are randomized
 
         Returns:
             Game configuration dict for GameState initialization
@@ -868,6 +873,10 @@ class MultiplayerSetup:
             'taxation_level': taxation_level,
             'game_mode': 'simultaneous' if turn_mode == 1 else 'sequential',
             'multiplayer_mode': True,
+
+            # Additional options
+            'neutral_armies': neutral_armies,
+            'randomize_bonuses': randomize_bonuses,
 
             # Full lobby state for reference
             'lobby_state': lobby_state
