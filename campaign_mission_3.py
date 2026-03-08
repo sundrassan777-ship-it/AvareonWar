@@ -1428,6 +1428,10 @@ class Mission3:
 
         return True
 
+    def should_hide_hero_training(self):
+        """Hide hero training UI — Serthus is pre-assigned, no training allowed."""
+        return True
+
     def should_button_be_locked(self, button_id):
         """Check if a specific button should be locked."""
         if not self.active:

@@ -2,6 +2,12 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-08 - Fix Hero Training Bypass in Campaign Mission 3
+
+- **Bug fix:** Hero training buttons were visible and clickable in campaign mission 3, allowing players to train heroes when only pre-assigned Serthus Diarcess should be available
+- Added `should_hide_hero_training()` to `campaign_mission_3.py` (missions 4/5/6 already had it)
+- Added `is_action_allowed('train_hero')` defense-in-depth check in `main.py` hero training click handler
+
 ## 2026-03-06 - Background Music System & Volume Controls
 
 - **New feature: Background music** with 3 categories (menu, game, recap)
