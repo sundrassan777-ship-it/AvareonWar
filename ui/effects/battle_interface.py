@@ -964,19 +964,18 @@ class EnhancedBattleInterface:
             self.defender_survivors = max(1, int(initial_defender * (0.3 + 0.7 * survivor_ratio)))
             self.attacker_survivors = 0
         else:
-            # Tie - use dice roll (simulate)
-            random.seed(self.animation_seed + 1)
-            if random.random() < 0.5:
-                self.winner = self.attacker_player
-                self.attacker_survivors = 1
-                self.defender_survivors = 0
-            else:
-                self.winner = self.defender_players[0] if self.defender_players else None
-                self.defender_survivors = 1
-                self.attacker_survivors = 0
+            # Tie - both bars drain to empty; actual winner determined by dice
+            # set_actual_battle_result() will update winner/survivors with real values
+            self.winner = self.attacker_player  # placeholder, overwritten by actual result
+            self.attacker_survivors = 0
+            self.defender_survivors = 0
 
         # Calculate final bar fills
-        if self.winner == self.attacker_player:
+        # Perfect tie: both drain to 0 (visually shows evenly matched before dice)
+        if self.attacker_survivors == 0 and self.defender_survivors == 0:
+            self.attacker_final_fill = 0.0
+            self.defender_final_fill = 0.0
+        elif self.winner == self.attacker_player:
             self.attacker_final_fill = self.attacker_survivors / initial_attacker if initial_attacker > 0 else 0
             self.defender_final_fill = 0.0
         else:
