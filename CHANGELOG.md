@@ -2,6 +2,12 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-08 - Captain Dies Last in Combat
+
+- **Balance:** Captains now always die last in casualty priority, regardless of unit level or counter matchup
+- Lore justification: Captains are behind the army as support units
+- `game_state/military.py`: Added Captain check as primary sort key in `apply_casualties_with_priority()`
+
 ## 2026-03-08 - Neutral Armies Game Mode
 
 - **New feature:** Activate the "Neutral Armies" Additional Options toggle for custom games and multiplayer

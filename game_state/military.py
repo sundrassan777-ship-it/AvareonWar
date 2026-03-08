@@ -392,7 +392,8 @@ class MilitaryMixin:
         for u in advantaged_units:
             tier_map[id(u)] = 2   # advantaged = least vulnerable tier
 
-        all_sorted = sorted(units, key=lambda u: (u.get('level', 0), tier_map.get(id(u), 1)))
+        # Captains die last (lore: behind the army as support), regardless of level/tier
+        all_sorted = sorted(units, key=lambda u: (1 if u.get('type') == 'Captain' else 0, u.get('level', 0), tier_map.get(id(u), 1)))
 
         # Apply casualties: kill from front (lowest level + worst matchup first)
         casualties_applied = {}
