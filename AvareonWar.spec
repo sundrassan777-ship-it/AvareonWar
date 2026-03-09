@@ -15,8 +15,14 @@ for dll_name in ['steam_api64.dll', 'SteamworksPy64.dll']:
     if os.path.exists(dll_path):
         steam_binaries.append((dll_path, '.'))
 
+# Steamworks Python wrapper (optional — only present after SDK setup)
+steam_datas = []
+steamworks_dir = os.path.join(PROJECT_ROOT, 'steamworks')
+if os.path.isdir(steamworks_dir):
+    steam_datas.append((steamworks_dir, 'steamworks'))
+
 # Data files to include (source, destination in bundle)
-datas = [
+datas = steam_datas + [
     # Assets folder
     (os.path.join(PROJECT_ROOT, 'assets'), 'assets'),
     # Config folder
