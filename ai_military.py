@@ -311,8 +311,10 @@ class AttackPlanner:
             is_empty_neutral = (target_owner == -1 and target_garrison == 0)
 
             # Assess safety of source territory (how many armies to keep)
-            # EARLY GAME OVERRIDE: Ignore garrison requirements for empty neutral expansion
-            if is_early_game and is_empty_neutral:
+            # EARLY GAME OVERRIDE: Ignore garrison requirements for neutral expansion
+            # Covers both empty neutrals AND weak neutral garrisons (Neutral Armies mode)
+            is_weak_neutral = (target_owner == -1 and target_garrison <= 2)
+            if is_early_game and (is_empty_neutral or is_weak_neutral):
                 garrison_needed = 0  # Send everything in early game expansion!
             else:
                 garrison_needed = self._calculate_garrison_needed(from_terr, game_state, player_index)
@@ -328,16 +330,17 @@ class AttackPlanner:
             if from_terr not in armies_allocated:
                 # First attack from this territory
                 if is_early_game or is_empty_neutral:
-                    # Early game/empty neutral: send 1 army to maximize splits (1-1-1 possible)
-                    attack_with = 1
+                    # Early game/empty neutral: send enough to beat garrison, minimize waste
+                    # Against neutral garrisons (1-2 units), send garrison+1 to ensure victory
+                    attack_with = max(1, target_garrison + 1) if is_weak_neutral else 1
                 else:
                     # Normal: send all except required garrison
                     attack_with = max(1, remaining_armies - garrison_needed)
             else:
                 # Additional attack from same territory
                 if is_early_game or is_empty_neutral:
-                    # Send 1 army at a time to maximize territory conquest
-                    attack_with = 1
+                    # Send enough to beat neutral garrison, or 1 for empty
+                    attack_with = max(1, target_garrison + 1) if is_weak_neutral else 1
                 else:
                     # Send remaining armies beyond garrison requirement
                     can_send = remaining_armies - garrison_needed
@@ -517,9 +520,15 @@ class AttackPlanner:
             else:
                 # Neutral with garrison - still easier than enemy
                 strength_ratio = our_strength / max(enemy_strength, 1)
-                if strength_ratio < 1.5:  # Need at least 1.5x strength for neutrals with garrison
+                # Early game: lower ratio requirement for weak neutral garrisons
+                # so AI expands through Neutral Armies mode territories
+                min_neutral_ratio = 1.0 if territory_count < 16 else 1.5
+                if strength_ratio < min_neutral_ratio:
                     return 0.0
                 score += min(strength_ratio * 20.0, 40.0)
+                # Early game bonus for capturing weak neutrals (parallels empty neutral bonus)
+                if territory_count < 16:
+                    score += 60.0  # Strong incentive to expand through garrisoned neutrals
         else:
             # Enemy territory
             strength_ratio = our_strength / max(enemy_strength, 1)
