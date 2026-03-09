@@ -38,5 +38,11 @@ Replays/
 # Claude
 .claude/
 
+# Steamworks SDK (proprietary Valve files — do not commit)
+steam_api64.dll
+SteamworksPy64.dll
+steam_appid.txt
+steamworks/
+
 # Windows reserved device name artifacts
 nul
