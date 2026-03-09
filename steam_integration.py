@@ -22,10 +22,11 @@ Singleton that wraps all Steamworks SDK calls behind a safe interface.
 If Steam is not running or the SDK fails to initialize, every method
 becomes a silent no-op.  This keeps the game fully playable without Steam.
 
-Requires:
-  - SteamworksPy installed (pip install steamworkspy)
-  - steam_api64.dll in the game directory (bundled via PyInstaller)
-  - steam_appid.txt in working directory (dev only — remove before depot upload)
+Requires (all gated behind Steamworks partner account):
+  - steamworks/ Python folder from https://github.com/philippj/SteamworksPy (copy to project root)
+  - SteamworksPy64.dll from SteamworksPy GitHub releases (copy to project root)
+  - steam_api64.dll from Steamworks SDK redistributable_bin/win64/ (copy to project root)
+  - steam_appid.txt in working directory (dev only — remove before Steam depot upload)
 """
 
 from utils.logger import get_logger

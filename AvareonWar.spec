@@ -8,11 +8,12 @@ block_cipher = None
 # Project root directory
 PROJECT_ROOT = os.path.dirname(os.path.abspath(SPEC))
 
-# Steamworks SDK: include steam_api64.dll if present (optional dependency)
+# Steamworks SDK: include DLLs if present (optional — only available with Steamworks partner account)
 steam_binaries = []
-steam_dll = os.path.join(PROJECT_ROOT, 'steam_api64.dll')
-if os.path.exists(steam_dll):
-    steam_binaries.append((steam_dll, '.'))
+for dll_name in ['steam_api64.dll', 'SteamworksPy64.dll']:
+    dll_path = os.path.join(PROJECT_ROOT, dll_name)
+    if os.path.exists(dll_path):
+        steam_binaries.append((dll_path, '.'))
 
 # Data files to include (source, destination in bundle)
 datas = [
