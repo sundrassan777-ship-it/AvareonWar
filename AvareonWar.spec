@@ -8,6 +8,12 @@ block_cipher = None
 # Project root directory
 PROJECT_ROOT = os.path.dirname(os.path.abspath(SPEC))
 
+# Steamworks SDK: include steam_api64.dll if present (optional dependency)
+steam_binaries = []
+steam_dll = os.path.join(PROJECT_ROOT, 'steam_api64.dll')
+if os.path.exists(steam_dll):
+    steam_binaries.append((steam_dll, '.'))
+
 # Data files to include (source, destination in bundle)
 datas = [
     # Assets folder
@@ -27,7 +33,7 @@ datas = [
 a = Analysis(
     [os.path.join(PROJECT_ROOT, 'main.py')],
     pathex=[PROJECT_ROOT],
-    binaries=[],
+    binaries=steam_binaries,
     datas=datas,
     hiddenimports=[
         'pygame',
@@ -54,6 +60,7 @@ a = Analysis(
         'os',
         'sys',
         'miniupnpc',
+        'steamworks',
     ],
     hookspath=[],
     hooksconfig={},
@@ -87,7 +94,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # Add icon path here if you have one: 'assets/icon.ico'
+    icon=os.path.join(PROJECT_ROOT, 'assets', 'icon.ico'),
 )
 
 coll = COLLECT(

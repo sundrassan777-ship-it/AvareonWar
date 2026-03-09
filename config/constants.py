@@ -39,6 +39,8 @@ WINDOW_HEIGHT = 850  # Adjust this to your screen height
 
 # Frame rate - PERFORMANCE OPTIMIZATION: Raised from 60 to 80 FPS target
 FPS = 80
+# Reduced frame rate when window is unfocused/minimized (Steam requirement: don't burn CPU in background)
+UNFOCUSED_FPS = 10
 
 # ===========================================
 # FONT PATHS

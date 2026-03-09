@@ -71,6 +71,7 @@ from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
 from config.font_manager import FontManager
+from steam_integration import steam_manager
 # Import sparkle version of turn announcement (can switch back to turn_announcement_effect if needed)
 from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
 from global_sound import sound_manager, play_structure_sound  # Global sound manager instance
@@ -403,6 +404,9 @@ class Game:
         self.network_connection = network_connection
         self.multiplayer_mode = (network_connection is not None)
         self.local_player_index = None  # Will be set from network connection
+
+        # Window focus tracking — throttle FPS when unfocused (Steam requirement)
+        self._window_focused = True
 
         # Multiplayer disconnect dialog
         self.show_disconnect_dialog = False
@@ -8756,6 +8760,21 @@ class Game:
         self.draw_order_sidebar()
         self.draw_bottom_ui()
 
+    def _cleanup(self):
+        """Clean up network resources on game exit.
+        Safe to call multiple times (idempotent). Called from run() exit path.
+        Note: replay/logger finalization is handled by show_recap_if_ended(), not here."""
+        # Close network connection if still active
+        if self.network_connection is not None:
+            try:
+                if hasattr(self.network_connection, 'stop'):
+                    self.network_connection.stop()
+                elif hasattr(self.network_connection, 'disconnect'):
+                    self.network_connection.disconnect()
+            except Exception:
+                pass  # Best-effort cleanup on exit
+            self.network_connection = None
+
     def run(self):
         """
         Main game loop - handles events, updates state, and renders frames.
@@ -8832,6 +8851,9 @@ class Game:
 
             # Process sound queue (play queued sounds sequentially)
             self.sound_manager.process_sound_queue()
+
+            # Process Steam callbacks (overlay notifications, achievement popups)
+            steam_manager.run_callbacks()
 
             # Process network messages (multiplayer)
             if self.multiplayer_mode:
@@ -9264,6 +9286,13 @@ class Game:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+
+                # Window focus tracking — throttle FPS when unfocused (Steam: don't burn CPU in background)
+                elif event.type == pygame.ACTIVEEVENT:
+                    if hasattr(event, 'gain') and hasattr(event, 'state'):
+                        # state & 2 = keyboard/window focus, state & 6 = input focus
+                        if event.state & 6:
+                            self._window_focused = bool(event.gain)
 
                 # Music track ended — advance to next track (always process, even during blocking)
                 elif event.type == MUSIC_END_EVENT:
@@ -9740,7 +9769,11 @@ class Game:
 
             # Update display
             pygame.display.flip()
-            self.clock.tick(FPS)
+            # Throttle FPS when window is unfocused (Steam: don't burn CPU in background)
+            self.clock.tick(FPS if self._window_focused else UNFOCUSED_FPS)
+
+        # Clean up resources (network, replay, logger) before exiting
+        self._cleanup()
 
         # Return to main menu if flag is set, otherwise quit
         if self.return_to_main_menu:
@@ -12969,6 +13002,7 @@ if __name__ == "__main__":
     from loading_screen import LoadingScreen
     from settings_manager import settings
     from achievement_manager import achievement_manager
+    from steam_integration import steam_manager
 
     def show_recap_if_ended(game):
         """Show post-game recap screen after any game that progressed past setup."""
@@ -13023,6 +13057,13 @@ if __name__ == "__main__":
 
     # Initialize pygame for main menu
     pygame.init()
+
+    # Initialize Steamworks SDK (no-op if Steam not running or SteamworksPy not installed)
+    steam_manager.initialize()
+
+    # Register Steam shutdown as atexit handler so it runs on any exit path
+    import atexit
+    atexit.register(steam_manager.shutdown)
 
     # Initialize menu-only sounds for fast startup (game sounds deferred to loading screen)
     from global_sound import initialize_menu_sounds, sound_manager

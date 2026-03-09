@@ -17,6 +17,7 @@ Reward types: None, 'title' (shown under profile name), 'icon' (selectable in pr
 from datetime import datetime
 from settings_manager import settings
 from player_level import player_level_manager
+from steam_integration import steam_manager
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -694,6 +695,8 @@ class AchievementManager:
                 self.earned[ach_id] = timestamp
                 newly_earned.append(ach)
                 logger.info(f"Achievement earned: {ach['name']} (id={ach_id})")
+                # Sync to Steam (no-op if Steam unavailable)
+                steam_manager.unlock_achievement(ach_id)
         return newly_earned
 
     # --- Query methods for UI ---
