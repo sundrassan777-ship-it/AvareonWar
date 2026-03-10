@@ -2617,8 +2617,6 @@ class MilitaryMixin:
                                 # Capital conquered - eliminate the player
                                 logger.info(f"[CAPITAL ASSAULT] Player {winner + 1} conquered Player {player_index + 1}'s capital via army movement!")
                                 self.eliminate_player(player_index)
-                                # Check for victory after elimination
-                                self.check_victory()
 
                     # Add conqueror's garrison (use actual unit count)
                     self.add_garrison(territory, winner, moved=len(units), units=units)
@@ -2638,6 +2636,10 @@ class MilitaryMixin:
                     else:
                         # Enemy territory conquered without a battle
                         self._track_stat(winner, 'xp_earned', 4)
+
+                    # Check victory after any uncontested territory capture
+                    # (Domination, Total Conquest, Capital Assault — all victory conditions)
+                    self.check_victory()
 
             elif unique_players > 1:
                 # TEAM CHECK: Group allies together before creating battles

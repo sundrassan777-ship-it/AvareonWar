@@ -2,6 +2,13 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-10 - Fix Victory Not Triggering After Uncontested Captures
+
+- **Bug fix:** Victory conditions (Domination, Total Conquest) never triggered when all territory captures were uncontested (no battles)
+- Root cause: `check_victory()` was only called after battle resolution and Capital Assault eliminations — never after undefended territory captures for other victory modes
+- `game_state/military.py`: Added `check_victory()` call after every uncontested territory capture, moved outside the Capital Assault guard
+- `simultaneous/sim_phase_manager.py`: Added `check_victory()` after uncontested captures and unconditionally after battle resolution
+
 ## 2026-03-08 - Captain Dies Last in Combat
 
 - **Balance:** Captains now always die last in casualty priority, regardless of unit level or counter matchup

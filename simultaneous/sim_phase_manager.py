@@ -904,6 +904,8 @@ class SimPhaseManager:
                     sim_log.sync(f"Player {new_owner} captured neutral territory {territory}")
                     # Capital Assault: Check if this neutral territory was someone's capital (rare edge case)
                     self._check_capital_assault_eliminations(territory, new_owner)
+                    # Check victory after any uncontested capture (Domination, Total Conquest, etc.)
+                    self.gs.check_victory()
                 elif len(players_present) > 1:
                     # Multiple players arrived - _detect_conflicts will handle it as a battle
                     sim_log.battle(f"Multiple players ({players_present}) at neutral {territory} - battle needed")
@@ -929,6 +931,8 @@ class SimPhaseManager:
 
                     # Capital Assault: Check if captured territory is enemy's capital
                     self._check_capital_assault_eliminations(territory, sole_player)
+                    # Check victory after any uncontested capture (Domination, Total Conquest, etc.)
+                    self.gs.check_victory()
 
                     # Cleanup old owner's empty garrison if present
                     if current_owner >= 0 and current_owner in garrison:
@@ -1650,6 +1654,5 @@ class SimPhaseManager:
                     sim_log.sync(f"Player {player_id} ELIMINATED!")
                     elimination_occurred = True
 
-        # Check for victory after any elimination
-        if elimination_occurred:
-            self.gs.check_victory()
+        # Check for victory after battle resolution (all victory conditions)
+        self.gs.check_victory()
