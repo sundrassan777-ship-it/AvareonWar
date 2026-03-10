@@ -544,6 +544,11 @@ class HeroMixin:
         # Sync to legacy system
         self.sync_legacy_garrison_data(target_territory)
 
+        # Cancel incoming orders that would now exceed army limit after spawning units
+        cancelled = self._revalidate_incoming_orders(target_territory)
+        if cancelled:
+            self.add_message(f"Orders cancelled due to Relentless Charge: {', '.join(cancelled)}")
+
         # Add message to action log
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
         self.add_message(f"Player {owner + 1}: Relentless Charge summoned {cavalry_spawned} Cavalry in {target_territory}{haste_msg}")
@@ -631,6 +636,11 @@ class HeroMixin:
 
         # Sync to legacy system
         self.sync_legacy_garrison_data(keep_territory)
+
+        # Cancel incoming orders that would now exceed army limit after spawning units
+        cancelled = self._revalidate_incoming_orders(keep_territory)
+        if cancelled:
+            self.add_message(f"Orders cancelled due to Reinforce: {', '.join(cancelled)}")
 
         # Play spell sound only for the casting player (personal buff)
         should_play_sound = not self.player_is_ai[owner]
@@ -730,6 +740,15 @@ class HeroMixin:
         self.invalidate_income_cache()  # FPS OPT: Ownership affects income
         self.invalidate_army_count_cache()  # FPS OPT: Army counts change
         self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
+
+        # Campaign hook: notify territory conquered via Aggressive Diplomacy
+        # This triggers quest checks and AI awakening (e.g. Mission 6 Blue activation)
+        if self.tutorial_mission and current_owner != owner:
+            self.tutorial_mission.notify_event(
+                'territory_conquered',
+                territory=target_territory,
+                new_owner=owner
+            )
 
         # Build message
         message = f"Player {owner + 1}: Aggressive Diplomacy conquers {target_territory}!"
@@ -1045,6 +1064,11 @@ class HeroMixin:
         self.sync_legacy_garrison_data(keep_territory)
         self.sync_legacy_garrison_data(target_territory)
 
+        # Cancel incoming orders that would now exceed army limit in target territory
+        cancelled = self._revalidate_incoming_orders(target_territory)
+        if cancelled:
+            self.add_message(f"Orders cancelled due to Valorous Charge: {', '.join(cancelled)}")
+
         # Add message to action log
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
         self.add_message(f"Player {owner + 1}: Valorous Charge moved {units_to_move} units from {keep_territory} to {target_territory}{haste_msg}")
@@ -1186,6 +1210,11 @@ class HeroMixin:
         # Sync both territories to legacy system
         self.sync_legacy_garrison_data(target_territory)
         self.sync_legacy_garrison_data(narn_keep_territory)
+
+        # Cancel incoming orders that would now exceed army limit in Narn's Keep
+        cancelled = self._revalidate_incoming_orders(narn_keep_territory)
+        if cancelled:
+            self.add_message(f"Orders cancelled due to Royal Charisma: {', '.join(cancelled)}")
 
         # Add message to action log
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""

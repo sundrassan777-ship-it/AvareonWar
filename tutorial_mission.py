@@ -383,6 +383,8 @@ class TutorialMission:
 
         for territory, config in enemy_territories.items():
             gs.territory_owners[territory] = 1
+            # Clear any pre-existing garrisons from default game init
+            gs.territory_garrisons[territory] = {}
             # Set garrison with army composition
             units = config['armies']
             unmoved = len(units)
@@ -392,6 +394,14 @@ class TutorialMission:
                 gs.buildings[territory] = {}
             for plot_idx, building_type in config['buildings'].items():
                 gs.buildings[territory][plot_idx] = building_type
+
+        # Clear non-mission territories to prevent stale state from previous games
+        mission_territories = TUTORIAL_TERRITORIES | {'Lunedale'}
+        for territory in list(gs.territory_owners.keys()):
+            if territory not in mission_territories:
+                gs.territory_owners[territory] = -1
+                gs.territory_garrisons[territory] = {}
+                gs.buildings[territory] = {}
 
         # Store starting territories for reference
         gs.player_starting_territories[0] = 'Lunedale'

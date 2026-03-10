@@ -13,6 +13,7 @@ and a Return to Main Menu button at the bottom.
 import pygame
 import sys
 import json
+import math
 from utils.surface_utils import crop_to_opaque
 import os
 from config.constants import WHITE, BLACK, GRAY
@@ -60,11 +61,11 @@ class CampaignScreen:
             {'id': 'mission_3', 'text': 'Chapter 3: Storms above the West'},
             {'id': 'mission_4', 'text': 'Chapter 4: Domination'},
             {'id': 'mission_5', 'text': 'Chapter 5: The First War'},
-            {'id': 'mission_6', 'text': 'Chapter 6: TBD'},
+            {'id': 'mission_6', 'text': 'Chapter 6: The Second War'},
         ]
 
-        # Pagination constants
-        self.MISSIONS_PER_PAGE = 5
+        # Pagination constants — 4 missions per page for balanced layout
+        self.MISSIONS_PER_PAGE = 4
         self.total_pages = max(1, (len(self.all_mission_buttons) + self.MISSIONS_PER_PAGE - 1) // self.MISSIONS_PER_PAGE)
 
         # Layout for campaign buttons - preserve CampaignBTN.png visible aspect ratio
@@ -77,10 +78,13 @@ class CampaignScreen:
         self.campaign_btn_x = (self.width - self.campaign_btn_width) // 2
         self.top_padding = int(120 * self.ui_scale)
 
+        # Pulse timer for arrow animation — slow breathing glow for visibility
+        self._arrow_pulse_time = 0.0
+
         # Pagination arrow sizing and positioning
         arrow_size = int(50 * self.ui_scale)  # Arrow triangle bounding box size
         arrow_margin = int(30 * self.ui_scale)  # Gap between arrow and mission button column
-        # Vertical center of the mission button column (based on max 5 buttons)
+        # Vertical center of the mission button column
         max_buttons_height = self.MISSIONS_PER_PAGE * (self.campaign_btn_height + self.campaign_btn_spacing) - self.campaign_btn_spacing
         arrow_center_y = self.top_padding + max_buttons_height // 2
         # Left arrow: to the left of the button column
@@ -136,6 +140,8 @@ class CampaignScreen:
     def run(self):
         """Main loop - returns mission_id string if mission clicked, None if cancelled"""
         while not self.cancelled and not self.selected_mission:
+            delta_time = min(self.clock.get_time() / 1000.0, 0.05)
+            self._arrow_pulse_time += delta_time
             self.handle_events()
             self.render()
             draw_custom_cursor(self.screen)
@@ -258,7 +264,7 @@ class CampaignScreen:
         self.screen.blit(text_surface, text_rect)
 
     def _draw_page_arrow(self, rect, direction, btn_id):
-        """Draw a pagination arrow (triangle) with hover/click effects.
+        """Draw a pagination arrow (triangle) with hover/click effects and slow pulse.
         direction: 'left' or 'right'
         """
         is_hovered = (self.hovered_button == btn_id)
@@ -275,17 +281,25 @@ class CampaignScreen:
             # Arrow pointing right: tip on the right, base on the left
             points = [(cx + half_w, cy), (cx - half_w, cy - half_h), (cx - half_w, cy + half_h)]
 
-        # Choose color based on state — very dark brown, nearly black
+        # Slow pulse brightness oscillation (2-second cycle) for idle arrows
+        # Sine wave maps 0..1 over the cycle, boosting the base color
+        pulse = (math.sin(self._arrow_pulse_time * math.pi) + 1.0) / 2.0  # 0..1, ~2s cycle
+        pulse_boost = int(25 * pulse)  # 0..25 extra brightness on the base color
+
+        # Choose color based on state — dark brown base with slow pulse glow
         if is_clicked:
             color = (60, 40, 20)
         elif is_hovered:
             color = (45, 28, 12)
         else:
-            color = (30, 18, 8)
+            # Pulsing base: oscillates between (30,18,8) and (55,43,33)
+            color = (30 + pulse_boost, 18 + pulse_boost, 8 + pulse_boost)
 
         pygame.draw.polygon(self.screen, color, points)
-        # Subtle outline for definition
-        pygame.draw.polygon(self.screen, (20, 12, 5), points, max(1, int(2 * self.ui_scale)))
+        # Outline also pulses slightly for extra visibility
+        outline_boost = int(15 * pulse)
+        outline_color = (20 + outline_boost, 12 + outline_boost, 5 + outline_boost)
+        pygame.draw.polygon(self.screen, outline_color, points, max(1, int(2 * self.ui_scale)))
 
     def _draw_return_button(self):
         """Draw the Return to Main Menu button with integrated_setup styling"""

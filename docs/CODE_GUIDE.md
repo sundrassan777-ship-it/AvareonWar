@@ -1887,6 +1887,8 @@ Campaign missions are self-contained modules that:
 - [campaign_mission_2.py](../campaign_mission_2.py) - Early Eastern Conquests (9 territories, 4 players)
 - [campaign_mission_3.py](../campaign_mission_3.py) - Storms above the West
 - [campaign_mission_4.py](../campaign_mission_4.py) - Domination (21 territories, 4 factions, hybrid custom AI)
+- [campaign_mission_5.py](../campaign_mission_5.py) - The First War (17 territories, 3 factions, allied team vs empire)
+- [campaign_mission_6.py](../campaign_mission_6.py) - The Second War (33 territories, 3 factions, 4 sequential quests, dynamic AI)
 - `campaign_data.json` - Mission text data (edit with `Campaign_Text_Tool.py`)
 - [cutscene_player.py](../cutscene_player.py) - Cutscene player (Ken Burns camera + crossfade + audio + subtitles)
 - [Cutscene_Tool.py](../Cutscene_Tool.py) - Cutscene editor tool

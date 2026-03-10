@@ -4317,6 +4317,17 @@ class Game:
                 execute_fn = ability_dispatch.get(self.ability_targeting_ability_name)
                 if execute_fn:
                     current_player = self.game_state.current_player
+
+                    # Mission hook: block Aggressive Diplomacy on restricted territories
+                    if (self.ability_targeting_ability_name == 'Aggressive Diplomacy'
+                            and self.tutorial_mission
+                            and self.tutorial_mission.active
+                            and hasattr(self.tutorial_mission, 'is_attack_target_blocked')
+                            and self.tutorial_mission.is_attack_target_blocked(clicked_territory)):
+                        self.invalid_target_message = "Cannot take over that territory yet."
+                        self.invalid_target_message_time = pygame.time.get_ticks()
+                        return
+
                     success, error_msg = execute_fn(clicked_territory, current_player)
 
                     if success:
@@ -4750,14 +4761,26 @@ class Game:
         if not territory:
             return
 
+        # Mission hook: block army orders to territories restricted by campaign mission
+        # (e.g., Mission 6 blocks Red from attacking certain territories until quests unlock them)
+        if (territory and self.tutorial_mission
+                and self.tutorial_mission.active
+                and hasattr(self.tutorial_mission, 'is_attack_target_blocked')
+                and self.tutorial_mission.is_attack_target_blocked(territory)):
+            # Only block if player is trying to send armies (has units selected)
+            if ((self.show_army_composition and self.selected_army_units)
+                    or self.game_state.selected_army):
+                self.game_state.add_message(f"Cannot target {territory} yet!")
+                return
+
         # CASE 1: Composition UI is open with selected units
         if self.show_army_composition and self.army_composition_territory and self.selected_army_units:
             from_territory = self.army_composition_territory
-            
+
             # Can't move to same territory
             if from_territory == territory:
                 return
-            
+
             # Check if this would exceed army limit (for reinforcements or allied reinforcements)
             owner_from = self.game_state.territory_owners.get(from_territory, -1)
             owner_to = self.game_state.territory_owners.get(territory, -1)

@@ -344,6 +344,9 @@ class Mission2:
             owner = config["owner"]
             gs.territory_owners[territory] = owner
 
+            # Clear any pre-existing garrisons from default game init
+            gs.territory_garrisons[territory] = {}
+
             # Set buildings
             if territory not in gs.buildings:
                 gs.buildings[territory] = {}
@@ -354,6 +357,14 @@ class Mission2:
             units = copy.deepcopy(config.get("units", []))
             unmoved = len(units)
             gs.set_garrison_armies(territory, owner, unmoved=unmoved, moved=0, units=units)
+
+        # Clear non-mission territories to prevent stale state from previous games
+        mission_set = set(MISSION_2_TERRITORIES)
+        for territory in list(gs.territory_owners.keys()):
+            if territory not in mission_set:
+                gs.territory_owners[territory] = -1
+                gs.territory_garrisons[territory] = {}
+                gs.buildings[territory] = {}
 
         # Invalidate bonus cache after bulk territory setup
         gs.invalidate_territorial_bonus_cache()

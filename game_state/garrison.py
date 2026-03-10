@@ -720,6 +720,8 @@ class GarrisonMixin:
         self.fix_unit_statuses(territory)
 
         for player, garrison in self.territory_garrisons[territory].items():
+            if not garrison or 'units' not in garrison:
+                continue  # Skip empty/malformed garrison entries
             # Reset all unit statuses to 'ready' and clear orders
             for unit in garrison['units']:
                 # Any unit without an order should be 'ready'

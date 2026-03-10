@@ -542,6 +542,9 @@ class Mission3:
             owner = config["owner"]
             gs.territory_owners[territory] = owner
 
+            # Clear any pre-existing garrisons from default game init
+            gs.territory_garrisons[territory] = {}
+
             if territory not in gs.buildings:
                 gs.buildings[territory] = {}
             for plot_idx, building_type in config.get("buildings", {}).items():
@@ -555,6 +558,7 @@ class Mission3:
         # Generate random units for remaining Nordia territories
         for territory in NORDIA_RANDOM_TERRITORIES:
             gs.territory_owners[territory] = 2  # Nordia
+            gs.territory_garrisons[territory] = {}  # Clear pre-existing garrisons
             if territory not in gs.buildings:
                 gs.buildings[territory] = {}
             # Random 0-3 units
@@ -564,6 +568,14 @@ class Mission3:
                 unit_type = random.choice(RANDOM_UNIT_TYPES)
                 units.append({"type": unit_type, "id": i, "status": "ready", "order": None, "xp": 0, "level": 0})
             gs.set_garrison_armies(territory, 2, unmoved=num_units, moved=0, units=units)
+
+        # Clear non-mission territories to prevent stale state from previous games
+        mission_set = set(MISSION_3_TERRITORIES)
+        for territory in list(gs.territory_owners.keys()):
+            if territory not in mission_set:
+                gs.territory_owners[territory] = -1
+                gs.territory_garrisons[territory] = {}
+                gs.buildings[territory] = {}
 
         # Invalidate bonus cache after bulk territory setup
         gs.invalidate_territorial_bonus_cache()

@@ -2,6 +2,21 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-10 - Campaign Mission 6: The Second War
+
+- **New feature:** Implemented Campaign Mission 6 "The Second War"
+  - 3 factions: Human (Red) vs Northern Powers (Blue, Hard AI) + Independent States (Yellow, Med AI)
+  - 33 playable territories with alliance system (player_teams [0, 1, 1])
+  - 4 sequential quests with progressive territory transfers and unlock chain
+  - Dynamic AI: Blue activates when Red attacks Yellow (max 1 army), angers when Red attacks Blue (max 3 armies)
+  - Yellow AI: passive toward Red, trains up to 6 armies per territory, fortifies own only
+  - Territory attack restrictions: Red blocked from targeting certain territories until quests unlock them
+  - Heroes: Vearen Asford (Leuse Valley) and Halon Nextroy (Valeonia) pre-assigned
+  - Research: Red/Yellow rows 0-2, Blue rows 0-5 (all 3 columns)
+  - Victory: Complete all 4 quests. Defeat: Red loses all 4 core territories simultaneously
+- **New hook:** `is_attack_target_blocked()` in main.py right-click handler for campaign territory restrictions
+- **campaign_screen.py:** Updated Mission 6 title from "TBD" to "The Second War"
+
 ## 2026-03-10 - Fix Victory Not Triggering After Uncontested Captures
 
 - **Bug fix:** Victory conditions (Domination, Total Conquest) never triggered when all territory captures were uncontested (no battles)
