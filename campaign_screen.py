@@ -11,6 +11,7 @@ and a Return to Main Menu button at the bottom.
 """
 
 import pygame
+import pygame.gfxdraw
 import sys
 import json
 import math
@@ -74,7 +75,7 @@ class CampaignScreen:
         img_w, img_h = self.campaign_btn_image.get_size()
         self.campaign_btn_width = int(750 * self.ui_scale)
         self.campaign_btn_height = int(self.campaign_btn_width * img_h / img_w)
-        self.campaign_btn_spacing = int(15 * self.ui_scale)
+        self.campaign_btn_spacing = int(55 * self.ui_scale)
         self.campaign_btn_x = (self.width - self.campaign_btn_width) // 2
         self.top_padding = int(120 * self.ui_scale)
 
@@ -82,7 +83,7 @@ class CampaignScreen:
         self._arrow_pulse_time = 0.0
 
         # Pagination arrow sizing and positioning
-        arrow_size = int(50 * self.ui_scale)  # Arrow triangle bounding box size
+        arrow_size = int(65 * self.ui_scale)  # Arrow triangle bounding box size
         arrow_margin = int(30 * self.ui_scale)  # Gap between arrow and mission button column
         # Vertical center of the mission button column
         max_buttons_height = self.MISSIONS_PER_PAGE * (self.campaign_btn_height + self.campaign_btn_spacing) - self.campaign_btn_spacing
@@ -264,27 +265,24 @@ class CampaignScreen:
         self.screen.blit(text_surface, text_rect)
 
     def _draw_page_arrow(self, rect, direction, btn_id):
-        """Draw a pagination arrow (triangle) with hover/click effects and slow pulse.
+        """Draw a pagination arrow (triangle) with hover/click effects, slow pulse, and size breathing.
         direction: 'left' or 'right'
         """
         is_hovered = (self.hovered_button == btn_id)
         is_clicked = (self.clicked_button == btn_id)
 
-        # Build triangle points within the arrow rect
+        # Slow color pulse (3-second cycle)
+        pulse = (math.sin(self._arrow_pulse_time * 2.0 * math.pi / 3.0) + 1.0) / 2.0  # 0..1
+        pulse_boost = int(25 * pulse)
+
+        # Build triangle points at fixed size from rect center
         cx, cy = rect.centerx, rect.centery
         half_w = rect.width // 2
         half_h = rect.height // 2
         if direction == 'left':
-            # Arrow pointing left: tip on the left, base on the right
             points = [(cx - half_w, cy), (cx + half_w, cy - half_h), (cx + half_w, cy + half_h)]
         else:
-            # Arrow pointing right: tip on the right, base on the left
             points = [(cx + half_w, cy), (cx - half_w, cy - half_h), (cx - half_w, cy + half_h)]
-
-        # Slow pulse brightness oscillation (2-second cycle) for idle arrows
-        # Sine wave maps 0..1 over the cycle, boosting the base color
-        pulse = (math.sin(self._arrow_pulse_time * math.pi) + 1.0) / 2.0  # 0..1, ~2s cycle
-        pulse_boost = int(25 * pulse)  # 0..25 extra brightness on the base color
 
         # Choose color based on state — dark brown base with slow pulse glow
         if is_clicked:
@@ -295,11 +293,8 @@ class CampaignScreen:
             # Pulsing base: oscillates between (30,18,8) and (55,43,33)
             color = (30 + pulse_boost, 18 + pulse_boost, 8 + pulse_boost)
 
-        pygame.draw.polygon(self.screen, color, points)
-        # Outline also pulses slightly for extra visibility
-        outline_boost = int(15 * pulse)
-        outline_color = (20 + outline_boost, 12 + outline_boost, 5 + outline_boost)
-        pygame.draw.polygon(self.screen, outline_color, points, max(1, int(2 * self.ui_scale)))
+        pygame.gfxdraw.filled_polygon(self.screen, points, color)
+        pygame.gfxdraw.aapolygon(self.screen, points, color)
 
     def _draw_return_button(self):
         """Draw the Return to Main Menu button with integrated_setup styling"""
