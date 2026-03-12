@@ -189,6 +189,12 @@ class Game:
                 logger.info(f"Starting game in WINDOWED at {initial_width}x{initial_height}")
                 self.screen = pygame.display.set_mode((initial_width, initial_height))
         pygame.display.set_caption("War of Avareon")
+        # Set taskbar/window icon (overrides default Python icon)
+        try:
+            _icon = pygame.image.load("assets/icon.ico")
+            pygame.display.set_icon(_icon)
+        except Exception:
+            pass
         pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
         self.clock = pygame.time.Clock()
 
