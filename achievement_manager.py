@@ -582,6 +582,20 @@ class AchievementManager:
         self.earned = settings.get_earned_achievements().copy()
         logger.info(f"Achievements loaded: {len(self.earned)} earned, stats={self.stats}")
 
+    def sync_to_steam(self):
+        """Push all locally-earned achievements to Steam.
+        Call once after Steam SDK initializes to catch any achievements
+        earned offline or before the portal had them defined."""
+        if not steam_manager.is_available:
+            return
+        synced = 0
+        for ach_id in self.earned:
+            if not steam_manager.is_achievement_unlocked(ach_id):
+                if steam_manager.unlock_achievement(ach_id):
+                    synced += 1
+        if synced > 0:
+            logger.info(f"Synced {synced} locally-earned achievements to Steam")
+
     def save(self):
         """Persist achievement data via settings_manager"""
         settings.set_achievement_stats(self.stats)

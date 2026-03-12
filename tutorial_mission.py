@@ -423,10 +423,8 @@ class TutorialMission:
         Loads CampaignMission1Cover.png, converts black background to transparency
         (pixel brightness → alpha), then blits it onto map_image_original.
         This eliminates separate overlay rendering and any UI clipping issues.
+        Uses pure pygame (no numpy) for PyInstaller compatibility.
         """
-        import pygame.surfarray as surfarray
-        import numpy as np
-
         try:
             raw = pygame.image.load('assets/CampaignMaps/CampaignMission1Cover.png').convert()
         except pygame.error as e:
@@ -434,21 +432,16 @@ class TutorialMission:
             return
 
         w, h = raw.get_size()
-        # Create SRCALPHA surface with brightness-based alpha
-        cover = pygame.Surface((w, h), pygame.SRCALPHA)
 
-        rgb = surfarray.array3d(raw)       # shape: w x h x 3 (copy, no lock held)
-        brightness = np.max(rgb, axis=2)   # max channel = brightness
+        # Extract raw RGBA pixel data as a bytearray for bulk manipulation.
+        # For each pixel, set alpha = max(R, G, B) so black → transparent, white → opaque.
+        raw_str = pygame.image.tostring(raw, 'RGBA')
+        pixels = bytearray(raw_str)
+        for i in range(0, len(pixels), 4):
+            pixels[i + 3] = max(pixels[i], pixels[i + 1], pixels[i + 2])
 
-        # Write RGB channels
-        cover_px = surfarray.pixels3d(cover)
-        cover_px[:] = rgb
-        del cover_px  # Release lock before accessing alpha
-
-        # Write alpha channel (black=transparent, white=opaque)
-        cover_alpha = surfarray.pixels_alpha(cover)
-        cover_alpha[:] = brightness
-        del cover_alpha  # Release lock
+        # Reconstruct surface from modified pixel data
+        cover = pygame.image.fromstring(bytes(pixels), (w, h), 'RGBA')
 
         # Scale cover to match map_image_original if sizes differ
         game = self.main_game

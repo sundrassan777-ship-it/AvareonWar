@@ -13084,6 +13084,10 @@ if __name__ == "__main__":
     # Initialize Steamworks SDK (no-op if Steam not running or SteamworksPy not installed)
     steam_manager.initialize()
 
+    # Sync any locally-earned achievements to Steam (catches offline unlocks)
+    from achievement_manager import achievement_manager
+    achievement_manager.sync_to_steam()
+
     # Register Steam shutdown as atexit handler so it runs on any exit path
     import atexit
     atexit.register(steam_manager.shutdown)

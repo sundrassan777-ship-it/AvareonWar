@@ -2,7 +2,7 @@
   "mission_1_intro": {
     "slides": [
       {
-        "image": "../../Downloads/M1C1I1.png",
+        "image": "assets/cutscenes/M1C1I1.png",
         "camera_a": {
           "x": 31.95187969924808,
           "y": 117.27857142857152,
@@ -20,7 +20,7 @@
         "pan_duration": 10.0,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M1C1I1V.mp3",
+        "audio": "assets/cutscenes/M1C1I1V.mp3",
         "audio_volume": 1.0,
         "audio_start_delay": 0.0,
         "music": "",
@@ -29,7 +29,7 @@
         "subtitle": "The valleys near the western Euve river have provided a good life for the local tribes for centuries."
       },
       {
-        "image": "../../Downloads/M1C1I2.png",
+        "image": "assets/cutscenes/M1C1I2.png",
         "camera_a": {
           "x": 310.66466165413533,
           "y": 17.40300751879701,
@@ -47,7 +47,7 @@
         "pan_duration": 12.0,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M1C1I2V.mp3",
+        "audio": "assets/cutscenes/M1C1I2V.mp3",
         "audio_volume": 0.5,
         "audio_start_delay": 0.0,
         "music": "",
@@ -56,7 +56,7 @@
         "subtitle": "Among the tribes were the Affrancians, a peaceful tribe, that worshipped the god of thunder. However, their peaceful ways would soon change."
       },
       {
-        "image": "../../Downloads/M1C1I3.png",
+        "image": "assets/cutscenes/M1C1I3.png",
         "camera_a": {
           "x": 184.85563909774442,
           "y": 363.2285714285714,
@@ -74,7 +74,7 @@
         "pan_duration": 12.0,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M1C1I3V.mp3",
+        "audio": "assets/cutscenes/M1C1I3V.mp3",
         "audio_volume": 0.5,
         "audio_start_delay": 0.0,
         "music": "",
@@ -83,7 +83,7 @@
         "subtitle": "Using the influence of the Thunder priests, the Chief of the Affrancians spread false threats about the surrounding tribes, urging the local populace to prepare for war."
       },
       {
-        "image": "../../Downloads/M1C1I4.png",
+        "image": "assets/cutscenes/M1C1I4.png",
         "camera_a": {
           "x": 605.7308270676692,
           "y": 5.0842105263158,
@@ -101,7 +101,7 @@
         "pan_duration": 13.0,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M1C1I4V.mp3",
+        "audio": "assets/cutscenes/M1C1I4V.mp3",
         "audio_volume": 0.5,
         "audio_start_delay": 0.0,
         "music": "",
@@ -110,7 +110,7 @@
         "subtitle": "Heeding the call of their priests, the once peaceful Affrancians became pawns in their chief's power hunger. Soon enough, the people became consumed by the new ways."
       },
       {
-        "image": "../../Downloads/M1C1I5.png",
+        "image": "assets/cutscenes/M1C1I5.png",
         "camera_a": {
           "x": 718.13984962406,
           "y": 97.8529135338344,
@@ -128,7 +128,7 @@
         "pan_duration": 8.0,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M1C1I5V.mp3",
+        "audio": "assets/cutscenes/M1C1I5V.mp3",
         "audio_volume": 0.5,
         "audio_start_delay": 0.0,
         "music": "",
@@ -141,7 +141,7 @@
   "mission_1_outro": {
     "slides": [
       {
-        "image": "../../Downloads/M1C2I1.png",
+        "image": "assets/cutscenes/M1C2I1.png",
         "camera_a": {
           "x": 438.0015037593985,
           "y": 54.3611842105264,
@@ -159,7 +159,7 @@
         "pan_duration": 11.0,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M1C2I1V.mp3",
+        "audio": "assets/cutscenes/M1C2I1V.mp3",
         "audio_volume": 0.75,
         "audio_start_delay": 0.0,
         "music": "",
@@ -168,7 +168,7 @@
         "subtitle": "The Affrancian chief savored their victory to the fullest. For him and his priests, this meant that the thunder god meant for them to achieve great things."
       },
       {
-        "image": "../../Downloads/M1C2I2.png",
+        "image": "assets/cutscenes/M1C2I2.png",
         "camera_a": {
           "x": 42.14586466165406,
           "y": 54.3593984962406,
@@ -186,7 +186,7 @@
         "pan_duration": 11.5,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M1C2I2V.mp3",
+        "audio": "assets/cutscenes/M1C2I2V.mp3",
         "audio_volume": 0.65,
         "audio_start_delay": 0.0,
         "music": "",
@@ -195,7 +195,7 @@
         "subtitle": "For the common people, though, war has become a new reality. Every day came with new struggles and new conflicts. And this was not going away."
       },
       {
-        "image": "../../Downloads/M1C2I3.png",
+        "image": "assets/cutscenes/M1C2I3.png",
         "camera_a": {
           "x": 48.30526315789473,
           "y": 169.8481203007519,
@@ -213,7 +213,7 @@
         "pan_duration": 6.0,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M1C2I3V.mp3",
+        "audio": "assets/cutscenes/M1C2I3V.mp3",
         "audio_volume": 0.75,
         "audio_start_delay": 0.0,
         "music": "",
@@ -226,7 +226,7 @@
   "mission_2_intro": {
     "slides": [
       {
-        "image": "../../Downloads/M2C1I1.png",
+        "image": "assets/cutscenes/M2C1I1.png",
         "camera_a": {
           "x": 95.9122807017543,
           "y": 409.35087719298247,
@@ -244,7 +244,7 @@
         "pan_duration": 8.0,
         "crossfade_duration": 1.0,
         "easing": "ease_in_out",
-        "audio": "../../Downloads/M2C1I1V.mp3",
+        "audio": "assets/cutscenes/M2C1I1V.mp3",
         "audio_volume": 0.75,
         "audio_start_delay": 0.0,
         "music": "",
@@ -253,7 +253,7 @@
         "subtitle": "Far to the southeast of the Affrancian lands, another region was beset by a growing conflict."
       },
       {
-        "image": "../../Downloads/M2C1I2.png",
+        "image": "assets/cutscenes/M2C1I2.png",
         "camera_a": {
           "x": 176.11278195488705,
           "y": 46.66015037593979,
@@ -271,7 +271,7 @@
         "pan_duration": 11.5,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M2C1I2V.mp3",
+        "audio": "assets/cutscenes/M2C1I2V.mp3",
         "audio_volume": 0.754,
         "audio_start_delay": 0.0,
         "music": "",
@@ -280,7 +280,7 @@
         "subtitle": "The lands of the southeastern peninsula were vast, green hills that cultivated all forms of life. They became known for their great abundance of horses."
       },
       {
-        "image": "../../Downloads/M2C1I3.png",
+        "image": "assets/cutscenes/M2C1I3.png",
         "camera_a": {
           "x": 392.2766917293234,
           "y": 265.874060150376,
@@ -298,7 +298,7 @@
         "pan_duration": 12.5,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M2C1I3V.mp3",
+        "audio": "assets/cutscenes/M2C1I3V.mp3",
         "audio_volume": 0.75,
         "audio_start_delay": 0.0,
         "music": "",
@@ -307,7 +307,7 @@
         "subtitle": "Lobards, the tribe that was leading in domestication of these animals, were a scattered group, dominated by family politics and pursuit of fortune and glory."
       },
       {
-        "image": "../../Downloads/M2C1I4.png",
+        "image": "assets/cutscenes/M2C1I4.png",
         "camera_a": {
           "x": 17.96491228070181,
           "y": 364.45029239766063,
@@ -325,7 +325,7 @@
         "pan_duration": 15.5,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M2C1I4V.mp3",
+        "audio": "assets/cutscenes/M2C1I4V.mp3",
         "audio_volume": 0.75,
         "audio_start_delay": 0.0,
         "music": "",
@@ -334,7 +334,7 @@
         "subtitle": "One of them, lord Venderfornet, took it upon himself to unify the scattered Lobards. He challenged his brothers one by one and slew them all in combat, finally unifying the tribe under his own rule."
       },
       {
-        "image": "../../Downloads/M2C1I5.png",
+        "image": "assets/cutscenes/M2C1I5.png",
         "camera_a": {
           "x": 265.4240601503759,
           "y": 37.4210526315789,
@@ -352,7 +352,7 @@
         "pan_duration": 9.0,
         "crossfade_duration": 1.0,
         "easing": "linear",
-        "audio": "../../Downloads/M2C1I5V.mp3",
+        "audio": "assets/cutscenes/M2C1I5V.mp3",
         "audio_volume": 0.75,
         "audio_start_delay": 0.0,
         "music": "",
