@@ -189,12 +189,7 @@ class Game:
                 logger.info(f"Starting game in WINDOWED at {initial_width}x{initial_height}")
                 self.screen = pygame.display.set_mode((initial_width, initial_height))
         pygame.display.set_caption("War of Avareon")
-        # Set taskbar/window icon (overrides default Python icon)
-        try:
-            _icon = pygame.image.load("assets/icon.ico")
-            pygame.display.set_icon(_icon)
-        except Exception:
-            pass
+        _set_app_icon()  # Re-apply icon after display recreation
         pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
         self.clock = pygame.time.Clock()
 
@@ -2988,7 +2983,8 @@ class Game:
             # Recreate display surface
             flags = pygame.FULLSCREEN if fullscreen else 0
             self.screen = pygame.display.set_mode((actual_width, actual_height), flags)
-            
+            _set_app_icon()  # Re-apply icon after display recreation
+
             # CRITICAL FIX: Check if pygame created a different size (happens with Windows display scaling)
             created_size = self.screen.get_size()
             if created_size != (actual_width, actual_height):
@@ -9605,10 +9601,12 @@ class Game:
                     if self.is_fullscreen:
                         # Should be fullscreen but isn't - restore it
                         self.screen = pygame.display.set_mode(current_size, pygame.FULLSCREEN)
+                        _set_app_icon()
                         logger.info(f"[OK] Restored fullscreen mode")
                     else:
                         # Should be windowed but isn't - restore it
                         self.screen = pygame.display.set_mode(current_size, 0)
+                        _set_app_icon()
                         logger.info(f"[OK] Restored windowed mode")
                 except Exception as e:
                     logger.error(f"[ERROR] Failed to restore display mode: {e}")
@@ -13087,6 +13085,24 @@ if __name__ == "__main__":
     # Initialize pygame for main menu
     pygame.init()
 
+    # Load and set window icon early — must be set before first set_mode on Windows.
+    # _app_icon is reused by _set_app_icon() after every set_mode call to prevent
+    # pygame from reverting to the default Python icon on display recreation.
+    _app_icon = None
+    try:
+        _app_icon = pygame.image.load("assets/icon.ico")
+        pygame.display.set_icon(_app_icon)
+    except Exception:
+        pass
+
+    def _set_app_icon():
+        """Re-apply window icon after any pygame.display.set_mode() call."""
+        if _app_icon is not None:
+            try:
+                pygame.display.set_icon(_app_icon)
+            except Exception:
+                pass
+
     # Initialize Steamworks SDK (no-op if Steam not running or SteamworksPy not installed)
     steam_manager.initialize()
 
@@ -13121,6 +13137,7 @@ if __name__ == "__main__":
         screen = pygame.display.set_mode(initial_resolution)
 
     pygame.display.set_caption("War of Avareon")
+    _set_app_icon()  # Re-apply icon after display creation
     pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
 
     # Main menu loop
@@ -13139,6 +13156,12 @@ if __name__ == "__main__":
             # Display settings changed in options - recreate window
             pygame.display.quit()
             pygame.init()
+            # Reload icon surface (old one invalidated by display.quit)
+            try:
+                _app_icon = pygame.image.load("assets/icon.ico")
+                pygame.display.set_icon(_app_icon)
+            except Exception:
+                pass
 
             # Re-register music end event after pygame reinit
             pygame.mixer.music.set_endevent(MUSIC_END_EVENT)
@@ -13156,6 +13179,7 @@ if __name__ == "__main__":
                 screen = pygame.display.set_mode(initial_resolution)
 
             pygame.display.set_caption("War of Avareon")
+            _set_app_icon()  # Re-apply icon after window recreation
             pygame.mouse.set_visible(False)  # Re-hide cursor after window recreation
             continue
         elif action == 'campaign':
@@ -13415,6 +13439,7 @@ if __name__ == "__main__":
                         screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
                     else:
                         screen = pygame.display.set_mode(initial_resolution)
+                    _set_app_icon()  # Re-apply icon after display recreation
                     pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
 
                 continue
@@ -13505,6 +13530,7 @@ if __name__ == "__main__":
                         screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
                     else:
                         screen = pygame.display.set_mode(initial_resolution)
+                    _set_app_icon()  # Re-apply icon after display recreation
                     pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
 
                 continue

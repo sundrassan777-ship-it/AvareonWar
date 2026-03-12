@@ -587,14 +587,19 @@ class AchievementManager:
         Call once after Steam SDK initializes to catch any achievements
         earned offline or before the portal had them defined."""
         if not steam_manager.is_available:
+            logger.info("Steam sync skipped — Steam not available")
             return
+        logger.info(f"Steam sync: checking {len(self.earned)} locally-earned achievements: {list(self.earned.keys())}")
         synced = 0
         for ach_id in self.earned:
-            if not steam_manager.is_achievement_unlocked(ach_id):
-                if steam_manager.unlock_achievement(ach_id):
+            already = steam_manager.is_achievement_unlocked(ach_id)
+            logger.info(f"  Steam achievement '{ach_id}': already_unlocked={already}")
+            if not already:
+                result = steam_manager.unlock_achievement(ach_id)
+                logger.info(f"  Unlock attempt for '{ach_id}': result={result}")
+                if result:
                     synced += 1
-        if synced > 0:
-            logger.info(f"Synced {synced} locally-earned achievements to Steam")
+        logger.info(f"Steam sync complete: {synced} achievements pushed")
 
     def save(self):
         """Persist achievement data via settings_manager"""
