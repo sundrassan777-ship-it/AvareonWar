@@ -108,15 +108,18 @@ QUEST_2_TRANSFER_TO_BLUE = ["Venexia", "Révia"]
 DEFEAT_TERRITORIES = ["Leuse Valley", "Nordica", "Valeonia", "Velognia"]
 
 # Mission speaker name for transmissions
-MISSION_6_SPEAKER = "Commander"
+MISSION_6_SPEAKER = "King Leonid Royen"
 
-# Intro sequence: zoom to Leuse Valley + opening transmission
+# Intro sequence: zoom to Leuse Valley + opening transmissions
 INTRO_SEQUENCE = [
     # Step 0: Zoom to Leuse Valley
     ("zoom_to", "Leuse Valley", ""),
-    # Step 1: Opening transmission (placeholder)
-    ("wait", 5.0, "Our scouts report growing tensions along the borders. We must secure the eastern territories before the Northern Powers make their move."),
-    # Step 2: Start gameplay
+    # Step 1-4: Opening narrative transmissions
+    ("wait", 5.0, "Even though Azincourne fell, we cannot relent. We are not safe for as long as Azincourne is allowed to prosper."),
+    ("wait", 6.0, "Conquest at this point, however, would be ill-advised. The borderlands are massively secured. We need allies and resources for a full-scale invasion."),
+    ("wait", 6.0, "Our ally, Sordia, will join our fight. Our common ancestry will be the cornerstone of our alliance. However, they are far to the southwest."),
+    ("wait", 6.0, "We need to build a corridor between us and them. Take over the states of Quil'en and Anodia - we will use their resources for our war."),
+    # Step 5: Start gameplay
     ("start_game", 0, ""),
 ]
 
@@ -858,9 +861,9 @@ class Mission6:
                 self._pending_victory = True
                 self.game_paused = True
 
-                text = "We have prevailed! The Northern Powers are broken. Our lands are secured!"
+                text = "The Azincourne heartland lies wide open! They will surely not be able to withstand our might and sue for peace!"
                 self._show_transmission(text, speaker=MISSION_6_SPEAKER)
-                self.transmission_duration = 6.0
+                self.transmission_duration = 5.0
                 self.transmission_timer = 0.0
 
         # Deferred defeat: same pattern
@@ -1347,11 +1350,16 @@ class Mission6:
         self._blocked_territories.discard("Ahtep")
         self._blocked_territories.discard("Daomea")
 
+        # Two-part quest 1 completion transmission
         self._queue_transmission(
-            "The eastern territories are secured! But our scouts report that the "
-            "Southern territories have fallen under Northern Powers' control. "
-            "We must push through Liadnon, Sstep and Amennia!",
-            8.0
+            "Our alliance is secure. And look, the mighty empiurate of Ahtep agreed to join our cause.",
+            5.0
+        )
+        self._queue_transmission(
+            "We will use their military to advance our ends, but beware - "
+            "Azincourne has also found more allies. Push through Sstep, Liadnon "
+            "and Amennia to secure our heartland.",
+            7.0
         )
 
     def _complete_quest_2(self):
@@ -1373,8 +1381,9 @@ class Mission6:
             self._blocked_territories.discard(t)
 
         self._queue_transmission(
-            "Excellent! The middle territories are ours! But the Northern Powers "
-            "have seized Révia and Venexia. We must take them back!",
+            "We have rid Azincourne of its allies. Now it is time to strike. "
+            "We must bypass the fortified borderlands by conquering the weak "
+            "states of Venexia and Révia.",
             7.0
         )
 
@@ -1393,9 +1402,9 @@ class Mission6:
             self._blocked_territories.discard(t)
 
         self._queue_transmission(
-            "Révia and Venexia are ours! Now we strike at the heart of the "
-            "Northern Powers! Conquer Northern Heilonia, Duchy of Daurels and Londia!",
-            7.0
+            "We are on the borders of Azincourne! Strike their heartland! "
+            "Decimate their territories of Duchy of Daurels, Northern Heilonia and Londia!",
+            6.0
         )
 
     def _complete_quest_4(self):
@@ -1527,8 +1536,8 @@ class Mission6:
                         self.blue_active = True
                         logger.info(f"Blue angered! Red conquered Blue territory {territory}")
                         self._queue_transmission(
-                            "The Northern Powers are enraged! They are mobilizing their full forces against us!",
-                            5.0
+                            "The Northern Powers amass their forces against us. They send even more forces to attack!",
+                            4.0
                         )
                 elif not self.blue_active:
                     # Red conquered a non-Blue territory (Yellow) → activate Blue
@@ -1537,7 +1546,7 @@ class Mission6:
                     self._queue_transmission(
                         "The Northern Powers have taken notice of our expansion. "
                         "They are sending skirmishing forces against us!",
-                        5.0
+                        4.0
                     )
 
             # Check quest completion whenever Red conquers a territory
