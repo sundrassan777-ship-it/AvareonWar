@@ -13085,21 +13085,59 @@ if __name__ == "__main__":
     # Initialize pygame for main menu
     pygame.init()
 
-    # Load and set window icon early — must be set before first set_mode on Windows.
-    # _app_icon is reused by _set_app_icon() after every set_mode call to prevent
-    # pygame from reverting to the default Python icon on display recreation.
+    # Set Windows App User Model ID so the taskbar treats this as its own app
+    # (not python.exe), allowing a custom taskbar icon.  Must be called before
+    # the first pygame.display.set_mode().
+    import sys
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('AvareonWar.WarOfAvareon')
+        except Exception:
+            pass
+
+    # Load and set window/taskbar icon early — must be set before first set_mode
+    # on Windows.  _app_icon is reused by _set_app_icon() after every set_mode
+    # call to prevent pygame from reverting to the default Python icon.
     _app_icon = None
+    _ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'icon.ico')
     try:
-        _app_icon = pygame.image.load("assets/icon.ico")
+        _app_icon = pygame.image.load(_ico_path)
         pygame.display.set_icon(_app_icon)
     except Exception:
         pass
 
     def _set_app_icon():
-        """Re-apply window icon after any pygame.display.set_mode() call."""
+        """Re-apply window and taskbar icon after any pygame.display.set_mode() call.
+        Uses both pygame.display.set_icon (title bar) and Win32 SendMessage
+        WM_SETICON (taskbar) to ensure the icon persists through display recreation."""
         if _app_icon is not None:
             try:
                 pygame.display.set_icon(_app_icon)
+            except Exception:
+                pass
+        # Force taskbar icon via Win32 API (pygame.display.set_icon only sets title bar)
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                from ctypes import wintypes
+                user32 = ctypes.windll.user32
+                # Load .ico file with both small (16x16) and large (32x32) icons
+                _ICON_SMALL, _ICON_BIG = 0, 1
+                _WM_SETICON = 0x0080
+                _IMAGE_ICON = 1
+                _LR_LOADFROMFILE = 0x0010
+                hwnd = pygame.display.get_wm_info()['window']
+                # Large icon (taskbar) — 32x32
+                hicon_big = user32.LoadImageW(
+                    None, _ico_path, _IMAGE_ICON, 32, 32, _LR_LOADFROMFILE)
+                if hicon_big:
+                    user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, hicon_big)
+                # Small icon (title bar) — 16x16
+                hicon_small = user32.LoadImageW(
+                    None, _ico_path, _IMAGE_ICON, 16, 16, _LR_LOADFROMFILE)
+                if hicon_small:
+                    user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, hicon_small)
             except Exception:
                 pass
 
@@ -13158,7 +13196,7 @@ if __name__ == "__main__":
             pygame.init()
             # Reload icon surface (old one invalidated by display.quit)
             try:
-                _app_icon = pygame.image.load("assets/icon.ico")
+                _app_icon = pygame.image.load(_ico_path)
                 pygame.display.set_icon(_app_icon)
             except Exception:
                 pass
