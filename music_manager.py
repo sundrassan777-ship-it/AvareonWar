@@ -4,7 +4,7 @@ Music Manager - Background music playback system.
 Three categories:
 - Menu Music: plays across all menus, uninterrupted between screens
 - Game Music: plays during gameplay
-- Recap Music: plays "Northern Honour - Recap Screen.mp3" on loop during recap screen
+- Recap Music: randomly picks from RECAP_TRACKS and loops during recap screen
 
 Uses pygame.mixer.music for streaming playback (one track at a time).
 """
@@ -19,7 +19,10 @@ import pygame
 MUSIC_DIR = os.path.join(os.path.dirname(__file__), 'assets', 'music')
 
 # Special tracks
-RECAP_TRACK = 'Northern Honour - Recap Screen.mp3'
+RECAP_TRACKS = [
+    'Northern Honour - Recap Screen.mp3',
+    'Northern Warrior Cmaj - 12.3..mp3',
+]
 INTRO_TRACK = 'War in the North 1 - Intro Main Menu.mp3'
 
 # No repeat within last N songs
@@ -48,7 +51,8 @@ class MusicManager:
             for f in sorted(os.listdir(MUSIC_DIR)):
                 if f.lower().endswith(('.mp3', '.wav', '.ogg')):
                     self.all_tracks.append(f)
-                    if f != RECAP_TRACK:
+                    # Exclude recap-only tracks from menu/game rotation
+                    if f not in RECAP_TRACKS:
                         self.general_tracks.append(f)
 
         # Register end-of-track event
@@ -123,9 +127,10 @@ class MusicManager:
         self._play_track(track)
 
     def start_recap_music(self):
-        """Start recap music — loops the recap track."""
+        """Start recap music — randomly picks a recap track and loops it."""
         self.current_category = 'recap'
-        self._play_track(RECAP_TRACK, loop=True)
+        track = random.choice(RECAP_TRACKS) if RECAP_TRACKS else None
+        self._play_track(track, loop=True)
 
     def stop(self):
         """Stop music playback and unload."""

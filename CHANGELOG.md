@@ -2,6 +2,13 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-15 - Add New Music Tracks
+
+- **New content:** Added 8 new music tracks
+  - 7 tracks added to Game Music + Main Menu rotation: Battlefield Sunset, Late Night Dance, Morning Star, Night Before the Battle, On the Market, Sad Knight Different Version, Soul of the Nation
+  - 1 track added to Recap Screen rotation: Northern Warrior Cmaj (joins existing Northern Honour)
+  - Recap screen now randomly picks from multiple recap tracks instead of always playing the same one
+
 ## 2026-03-15 - Fix Steam Achievements + Steam Player Name
 
 - **Bug fix:** Steam achievements silently failed to unlock despite in-game achievements working
