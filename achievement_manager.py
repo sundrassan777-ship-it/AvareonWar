@@ -665,15 +665,24 @@ class AchievementManager:
                          getattr(game, 'network_connection', None) is not None
         is_custom = not is_campaign and not is_multiplayer
 
+        # Increment mode-specific total game counters (win or loss) for win rate stats
+        has_ai_opponent = False
+        if is_custom:
+            has_ai_opponent = any(
+                gs.player_is_ai[i] for i in range(gs.num_players) if i != human_player_index
+            )
+            if has_ai_opponent:
+                self.stats['custom_games_ai_finished'] = self.stats.get('custom_games_ai_finished', 0) + 1
+                logger.info(f"Custom game (vs AI) finished. Total: {self.stats['custom_games_ai_finished']}")
+        elif is_multiplayer:
+            self.stats['multiplayer_games_finished'] = self.stats.get('multiplayer_games_finished', 0) + 1
+            logger.info(f"Multiplayer game finished. Total: {self.stats['multiplayer_games_finished']}")
+
         # Increment win-specific stat counters only if human won
         if human_won:
-            if is_custom:
-                has_ai_opponent = any(
-                    gs.player_is_ai[i] for i in range(gs.num_players) if i != human_player_index
-                )
-                if has_ai_opponent:
-                    self.stats['custom_game_ai_wins'] = self.stats.get('custom_game_ai_wins', 0) + 1
-                    logger.info(f"Custom game AI win recorded. Total: {self.stats['custom_game_ai_wins']}")
+            if is_custom and has_ai_opponent:
+                self.stats['custom_game_ai_wins'] = self.stats.get('custom_game_ai_wins', 0) + 1
+                logger.info(f"Custom game AI win recorded. Total: {self.stats['custom_game_ai_wins']}")
             elif is_multiplayer:
                 self.stats['multiplayer_wins'] = self.stats.get('multiplayer_wins', 0) + 1
                 logger.info(f"Multiplayer win recorded. Total: {self.stats['multiplayer_wins']}")

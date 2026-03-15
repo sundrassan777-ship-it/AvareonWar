@@ -167,8 +167,8 @@ class MainMenu:
         # Achievement panel helper (handles content rendering and interaction)
         self.achievement_panel_helper = AchievementPanel(self.width, self.height, self.ui_scale)
 
-        # Icon grid scroll state for profile panel
-        self.icon_scroll_offset = 0
+        # Profile panel scroll state (scrolls entire content area)
+        self.profile_scroll_offset = 0
 
         # Title dropdown scroll state
         self.title_dropdown_scroll = 0
@@ -659,13 +659,13 @@ class MainMenu:
                         else:  # Scroll down
                             self.title_dropdown_scroll = min(max_dd_scroll, self.title_dropdown_scroll + 1)
                     else:
-                        # Mouse wheel scroll for profile icon grid
+                        # Mouse wheel scroll for entire profile panel content
                         scroll_amount = int(30 * self.ui_scale)
+                        max_scroll = getattr(self, '_profile_max_scroll', 0)
                         if event.button == 4:  # Scroll up
-                            self.icon_scroll_offset = max(0, self.icon_scroll_offset - scroll_amount)
+                            self.profile_scroll_offset = max(0, self.profile_scroll_offset - scroll_amount)
                         else:  # Scroll down
-                            max_scroll = getattr(self, '_icon_max_scroll', 0)
-                            self.icon_scroll_offset = min(max_scroll, self.icon_scroll_offset + scroll_amount)
+                            self.profile_scroll_offset = min(max_scroll, self.profile_scroll_offset + scroll_amount)
                 elif event.button in (4, 5) and self.show_options:
                     # Mouse wheel scroll for options panel content
                     scroll_amount = int(30 * self.ui_scale)
@@ -1042,6 +1042,7 @@ class MainMenu:
         self.temp_selected_title = settings.get_selected_title()
         self.profile_name_active = False
         self.title_dropdown_open = False
+        self.profile_scroll_offset = 0
 
     def _close_profile(self):
         """Close the sliding profile panel"""
@@ -1855,9 +1856,21 @@ class MainMenu:
         title_rect = title_text.get_rect(center=(panel_x + panel_w // 2, panel_y + padding_top))
         self.screen.blit(title_text, title_rect)
 
-        # Content area
+        # Content area with profile-level scroll
         content_x = panel_x + padding_sides
-        content_y = panel_y + padding_top + int(60 * self.ui_scale)
+        visible_content_top = panel_y + padding_top + int(60 * self.ui_scale)
+        # Pre-calculate buttons_y for clip boundary
+        buttons_y = panel_y + panel_h - padding_bottom - 10
+        visible_content_bottom = buttons_y - int(10 * self.ui_scale)
+
+        # Apply profile scroll offset to content
+        content_y = visible_content_top - self.profile_scroll_offset
+
+        # Clip the scrollable content area (between title and buttons)
+        profile_clip = pygame.Rect(panel_x, visible_content_top,
+                                   panel_w, visible_content_bottom - visible_content_top)
+        old_profile_clip = self.screen.get_clip()
+        self.screen.set_clip(profile_clip)
 
         # Scaled fonts
         label_font_size = max(16, int(28 * self.ui_scale))
@@ -2006,30 +2019,12 @@ class MainMenu:
         num_hero_icons = 1 + len(self.hero_icons)  # question mark + loaded heroes
         total_icons = num_hero_icons + len(reward_icon_order)
 
-        # Pre-calculate buttons_y so we know where the icon grid must stop
-        buttons_y = panel_y + panel_h - padding_bottom - 10
-
-        # Calculate visible area for icon grid (between label and buttons)
+        # Icon grid layout (no sub-scroll — profile-level scroll handles everything)
         icon_grid_top = y
-        icon_grid_bottom = buttons_y - int(10 * self.ui_scale)
-        icon_grid_height = icon_grid_bottom - icon_grid_top
-
-        # Total content height
         total_rows = (total_icons + icons_per_row - 1) // icons_per_row
-        total_content_height = total_rows * (icon_size + icon_spacing) - icon_spacing
+        icons_content_height = total_rows * (icon_size + icon_spacing) - icon_spacing
 
-        # Clamp scroll offset
-        max_scroll = max(0, total_content_height - icon_grid_height)
-        self.icon_scroll_offset = max(0, min(self.icon_scroll_offset, max_scroll))
-        self._icon_max_scroll = max_scroll
-
-        # Clip to icon grid area
-        clip_rect = pygame.Rect(content_x, icon_grid_top,
-                                panel_w - padding_sides * 2, icon_grid_height)
-        old_clip = self.screen.get_clip()
-        self.screen.set_clip(clip_rect)
-
-        # Deferred tooltip info (drawn after clip is restored)
+        # Deferred tooltip info (drawn after profile clip is restored)
         deferred_tooltip = None
         small_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', max(11, int(14 * self.ui_scale)))
 
@@ -2037,12 +2032,11 @@ class MainMenu:
             row = i // icons_per_row
             col = i % icons_per_row
             icon_x = content_x + col * (icon_size + icon_spacing)
-            icon_y = icon_grid_top + row * (icon_size + icon_spacing) - self.icon_scroll_offset
+            icon_y = icon_grid_top + row * (icon_size + icon_spacing)
             icon_rect = pygame.Rect(icon_x, icon_y, icon_size, icon_size)
 
-            # Skip icons fully outside visible area
-            if icon_y + icon_size < icon_grid_top or icon_y > icon_grid_bottom:
-                # Still register UI element for click detection if partially visible
+            # Skip icons fully outside visible clip area
+            if icon_y + icon_size < visible_content_top or icon_y > visible_content_bottom:
                 if i < num_hero_icons:
                     self.profile_ui_elements[f'icon_{i}'] = {'rect': icon_rect}
                 else:
@@ -2127,22 +2121,71 @@ class MainMenu:
                 else:
                     deferred_tooltip = icon_name
 
-        # Restore clip
-        self.screen.set_clip(old_clip)
+        # --- Player Stats section (below icon grid, scrolls with profile content) ---
+        stats_y = icon_grid_top + icons_content_height + int(12 * self.ui_scale)
+        stats_line_width = panel_w - 2 * padding_sides
+        # Thin white divider line
+        pygame.draw.line(self.screen, (180, 180, 180),
+                         (content_x, stats_y), (content_x + stats_line_width, stats_y), 1)
+        stats_y += int(6 * self.ui_scale)
 
-        # Draw scroll indicator if icons overflow
-        if max_scroll > 0:
-            scrollbar_x = content_x + icons_per_row * (icon_size + icon_spacing) + int(4 * self.ui_scale)
+        # "Player Stats" header
+        stats_header_font = self._get_cached_font('assets/fonts/Cinzel-Bold.ttf',
+                                                   max(11, int(14 * self.ui_scale)))
+        stats_header = stats_header_font.render("Player Stats", True, WHITE)
+        self.screen.blit(stats_header, (content_x, stats_y))
+        stats_y += int(18 * self.ui_scale)
+
+        # Read stats from achievement_manager
+        a_stats = achievement_manager.stats
+        custom_total = a_stats.get('custom_games_ai_finished', 0)
+        custom_wins = a_stats.get('custom_game_ai_wins', 0)
+        mp_total = a_stats.get('multiplayer_games_finished', 0)
+        mp_wins = a_stats.get('multiplayer_wins', 0)
+        custom_rate = f"{round(100 * custom_wins / custom_total)}%" if custom_total > 0 else "N/A"
+        mp_rate = f"{round(100 * mp_wins / mp_total)}%" if mp_total > 0 else "N/A"
+
+        # Stat lines rendered in single column
+        stat_color = (200, 200, 200)
+        stat_line_height = int(18 * self.ui_scale)
+        stat_lines = [
+            f"Custom Game Win Rate: {custom_rate}",
+            f"Multiplayer Win Rate: {mp_rate}",
+            f"Total Custom Games Played: {custom_total}",
+            f"Total Multiplayer Games Played: {mp_total}",
+            f"Total Custom Game Wins: {custom_wins}",
+            f"Total Multiplayer Wins: {mp_wins}",
+        ]
+        for line_text in stat_lines:
+            stat_surf = small_font.render(line_text, True, stat_color)
+            self.screen.blit(stat_surf, (content_x, stats_y))
+            stats_y += stat_line_height
+
+        # Calculate and clamp profile scroll
+        # Total content height computed from unscrolled origin (independent of current scroll offset)
+        total_unscrolled_height = stats_y + self.profile_scroll_offset - visible_content_top
+        visible_height = visible_content_bottom - visible_content_top
+        profile_max_scroll = max(0, total_unscrolled_height - visible_height)
+        self._profile_max_scroll = profile_max_scroll
+        self.profile_scroll_offset = max(0, min(self.profile_scroll_offset, profile_max_scroll))
+
+        # Restore profile clip
+        self.screen.set_clip(old_profile_clip)
+
+        # Draw scroll indicator if content overflows
+        if profile_max_scroll > 0:
+            scrollbar_x = panel_x + panel_w - padding_sides + int(10 * self.ui_scale)
             scrollbar_w = int(4 * self.ui_scale)
-            visible_ratio = icon_grid_height / total_content_height
-            indicator_h = max(int(20 * self.ui_scale), int(icon_grid_height * visible_ratio))
-            if max_scroll > 0:
-                scroll_ratio = self.icon_scroll_offset / max_scroll
-            else:
-                scroll_ratio = 0
-            indicator_y = icon_grid_top + int((icon_grid_height - indicator_h) * scroll_ratio)
-            pygame.draw.rect(self.screen, (60, 60, 80), (scrollbar_x, icon_grid_top, scrollbar_w, icon_grid_height), border_radius=2)
-            pygame.draw.rect(self.screen, (150, 150, 170), (scrollbar_x, indicator_y, scrollbar_w, indicator_h), border_radius=2)
+            scrollbar_top = visible_content_top
+            scrollbar_height = visible_content_bottom - visible_content_top
+            visible_ratio = visible_height / total_unscrolled_height
+            indicator_h = max(int(20 * self.ui_scale), int(scrollbar_height * visible_ratio))
+            scroll_ratio = self.profile_scroll_offset / profile_max_scroll if profile_max_scroll > 0 else 0
+            indicator_y = scrollbar_top + int((scrollbar_height - indicator_h) * scroll_ratio)
+            pygame.draw.rect(self.screen, (60, 60, 80),
+                             (scrollbar_x, scrollbar_top, scrollbar_w, scrollbar_height), border_radius=2)
+            pygame.draw.rect(self.screen, (150, 150, 170),
+                             (scrollbar_x, indicator_y, scrollbar_w, indicator_h), border_radius=2)
 
         # --- Deferred: Draw title dropdown options on top of icons ---
         if self.title_dropdown_open:
