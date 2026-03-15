@@ -602,6 +602,34 @@ class AchievementManager:
                     synced += 1
         logger.info(f"Steam sync complete: {synced} achievements pushed")
 
+    def sync_from_steam(self):
+        """Pull achievements unlocked on Steam but missing from local config.
+        Recovers achievements lost due to config reset, reinstall, or cloud sync
+        issues. Also restores the corresponding stat keys so achievement checks
+        don't re-trigger redundantly."""
+        if not steam_manager.is_available:
+            return
+        recovered = 0
+        for ach in ACHIEVEMENTS:
+            ach_id = ach['id']
+            if ach_id in self.earned:
+                continue  # Already tracked locally
+            if steam_manager.is_achievement_unlocked(ach_id):
+                # Recover into local earned dict with current timestamp
+                # (original unlock time is not available from Steamworks API)
+                self.earned[ach_id] = datetime.now().isoformat()
+                # Restore the stat so _check_new_achievements won't re-process it
+                self.stats[ach['stat_key']] = max(
+                    self.stats.get(ach['stat_key'], 0), ach['stat_threshold']
+                )
+                recovered += 1
+                logger.info(f"Recovered achievement from Steam: {ach['name']} (id={ach_id})")
+        if recovered > 0:
+            self.save()
+            logger.info(f"Steam pull sync: recovered {recovered} achievements from Steam")
+        else:
+            logger.info("Steam pull sync: no missing achievements to recover")
+
     def save(self):
         """Persist achievement data via settings_manager"""
         settings.set_achievement_stats(self.stats)

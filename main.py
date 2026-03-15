@@ -13148,8 +13148,11 @@ if __name__ == "__main__":
     # SetAchievement silently fails until RequestCurrentStats callback fires
     steam_manager.pump_until_stats_ready()
 
-    # Sync any locally-earned achievements to Steam (catches offline unlocks)
+    # Bi-directional Steam achievement sync:
+    # 1. Pull achievements from Steam that are missing locally (recovers from config resets)
+    # 2. Push locally-earned achievements to Steam (catches offline unlocks)
     from achievement_manager import achievement_manager
+    achievement_manager.sync_from_steam()
     achievement_manager.sync_to_steam()
 
     # If Steam is available, use Steam persona name as player name
