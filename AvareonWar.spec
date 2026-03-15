@@ -21,6 +21,11 @@ steamworks_dir = os.path.join(PROJECT_ROOT, 'steamworks')
 if os.path.isdir(steamworks_dir):
     steam_datas.append((steamworks_dir, 'steamworks'))
 
+# steam_appid.txt — SteamworksPy requires this in CWD even when launched via Steam
+steam_appid = os.path.join(PROJECT_ROOT, 'steam_appid.txt')
+if os.path.isfile(steam_appid):
+    steam_datas.append((steam_appid, '.'))
+
 # Data files to include (source, destination in bundle)
 datas = steam_datas + [
     # Assets folder

@@ -30,11 +30,15 @@ Requires (all gated behind Steamworks partner account):
   - steam_appid.txt in working directory (dev only — remove before Steam depot upload)
 """
 
+import os
 import time
 
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Steam App ID — must match Steamworks partner dashboard
+STEAM_APP_ID = 4518130
 
 
 def _encode(s):
@@ -59,6 +63,21 @@ class SteamManager:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _ensure_appid_file():
+        """Ensure steam_appid.txt exists in CWD.
+        SteamworksPy unconditionally requires this file in os.getcwd(),
+        but PyInstaller frozen builds set CWD to _internal/ where it
+        doesn't exist.  Create it on-the-fly with our known app ID."""
+        appid_path = os.path.join(os.getcwd(), 'steam_appid.txt')
+        if not os.path.isfile(appid_path):
+            try:
+                with open(appid_path, 'w') as f:
+                    f.write(str(STEAM_APP_ID))
+                logger.info(f"Created steam_appid.txt at {appid_path}")
+            except OSError as e:
+                logger.warning(f"Could not create steam_appid.txt: {e}")
+
     def initialize(self):
         """Initialize Steamworks SDK.  Returns True if Steam is available.
         After SteamInit(), requests current user stats so achievements work."""
@@ -66,6 +85,10 @@ class SteamManager:
             return True
 
         try:
+            # SteamworksPy requires steam_appid.txt in CWD — ensure it exists
+            # for frozen (PyInstaller) builds where CWD is _internal/
+            self._ensure_appid_file()
+
             import steamworks
             self._steamworks = steamworks.STEAMWORKS()
             self._steamworks.initialize()
