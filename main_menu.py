@@ -22,6 +22,7 @@ from settings_manager import settings
 from global_sound import sound_manager  # Global sound manager for UI clicks
 from achievement_manager import achievement_manager, ALL_REWARD_ICON_PATHS, ALL_TITLES
 from achievement_panel import AchievementPanel
+from steam_integration import steam_manager
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 
@@ -159,6 +160,7 @@ class MainMenu:
         self.temp_player_icon = settings.get_player_icon()
         self.temp_selected_title = settings.get_selected_title()
         self.profile_name_active = False  # Whether name input field is active
+        self._steam_name_active = False  # True when name is from Steam (non-editable)
         self.title_dropdown_open = False  # Title dropdown in profile
 
         # Profile UI elements
@@ -522,6 +524,9 @@ class MainMenu:
             self.render()
             draw_custom_cursor(self.screen)
 
+            # Process Steam callbacks in menu (overlay popups, persona updates)
+            steam_manager.run_callbacks()
+
             pygame.display.flip()
 
         return self.result
@@ -632,8 +637,8 @@ class MainMenu:
                 elif self.show_achievements:
                     self.achievement_panel_helper.handle_keydown(event)
 
-                # Handle text input for profile name
-                elif self.show_profile and self.profile_name_active:
+                # Handle text input for profile name (disabled when Steam name is active)
+                elif self.show_profile and self.profile_name_active and not self._steam_name_active:
                     if event.key == pygame.K_BACKSPACE:
                         self.temp_player_name = self.temp_player_name[:-1]
                     elif event.key == pygame.K_RETURN or event.key == pygame.K_ESCAPE:
@@ -740,9 +745,10 @@ class MainMenu:
                 self._close_profile()
                 return
 
-            # Check player name input field
+            # Check player name input field (not clickable when Steam name is active)
             if 'name_input' in self.profile_ui_elements and self.profile_ui_elements['name_input']['rect'].collidepoint(pos):
-                self.profile_name_active = True
+                if not self._steam_name_active:
+                    self.profile_name_active = True
                 self.title_dropdown_open = False
                 return
 
@@ -1037,7 +1043,18 @@ class MainMenu:
         self.show_profile = True
         self.profile_panel_target_y = self.profile_panel_final_y
         # Reset temporary settings to current settings
-        self.temp_player_name = settings.get_player_name()
+        # If Steam is available, use Steam persona name (non-editable)
+        if steam_manager.is_available:
+            steam_name = steam_manager.get_player_name()
+            if steam_name:
+                self.temp_player_name = steam_name
+                self._steam_name_active = True
+            else:
+                self.temp_player_name = settings.get_player_name()
+                self._steam_name_active = False
+        else:
+            self.temp_player_name = settings.get_player_name()
+            self._steam_name_active = False
         self.temp_player_icon = settings.get_player_icon()
         self.temp_selected_title = settings.get_selected_title()
         self.profile_name_active = False
@@ -1887,23 +1904,36 @@ class MainMenu:
         input_height = int(40 * self.ui_scale)
         input_rect = pygame.Rect(content_x, y, input_width, input_height)
 
-        # Draw input box (black background)
-        is_active = self.profile_name_active
-        input_bg = (30, 30, 30) if is_active else (20, 20, 20)
+        # Draw input box — different style when Steam name is active (non-editable)
+        is_active = self.profile_name_active and not self._steam_name_active
+        if self._steam_name_active:
+            # Steam name: darker, non-interactive look
+            input_bg = (15, 15, 15)
+            border_color = (60, 60, 60)
+        else:
+            input_bg = (30, 30, 30) if is_active else (20, 20, 20)
+            border_color = WHITE if is_active else (100, 100, 100)
         pygame.draw.rect(self.screen, input_bg, input_rect, border_radius=5)
-        pygame.draw.rect(self.screen, WHITE if is_active else (100, 100, 100), input_rect, 2, border_radius=5)
+        pygame.draw.rect(self.screen, border_color, input_rect, 2, border_radius=5)
 
         # Draw current name text
         name_text = label_font.render(self.temp_player_name, True, WHITE)
         name_rect = name_text.get_rect(midleft=(input_rect.left + 10, input_rect.centery))
         self.screen.blit(name_text, name_rect)
 
-        # Draw cursor if active
+        # Draw cursor if active (not shown for Steam names)
         if is_active and int(pygame.time.get_ticks() / 500) % 2 == 0:
             cursor_x = name_rect.right + 2
             pygame.draw.line(self.screen, WHITE,
                            (cursor_x, input_rect.top + 8),
                            (cursor_x, input_rect.bottom - 8), 2)
+
+        # Show "(Steam)" indicator next to input box when name comes from Steam
+        if self._steam_name_active:
+            steam_label_size = max(12, int(20 * self.ui_scale))
+            steam_label_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', steam_label_size)
+            steam_label = steam_label_font.render("(Steam)", True, (120, 180, 255))
+            self.screen.blit(steam_label, (input_rect.right + int(8 * self.ui_scale), input_rect.centery - steam_label.get_height() // 2))
 
         self.profile_ui_elements['name_input'] = {'rect': input_rect}
 

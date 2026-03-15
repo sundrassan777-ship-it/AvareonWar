@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # steam_integration.py
-# Steamworks SDK integration — achievements, stats, and rich presence
+# Steamworks SDK integration — achievements, stats, rich presence, and persona
 #
 # Uses SteamworksPy (https://github.com/philippj/SteamworksPy) as the
 # native wrapper around the Steamworks C SDK.  All calls are guarded so
@@ -10,6 +10,7 @@
 # Usage:
 #   from steam_integration import steam_manager
 #   steam_manager.initialize()          # Call once at startup after pygame.init()
+#   steam_manager.pump_until_stats_ready()  # Wait for stats before syncing achievements
 #   steam_manager.unlock_achievement("apprentice")
 #   steam_manager.set_rich_presence("Playing Campaign - Mission 3")
 #   steam_manager.shutdown()            # Call before sys.exit()
@@ -29,9 +30,19 @@ Requires (all gated behind Steamworks partner account):
   - steam_appid.txt in working directory (dev only — remove before Steam depot upload)
 """
 
+import time
+
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _encode(s):
+    """Encode a string to bytes for ctypes calls.
+    SteamworksPy methods without explicit argtypes need bytes, not str."""
+    if isinstance(s, str):
+        return s.encode('utf-8')
+    return s
 
 
 class SteamManager:
@@ -40,13 +51,17 @@ class SteamManager:
     def __init__(self):
         self._initialized = False
         self._steamworks = None
+        # Whether RequestCurrentStats() callback has been processed —
+        # required before SetAchievement/GetAchievement will work
+        self._stats_ready = False
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def initialize(self):
-        """Initialize Steamworks SDK.  Returns True if Steam is available."""
+        """Initialize Steamworks SDK.  Returns True if Steam is available.
+        After SteamInit(), requests current user stats so achievements work."""
         if self._initialized:
             return True
 
@@ -56,6 +71,16 @@ class SteamManager:
             self._steamworks.initialize()
             self._initialized = True
             logger.info("Steamworks SDK initialized successfully")
+
+            # Request user stats from Steam servers — REQUIRED before
+            # SetAchievement/GetAchievement/StoreStats will function.
+            # The callback fires asynchronously via run_callbacks().
+            try:
+                self._steamworks.UserStats.RequestCurrentStats()
+                logger.info("RequestCurrentStats() called — waiting for callback")
+            except Exception as e:
+                logger.warning(f"RequestCurrentStats() failed: {e}")
+
             return True
         except ImportError:
             logger.info("SteamworksPy not installed — running without Steam integration")
@@ -64,6 +89,37 @@ class SteamManager:
             logger.warning(f"Steamworks SDK init failed (Steam not running?): {e}")
             self._steamworks = None
             return False
+
+    def pump_until_stats_ready(self, max_wait=0.5):
+        """Poll run_callbacks() until Steam user stats are loaded.
+        Uses GetNumAchievements() > 0 as a readiness heuristic.
+        Blocks up to max_wait seconds. Call once at startup before sync_to_steam()."""
+        if not self._initialized:
+            return False
+
+        start = time.time()
+        while time.time() - start < max_wait:
+            try:
+                self._steamworks.run_callbacks()
+            except Exception:
+                pass
+            try:
+                # GetNumAchievements returns 0 until stats are loaded
+                if self._steamworks.UserStats.GetNumAchievements() > 0:
+                    self._stats_ready = True
+                    elapsed = time.time() - start
+                    logger.info(f"Steam stats ready after {elapsed:.3f}s "
+                                f"({self._steamworks.UserStats.GetNumAchievements()} achievements)")
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.01)
+
+        # Timed out — mark ready anyway (achievements earned during gameplay
+        # will still work since run_callbacks is called every frame)
+        self._stats_ready = True
+        logger.warning(f"Steam stats readiness timed out after {max_wait}s — proceeding anyway")
+        return False
 
     def shutdown(self):
         """Shut down Steamworks SDK.  Safe to call even if not initialized."""
@@ -81,6 +137,11 @@ class SteamManager:
         """True if Steam SDK initialized successfully."""
         return self._initialized
 
+    @property
+    def stats_ready(self):
+        """True if Steam user stats have been loaded (or timed out)."""
+        return self._stats_ready
+
     # ------------------------------------------------------------------
     # Achievements
     # ------------------------------------------------------------------
@@ -92,7 +153,8 @@ class SteamManager:
             return False
 
         try:
-            self._steamworks.UserStats.SetAchievement(achievement_id)
+            # Encode to bytes — SteamworksPy achievement methods lack argtypes
+            self._steamworks.UserStats.SetAchievement(_encode(achievement_id))
             self._steamworks.UserStats.StoreStats()
             logger.info(f"Steam achievement unlocked: {achievement_id}")
             return True
@@ -106,7 +168,7 @@ class SteamManager:
             return False
 
         try:
-            self._steamworks.UserStats.ClearAchievement(achievement_id)
+            self._steamworks.UserStats.ClearAchievement(_encode(achievement_id))
             self._steamworks.UserStats.StoreStats()
             logger.info(f"Steam achievement cleared: {achievement_id}")
             return True
@@ -120,9 +182,29 @@ class SteamManager:
             return False
 
         try:
-            return self._steamworks.UserStats.GetAchievement(achievement_id)
+            return self._steamworks.UserStats.GetAchievement(_encode(achievement_id))
         except Exception:
             return False
+
+    # ------------------------------------------------------------------
+    # Player Identity
+    # ------------------------------------------------------------------
+
+    def get_player_name(self):
+        """Get the current user's Steam persona name.
+        Returns None if Steam is unavailable."""
+        if not self._initialized:
+            return None
+
+        try:
+            name = self._steamworks.Friends.GetPlayerName()
+            # GetPersonaName returns c_char_p (bytes in Python 3)
+            if isinstance(name, bytes):
+                return name.decode('utf-8')
+            return name
+        except Exception as e:
+            logger.warning(f"Failed to get Steam persona name: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Rich Presence

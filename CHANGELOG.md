@@ -2,6 +2,18 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-15 - Fix Steam Achievements + Steam Player Name
+
+- **Bug fix:** Steam achievements silently failed to unlock despite in-game achievements working
+  - Root cause: `RequestCurrentStats()` was never called after `SteamInit()` — required by Steamworks before `SetAchievement`/`GetAchievement`/`StoreStats` will function
+  - Added `RequestCurrentStats()` call in `initialize()` and `pump_until_stats_ready()` to block until stats are loaded before syncing
+  - Fixed achievement ID encoding: SteamworksPy achievement methods lack `argtypes`, so strings must be explicitly encoded to bytes
+- **New feature:** Player name auto-populated from Steam persona name when running via Steam
+  - Profile name field shows Steam name with "(Steam)" indicator and is non-editable
+  - Steam name auto-saved to settings on startup, used everywhere (profile, multiplayer, in-game)
+  - Without Steam, name editing works as before
+- **Enhancement:** Added `steam_manager.run_callbacks()` to main menu loop for Steam overlay support in menus
+
 ## 2026-03-10 - Campaign Mission 6: The Second War
 
 - **New feature:** Implemented Campaign Mission 6 "The Second War"

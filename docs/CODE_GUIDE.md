@@ -2138,10 +2138,12 @@ def is_action_allowed(self, action_type, **kwargs):
 
 ## Achievement System
 
-**Files:** `achievement_manager.py` (definitions, logic), `achievement_panel.py` (UI helper)
+**Files:** `achievement_manager.py` (definitions, logic), `achievement_panel.py` (UI helper), `steam_integration.py` (Steam sync)
 **Integration:** `main_menu.py` (button/panel/profile), `recap_screen.py` (preview popup), `main.py` (post-game hook), `settings_manager.py` (persistence)
 
 **Architecture:** Singleton `AchievementManager` owns all definitions and stat tracking. `AchievementPanel` is a UI helper class created by `MainMenu` to render panel content. Achievement data persisted to `config.json` via `settings_manager`.
+
+**Steam integration:** `steam_integration.py` provides `SteamManager` singleton. On startup: `initialize()` calls `SteamInit()` + `RequestCurrentStats()`, then `pump_until_stats_ready()` waits for stats callback before `sync_to_steam()`. Achievement IDs are encoded to bytes before passing to SteamworksPy (no argtypes on achievement methods). Steam persona name auto-updates `settings.player_name` on startup; profile panel shows "(Steam)" indicator and disables name editing when Steam is active.
 
 **Data flow:** Game ends → `show_recap_if_ended()` → `achievement_manager.record_game_result(game)` → detects mode, increments stats, checks thresholds → returns newly earned list → `RecapScreen` shows preview popups → user returns to main menu → achievement panel shows all achievements. Campaign missions set `gs.winner = 0` and `gs.phase = 'ended'` in their `_start_victory` method to trigger this flow.
 
@@ -2161,6 +2163,8 @@ def is_action_allowed(self, action_type, **kwargs):
 - **Change achievement panel layout**: Modify `achievement_panel.py` draw methods.
 - **Change preview popup**: Modify `_draw_achievement_preview()` / `_update_achievement_preview()` in `recap_screen.py`.
 - **Change profile title/icon UI**: Modify `_draw_profile_panel()` in `main_menu.py`.
+- **Change Steam achievement sync**: Modify `steam_integration.py` (`unlock_achievement`, `pump_until_stats_ready`). Achievement IDs must be bytes-encoded.
+- **Change Steam name behavior**: Modify `_open_profile()` in `main_menu.py` (detection) and `_draw_profile_panel()` (UI). Startup auto-set in `main.py`.
 
 ## Recap Screen
 
