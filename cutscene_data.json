@@ -1120,9 +1120,173 @@
     ]
   },
   "mission_6_intro": {
-    "slides": []
+    "slides": [
+      {
+        "image": "assets/cutscenes/M6C1I1.png",
+        "camera_a": {
+          "x": 93.13199665831235,
+          "y": 64.79615705931496,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 594.8524644945697,
+          "y": 248.54785923141185,
+          "width": 922.1988304093567,
+          "height": 518.7368421052631,
+          "rotation": 0
+        },
+        "pan_duration": 7.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M6C1I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Few short years after the First War have been marked by recovery and relative peace."
+      },
+      {
+        "image": "assets/cutscenes/M6C1I2.png",
+        "camera_a": {
+          "x": 246.94586466165424,
+          "y": 98.62283834586464,
+          "width": 1107.7368421052631,
+          "height": 623.1019736842105,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 25.79248120300781,
+          "y": 7.377255639097484,
+          "width": 1477.6586466165413,
+          "height": 831.1829887218046,
+          "rotation": 0
+        },
+        "pan_duration": 16.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M6C1I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "However, this was to be cut short, as the new king of Naragonthid, Leonid Royen, afraid and paranoid about their eastern neighbor, Azincourne, began preparations for a new war against them."
+      },
+      {
+        "image": "assets/cutscenes/M6C1I3.png",
+        "camera_a": {
+          "x": 488.70225563909776,
+          "y": 15.863157894736787,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 110.46165413533828,
+          "y": 22.536184210526358,
+          "width": 917.772932330827,
+          "height": 516.2472744360902,
+          "rotation": 0
+        },
+        "pan_duration": 12.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M6C1I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Using their expansionist views as a pretext, Naragonese emissaries met with representatives of the nation of Sordia, and the two countries signed an alliance."
+      },
+      {
+        "image": "assets/cutscenes/M6C1I4.png",
+        "camera_a": {
+          "x": 447.6015780191218,
+          "y": 240.1869302886847,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 19.200594077786945,
+          "y": 87.27899378074801,
+          "width": 1515.459166434605,
+          "height": 852.4457811194654,
+          "rotation": 0
+        },
+        "pan_duration": 12.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M6C1I4V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Now it was their task to remove all that would oppose them, starting with a country that was geographically dividing them - Quil'en - and then continuing northwards."
+      }
+    ]
   },
   "mission_6_outro": {
-    "slides": []
+    "slides": [
+      {
+        "image": "assets/cutscenes/M6C2I1.png",
+        "camera_a": {
+          "x": 64.04594820384295,
+          "y": 372.766081871345,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 64.77944862155391,
+          "y": 88.64745196324145,
+          "width": 1424.04126984127,
+          "height": 801.0232142857144,
+          "rotation": 0
+        },
+        "pan_duration": 22.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M6C2I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Naragonese forces laid siege to the major Azincournean city of Avantgardia - but the attack was, after weeks of brutal siege, finally repelled. This, combined with the ensuing invasion of Azincourne's allies from the west, marked the end of Naragonese campaign."
+      },
+      {
+        "image": "assets/cutscenes/M6C2I2.png",
+        "camera_a": {
+          "x": 60.6240601503759,
+          "y": 26.642105263157873,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 62.748872180451144,
+          "y": 139.85347744360888,
+          "width": 1453.618045112782,
+          "height": 817.6601503759399,
+          "rotation": 0
+        },
+        "pan_duration": 11.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M6C2I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "Now, forces of Azincourne were rallied and ready to liberate their homeland from their invaders - and to bring them to justice."
+      }
+    ]
   }
 }

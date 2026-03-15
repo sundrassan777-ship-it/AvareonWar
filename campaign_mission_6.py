@@ -114,14 +114,17 @@ MISSION_6_SPEAKER = "King Leonid Royen"
 INTRO_SEQUENCE = [
     # Step 0: Zoom to Leuse Valley
     ("zoom_to", "Leuse Valley", ""),
-    # Step 1-4: Opening narrative transmissions
-    ("wait", 5.0, "Even though Azincourne fell, we cannot relent. We are not safe for as long as Azincourne is allowed to prosper."),
-    ("wait", 6.0, "Conquest at this point, however, would be ill-advised. The borderlands are massively secured. We need allies and resources for a full-scale invasion."),
-    ("wait", 6.0, "Our ally, Sordia, will join our fight. Our common ancestry will be the cornerstone of our alliance. However, they are far to the southwest."),
-    ("wait", 6.0, "We need to build a corridor between us and them. Take over the states of Quil'en and Anodia - we will use their resources for our war."),
+    # Step 1-4: Opening narrative transmissions (durations = voice file length + 1s)
+    ("wait", 8.9, "Even though Azincourne fell, we cannot relent. We are not safe for as long as Azincourne is allowed to prosper."),
+    ("wait", 11.1, "Conquest at this point, however, would be ill-advised. The borderlands are massively secured. We need allies and resources for a full-scale invasion."),
+    ("wait", 12.3, "Our ally, Sordia, will join our fight. Our common ancestry will be the cornerstone of our alliance. However, they are far to the southwest."),
+    ("wait", 9.8, "We need to build a corridor between us and them. Take over the states of Quil'en and Anodia - we will use their resources for our war."),
     # Step 5: Start gameplay
     ("start_game", 0, ""),
 ]
+
+# Map intro step indices to voice keys (step 0 is zoom, steps 1-4 are transmissions)
+INTRO_STEP_TO_VOICE = {1: "M6T1", 2: "M6T2", 3: "M6T3", 4: "M6T4"}
 
 # ============================================================================
 # UNIT CREATION HELPERS (same pattern as campaign_mission_5.py)
@@ -428,7 +431,7 @@ class Mission6:
 
         # Defeat text and voice key (set dynamically based on defeat cause)
         self._defeat_text = "We have lost our homeland. All is lost."
-        self._defeat_voice_key = None  # No voice lines yet (TBD)
+        self._defeat_voice_key = "M6T12"
 
         # Allow turn timer to auto-end player turns
         self.allow_timer_expiry = True
@@ -691,6 +694,11 @@ class Mission6:
             if text:
                 self._show_transmission(text, speaker=MISSION_6_SPEAKER)
                 self.transmission_duration = param
+                # Play voice line for this intro step
+                voice_key = INTRO_STEP_TO_VOICE.get(self.intro_step_index)
+                if voice_key:
+                    from global_sound import play_transmission_sound
+                    play_transmission_sound(voice_key)
             else:
                 self.transmission_overlay = None
                 self.transmission_duration = param
@@ -863,8 +871,11 @@ class Mission6:
 
                 text = "The Azincourne heartland lies wide open! They will surely not be able to withstand our might and sue for peace!"
                 self._show_transmission(text, speaker=MISSION_6_SPEAKER)
-                self.transmission_duration = 5.0
+                self.transmission_duration = 8.3
                 self.transmission_timer = 0.0
+                # Play victory voice line
+                from global_sound import play_transmission_sound
+                play_transmission_sound("M6T11")
 
         # Deferred defeat: same pattern
         if self._defeat_waiting and gameplay_idle:
@@ -874,8 +885,11 @@ class Mission6:
                 self.game_paused = True
 
                 self._show_transmission(self._defeat_text, speaker=MISSION_6_SPEAKER)
-                self.transmission_duration = 4.0
+                self.transmission_duration = 4.6
                 self.transmission_timer = 0.0
+                # Play defeat voice line
+                from global_sound import play_transmission_sound
+                play_transmission_sound(self._defeat_voice_key)
 
         # Update victory sequence — return 'exit_campaign' to tell main.py to exit game loop
         result = self._update_victory_sequence(delta_time)
@@ -1350,16 +1364,16 @@ class Mission6:
         self._blocked_territories.discard("Ahtep")
         self._blocked_territories.discard("Daomea")
 
-        # Two-part quest 1 completion transmission
+        # Two-part quest 1 completion transmission (durations = voice file length + 1s)
         self._queue_transmission(
             "Our alliance is secure. And look, the mighty empiurate of Ahtep agreed to join our cause.",
-            5.0
+            7.6, "M6T5"
         )
         self._queue_transmission(
             "We will use their military to advance our ends, but beware - "
             "Azincourne has also found more allies. Push through Sstep, Liadnon "
             "and Amennia to secure our heartland.",
-            7.0
+            13.0, "M6T6"
         )
 
     def _complete_quest_2(self):
@@ -1384,7 +1398,7 @@ class Mission6:
             "We have rid Azincourne of its allies. Now it is time to strike. "
             "We must bypass the fortified borderlands by conquering the weak "
             "states of Venexia and Révia.",
-            7.0
+            12.2, "M6T7"
         )
 
     def _complete_quest_3(self):
@@ -1404,7 +1418,7 @@ class Mission6:
         self._queue_transmission(
             "We are on the borders of Azincourne! Strike their heartland! "
             "Decimate their territories of Duchy of Daurels, Northern Heilonia and Londia!",
-            6.0
+            11.1, "M6T8"
         )
 
     def _complete_quest_4(self):
@@ -1537,7 +1551,7 @@ class Mission6:
                         logger.info(f"Blue angered! Red conquered Blue territory {territory}")
                         self._queue_transmission(
                             "The Northern Powers amass their forces against us. They send even more forces to attack!",
-                            4.0
+                            7.0, "M6T9"
                         )
                 elif not self.blue_active:
                     # Red conquered a non-Blue territory (Yellow) → activate Blue
@@ -1546,7 +1560,7 @@ class Mission6:
                     self._queue_transmission(
                         "The Northern Powers have taken notice of our expansion. "
                         "They are sending skirmishing forces against us!",
-                        4.0
+                        7.5, "M6T10"
                     )
 
             # Check quest completion whenever Red conquers a territory
