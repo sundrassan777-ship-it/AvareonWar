@@ -474,11 +474,11 @@ ACHIEVEMENTS = [
         'stat_key': 'campaign_mission_5_bonus',
         'stat_threshold': 1,
     },
-    # Mission 6: TBD — completion
+    # Mission 6: The Second War — completion
     {
         'id': 'campaign_mission_6',
-        'name': 'Chapter 6',
-        'description': 'Complete Chapter 6.',
+        'name': 'The Second War',
+        'description': 'Complete Chapter 6: The Second War.',
         'category': 'campaign',
         'icon': 'assets/achievements/AchievementIcons/Campaign6Achiev.png',
         'reward_type': None,
@@ -486,15 +486,16 @@ ACHIEVEMENTS = [
         'stat_key': 'campaign_mission_6_completed',
         'stat_threshold': 1,
     },
-    # Mission 6 Bonus — placeholder
+    # Mission 6 Bonus: Red World — conquer all Northern Powers territories and win
     {
         'id': 'campaign_mission_6_bonus',
-        'name': 'Chapter 6 Bonus',
-        'description': 'Complete the bonus objective in Chapter 6.',
+        'name': 'Red World',
+        'description': 'Conquer all territories owned by Northern Powers and win Chapter 6.',
         'category': 'campaign',
-        'icon': 'assets/achievements/AchievementIcons/Campaign6Bonus.png',
-        'reward_type': None,
-        'reward_id': None,
+        'icon': 'assets/achievements/AchievementIcons/Campaign6BonusAchiev.png',
+        'reward_type': 'icon',
+        'reward_id': 'assets/achievements/RewardsIcons/KalanIcon.png',
+        'reward_name': 'Lord Kalan',
         'stat_key': 'campaign_mission_6_bonus',
         'stat_threshold': 1,
     },

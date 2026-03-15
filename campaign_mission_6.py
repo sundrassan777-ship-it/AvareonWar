@@ -1670,9 +1670,17 @@ class Mission6:
     # ========================================================================
 
     def get_bonus_conditions(self):
-        """Return bonus achievement conditions for Mission 6."""
+        """Return bonus achievement conditions for Mission 6.
+
+        Bonus "Red World": Northern Powers (player 1) owns no territories.
+        Covers both their starting 5 and any they may have conquered during the game.
+        """
+        gs = self.game_state
+        northern_powers_has_no_territories = not any(
+            gs.territory_owners.get(t) == 1 for t in MISSION_6_TERRITORIES
+        )
         return {
-            'campaign_mission_6_bonus': False,  # TBD
+            'campaign_mission_6_bonus': northern_powers_has_no_territories,
         }
 
     # ========================================================================
