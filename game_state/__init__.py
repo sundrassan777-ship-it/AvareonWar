@@ -964,6 +964,11 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             'heroes': {str(k): sorted(v.keys()) for k, v in self.heroes.items() if v},
             'tech_researched': {str(k): sorted(list(v)) for k, v in self.player_tech_researched.items() if v},
             'building_xp': {t: dict(sorted(plots.items())) for t, plots in sorted(self.building_xp.items()) if plots},
+            # Sync fix: include construction/training/upgrade state to catch more divergence types
+            'under_construction': {t: dict(sorted(plots.items())) for t, plots in sorted(self.under_construction.items()) if plots},
+            'training_queue': {t: {str(p): q for p, q in sorted(plots.items())} for t, plots in sorted(self.training_queue.items()) if plots},
+            'castle_upgrades': {t: dict(sorted(plots.items())) for t, plots in sorted(self.castle_upgrades.items()) if plots},
+            'castle_upgrades_in_progress': {t: dict(sorted(plots.items())) for t, plots in sorted(self.castle_upgrades_in_progress.items()) if plots},
             # Note: We don't include chat, messages, or UI state
         }
 

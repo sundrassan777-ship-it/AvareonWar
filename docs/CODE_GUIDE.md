@@ -933,6 +933,28 @@ set_game_started(started)             # Enable reconnection mode
 4. Add handler in `main.py _handle_network_message()`
 5. Test with host and multiple clients
 
+✅ **Sync a new game action in sequential multiplayer:**
+Every action that modifies game state must send a network message. Pattern:
+1. After `game_state.action()` succeeds, call `_send_action_to_remote(MessageType.XXX, {...})`
+2. For sim mode: queue order via `sim_state.add_order()` instead (sent via SIM_PLAYER_READY)
+3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish)
+4. `FULL_STATE_SYNC` sent by host at every turn boundary as safety net (sequential mode)
+5. `SIM_ROUND_COMPLETE` sent by host at every round end as safety net (simultaneous mode)
+6. All randomness must be resolved on sender side; include results in message (e.g., Royal Charisma stolen_units)
+7. Send messages in **both modes** — don't guard with `self.sim_state is None` unless sequential-only logic
+
+✅ **Adding state to sync safety nets:**
+When adding new game state fields that could diverge between host and client:
+1. Add to `_send_full_state_sync()` state_data dict (sequential mode safety net)
+2. Add to `_sim_broadcast_round_complete()` authoritative_data dict (sim mode safety net)
+3. Add apply logic in both `FULL_STATE_SYNC` and `SIM_ROUND_COMPLETE` handlers
+4. Consider adding to `calculate_state_checksum()` in `game_state/__init__.py` for desync detection
+
+✅ **Client SIM_ROUND_COMPLETE handler must mirror host's `complete_round()`:**
+When adding new per-round logic in `sim_state.complete_round()`, ensure the client handler in
+`main.py _handle_network_message(SIM_ROUND_COMPLETE)` calls the same methods. Currently both call:
+`collect_income()`, `finish_constructions()`, `finish_research()`, `finish_castle_upgrades()`, `_tick_building_xp()`
+
 ✅ **Change connection settings:**
 - Modify in `network_config.py`:
   - `MAX_CLIENTS = 3` (host + 3 = 4 players)

@@ -405,6 +405,8 @@ class Game:
         self.network_connection = network_connection
         self.multiplayer_mode = (network_connection is not None)
         self.local_player_index = None  # Will be set from network connection
+        # Sync fix: queue FULL_STATE_SYNC if received during battles/animations
+        self._pending_full_state_sync = None
 
         # Window focus tracking — throttle FPS when unfocused (Steam requirement)
         self._window_focused = True
@@ -1306,6 +1308,26 @@ class Game:
                     'plot_index': plot_index
                 })
 
+        # Sync fix: Send castle upgrade completion notifications
+        if hasattr(self.game_state, 'last_completed_castle_upgrades') and self.game_state.last_completed_castle_upgrades:
+            for territory, plot_index in self.game_state.last_completed_castle_upgrades:
+                self._send_action_to_remote(MessageType.BUILDING_COMPLETE, {
+                    'territory': territory,
+                    'building_type': 'CastleUpgrade',
+                    'plot_index': plot_index
+                })
+
+        # Sync fix: Send hero training completion notifications
+        if hasattr(self.game_state, 'last_completed_heroes') and self.game_state.last_completed_heroes:
+            for hero_info in self.game_state.last_completed_heroes:
+                self._send_action_to_remote(MessageType.BUILDING_COMPLETE, {
+                    'territory': hero_info['territory'],
+                    'building_type': 'HeroComplete',
+                    'plot_index': hero_info['keep_plot'],
+                    'hero_type': hero_info['hero_type'],
+                    'player_index': hero_info['player_index']
+                })
+
     def _process_network_messages(self):
         """Process incoming network messages from remote player"""
         if not self.network_connection:
@@ -1328,6 +1350,22 @@ class Game:
                 break
 
             self._handle_network_message(msg)
+
+        # Sync fix: apply queued FULL_STATE_SYNC if battles/animations have cleared
+        # (previously these were silently dropped, causing missed sync corrections)
+        if self._pending_full_state_sync is not None:
+            battles_clear = (self.game_state.turn_phase != 'battles' or
+                             len(self.game_state.pending_battles) == 0)
+            animations_clear = not self.game_state.active_animations
+            if battles_clear and animations_clear:
+                logger.info("[NETWORK] Applying deferred FULL_STATE_SYNC")
+                pending_data = self._pending_full_state_sync
+                self._pending_full_state_sync = None
+                # Re-dispatch as FULL_STATE_SYNC message
+                self._handle_network_message({
+                    'type': MessageType.FULL_STATE_SYNC,
+                    'data': pending_data
+                })
 
     def _handle_network_message(self, message: dict):
         """
@@ -1362,8 +1400,44 @@ class Game:
             self._handle_remote_training_order(data)
 
         elif msg_type == MessageType.ORDER_REMOVE:
-            # Remote player cancelled an order
+            # Remote player cancelled an order (movement, training, castle upgrade, or hero training)
             self._handle_remote_order_remove(data)
+
+        elif msg_type == MessageType.RESEARCH_ORDER:
+            # Sync fix: Remote player started research (sequential mode)
+            tech_id = data.get('tech_id')
+            remote_player_index = data.get('player_index')
+            if remote_player_index is None:
+                remote_player_index = 1 if self.local_player_index == 0 else 0
+            if 0 <= remote_player_index < self.game_state.num_players and tech_id:
+                original_player = self.game_state.current_player
+                try:
+                    self.game_state.current_player = remote_player_index
+                    self.game_state.start_research(tech_id)
+                    logger.info(f"[NETWORK] Player {remote_player_index} started research: {tech_id}")
+                finally:
+                    self.game_state.current_player = original_player
+
+        elif msg_type == MessageType.HERO_TRAINING_ORDER:
+            # Sync fix: Remote player started hero training (sequential mode)
+            territory = data.get('territory')
+            keep_plot = data.get('keep_plot')
+            hero_type = data.get('hero_type')
+            remote_player_index = data.get('player_index')
+            if remote_player_index is None:
+                remote_player_index = 1 if self.local_player_index == 0 else 0
+            if 0 <= remote_player_index < self.game_state.num_players and territory and hero_type is not None:
+                territory_owner = self.game_state.territory_owners.get(territory)
+                if territory_owner == remote_player_index:
+                    original_player = self.game_state.current_player
+                    try:
+                        self.game_state.current_player = remote_player_index
+                        self.game_state.start_hero_training(territory, keep_plot, hero_type)
+                        logger.info(f"[NETWORK] Player {remote_player_index} started hero training: {hero_type} in {territory}")
+                    finally:
+                        self.game_state.current_player = original_player
+                else:
+                    logger.warning(f"[NETWORK] REJECTED: Hero training in {territory} - not owned by Player {remote_player_index}")
 
         elif msg_type == MessageType.EXECUTE_ORDERS:
             # Remote player clicked Execute Orders
@@ -1548,9 +1622,45 @@ class Game:
 
             # Add the building to the map (same logic as finish_constructions)
             if territory and building_type is not None and plot_index is not None:
-                if territory not in self.game_state.buildings:
-                    self.game_state.buildings[territory] = {}
-                self.game_state.buildings[territory][plot_index] = building_type
+                if building_type == 'CastleUpgrade':
+                    # Sync fix: castle upgrade completion from remote player
+                    if territory not in self.game_state.castle_upgrades:
+                        self.game_state.castle_upgrades[territory] = {}
+                    self.game_state.castle_upgrades[territory][plot_index] = True
+                    # Remove from in-progress if present
+                    if territory in self.game_state.castle_upgrades_in_progress:
+                        if plot_index in self.game_state.castle_upgrades_in_progress[territory]:
+                            del self.game_state.castle_upgrades_in_progress[territory][plot_index]
+                            if not self.game_state.castle_upgrades_in_progress[territory]:
+                                del self.game_state.castle_upgrades_in_progress[territory]
+                    # Trigger visual effect
+                    if self.map_renderer:
+                        self.map_renderer.trigger_castle_upgrade_effect(territory, plot_index)
+                    logger.info(f"[NETWORK] Castle upgrade complete in {territory} plot {plot_index}")
+                elif building_type == 'HeroComplete':
+                    # Sync fix: hero training completion from remote player
+                    hero_type = data.get('hero_type')
+                    player_index = data.get('player_index', remote_player_index)
+                    if hero_type:
+                        if player_index not in self.game_state.heroes:
+                            self.game_state.heroes[player_index] = {}
+                        self.game_state.heroes[player_index][hero_type] = {
+                            'keep_territory': territory,
+                            'keep_plot': plot_index,
+                            'status': 'active'
+                        }
+                        # Remove from training queue if present
+                        if territory in self.game_state.hero_training_queue:
+                            if plot_index in self.game_state.hero_training_queue[territory]:
+                                del self.game_state.hero_training_queue[territory][plot_index]
+                                if not self.game_state.hero_training_queue[territory]:
+                                    del self.game_state.hero_training_queue[territory]
+                        logger.info(f"[NETWORK] Hero {hero_type} training complete for Player {player_index} in {territory}")
+                else:
+                    # Normal building completion
+                    if territory not in self.game_state.buildings:
+                        self.game_state.buildings[territory] = {}
+                    self.game_state.buildings[territory][plot_index] = building_type
 
         elif msg_type == MessageType.CHAT_MESSAGE:
             # Remote player sent a chat message
@@ -1582,10 +1692,11 @@ class Game:
                     logger.info(f"[NETWORK] Client checksum: {client_checksum}")
 
                     # Show warning message
-                    self.game_state.add_message("WARNING: Game state desync detected!")
+                    self.game_state.add_message("WARNING: Game state desync detected! Resyncing...")
 
-                    # TODO: In future, could implement full state resync here
-                    # For now, just warn the players
+                    # Sync fix: send corrective FULL_STATE_SYNC on checksum mismatch
+                    self._send_full_state_sync()
+                    logger.info(f"[HOST] Sent corrective FULL_STATE_SYNC after desync at turn {turn_number}")
                 else:
                     logger.info(f"[NETWORK] State checksum validated for turn {turn_number}")
 
@@ -1740,7 +1851,10 @@ class Game:
                         elif ability_name == 'Levy':
                             self.game_state.execute_levy(target, player_id)
                         elif ability_name == 'Royal Charisma':
-                            self.game_state.execute_royal_charisma(target, player_id)
+                            # Sync fix: pass pre-selected stolen units from sender
+                            # to ensure same random units are stolen on both sides
+                            stolen_units = data.get('stolen_units')
+                            self.game_state.execute_royal_charisma(target, player_id, pre_selected_unit_ids=stolen_units)
                         elif ability_name == 'Regicide':
                             self.game_state.execute_regicide(target, player_id)
                         elif ability_name == 'Decisive Strike':
@@ -1885,7 +1999,8 @@ class Game:
                     self.sim_state.player_orders[player_id].clear()
                 logger.info(f"[NETWORK] Cleared player_orders")
 
-                # Apply income and finish constructions/research for all players
+                # Apply income and finish constructions/research/castle upgrades for all players
+                # Sync fix: must mirror host's complete_round() logic in sim_state.py
                 original_player = self.game_state.current_player
                 for player_id in range(self.game_state.num_players):
                     if player_id not in self.sim_state.eliminated_players:
@@ -1893,6 +2008,11 @@ class Game:
                         self.game_state.current_player = player_id
                         self.game_state.finish_constructions()
                         self.game_state.finish_research()
+                        # Sync fix: client was missing castle upgrade tick, building XP tick,
+                        # and training grounds XP tick — mirrors host's complete_round() in sim_state.py
+                        self.game_state.finish_castle_upgrades()
+                        self.game_state._tick_building_xp()
+                        self.game_state._tick_training_grounds_xp()
                 self.game_state.current_player = original_player
 
                 # Apply authoritative state from host to prevent desync
@@ -2007,7 +2127,77 @@ class Game:
                             int(player_id): garrison_data
                             for player_id, garrison_data in player_garrisons.items()
                         }
+                    # QA fix: sync legacy army counters to match garrison data
+                    # (checksum includes legacy counters, so they must stay in sync)
+                    from map_data import get_all_territories
+                    for territory in get_all_territories():
+                        self.game_state.sync_legacy_garrison_data(territory)
                     logger.debug(f"[NETWORK] Sync: territory_garrisons for {len(data['territory_garrisons'])} territories")
+
+                # Sync fix: apply authoritative building state to prevent permanent divergence
+                # from missed demolish messages, construction drift, or castle upgrade desync
+                if 'buildings' in data:
+                    self.game_state.buildings.clear()
+                    for territory, plots in data['buildings'].items():
+                        self.game_state.buildings[territory] = {
+                            int(plot): btype for plot, btype in plots.items()
+                        }
+                    logger.debug(f"[NETWORK] Sync: buildings for {len(data['buildings'])} territories")
+
+                if 'under_construction' in data:
+                    self.game_state.under_construction.clear()
+                    for territory, plots in data['under_construction'].items():
+                        self.game_state.under_construction[territory] = {
+                            int(plot): tuple(entry) for plot, entry in plots.items()
+                        }
+                    logger.debug(f"[NETWORK] Sync: under_construction")
+
+                if 'training_queue' in data:
+                    self.game_state.training_queue.clear()
+                    for territory, plots in data['training_queue'].items():
+                        self.game_state.training_queue[territory] = {
+                            int(plot): [tuple(entry) for entry in queue]
+                            for plot, queue in plots.items()
+                        }
+                    logger.debug(f"[NETWORK] Sync: training_queue")
+
+                if 'castle_upgrades_in_progress' in data:
+                    self.game_state.castle_upgrades_in_progress.clear()
+                    for territory, plots in data['castle_upgrades_in_progress'].items():
+                        self.game_state.castle_upgrades_in_progress[territory] = {
+                            int(plot): turns for plot, turns in plots.items()
+                        }
+                    logger.debug(f"[NETWORK] Sync: castle_upgrades_in_progress")
+
+                if 'castle_upgrades' in data:
+                    self.game_state.castle_upgrades.clear()
+                    for territory, plots in data['castle_upgrades'].items():
+                        self.game_state.castle_upgrades[territory] = {
+                            int(plot): val for plot, val in plots.items()
+                        }
+                    logger.debug(f"[NETWORK] Sync: castle_upgrades")
+
+                if 'building_xp' in data:
+                    self.game_state.building_xp.clear()
+                    for territory, plots in data['building_xp'].items():
+                        self.game_state.building_xp[territory] = {
+                            int(plot): xp for plot, xp in plots.items()
+                        }
+                    logger.debug(f"[NETWORK] Sync: building_xp")
+
+                if 'hero_ownership' in data:
+                    for pid_str, owned_heroes in data['hero_ownership'].items():
+                        self.game_state.hero_ownership[int(pid_str)] = set(owned_heroes)
+                    logger.debug(f"[NETWORK] Sync: hero_ownership")
+
+                # Sync fix: transient hero ability state
+                if 'embargo_blocked_players' in data:
+                    self.game_state.embargo_blocked_players = list(data['embargo_blocked_players'])
+                    logger.debug(f"[NETWORK] Sync: embargo_blocked_players = {data['embargo_blocked_players']}")
+
+                if 'player_master_negotiator_active' in data:
+                    self.game_state.player_master_negotiator_active = list(data['player_master_negotiator_active'])
+                    logger.debug(f"[NETWORK] Sync: player_master_negotiator_active")
 
                 self.sim_state.round_number = round_number
                 self.sim_state.start_planning_phase()
@@ -2031,6 +2221,180 @@ class Game:
                 self.game_state.active_animations.clear()
 
                 logger.info(f"[NETWORK] Client round complete processing done")
+
+        elif msg_type == MessageType.FULL_STATE_SYNC:
+            # Sync fix: Authoritative state sync from host (sequential mode safety net)
+            # QA fix: Queue if battles in progress or animations playing to avoid corruption
+            # (previously dropped the message, now queued for later application)
+            if (self.game_state.turn_phase == 'battles' and len(self.game_state.pending_battles) > 0):
+                logger.info("[NETWORK] Queuing FULL_STATE_SYNC - battles in progress")
+                self._pending_full_state_sync = data
+                return
+            if self.game_state.active_animations:
+                logger.info("[NETWORK] Queuing FULL_STATE_SYNC - animations playing")
+                self._pending_full_state_sync = data
+                return
+            logger.info("[NETWORK] Received FULL_STATE_SYNC from host")
+
+            # Apply authoritative gold values
+            if 'player_gold' in data:
+                for pid, gold in enumerate(data['player_gold']):
+                    if pid < len(self.game_state.player_gold):
+                        if self.game_state.player_gold[pid] != gold:
+                            logger.debug(f"[SYNC] Player {pid} gold {self.game_state.player_gold[pid]} -> {gold}")
+                        self.game_state.player_gold[pid] = gold
+
+            # Apply authoritative territory ownership
+            if 'territory_owners' in data:
+                for territory, owner in data['territory_owners'].items():
+                    self.game_state.territory_owners[territory] = owner
+                self.game_state._territory_owners_version += 1
+                self.game_state.invalidate_territorial_bonus_cache()
+
+            # Apply authoritative garrisons
+            if 'territory_garrisons' in data:
+                self.game_state.territory_garrisons.clear()
+                for territory, player_garrisons in data['territory_garrisons'].items():
+                    self.game_state.territory_garrisons[territory] = {
+                        int(pid): garrison_data
+                        for pid, garrison_data in player_garrisons.items()
+                    }
+                # QA fix: sync legacy army counters to match garrison data
+                # (checksum includes legacy counters, so they must stay in sync)
+                from map_data import get_all_territories
+                for territory in get_all_territories():
+                    self.game_state.sync_legacy_garrison_data(territory)
+
+            # Apply authoritative buildings
+            if 'buildings' in data:
+                self.game_state.buildings.clear()
+                for territory, plots in data['buildings'].items():
+                    self.game_state.buildings[territory] = {
+                        int(plot): btype for plot, btype in plots.items()
+                    }
+
+            # Apply authoritative under_construction
+            if 'under_construction' in data:
+                self.game_state.under_construction.clear()
+                for territory, plots in data['under_construction'].items():
+                    self.game_state.under_construction[territory] = {
+                        int(plot): tuple(entry) for plot, entry in plots.items()
+                    }
+
+            # Apply authoritative training queue
+            if 'training_queue' in data:
+                self.game_state.training_queue.clear()
+                for territory, plots in data['training_queue'].items():
+                    self.game_state.training_queue[territory] = {
+                        int(plot): [tuple(entry) for entry in queue]
+                        for plot, queue in plots.items()
+                    }
+
+            # Apply authoritative castle upgrades
+            if 'castle_upgrades_in_progress' in data:
+                self.game_state.castle_upgrades_in_progress.clear()
+                for territory, plots in data['castle_upgrades_in_progress'].items():
+                    self.game_state.castle_upgrades_in_progress[territory] = {
+                        int(plot): turns for plot, turns in plots.items()
+                    }
+            if 'castle_upgrades' in data:
+                self.game_state.castle_upgrades.clear()
+                for territory, plots in data['castle_upgrades'].items():
+                    self.game_state.castle_upgrades[territory] = {
+                        int(plot): val for plot, val in plots.items()
+                    }
+
+            # Apply authoritative research state
+            if 'player_tech_researched' in data:
+                for pid_str, techs in data['player_tech_researched'].items():
+                    self.game_state.player_tech_researched[int(pid_str)] = set(techs)
+            if 'research_in_progress' in data:
+                self.game_state.research_in_progress.clear()
+                for pid_str, research in data['research_in_progress'].items():
+                    self.game_state.research_in_progress[int(pid_str)] = research
+            if 'player_tech_available' in data:
+                for pid_str, techs in data['player_tech_available'].items():
+                    self.game_state.player_tech_available[int(pid_str)] = set(techs)
+
+            # Apply authoritative tech effects
+            if 'tech_effects' in data:
+                effects = data['tech_effects']
+                if 'royal_decree_discount' in effects:
+                    self.game_state.player_royal_decree_discount = effects['royal_decree_discount']
+                if 'training_cost_discount' in effects:
+                    self.game_state.player_training_cost_discount = effects['training_cost_discount']
+                if 'cavalry_cost_discount' in effects:
+                    self.game_state.player_cavalry_cost_discount = effects['cavalry_cost_discount']
+                if 'archer_keep_strength_bonus' in effects:
+                    self.game_state.player_archer_keep_strength_bonus = effects['archer_keep_strength_bonus']
+                if 'farm_destruction_gold_bonus' in effects:
+                    self.game_state.player_farm_destruction_gold_bonus = effects['farm_destruction_gold_bonus']
+                if 'cavalry_strength_bonus' in effects:
+                    self.game_state.player_cavalry_strength_bonus = effects['cavalry_strength_bonus']
+                if 'divide_conquer_bonus' in effects:
+                    self.game_state.player_divide_conquer_bonus = effects['divide_conquer_bonus']
+                if 'barracks_cost_discount' in effects:
+                    self.game_state.player_barracks_cost_discount = effects['barracks_cost_discount']
+                if 'barracks_full_refund' in effects:
+                    self.game_state.player_barracks_full_refund = effects['barracks_full_refund']
+                if 'hero_keep_defense_bonus' in effects:
+                    self.game_state.player_hero_keep_defense_bonus = effects['hero_keep_defense_bonus']
+
+            # Apply authoritative hero state
+            if 'heroes' in data:
+                for pid_str, player_heroes in data['heroes'].items():
+                    self.game_state.heroes[int(pid_str)] = player_heroes
+            if 'hero_training_queue' in data:
+                self.game_state.hero_training_queue.clear()
+                for territory, plots in data['hero_training_queue'].items():
+                    self.game_state.hero_training_queue[territory] = {
+                        int(plot): tuple(entry) for plot, entry in plots.items()
+                    }
+            if 'hero_ability_cooldowns' in data:
+                self.game_state.hero_ability_cooldowns.clear()
+                for pid_str, cooldowns in data['hero_ability_cooldowns'].items():
+                    self.game_state.hero_ability_cooldowns[int(pid_str)] = cooldowns
+            if 'hero_silence_status' in data:
+                self.game_state.hero_silence_status.clear()
+                for pid_str, status in data['hero_silence_status'].items():
+                    self.game_state.hero_silence_status[int(pid_str)] = status
+
+            # QA fix: Apply authoritative hero_ownership (prevents desync after hero training/demolish)
+            if 'hero_ownership' in data:
+                for pid_str, owned_heroes in data['hero_ownership'].items():
+                    self.game_state.hero_ownership[int(pid_str)] = set(owned_heroes)
+            else:
+                # QA fix BUG 8: rebuild hero_ownership from heroes data if not sent explicitly
+                # (ensures consistency even with older host versions)
+                for pid in range(self.game_state.num_players):
+                    owned = set()
+                    # Active heroes
+                    for hero_type in self.game_state.heroes.get(pid, {}):
+                        owned.add(hero_type)
+                    # Heroes in training queue
+                    for territory, plots in self.game_state.hero_training_queue.items():
+                        for plot, entry in plots.items():
+                            hero_type = entry[0] if isinstance(entry, (list, tuple)) else entry
+                            owner = self.game_state.territory_owners.get(territory)
+                            if owner == pid:
+                                owned.add(hero_type)
+                    self.game_state.hero_ownership[pid] = owned
+
+            # QA fix: Apply authoritative building_xp (Veterancy system)
+            if 'building_xp' in data:
+                self.game_state.building_xp.clear()
+                for territory, plots in data['building_xp'].items():
+                    self.game_state.building_xp[territory] = {
+                        int(plot): xp for plot, xp in plots.items()
+                    }
+
+            # Sync fix: apply transient hero ability state
+            if 'embargo_blocked_players' in data:
+                self.game_state.embargo_blocked_players = list(data['embargo_blocked_players'])
+            if 'player_master_negotiator_active' in data:
+                self.game_state.player_master_negotiator_active = list(data['player_master_negotiator_active'])
+
+            logger.info("[NETWORK] FULL_STATE_SYNC applied successfully")
 
         else:
             logger.info(f"[NETWORK] Unknown message type: {msg_type}")
@@ -2097,14 +2461,20 @@ class Game:
         logger.info(f"[NETWORK] Applying building order from Player {remote_player_index}: {building_type} in {territory} plot {plot_index}")
 
         # Temporarily set current_player to remote player (start_construction checks current_player)
+        # QA fix: use try/finally to prevent current_player corruption on exception
         original_player = self.game_state.current_player
-        self.game_state.current_player = remote_player_index
+        try:
+            self.game_state.current_player = remote_player_index
 
-        # Apply the building construction
-        self.game_state.start_construction(territory, plot_index, building_type)
-
-        # Restore current_player
-        self.game_state.current_player = original_player
+            # Sync fix: handle castle upgrade as a special building type
+            if building_type == 'CastleUpgrade':
+                self.game_state.start_castle_upgrade(territory, plot_index)
+            else:
+                # Apply the building construction
+                self.game_state.start_construction(territory, plot_index, building_type)
+        finally:
+            # Restore current_player even if an exception occurs
+            self.game_state.current_player = original_player
 
     def _handle_remote_training_order(self, data: dict):
         """Apply training order from remote player"""
@@ -2134,14 +2504,16 @@ class Game:
         logger.info(f"[NETWORK] Applying training order from Player {remote_player_index}: {unit_type} in {territory} barracks {barracks_plot}")
 
         # Temporarily set current_player to remote player (start_training checks current_player)
+        # QA fix: use try/finally to prevent current_player corruption on exception
         original_player = self.game_state.current_player
-        self.game_state.current_player = remote_player_index
+        try:
+            self.game_state.current_player = remote_player_index
 
-        # Apply the training order
-        self.game_state.start_training(territory, barracks_plot, unit_type)
-
-        # Restore current_player
-        self.game_state.current_player = original_player
+            # Apply the training order
+            self.game_state.start_training(territory, barracks_plot, unit_type)
+        finally:
+            # Restore current_player even if an exception occurs
+            self.game_state.current_player = original_player
 
     def _handle_remote_order_remove(self, data: dict):
         """Remove movement order(s) from remote player.
@@ -2157,6 +2529,7 @@ class Game:
         """
         cancel_all = data.get('cancel_all', False)
         order_index = data.get('order_index')
+        cancel_type = data.get('cancel_type')  # Sync fix: extended for training/castle/hero cancels
         # Get player_index from message (4-player support) or fall back to 2-player logic
         remote_player_index = data.get('player_index')
         if remote_player_index is None:
@@ -2174,7 +2547,46 @@ class Game:
         try:
             self.game_state.current_player = remote_player_index
 
-            if cancel_all:
+            # Sync fix: Handle extended cancel types (training, castle upgrade, hero training)
+            if cancel_type == 'training':
+                territory = data.get('territory')
+                barracks_plot = data.get('barracks_plot')
+                queue_index = data.get('queue_index')
+                if territory is not None and barracks_plot is not None and queue_index is not None:
+                    self.game_state.cancel_training(territory, barracks_plot, queue_index)
+                    logger.info(f"[NETWORK] Player {remote_player_index} cancelled training in {territory} plot {barracks_plot} index {queue_index}")
+                else:
+                    logger.warning(f"[NETWORK] ORDER_REMOVE training cancel missing fields")
+            elif cancel_type == 'castle_upgrade':
+                territory = data.get('territory')
+                keep_plot = data.get('keep_plot')
+                if territory is not None and keep_plot is not None:
+                    self.game_state.cancel_castle_upgrade(territory, keep_plot)
+                    logger.info(f"[NETWORK] Player {remote_player_index} cancelled castle upgrade in {territory}")
+                else:
+                    logger.warning(f"[NETWORK] ORDER_REMOVE castle_upgrade cancel missing fields")
+            elif cancel_type == 'hero_training':
+                territory = data.get('territory')
+                keep_plot = data.get('keep_plot')
+                if territory is not None and keep_plot is not None:
+                    self.game_state.cancel_hero_training(territory, keep_plot)
+                    logger.info(f"[NETWORK] Player {remote_player_index} cancelled hero training in {territory}")
+                else:
+                    logger.warning(f"[NETWORK] ORDER_REMOVE hero_training cancel missing fields")
+            elif cancel_type == 'research':
+                # Sync fix: cancel research for remote player
+                self.game_state.cancel_research()
+                logger.info(f"[NETWORK] Player {remote_player_index} cancelled research")
+            elif cancel_type == 'demolish':
+                # Sync fix: demolish building for remote player in sequential mode
+                territory = data.get('territory')
+                plot_index = data.get('plot_index')
+                if territory is not None and plot_index is not None:
+                    self.game_state.destroy_building(territory, plot_index)
+                    logger.info(f"[NETWORK] Player {remote_player_index} demolished building in {territory} plot {plot_index}")
+                else:
+                    logger.warning(f"[NETWORK] ORDER_REMOVE demolish missing fields")
+            elif cancel_all:
                 count = self.game_state.cancel_all_orders()
                 logger.info(f"[NETWORK] Player {remote_player_index} cancelled all orders ({count} removed)")
             elif order_index is not None:
@@ -2187,6 +2599,118 @@ class Game:
         finally:
             # Restore current_player even if cancel methods throw
             self.game_state.current_player = original_player
+
+    def _send_full_state_sync(self):
+        """
+        Sync fix: Send authoritative game state to all clients (host only, sequential mode).
+        Called at turn boundaries as a safety net to prevent/correct desync.
+        Patterned after SIM_ROUND_COMPLETE authoritative data.
+        """
+        if not self.multiplayer_mode or self.local_player_index != 0:
+            return  # Only host sends state sync
+        if self.sim_state is not None:
+            return  # Simultaneous mode uses SIM_ROUND_COMPLETE instead
+
+        logger.info("[HOST] Sending FULL_STATE_SYNC (sequential mode safety net)")
+
+        # Build authoritative state snapshot
+        state_data = {
+            # Gold values - prevents calculation divergence
+            'player_gold': list(self.game_state.player_gold),
+            # Territory ownership - ensures consistency after battles
+            'territory_owners': dict(self.game_state.territory_owners),
+            # Territory garrisons - army positions and unit compositions
+            'territory_garrisons': {
+                territory: {
+                    str(player_id): garrison_data
+                    for player_id, garrison_data in player_garrisons.items()
+                }
+                for territory, player_garrisons in self.game_state.territory_garrisons.items()
+            },
+            # Buildings - complete building state
+            'buildings': {
+                territory: {str(plot): btype for plot, btype in plots.items()}
+                for territory, plots in self.game_state.buildings.items()
+            },
+            # Under construction - in-progress buildings
+            'under_construction': {
+                territory: {str(plot): list(entry) for plot, entry in plots.items()}
+                for territory, plots in self.game_state.under_construction.items()
+            },
+            # Training queue - in-progress unit training
+            'training_queue': {
+                territory: {
+                    str(plot): [list(entry) for entry in queue]
+                    for plot, queue in plots.items()
+                }
+                for territory, plots in self.game_state.training_queue.items()
+            },
+            # Castle upgrades in progress
+            'castle_upgrades_in_progress': {
+                territory: {str(plot): turns for plot, turns in plots.items()}
+                for territory, plots in self.game_state.castle_upgrades_in_progress.items()
+            },
+            # Completed castle upgrades
+            'castle_upgrades': {
+                territory: {str(plot): val for plot, val in plots.items()}
+                for territory, plots in self.game_state.castle_upgrades.items()
+            },
+            # Research state
+            'player_tech_researched': {
+                str(pid): list(techs)
+                for pid, techs in self.game_state.player_tech_researched.items()
+            },
+            'research_in_progress': {
+                str(pid): research
+                for pid, research in self.game_state.research_in_progress.items()
+            },
+            'player_tech_available': {
+                str(pid): list(techs)
+                for pid, techs in self.game_state.player_tech_available.items()
+            },
+            # Tech effect arrays
+            'tech_effects': {
+                'royal_decree_discount': list(self.game_state.player_royal_decree_discount),
+                'training_cost_discount': list(self.game_state.player_training_cost_discount),
+                'cavalry_cost_discount': list(self.game_state.player_cavalry_cost_discount),
+                'archer_keep_strength_bonus': list(self.game_state.player_archer_keep_strength_bonus),
+                'farm_destruction_gold_bonus': list(self.game_state.player_farm_destruction_gold_bonus),
+                'cavalry_strength_bonus': list(self.game_state.player_cavalry_strength_bonus),
+                'divide_conquer_bonus': list(self.game_state.player_divide_conquer_bonus),
+                'barracks_cost_discount': list(self.game_state.player_barracks_cost_discount),
+                'barracks_full_refund': list(self.game_state.player_barracks_full_refund),
+                'hero_keep_defense_bonus': list(self.game_state.player_hero_keep_defense_bonus),
+            },
+            # Heroes
+            'heroes': {str(k): v for k, v in self.game_state.heroes.items()},
+            'hero_training_queue': {
+                territory: {str(plot): list(entry) for plot, entry in plots.items()}
+                for territory, plots in self.game_state.hero_training_queue.items()
+            },
+            'hero_ability_cooldowns': {
+                str(pid): cooldowns
+                for pid, cooldowns in self.game_state.hero_ability_cooldowns.items()
+            },
+            'hero_silence_status': {
+                str(pid): status
+                for pid, status in self.game_state.hero_silence_status.items()
+            },
+            # QA fix: include hero_ownership to prevent desync after hero training/demolish
+            'hero_ownership': {
+                str(pid): list(owned_heroes)
+                for pid, owned_heroes in self.game_state.hero_ownership.items()
+            },
+            # QA fix: include building_xp (Veterancy) to prevent silent XP divergence
+            'building_xp': {
+                territory: {str(plot): xp for plot, xp in plots.items()}
+                for territory, plots in self.game_state.building_xp.items()
+            },
+            # Sync fix: transient hero ability state — prevents desync if ability message lost
+            'embargo_blocked_players': list(self.game_state.embargo_blocked_players),
+            'player_master_negotiator_active': list(self.game_state.player_master_negotiator_active),
+        }
+
+        self._send_action_to_remote(MessageType.FULL_STATE_SYNC, state_data)
 
     def _send_action_to_remote(self, action_type: str, data: dict):
         """
@@ -2356,8 +2880,43 @@ class Game:
                 }
                 for territory, player_garrisons in self.game_state.territory_garrisons.items()
             },
+            # Sync fix: building state safety net — prevents permanent divergence if
+            # demolish/construction messages are lost or client logic drifts
+            'buildings': {
+                territory: {str(plot): btype for plot, btype in plots.items()}
+                for territory, plots in self.game_state.buildings.items()
+            },
+            'under_construction': {
+                territory: {str(plot): list(entry) for plot, entry in plots.items()}
+                for territory, plots in self.game_state.under_construction.items()
+            },
+            'training_queue': {
+                territory: {
+                    str(plot): [list(entry) for entry in queue]
+                    for plot, queue in plots.items()
+                }
+                for territory, plots in self.game_state.training_queue.items()
+            },
+            'castle_upgrades_in_progress': {
+                territory: {str(plot): turns for plot, turns in plots.items()}
+                for territory, plots in self.game_state.castle_upgrades_in_progress.items()
+            },
+            'castle_upgrades': {
+                territory: {str(plot): val for plot, val in plots.items()}
+                for territory, plots in self.game_state.castle_upgrades.items()
+            },
+            'building_xp': {
+                territory: {str(plot): xp for plot, xp in plots.items()}
+                for territory, plots in self.game_state.building_xp.items()
+            },
+            'hero_ownership': {
+                str(pid): list(owned_heroes)
+                for pid, owned_heroes in self.game_state.hero_ownership.items()
+            },
+            # Sync fix: transient hero ability state — prevents desync if ability message lost
+            'embargo_blocked_players': list(self.game_state.embargo_blocked_players),
+            'player_master_negotiator_active': list(self.game_state.player_master_negotiator_active),
         }
-
 
         self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, authoritative_data)
 
@@ -4377,14 +4936,20 @@ class Game:
                         self.game_state.hero_ability_cooldowns[current_player][hero_name][ability_name] = cooldown
 
                         # MULTIPLAYER: Broadcast targeted ability to other players
-                        if self.multiplayer_mode and self.sim_state is not None:
-                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
+                        # Sync fix: send in both sequential and simultaneous modes (not just sim)
+                        if self.multiplayer_mode:
+                            ability_data = {
                                 'player_id': current_player,
                                 'hero_name': hero_name,
                                 'ability_index': ability_index,
                                 'ability_name': ability_name,
                                 'target': clicked_territory
-                            })
+                            }
+                            # Sync fix: include stolen unit IDs for Royal Charisma
+                            # so receiver uses same random selection as sender
+                            if ability_name == 'Royal Charisma' and hasattr(self.game_state, '_last_royal_charisma_stolen'):
+                                ability_data['stolen_units'] = self.game_state._last_royal_charisma_stolen
+                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, ability_data)
                             logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name} on {clicked_territory}")
 
                         # Exit targeting mode
@@ -10478,6 +11043,7 @@ class Game:
                         if self.multiplayer_mode:
 
                             self._send_action_to_remote(MessageType.TURN_END, {})
+                            self._send_full_state_sync()  # Sync fix: authoritative state at turn boundary
 
                             # Send state checksum for desync detection (client to host)
                             if self.local_player_index == 1:  # Client only
@@ -10505,6 +11071,7 @@ class Game:
                 if self.multiplayer_mode:
 
                     self._send_action_to_remote(MessageType.TURN_END, {})
+                    self._send_full_state_sync()  # Sync fix: authoritative state at turn boundary
 
                     # Send state checksum for desync detection (client to host)
                     if self.local_player_index == 1:  # Client only
@@ -10653,8 +11220,9 @@ class Game:
 
             # MULTIPLAYER: Send TURN_END to remote player
             if self.multiplayer_mode:
-        
+
                 self._send_action_to_remote(MessageType.TURN_END, {})
+                self._send_full_state_sync()  # Sync fix: authoritative state at turn boundary
 
                 # Send state checksum for desync detection (client to host)
                 if self.local_player_index == 1:  # Client only
@@ -10861,6 +11429,7 @@ class Game:
 
                     # Send TURN_END (turn is ending, remote player will advance)
                     self._send_action_to_remote(MessageType.TURN_END, {})
+                    self._send_full_state_sync()  # Sync fix: authoritative state at turn boundary
 
                     # Advance to next player
                     self.game_state.next_player()
@@ -10887,7 +11456,15 @@ class Game:
                     self.trigger_click_flash('training', unit_type)
                     territory, barracks_plot_index = self.selected_barracks
                     if self.game_state.start_training(territory, barracks_plot_index, unit_type):
-                        # Don't send to remote - they'll see the unit when it finishes training
+                        # Sync fix: send training order to remote in sequential mode
+                        # so they see the training queue and can track progress
+                        if self.multiplayer_mode and self.sim_state is None:
+                            self._send_action_to_remote(MessageType.TRAINING_ORDER, {
+                                'territory': territory,
+                                'barracks_plot': barracks_plot_index,
+                                'unit_type': unit_type,
+                                'player_index': self.game_state.current_player
+                            })
                         self.clear_button_tooltip()
                     return True
 
@@ -10922,6 +11499,15 @@ class Game:
                                     break  # Only remove one matching order
 
                     self.game_state.cancel_training(territory, barracks_plot_index, queue_index)
+                    # Sync fix: send training cancel to remote in sequential mode
+                    if self.multiplayer_mode and self.sim_state is None:
+                        self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                            'cancel_type': 'training',
+                            'territory': territory,
+                            'barracks_plot': barracks_plot_index,
+                            'queue_index': queue_index,
+                            'player_index': self.game_state.current_player
+                        })
                     return True
 
         # Demolish Barracks button (only when Barracks is actually selected)
@@ -10951,6 +11537,14 @@ class Game:
                         logger.debug(f"[SIM] Removed queued train order (barracks demolished): {order.get('unit_type')} in {territory}")
 
                 if self.game_state.destroy_building(territory, barracks_plot_index):
+                    # Sync fix: send demolish to remote players (both sequential and simultaneous)
+                    if self.multiplayer_mode:
+                        self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                            'cancel_type': 'demolish',
+                            'territory': territory,
+                            'plot_index': barracks_plot_index,
+                            'player_index': self.game_state.current_player
+                        })
                     self.selected_barracks = None
                     self.selected_keep = None
                     self.clear_button_tooltip()
@@ -10978,6 +11572,14 @@ class Game:
                 else:
                     # SEQUENTIAL MODE: Execute immediately
                     if self.game_state.start_castle_upgrade(territory, keep_plot_index):
+                        # Sync fix: send castle upgrade to remote in sequential mode
+                        if self.multiplayer_mode:
+                            self._send_action_to_remote(MessageType.BUILDING_ORDER, {
+                                'territory': territory,
+                                'plot_index': keep_plot_index,
+                                'building_type': 'CastleUpgrade',
+                                'player_index': self.game_state.current_player
+                            })
                         self.clear_button_tooltip()
                 return True
 
@@ -11002,6 +11604,14 @@ class Game:
                         logger.debug(f"[SIM] Removed queued upgrade_castle order in {territory}")
 
                 if self.game_state.cancel_castle_upgrade(territory, keep_plot_index):
+                    # Sync fix: send castle upgrade cancel to remote in sequential mode
+                    if self.multiplayer_mode and self.sim_state is None:
+                        self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                            'cancel_type': 'castle_upgrade',
+                            'territory': territory,
+                            'keep_plot': keep_plot_index,
+                            'player_index': self.game_state.current_player
+                        })
                     self.clear_button_tooltip()
                 return True
 
@@ -11027,6 +11637,14 @@ class Game:
                         logger.debug(f"[SIM] Removed queued train_hero order: {order.get('hero_type')} in {territory}")
 
                 self.game_state.cancel_hero_training(territory, keep_plot_index)
+                # Sync fix: send hero training cancel to remote in sequential mode
+                if self.multiplayer_mode and self.sim_state is None:
+                    self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                        'cancel_type': 'hero_training',
+                        'territory': territory,
+                        'keep_plot': keep_plot_index,
+                        'player_index': self.game_state.current_player
+                    })
                 return True
 
         # Hero training buttons (only when Keep is actually selected)
@@ -11060,6 +11678,14 @@ class Game:
                     else:
                         # SEQUENTIAL MODE: Execute immediately
                         if self.game_state.start_hero_training(territory, keep_plot_index, hero_type):
+                            # Sync fix: send hero training order to remote in sequential mode
+                            if self.multiplayer_mode:
+                                self._send_action_to_remote(MessageType.HERO_TRAINING_ORDER, {
+                                    'territory': territory,
+                                    'keep_plot': keep_plot_index,
+                                    'hero_type': hero_type,
+                                    'player_index': self.game_state.current_player
+                                })
                             self.clear_button_tooltip()
                     return True
 
@@ -11090,6 +11716,14 @@ class Game:
                         logger.debug(f"[SIM] Removed queued train_hero order (keep demolished): {order.get('hero_type')} in {territory}")
 
                 if self.game_state.destroy_building(territory, keep_plot_index):
+                    # Sync fix: send demolish to remote players (both sequential and simultaneous)
+                    if self.multiplayer_mode:
+                        self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                            'cancel_type': 'demolish',
+                            'territory': territory,
+                            'plot_index': keep_plot_index,
+                            'player_index': self.game_state.current_player
+                        })
                     self.selected_keep = None
                     self.clear_button_tooltip()
                 return True
@@ -11268,6 +11902,14 @@ class Game:
                     territory, plot_index = self.selected_plot
                     result = self.game_state.destroy_building(territory, plot_index)
                     if result:
+                        # Sync fix: send demolish to remote players (both sequential and simultaneous)
+                        if self.multiplayer_mode:
+                            self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                                'cancel_type': 'demolish',
+                                'territory': territory,
+                                'plot_index': plot_index,
+                                'player_index': self.game_state.current_player
+                            })
                         self.selected_plot = None
                         self.clear_button_tooltip()
                     return True
@@ -11315,7 +11957,8 @@ class Game:
                                         self.ability_targeting_ability_name = ability_name
                                     elif result is True:
                                         # Immediate ability executed - broadcast to other players in multiplayer
-                                        if self.multiplayer_mode and self.sim_state is not None:
+                                        # Sync fix: send in both sequential and simultaneous modes (not just sim)
+                                        if self.multiplayer_mode:
 
                                             self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
                                                 'player_id': current_player,
@@ -11990,6 +12633,13 @@ class Game:
                 # Handle right-click to cancel research
                 if right_click and is_researching:
                     self.game_state.cancel_research()
+                    # Sync fix: send research cancel to remote in sequential mode
+                    if self.multiplayer_mode and self.sim_state is None:
+                        self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                            'cancel_type': 'research',
+                            'tech_id': tech_id,
+                            'player_index': self.game_state.current_player
+                        })
                     # SIMULTANEOUS MODE: Remove queued research order
                     if self.sim_state is not None:
                         local_player = self.get_local_player()
@@ -12031,7 +12681,13 @@ class Game:
                                 logger.debug(f"[SIM] Queued research order: {tech_id}")
                         else:
                             # SEQUENTIAL MODE: Execute immediately
-                            self.game_state.start_research(tech_id)
+                            if self.game_state.start_research(tech_id):
+                                # Sync fix: send research order to remote in sequential mode
+                                if self.multiplayer_mode:
+                                    self._send_action_to_remote(MessageType.RESEARCH_ORDER, {
+                                        'tech_id': tech_id,
+                                        'player_index': current_player
+                                    })
                         return True
                     elif is_researched:
                         # Already researched - just feedback

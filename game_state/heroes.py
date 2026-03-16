@@ -143,9 +143,12 @@ class HeroMixin:
         """Complete hero training (called at start of player's turn)."""
         if not hasattr(self, 'hero_training_queue'):
             self.hero_training_queue = {}
+            self.last_completed_heroes = []  # Sync fix: track completions for network sync
             return
 
         territories_to_remove = []
+        # Sync fix: track completed heroes for network sync at turn start
+        self.last_completed_heroes = []
 
         for territory, keeps_dict in list(self.hero_training_queue.items()):
             # Only process current player's territories
@@ -211,6 +214,13 @@ class HeroMixin:
                         play_hero_recruit_sound(hero_type, use_queue=is_sound_playing)
 
                     keeps_to_remove.append(keep_plot_index)
+                    # Sync fix: track completed hero for network notifications
+                    self.last_completed_heroes.append({
+                        'territory': territory,
+                        'keep_plot': keep_plot_index,
+                        'hero_type': hero_type,
+                        'player_index': owner
+                    })
                     # NOTE: Keep in hero_ownership - hero is owned!
                 else:
                     # Update timer — preserve paid_cost in 3rd slot (H1 fix)
@@ -1078,7 +1088,7 @@ class HeroMixin:
 
         return (True, None)
 
-    def execute_royal_charisma(self, target_territory, owner):
+    def execute_royal_charisma(self, target_territory, owner, pre_selected_unit_ids=None):
         """
         Execute Royal Charisma ability - steal up to 5 units from target enemy territory
         and move them to Narn's Keep territory (respects 15 unit limit).
@@ -1086,9 +1096,13 @@ class HeroMixin:
         Args:
             target_territory: Territory to steal units from (must be enemy-owned)
             owner: Player index who owns Aidam Narn
+            pre_selected_unit_ids: Optional list of (garrison_owner, unit_id) tuples to steal.
+                Used by network receivers to match the host's random selection.
 
         Returns:
             tuple: (success: bool, error_msg: str or None)
+                   On success, also sets self._last_royal_charisma_stolen with the stolen unit info
+                   for network sync: [(garrison_owner, unit_id, unit_type), ...]
         """
         # Validate territory exists and is enemy-owned
         if target_territory not in self.territory_owners:
@@ -1152,8 +1166,25 @@ class HeroMixin:
         # Calculate actual number of units to steal (minimum of max allowed and available)
         units_to_steal = min(max_units_to_steal, len(all_units))
 
-        # Randomly select units to steal from all garrisons combined
-        stolen_units = random.sample(all_units, units_to_steal)
+        # Sync fix: use pre-selected units from host if provided (network receiver),
+        # otherwise randomly select (host/local execution)
+        if pre_selected_unit_ids is not None:
+            # Match pre-selected units by (garrison_owner, unit_id)
+            stolen_units = []
+            for sel_owner, sel_id, _sel_type in pre_selected_unit_ids:
+                for garrison_owner, unit in all_units:
+                    if garrison_owner == sel_owner and unit['id'] == sel_id:
+                        stolen_units.append((garrison_owner, unit))
+                        break
+        else:
+            # Randomly select units to steal from all garrisons combined
+            stolen_units = random.sample(all_units, units_to_steal)
+
+        # Store stolen unit info for network sync
+        self._last_royal_charisma_stolen = [
+            (garrison_owner, unit['id'], unit['type'])
+            for garrison_owner, unit in stolen_units
+        ]
 
         # Remove stolen units from their respective garrisons
         for garrison_owner, unit in stolen_units:

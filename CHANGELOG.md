@@ -2,6 +2,47 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-16 - Multiplayer Sync Deep Audit (Phase 2)
+
+- **Bug fix (HIGH):** Client SIM_ROUND_COMPLETE handler missing `finish_castle_upgrades()` and `_tick_building_xp()`
+  - Castle upgrades never completed on client in simultaneous mode (timers never decremented)
+  - Building veterancy XP (Farms/Mines) never progressed on client
+  - Now mirrors host's `sim_state.complete_round()` logic
+- **Bug fix (HIGH):** Demolish not synced in simultaneous mode
+  - All 3 demolish send paths guarded by `self.sim_state is None`, only sending in sequential mode
+  - Building state diverged permanently when player demolished during sim planning phase
+  - Removed guard so demolish syncs in both modes
+- **Enhancement:** SIM_ROUND_COMPLETE now includes building state safety net
+  - Added: buildings, under_construction, training_queue, castle_upgrades, castle_upgrades_in_progress, building_xp, hero_ownership
+  - Client applies authoritative building state after local round-end processing
+  - Previously only gold, garrisons, heroes, research were synced — buildings had no correction mechanism
+- **Enhancement:** Added embargo_blocked_players and player_master_negotiator_active to both FULL_STATE_SYNC and SIM_ROUND_COMPLETE
+  - Transient hero ability state now has safety net if ability message is lost
+- **Bug fix (MEDIUM):** FULL_STATE_SYNC silently dropped during battles/animations
+  - Previously returned early, losing the sync correction entirely
+  - Now queues pending data and applies after battles/animations clear
+- **Enhancement:** Expanded STATE_CHECKSUM with under_construction, training_queue, castle_upgrades, castle_upgrades_in_progress
+  - More divergence types now detected by checksum mismatch → triggers corrective FULL_STATE_SYNC
+- **Docs:** Updated CODE_GUIDE.md with sync safety net guidance for future multiplayer changes
+
+## 2026-03-16 - Multiplayer Sync Audit & Fix
+
+- **Bug fix (CRITICAL):** Hero abilities were never synced in sequential multiplayer mode
+  - All 11 hero abilities (Royal Charisma, Aggressive Diplomacy, Levy, Reinforce, etc.) caused immediate desync
+  - Fixed by removing `sim_state is not None` gate on ability network send (affects both targeted and immediate abilities)
+- **Bug fix (CRITICAL):** Multiple game actions not synced in sequential multiplayer mode
+  - Training orders, castle upgrades, research, hero training all executed locally without notifying remote player
+  - Added network sends for: training start/cancel, castle upgrade start/cancel, research start/cancel, hero training start/cancel
+  - Added completion notifications at turn start for castle upgrades and hero training
+- **Bug fix (MEDIUM):** Royal Charisma random desync in simultaneous mode
+  - `random.sample()` was called independently on host and client, selecting different stolen units
+  - Fixed by including stolen unit IDs in network message; receiver uses host's selections
+- **Enhancement:** Added FULL_STATE_SYNC safety net for sequential multiplayer mode
+  - Host sends authoritative state (gold, territories, garrisons, buildings, research, heroes, tech effects) at every turn boundary
+  - On checksum mismatch, host sends corrective FULL_STATE_SYNC (replaces TODO)
+- **Protocol:** Added `RESEARCH_ORDER` and `HERO_TRAINING_ORDER` message types; extended `ORDER_REMOVE` with `cancel_type` field for training/castle/hero/research cancels
+- **Protocol:** Bumped `NETWORK_VERSION` to 1.1.0
+
 ## 2026-03-15 - Add New Music Tracks
 
 - **New content:** Added 8 new music tracks

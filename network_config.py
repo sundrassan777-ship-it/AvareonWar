@@ -10,7 +10,8 @@ import enum
 # L12: Version compatibility — increment MAJOR for breaking changes, MINOR for new message
 # types, PATCH for bug fixes. Server rejects clients with mismatched MAJOR version.
 # History: 1.0.0 = initial release (2-player + 4-player lobby, sequential + simultaneous)
-NETWORK_VERSION = "1.0.0"
+# History: 1.1.0 = sequential mode sync fix (research/hero training orders, FULL_STATE_SYNC)
+NETWORK_VERSION = "1.1.0"
 
 # Connection Settings
 DEFAULT_PORT = 7777
@@ -92,6 +93,8 @@ class MessageType(str, enum.Enum):
     BUILDING_ORDER = "BUILDING_ORDER"
     TRAINING_ORDER = "TRAINING_ORDER"
     ORDER_REMOVE = "ORDER_REMOVE"
+    RESEARCH_ORDER = "RESEARCH_ORDER"          # Sync fix: research start (sequential mode)
+    HERO_TRAINING_ORDER = "HERO_TRAINING_ORDER"  # Sync fix: hero training start (sequential mode)
 
     # Gameplay - Execution
     EXECUTE_ORDERS = "EXECUTE_ORDERS"

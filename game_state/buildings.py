@@ -976,6 +976,9 @@ class BuildingMixin:
                 # Queue if something is playing, otherwise play immediately
                 play_castle_complete_sound(use_queue=is_sound_playing)
 
+        # Sync fix: store completed castle upgrades for network notifications
+        self.last_completed_castle_upgrades = completed_with_plots
+
         # Trigger visual effects for completed upgrades
         if self.map_renderer:
             for territory, plot_index in completed_with_plots:
