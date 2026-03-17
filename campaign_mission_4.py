@@ -77,6 +77,9 @@ STARTING_GOLD = {
     3: 5000,
 }
 
+# Ahtep Empire (player 3) peace period: no attacks for this many turns
+AHTEP_PEACE_TURNS = 4
+
 # Defensive minimums: min units AI keeps in territories adjacent to player 0
 FACTION_DEFENSE_MIN = {
     1: 1,   # Eastern Kingdoms: at least 1 unit
@@ -869,13 +872,16 @@ class Mission4:
         turn_n = self.faction_turn_count[player_id]
         defense_min = FACTION_DEFENSE_MIN.get(player_id, 1)
 
+        # For Ahtep (player 3), ramp restarts after peace period
+        effective_turn = turn_n - AHTEP_PEACE_TURNS if player_id == 3 else turn_n
+
         # Ramp formula: 1-1-1-2-2-2-3-4-5... (delayed aggression, slow early game)
-        if turn_n <= 3:
+        if effective_turn <= 3:
             max_units = 1
-        elif turn_n <= 6:
+        elif effective_turn <= 6:
             max_units = 2
         else:
-            max_units = turn_n - 4  # turn 7→3, 8→4, 9→5, ...
+            max_units = effective_turn - 4  # turn 7→3, 8→4, 9→5, ...
 
         # Find territories owned by this faction
         my_territories = [t for t in MISSION_4_TERRITORIES
@@ -894,7 +900,11 @@ class Mission4:
         self._ai_reinforce(player_id, my_territories, max_units)
 
         # Phase 4: Plan attacks against player 0 only
-        self._ai_attack(player_id, my_territories, max_units, defense_min)
+        # Ahtep Empire (player 3) has a peace period before attacking
+        if player_id == 3 and turn_n <= AHTEP_PEACE_TURNS:
+            pass  # Ahtep peace period — no attacks, reinforcements still flow to border
+        else:
+            self._ai_attack(player_id, my_territories, max_units, defense_min)
 
     def _ai_build(self, player_id, my_territories):
         """Build structures on empty plots. Prioritize Barracks, then economy."""
