@@ -2,6 +2,21 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-18 - Fix Simultaneous Mode Multiplayer Bugs
+
+- **Bug fix (CRITICAL):** Client garrison desync — duplicate units spawned every round
+  - Root cause: Client's SIM_ROUND_COMPLETE handler called `finish_training()` on already-processed
+    training queues from host, double-decrementing timers and spawning duplicate units into garrisons
+  - Also: `start_planning_phase()` ran AFTER applying host garrisons, resetting newly trained units'
+    'moved' status to 'ready' — then `finish_training()` re-added them with 'moved', creating duplicates
+  - Fix: Moved `start_planning_phase()` before authoritative override, removed `finish_training()` call
+    (host already ran it, authoritative garrisons/training_queue are the final word)
+- **Bug fix (HIGH):** Timer expiry discarded all movement orders in simultaneous mode
+  - Root cause: `update_timers()` called `mark_ready()` which set `players_ready=True`, then
+    `add_order()` silently rejected orders because the player was already marked ready
+  - Fix: Detect when timer is about to expire, convert movement orders BEFORE `update_timers()`
+    calls `mark_ready()` — mirrors the End Turn button flow (convert first, mark ready second)
+
 ## 2026-03-18 - Icon Fix + Alt+F4 Exits Entire App
 
 - **Bug fix:** Missing `_set_app_icon()` call after fullscreen reapply in `apply_display_settings` — taskbar icon could revert to default Python icon on Windows with display scaling

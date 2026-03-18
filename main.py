@@ -1739,13 +1739,16 @@ class Game:
                 # HOST: Store remote player's orders in sim_state
                 # This is critical - orders are sent WITH the ready signal
                 if self.local_player_index == 0:  # Host only
-                    # Clear any existing orders for this player (shouldn't be any, but be safe)
-                    self.sim_state.player_orders[player_id] = []
-                    # Add received orders to sim_state
-                    for order in orders:
-                        order['player_id'] = player_id  # Ensure player_id is set
-                        self.sim_state.add_order(player_id, order)
-                        logger.info(f"[SIM] Received order from Player {player_id}: {order.get('from_territory')} -> {order.get('to_territory')}")
+                    if self.sim_state.sim_phase == 'planning':
+                        # Clear any existing orders for this player (shouldn't be any, but be safe)
+                        self.sim_state.player_orders[player_id] = []
+                        # Add received orders to sim_state
+                        for order in orders:
+                            order['player_id'] = player_id  # Ensure player_id is set
+                            self.sim_state.add_order(player_id, order)
+                            logger.info(f"[SIM] Received order from Player {player_id}: {order.get('from_territory')} -> {order.get('to_territory')}")
+                    else:
+                        logger.warning(f"[SIM] Late SIM_PLAYER_READY from player {player_id} - phase is '{self.sim_state.sim_phase}', orders discarded")
 
                 self.sim_state.players_ready[player_id] = True
 
@@ -2001,6 +2004,8 @@ class Game:
 
                 # Apply income and finish constructions/research/castle upgrades for all players
                 # Sync fix: must mirror host's complete_round() logic in sim_state.py
+                # NOTE: These local computations serve as a fallback if host doesn't send a field.
+                # The authoritative override below will overwrite all of these with host's values.
                 original_player = self.game_state.current_player
                 for player_id in range(self.game_state.num_players):
                     if player_id not in self.sim_state.eliminated_players:
@@ -2008,15 +2013,22 @@ class Game:
                         self.game_state.current_player = player_id
                         self.game_state.finish_constructions()
                         self.game_state.finish_research()
-                        # Sync fix: client was missing castle upgrade tick, building XP tick,
-                        # and training grounds XP tick — mirrors host's complete_round() in sim_state.py
                         self.game_state.finish_castle_upgrades()
                         self.game_state._tick_building_xp()
                         self.game_state._tick_training_grounds_xp()
                 self.game_state.current_player = original_player
 
+                # Start new planning phase BEFORE applying authoritative state.
+                # start_planning_phase() resets all 'moved' units to 'ready', so it must run
+                # BEFORE the host's garrison override (which has correct moved/ready statuses
+                # including newly trained units with 'moved' status).
+                self.sim_state.round_number = round_number
+                self.sim_state.start_planning_phase()
+
                 # Apply authoritative state from host to prevent desync
-                # This overrides local calculations with host's values
+                # This overrides local calculations with host's values.
+                # Applied AFTER start_planning_phase so garrison moved/ready statuses from host
+                # are the final word (not reset by _reset_unit_movement_status).
                 if 'player_gold' in data:
                     # player_gold is a list indexed by player_id
                     for player_id, gold in enumerate(data['player_gold']):
@@ -2199,19 +2211,21 @@ class Game:
                     self.game_state.player_master_negotiator_active = list(data['player_master_negotiator_active'])
                     logger.debug(f"[NETWORK] Sync: player_master_negotiator_active")
 
-                self.sim_state.round_number = round_number
-                self.sim_state.start_planning_phase()
+                # Sync overflow territories — client never runs _process_overflow_territories()
+                if 'overflow_territories' in data and self.sim_state is not None:
+                    self.sim_state.overflow_territories = data['overflow_territories']
+                    logger.debug(f"[NETWORK] Sync: overflow_territories ({len(data['overflow_territories'])} entries)")
 
-                # Finish training for all players (after start_planning_phase so units stay 'moved')
-                # NOTE: Do NOT call finish_hero_training() here - the authoritative hero_training_queue
-                # and heroes dict from host already have the correct state (timers decremented, heroes completed).
-                # Calling finish_hero_training() would double-decrement and complete heroes too early.
-                original_player = self.game_state.current_player
-                for player_id in range(self.game_state.num_players):
-                    if player_id not in self.sim_state.eliminated_players:
-                        self.game_state.current_player = player_id
-                        self.game_state.finish_training()
-                self.game_state.current_player = original_player
+                # NOTE: start_planning_phase() already called above (before authoritative override)
+                # so garrison moved/ready statuses from host are preserved.
+                # Do NOT call round_number or start_planning_phase again here.
+
+                # NOTE: Do NOT call finish_training() or finish_hero_training() here.
+                # The host already ran these in complete_round() and sent the results in the
+                # authoritative garrisons and training_queue. Calling them again would:
+                # 1. Double-decrement training timers (off by 1 turn)
+                # 2. Spawn duplicate units into garrisons (desync + tooltip mismatch)
+                # The same logic applies to hero training (already documented).
 
                 # Cleanup empty garrisons to prevent ghost armies
                 for territory in list(self.game_state.territory_garrisons.keys()):
@@ -2731,13 +2745,14 @@ class Game:
         if not self.network_connection:
             return
 
-
-        from network.protocol import NetworkProtocol
-
-        protocol = NetworkProtocol()
-        message = protocol.encode_message(action_type, data)
+        # Use the network connection's protocol so the sequence number is continuous
+        # across lobby and game phases. Creating a new instance resets seq to 0,
+        # causing the server's replay detection to reject game-phase messages
+        # (since the lobby already sent seq 0, 1, 2, ... through the same socket).
+        current_seq = self.network_connection.protocol._sequence_number
+        message = self.network_connection.protocol.encode_message(action_type, data)
         self.network_connection.send_message(message)
-        logger.debug(f"[NETWORK] Sent {action_type}: {data}")
+        logger.info(f"[NETWORK] Sent {action_type} (seq={current_seq}): {data}")
 
     # ========== SIMULTANEOUS MODE NETWORK HELPERS ==========
 
@@ -2932,6 +2947,9 @@ class Game:
             # Sync fix: transient hero ability state — prevents desync if ability message lost
             'embargo_blocked_players': list(self.game_state.embargo_blocked_players),
             'player_master_negotiator_active': list(self.game_state.player_master_negotiator_active),
+            # Overflow territories — client never runs _process_overflow_territories(),
+            # so sync the dict to prevent stale overflow icons and state divergence
+            'overflow_territories': dict(self.sim_state.overflow_territories) if self.sim_state else {},
         }
 
         self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, authoritative_data)
@@ -9577,37 +9595,53 @@ class Game:
 
             # Simultaneous mode: update timers and check for auto-ready
             if self.sim_state is not None and self.sim_state.sim_phase == 'planning' and not self.is_game_paused:
-                # Check if local player is ready BEFORE timer update
                 local_player = self.get_local_player()
                 was_ready = self.sim_state.players_ready.get(local_player, False)
 
+                # PRE-EXPIRE: Convert movement orders BEFORE update_timers() calls mark_ready().
+                # mark_ready() sets players_ready=True, after which add_order() silently rejects.
+                # This mirrors the End Turn button flow (convert first, mark ready second).
+                if not was_ready:
+                    timer_remaining = self.sim_state.player_timers.get(local_player, 999)
+                    if timer_remaining - delta_time <= 0:
+                        # Timer will expire this frame — convert movement orders now
+                        logger.info(f"[SIM] Timer about to expire for player {local_player} - pre-converting {len(self.game_state.movement_orders)} movement orders")
+                        for order in self.game_state.movement_orders:
+                            sim_order = {
+                                'type': 'movement',
+                                'player_id': local_player,
+                                'from_territory': order.from_territory,
+                                'to_territory': order.to_territory,
+                                'army_count': order.army_count,
+                                'unit_ids': order.unit_ids if hasattr(order, 'unit_ids') else []
+                            }
+                            self.sim_state.add_order(local_player, sim_order)
+                        # Reset unit statuses before clearing orders (same as End Turn button)
+                        for order in self.game_state.movement_orders:
+                            if hasattr(order, 'unit_ids') and order.unit_ids:
+                                garrison = self.game_state.territory_garrisons.get(order.from_territory, {}).get(local_player)
+                                if garrison and 'units' in garrison:
+                                    for unit in garrison['units']:
+                                        if unit.get('id') in order.unit_ids:
+                                            unit['status'] = 'ready'
+                                            unit['order'] = None
+                        self.game_state.movement_orders.clear()
+
+                # Now update timers — mark_ready() will be called, but orders are already saved
                 self.sim_state.update_timers(delta_time)
 
                 # Check if local player just became ready due to timer expiration
                 is_ready_now = self.sim_state.players_ready.get(local_player, False)
                 if not was_ready and is_ready_now:
-                    # Timer expired - convert any queued movement orders
-                    logger.debug(f"[SIM] Timer expired for player {local_player} - converting {len(self.game_state.movement_orders)} queued orders")
-                    for order in self.game_state.movement_orders:
-                        sim_order = {
-                            'type': 'movement',
+                    # MULTIPLAYER: Send SIM_PLAYER_READY with orders to host (mirrors End Turn button)
+                    # Without this, the host never receives the client's orders on timer expiry
+                    if self.multiplayer_mode:
+                        orders_to_send = list(self.sim_state.player_orders.get(local_player, []))
+                        self._send_action_to_remote(MessageType.SIM_PLAYER_READY, {
                             'player_id': local_player,
-                            'from_territory': order.from_territory,
-                            'to_territory': order.to_territory,
-                            'army_count': order.army_count,
-                            'unit_ids': order.unit_ids if hasattr(order, 'unit_ids') else []
-                        }
-                        self.sim_state.add_order(local_player, sim_order)
-                    # Reset unit statuses before clearing orders (same as End Turn button)
-                    for order in self.game_state.movement_orders:
-                        if hasattr(order, 'unit_ids') and order.unit_ids:
-                            garrison = self.game_state.territory_garrisons.get(order.from_territory, {}).get(local_player)
-                            if garrison and 'units' in garrison:
-                                for unit in garrison['units']:
-                                    if unit.get('id') in order.unit_ids:
-                                        unit['status'] = 'ready'
-                                        unit['order'] = None
-                    self.game_state.movement_orders.clear()
+                            'orders': orders_to_send
+                        })
+                        logger.info(f"[SIM] Timer expired - sent ready signal with {len(orders_to_send)} orders")
 
                 # MULTIPLAYER: Host sends periodic timer sync to client (every 2 seconds)
                 if self.multiplayer_mode and self.local_player_index == 0:
@@ -13876,12 +13910,18 @@ if __name__ == "__main__":
     pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
 
     # Check for Steam invite auto-connect launch parameter (+connect ip:port)
-    # When a friend accepts a Steam invite, the game is launched with this argument
+    # When a friend accepts a Steam invite, the game is launched with this argument.
+    # Steam may pass the connect string as two args (+connect ip:port) or as a single
+    # arg (+connect ip:port) depending on platform — handle both cases.
     _steam_connect_target = None
     for _i, _arg in enumerate(sys.argv):
         if _arg == '+connect' and _i + 1 < len(sys.argv):
             _steam_connect_target = sys.argv[_i + 1]
-            logger.info(f"Steam invite detected: will auto-connect to {_steam_connect_target}")
+        elif _arg.startswith('+connect '):
+            # Single-arg form: Steam passed the entire "+connect ip:port" as one argument
+            _steam_connect_target = _arg[len('+connect '):]
+    if _steam_connect_target:
+        logger.info(f"Steam invite detected: will auto-connect to {_steam_connect_target}")
 
     # Main menu loop
     while True:

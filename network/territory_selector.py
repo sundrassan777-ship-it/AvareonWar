@@ -104,7 +104,10 @@ class TerritorySelector:
         self.num_players = num_players
         self.local_player_index = local_player_index
         self.host_ip = host_ip  # Display in lobby for host
-        self.protocol = NetworkProtocol()
+        # Reuse the network connection's protocol so the sequence number is continuous
+        # across lobby and game phases. Creating a separate instance resets seq to 0,
+        # which causes the server's replay detection to reject game-phase messages.
+        self.protocol = network_connection.protocol
 
         # Layout constants - 35% left panel, 65% right map
         self.left_panel_width = int(self.width * 0.35)
@@ -2534,7 +2537,9 @@ class TerritorySelector:
                 display_ip = (server.get_display_ip()
                               if hasattr(server, 'get_display_ip') else self.host_ip)
                 if display_ip:
-                    connect_str = f"{display_ip}:{DEFAULT_PORT}"
+                    # Include +connect prefix so Steam passes it as a launch parameter
+                    # that main.py's sys.argv parser can detect
+                    connect_str = f"+connect {display_ip}:{DEFAULT_PORT}"
                     if steam_manager.invite_friend(steam_id, connect_str):
                         self._invited_friends.add(steam_id)
                         logger.info(f"Invited friend {steam_id} with connect string '{connect_str}'")

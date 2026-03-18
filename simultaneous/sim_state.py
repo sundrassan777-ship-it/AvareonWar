@@ -408,6 +408,11 @@ class SimultaneousGameState:
                         f"force-marking {len(waiting)} unresponsive players as ready: {waiting}"
                     )
                     for pid in waiting:
+                        # Skip remote human players — they send their own SIM_PLAYER_READY via network
+                        # Force-marking them here would mark them ready with empty orders
+                        if self.is_multiplayer_host and pid != 0 and not self.gs.player_is_ai[pid]:
+                            sim_log.state(f"Safety timeout: skipping remote human player {pid}")
+                            continue
                         self.player_timers[pid] = 0
                         self.mark_ready(pid)
                     return  # mark_ready will trigger execution, skip per-player updates
@@ -421,6 +426,11 @@ class SimultaneousGameState:
             # Check for timer expiration
             if self.player_timers[player_id] <= 0:
                 self.player_timers[player_id] = 0
+                # Don't auto-ready remote human players — they send SIM_PLAYER_READY via network
+                # Auto-readying them here would mark them ready with empty orders
+                if self.is_multiplayer_host and player_id != 0 and not self.gs.player_is_ai[player_id]:
+                    sim_log.state(f"Timer expired for remote player {player_id} - awaiting network ready")
+                    continue
                 self.mark_ready(player_id)  # Auto-ready when timer expires
 
     def get_remaining_time(self, player_id: int) -> float:

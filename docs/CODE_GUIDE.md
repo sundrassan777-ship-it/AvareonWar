@@ -955,6 +955,16 @@ When adding new per-round logic in `sim_state.complete_round()`, ensure the clie
 `main.py _handle_network_message(SIM_ROUND_COMPLETE)` calls the same methods. Currently both call:
 `collect_income()`, `finish_constructions()`, `finish_research()`, `finish_castle_upgrades()`, `_tick_building_xp()`
 
+⚠️ **Do NOT call `finish_training()` or `finish_hero_training()` in the client handler.**
+The host already runs these in `complete_round()` and sends the results (garrisons with trained units,
+decremented training_queue) in the authoritative SIM_ROUND_COMPLETE data. Calling them again on the
+client would double-decrement training timers and spawn duplicate units into garrisons (desync).
+
+⚠️ **Client must call `start_planning_phase()` BEFORE applying host's authoritative state.**
+`start_planning_phase()` resets all 'moved' units to 'ready'. The host's garrisons contain newly trained
+units with 'moved' status. If authoritative garrisons are applied before `start_planning_phase()`, the
+reset would incorrectly change newly trained units to 'ready'.
+
 ✅ **Change connection settings:**
 - Modify in `network_config.py`:
   - `MAX_CLIENTS = 3` (host + 3 = 4 players)

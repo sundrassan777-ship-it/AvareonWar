@@ -497,8 +497,10 @@ class NetworkServer:
         if isinstance(msg_seq, int):
             last_seq = self._client_last_seq.get(from_player_index, -1)
             if msg_seq <= last_seq:
+                msg_type_hint = message.get('type', '?')
                 logger.warning(f"Replay/duplicate detected from player "
-                               f"{from_player_index}: seq {msg_seq} <= {last_seq}")
+                               f"{from_player_index}: seq {msg_seq} <= {last_seq} "
+                               f"(msg_type={msg_type_hint})")
                 return
             self._client_last_seq[from_player_index] = msg_seq
 
@@ -523,6 +525,7 @@ class NetworkServer:
             # Add player_index to message for game loop to know who sent it
             message['from_player_index'] = from_player_index
             # Forward to game loop
+            logger.debug(f"[SERVER] Forwarding {msg_type} from player {from_player_index} to game loop (seq={msg_seq})")
             self.message_queue.receive_message(message)
 
     @staticmethod
