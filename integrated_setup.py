@@ -2047,7 +2047,8 @@ class IntegratedSetup:
             pygame.display.flip()
 
         if self.cancelled:
-            return None
+            # Distinguish Alt+F4 (quit app) from Escape (back to menu)
+            return 'quit' if getattr(self, 'quit_requested', False) else None
 
         return self.get_config()
 
@@ -2061,7 +2062,9 @@ class IntegratedSetup:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                # Alt+F4: signal caller to exit the entire app
                 self.cancelled = True
+                self.quit_requested = True
 
             # Music track ended — advance to next track
             elif event.type == _MUSIC_END_EVENT:

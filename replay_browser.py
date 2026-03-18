@@ -205,7 +205,8 @@ class ReplayBrowser:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                self.result = {'action': 'back'}
+                # Alt+F4: signal caller to exit the entire app
+                self.result = {'action': 'quit'}
                 self.done = True
                 return
 

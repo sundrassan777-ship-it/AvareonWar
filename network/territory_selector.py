@@ -194,6 +194,13 @@ class TerritorySelector:
         self.overlay_clicked = None  # Clicked overlay element (one-frame flash)
         self.overlay_rects = {}  # Computed rects for overlay elements
 
+        # Friend picker modal state (Steam invite — host only)
+        self._show_friend_picker = False
+        self._friend_list = []  # Cached online Steam friends [{steam_id, name}, ...]
+        self._invited_friends = set()  # Steam IDs already invited
+        self._friend_scroll_offset = 0  # Scroll position in friend list
+        self._friend_picker_rects = {}  # Computed rects for friend picker elements
+
         # Dropdown state for game settings
         self.victory_dropdown_open = False
         self.taxation_dropdown_open = False
@@ -392,23 +399,33 @@ class TerritorySelector:
             content_width, dropdown_height
         )
 
-        # Additional Options button - below turn mode, above bottom buttons
-        options_btn_y = self.turn_mode_dropdown_rect.bottom + int(15 * self.ui_scale)
-        options_btn_height = int(40 * self.ui_scale)
-        self.additional_options_rect = pygame.Rect(
-            margin, options_btn_y, content_width, options_btn_height
-        )
-
-        # Buttons at bottom
+        # Additional Options button — anchored below Turn Mode dropdown
         button_height = int(45 * self.ui_scale)
         button_spacing = int(12 * self.ui_scale)
-
-        self.return_button_rect = pygame.Rect(
-            margin, self.height - margin - button_height,
-            content_width, button_height
+        options_btn_y = self.turn_mode_dropdown_rect.bottom + int(20 * self.ui_scale)
+        self.additional_options_rect = pygame.Rect(
+            margin, options_btn_y, content_width, button_height
         )
+
+        # Bottom buttons — stacked downward from Additional Options
+        # Invite Friend (host only, below Additional Options)
+        if self.is_host:
+            invite_y = self.additional_options_rect.bottom + button_spacing
+            self.invite_button_rect = pygame.Rect(
+                margin, invite_y, content_width, button_height
+            )
+            next_top = self.invite_button_rect.bottom + button_spacing
+        else:
+            self.invite_button_rect = None
+            next_top = self.additional_options_rect.bottom + button_spacing
+
+        # Launch Game (below Invite Friend / Additional Options)
         self.launch_button_rect = pygame.Rect(
-            margin, self.return_button_rect.top - button_spacing - button_height,
+            margin, next_top, content_width, button_height
+        )
+        # Return to Main Menu (below Launch Game)
+        self.return_button_rect = pygame.Rect(
+            margin, self.launch_button_rect.bottom + button_spacing,
             content_width, button_height
         )
 
@@ -432,7 +449,8 @@ class TerritorySelector:
             # Handle events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    return None
+                    # Alt+F4: signal caller to exit the entire app
+                    return 'quit'
 
                 # Music track ended — advance to next track
                 if event.type == _MUSIC_END_EVENT:
@@ -440,8 +458,10 @@ class TerritorySelector:
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        # Close overlay first (acts as Cancel), otherwise exit selector
-                        if self.overlay_open:
+                        # Close friend picker or overlay first, otherwise exit selector
+                        if self._show_friend_picker:
+                            self._show_friend_picker = False
+                        elif self.overlay_open:
                             self.overlay_open = False
                         else:
                             return None
@@ -449,6 +469,15 @@ class TerritorySelector:
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
                         self.handle_click(event.pos)
+                    # Mouse wheel scroll for friend picker
+                    elif event.button in (4, 5) and self._show_friend_picker:
+                        scroll_dir = -1 if event.button == 4 else 1
+                        self._friend_scroll_offset = max(0, self._friend_scroll_offset + scroll_dir)
+
+                # MOUSEWHEEL event (SDL2 — preferred over button 4/5)
+                if hasattr(pygame, 'MOUSEWHEEL') and event.type == pygame.MOUSEWHEEL:
+                    if self._show_friend_picker:
+                        self._friend_scroll_offset = max(0, self._friend_scroll_offset - event.y)
 
                 if event.type == pygame.MOUSEMOTION:
                     self.handle_hover(event.pos)
@@ -502,6 +531,11 @@ class TerritorySelector:
 
     def handle_click(self, pos):
         """Handle mouse click."""
+        # Route clicks to friend picker modal while it's open
+        if self._show_friend_picker:
+            self._handle_friend_picker_click(pos)
+            return
+
         # Route clicks to overlay handler while overlay is open
         if self.overlay_open:
             self._handle_overlay_click(pos)
@@ -535,6 +569,17 @@ class TerritorySelector:
                 self.victory_dropdown_open = False
                 self.taxation_dropdown_open = False
                 self.turn_mode_dropdown_open = False
+            return
+
+        # Check if Invite Friend button clicked (host only)
+        if self.is_host and self.invite_button_rect and self.invite_button_rect.collidepoint(pos):
+            from steam_integration import steam_manager
+            if steam_manager.can_invite():
+                sound_manager.play_ui_click()
+                # Refresh friend list and open picker modal
+                self._friend_list = steam_manager.get_online_friends()
+                self._friend_scroll_offset = 0
+                self._show_friend_picker = True
             return
 
         # Check if Launch Game button clicked
@@ -924,6 +969,11 @@ class TerritorySelector:
 
     def handle_hover(self, pos):
         """Handle mouse hover."""
+        # Block normal hover while friend picker modal is open
+        if self._show_friend_picker:
+            self.hovered_territory = None
+            return
+
         # Block normal hover while overlay is open
         if self.overlay_open:
             self._update_overlay_hover(pos)
@@ -1298,6 +1348,10 @@ class TerritorySelector:
         # Draw Additional Options overlay on top of everything (if open)
         if self.overlay_open:
             self._draw_additional_options_overlay()
+
+        # Draw friend picker modal on top of everything (if open)
+        if self._show_friend_picker:
+            self._draw_friend_picker()
 
         # Draw floating "Copied to Clipboard!" text near mouse, fading out
         if self._ip_copied_timer > 0:
@@ -2293,6 +2347,204 @@ class TerritorySelector:
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
 
+    # ------------------------------------------------------------------
+    # Friend Picker Modal (Steam Invite)
+    # ------------------------------------------------------------------
+
+    def _draw_friend_picker(self):
+        """Draw the friend picker modal overlay for Steam invites."""
+        screen_w, screen_h = self.screen.get_size()
+        scale = self.ui_scale
+        mouse_pos = pygame.mouse.get_pos()
+
+        # Semi-transparent dark overlay covering entire screen
+        dark_overlay = pygame.Surface((screen_w, screen_h))
+        dark_overlay.set_alpha(180)
+        dark_overlay.fill((0, 0, 0))
+        self.screen.blit(dark_overlay, (0, 0))
+
+        # Panel dimensions — sized to comfortably fit friend list with padding
+        panel_w = int(440 * scale)
+        panel_h = int(480 * scale)
+        panel_x = (screen_w - panel_w) // 2
+        panel_y = (screen_h - panel_h) // 2
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
+        self._friend_picker_rects['panel'] = panel_rect
+
+        # Draw background (reuse overlay_bg_image or fallback)
+        if self.overlay_bg_image:
+            scaled_bg = pygame.transform.smoothscale(self.overlay_bg_image, (panel_w, panel_h))
+            self.screen.blit(scaled_bg, (panel_x, panel_y))
+        else:
+            pygame.draw.rect(self.screen, (40, 40, 50), panel_rect)
+            pygame.draw.rect(self.screen, BRASS_COLOR, panel_rect, 2)
+
+        # Title
+        title_font_size = max(16, int(26 * scale))
+        try:
+            title_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf', title_font_size)
+        except (FileNotFoundError, pygame.error, OSError):
+            title_font = self.text_font
+        title_surface = title_font.render("Invite Friend", True, TEXT_COLOR)
+        title_rect = title_surface.get_rect(centerx=panel_x + panel_w // 2, top=panel_y + int(40 * scale))
+        self.screen.blit(title_surface, title_rect)
+
+        # Close button (X) in top-right corner
+        close_size = int(30 * scale)
+        close_rect = pygame.Rect(panel_x + panel_w - close_size - int(10 * scale),
+                                 panel_y + int(10 * scale), close_size, close_size)
+        self._friend_picker_rects['close'] = close_rect
+        close_hovered = close_rect.collidepoint(mouse_pos)
+        close_color = WHITE if close_hovered else GRAY
+        # Draw X
+        pygame.draw.line(self.screen, close_color,
+                         (close_rect.x + 6, close_rect.y + 6),
+                         (close_rect.right - 6, close_rect.bottom - 6), 2)
+        pygame.draw.line(self.screen, close_color,
+                         (close_rect.right - 6, close_rect.y + 6),
+                         (close_rect.x + 6, close_rect.bottom - 6), 2)
+
+        # Separator line below title
+        sep_y = title_rect.bottom + int(10 * scale)
+        sep_margin = int(25 * scale)
+        pygame.draw.line(self.screen, BRASS_COLOR,
+                         (panel_x + sep_margin, sep_y),
+                         (panel_x + panel_w - sep_margin, sep_y), 1)
+
+        # Friend list area — generous padding to keep content within panel
+        list_top = sep_y + int(15 * scale)
+        list_bottom = panel_y + panel_h - int(35 * scale)
+        list_left = panel_x + int(30 * scale)
+        list_right = panel_x + panel_w - int(30 * scale)
+        list_width = list_right - list_left
+        row_h = int(40 * scale)
+
+        if not self._friend_list:
+            # No friends online message
+            no_friends_font = self.small_font
+            msg = no_friends_font.render("No Steam friends found.", True, TEXT_COLOR_DIM)
+            msg_rect = msg.get_rect(center=(panel_x + panel_w // 2,
+                                            (list_top + list_bottom) // 2))
+            self.screen.blit(msg, msg_rect)
+        else:
+            # Clamp scroll offset to valid range
+            max_visible = (list_bottom - list_top) // row_h
+            max_scroll = max(0, len(self._friend_list) - max_visible)
+            self._friend_scroll_offset = min(self._friend_scroll_offset, max_scroll)
+
+            # Clear invite button rects for this frame
+            self._friend_picker_rects['invite_buttons'] = {}
+
+            # Draw visible friend rows
+            visible_start = self._friend_scroll_offset
+            y = list_top
+            label_font = self.small_font
+            invite_btn_w = int(75 * scale)
+            invite_btn_h = int(28 * scale)
+
+            for idx in range(visible_start, len(self._friend_list)):
+                if y + row_h > list_bottom:
+                    break  # Stop rendering past container boundary
+
+                friend = self._friend_list[idx]
+                steam_id = friend['steam_id']
+                name = friend['name']
+                already_invited = steam_id in self._invited_friends
+
+                # Row hover highlight
+                row_rect = pygame.Rect(list_left, y, list_width, row_h)
+                if row_rect.collidepoint(mouse_pos):
+                    highlight = pygame.Surface((list_width, row_h), pygame.SRCALPHA)
+                    highlight.fill((255, 255, 255, 20))
+                    self.screen.blit(highlight, (list_left, y))
+
+                # Friend name (left-aligned, vertically centered in row)
+                name_surface = label_font.render(name, True, TEXT_COLOR)
+                # Truncate name if too wide (leave space for invite button)
+                max_name_width = list_width - invite_btn_w - int(15 * scale)
+                if name_surface.get_width() > max_name_width:
+                    # Render truncated name with ellipsis
+                    truncated = name
+                    while label_font.size(truncated + "...")[0] > max_name_width and len(truncated) > 1:
+                        truncated = truncated[:-1]
+                    name_surface = label_font.render(truncated + "...", True, TEXT_COLOR)
+                name_y = y + (row_h - name_surface.get_height()) // 2
+                self.screen.blit(name_surface, (list_left + int(5 * scale), name_y))
+
+                # Invite / Invited button (right-aligned)
+                btn_x = list_right - invite_btn_w
+                btn_y = y + (row_h - invite_btn_h) // 2
+                btn_rect = pygame.Rect(btn_x, btn_y, invite_btn_w, invite_btn_h)
+                self._friend_picker_rects['invite_buttons'][steam_id] = btn_rect
+
+                btn_hovered = btn_rect.collidepoint(mouse_pos) and not already_invited
+                if already_invited:
+                    # "Invited" label — green tint
+                    pygame.draw.rect(self.screen, (40, 70, 40), btn_rect, border_radius=4)
+                    pygame.draw.rect(self.screen, (100, 200, 100), btn_rect, 1, border_radius=4)
+                    btn_text = label_font.render("Invited", True, (100, 200, 100))
+                else:
+                    # "Invite" button
+                    bg_color = PARCHMENT_HOVER if btn_hovered else PARCHMENT_COLOR
+                    pygame.draw.rect(self.screen, bg_color, btn_rect, border_radius=4)
+                    pygame.draw.rect(self.screen, BRASS_COLOR, btn_rect, 1, border_radius=4)
+                    btn_text = label_font.render("Invite", True, TEXT_COLOR)
+                btn_text_rect = btn_text.get_rect(center=btn_rect.center)
+                self.screen.blit(btn_text, btn_text_rect)
+
+                # Separator line between rows
+                sep_line_y = y + row_h - 1
+                pygame.draw.line(self.screen, (80, 80, 80),
+                                 (list_left, sep_line_y), (list_right, sep_line_y), 1)
+
+                y += row_h
+
+            # Scroll indicators if list is longer than visible area
+            if self._friend_scroll_offset > 0:
+                # Up arrow indicator
+                arrow_text = self.tiny_font.render("▲ more", True, TEXT_COLOR_DIM)
+                self.screen.blit(arrow_text,
+                                 arrow_text.get_rect(centerx=panel_x + panel_w // 2,
+                                                     bottom=list_top - 2))
+            if self._friend_scroll_offset < max_scroll:
+                # Down arrow indicator
+                arrow_text = self.tiny_font.render("▼ more", True, TEXT_COLOR_DIM)
+                self.screen.blit(arrow_text,
+                                 arrow_text.get_rect(centerx=panel_x + panel_w // 2,
+                                                     top=list_bottom + 2))
+
+    def _handle_friend_picker_click(self, pos):
+        """Handle clicks within the friend picker modal."""
+        # Close button
+        close_rect = self._friend_picker_rects.get('close')
+        if close_rect and close_rect.collidepoint(pos):
+            sound_manager.play_ui_click()
+            self._show_friend_picker = False
+            return
+
+        # Check invite button clicks
+        invite_buttons = self._friend_picker_rects.get('invite_buttons', {})
+        for steam_id, btn_rect in invite_buttons.items():
+            if btn_rect.collidepoint(pos) and steam_id not in self._invited_friends:
+                sound_manager.play_ui_click()
+                # Get host IP for connection string
+                from steam_integration import steam_manager
+                from network_config import DEFAULT_PORT
+                server = self.network_connection
+                display_ip = (server.get_display_ip()
+                              if hasattr(server, 'get_display_ip') else self.host_ip)
+                if display_ip:
+                    connect_str = f"{display_ip}:{DEFAULT_PORT}"
+                    if steam_manager.invite_friend(steam_id, connect_str):
+                        self._invited_friends.add(steam_id)
+                        logger.info(f"Invited friend {steam_id} with connect string '{connect_str}'")
+                return
+
+        # Click outside panel closes it
+        panel_rect = self._friend_picker_rects.get('panel')
+        if panel_rect and not panel_rect.collidepoint(pos):
+            self._show_friend_picker = False
+
     def _draw_buttons(self):
         """Draw Launch Game and Return to Main Menu buttons."""
         mouse_pos = pygame.mouse.get_pos()
@@ -2306,6 +2558,26 @@ class TerritorySelector:
             hovered=self.additional_options_rect.collidepoint(mouse_pos) and self.is_host,
             is_launch_button=False
         )
+
+        # Invite Friend button (host only — disabled when Steam not connected)
+        if self.is_host and self.invite_button_rect:
+            from steam_integration import steam_manager
+            invite_enabled = steam_manager.can_invite()
+            self._draw_button(
+                self.invite_button_rect,
+                "Invite Friend",
+                enabled=invite_enabled,
+                hovered=self.invite_button_rect.collidepoint(mouse_pos) and invite_enabled,
+                is_launch_button=False
+            )
+            # Draw "Steam not connected" hint when disabled
+            if not invite_enabled:
+                hint_text = self.tiny_font.render("(Steam not connected)", True, GRAY)
+                hint_rect = hint_text.get_rect(
+                    centerx=self.invite_button_rect.centerx,
+                    top=self.invite_button_rect.bottom + 2
+                )
+                self.screen.blit(hint_text, hint_rect)
 
         # Launch Game button (brass text, bold font)
         self._draw_button(

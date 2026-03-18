@@ -161,7 +161,8 @@ class MultiplayerSetup:
             # Handle events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    return None
+                    # Alt+F4: signal caller to exit the entire app
+                    return 'quit'
 
                 # Music track ended — advance to next track
                 if event.type == _MUSIC_END_EVENT:
@@ -350,6 +351,10 @@ class MultiplayerSetup:
         )
         result = selector.run()
 
+        if result == 'quit':
+            # Alt+F4 pressed — propagate quit signal
+            server.stop()
+            return 'quit'
         if not result:
             # User cancelled
             server.stop()
@@ -419,6 +424,10 @@ class MultiplayerSetup:
         )
         result = selector.run()
 
+        if result == 'quit':
+            # Alt+F4 pressed — propagate quit signal
+            client.disconnect()
+            return 'quit'
         if not result:
             # User cancelled
             client.disconnect()
@@ -622,7 +631,8 @@ class MultiplayerSetup:
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    return None
+                    # Alt+F4: signal caller to exit the entire app
+                    return 'quit'
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:

@@ -2620,9 +2620,17 @@ class Game:
             # Territory ownership - ensures consistency after battles
             'territory_owners': dict(self.game_state.territory_owners),
             # Territory garrisons - army positions and unit compositions
+            # Note: unit dicts may contain 'order' field referencing MovementOrder objects
+            # which are not JSON-serializable — strip them during serialization
             'territory_garrisons': {
                 territory: {
-                    str(player_id): garrison_data
+                    str(player_id): {
+                        **garrison_data,
+                        'units': [
+                            {k: (None if k == 'order' else v) for k, v in unit.items()}
+                            for unit in garrison_data.get('units', [])
+                        ]
+                    } if 'units' in garrison_data else garrison_data
                     for player_id, garrison_data in player_garrisons.items()
                 }
                 for territory, player_garrisons in self.game_state.territory_garrisons.items()
@@ -2873,9 +2881,17 @@ class Game:
             },
             # Territory garrisons - army positions and unit compositions
             # Prevents desync when forced defenders incorrectly moved on client view
+            # Note: unit dicts may contain 'order' field referencing MovementOrder objects
+            # which are not JSON-serializable — strip them during serialization
             'territory_garrisons': {
                 territory: {
-                    str(player_id): garrison_data
+                    str(player_id): {
+                        **garrison_data,
+                        'units': [
+                            {k: (None if k == 'order' else v) for k, v in unit.items()}
+                            for unit in garrison_data.get('units', [])
+                        ]
+                    } if 'units' in garrison_data else garrison_data
                     for player_id, garrison_data in player_garrisons.items()
                 }
                 for territory, player_garrisons in self.game_state.territory_garrisons.items()
@@ -3577,6 +3593,7 @@ class Game:
                     # This ensures fullscreen persists even after display scaling adjustments
                     logger.info(f"[FIX] Reapplying fullscreen mode after scaling adjustment...")
                     self.screen = pygame.display.set_mode((actual_width, actual_height), pygame.FULLSCREEN)
+                    _set_app_icon()  # Re-apply icon after fullscreen reapply
 
                     # Verify it's actually fullscreen
                     final_size = self.screen.get_size()
@@ -13725,11 +13742,15 @@ if __name__ == "__main__":
             xp_result=xp_result,
             replay_recorder=replay_recorder
         )
-        recap.run()
+        recap_result = recap.run()
 
         # Stop recap music, restart menu music
         music_manager.stop()
         music_manager.start_menu_music()
+
+        # Propagate Alt+F4 from recap screen to caller
+        if recap_result == 'quit':
+            return 'quit'
 
     # Load settings first
     logger.info("\n" + "="*60)
@@ -13738,12 +13759,9 @@ if __name__ == "__main__":
     settings.load()
     logger.info("="*60 + "\n")
 
-    # Initialize pygame for main menu
-    pygame.init()
-
-    # Set Windows App User Model ID so the taskbar treats this as its own app
-    # (not python.exe), allowing a custom taskbar icon.  Must be called before
-    # the first pygame.display.set_mode().
+    # Set Windows App User Model ID BEFORE pygame.init() so the taskbar treats
+    # this as its own app (not python.exe).  Must be called before any window
+    # creation — pygame.init() can trigger early OS icon caching on Windows 11.
     import sys
     if sys.platform == 'win32':
         try:
@@ -13751,6 +13769,9 @@ if __name__ == "__main__":
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('AvareonWar.WarOfAvareon')
         except Exception:
             pass
+
+    # Initialize pygame for main menu
+    pygame.init()
 
     # Load and set window/taskbar icon early — must be set before first set_mode
     # on Windows.  _app_icon is reused by _set_app_icon() after every set_mode
@@ -13778,20 +13799,26 @@ if __name__ == "__main__":
                 import ctypes
                 from ctypes import wintypes
                 user32 = ctypes.windll.user32
-                # Load .ico file with both small (16x16) and large (32x32) icons
                 _ICON_SMALL, _ICON_BIG = 0, 1
                 _WM_SETICON = 0x0080
                 _IMAGE_ICON = 1
                 _LR_LOADFROMFILE = 0x0010
                 hwnd = pygame.display.get_wm_info()['window']
-                # Large icon (taskbar) — 32x32
+                # Use system metrics for DPI-correct icon sizes (e.g. 48x48 on 150% scaling)
+                _SM_CXICON, _SM_CYICON = 11, 12      # Large icon (taskbar, Alt+Tab)
+                _SM_CXSMICON, _SM_CYSMICON = 49, 50   # Small icon (title bar)
+                big_w = user32.GetSystemMetrics(_SM_CXICON) or 32
+                big_h = user32.GetSystemMetrics(_SM_CYICON) or 32
+                small_w = user32.GetSystemMetrics(_SM_CXSMICON) or 16
+                small_h = user32.GetSystemMetrics(_SM_CYSMICON) or 16
+                # Large icon (taskbar)
                 hicon_big = user32.LoadImageW(
-                    None, _ico_path, _IMAGE_ICON, 32, 32, _LR_LOADFROMFILE)
+                    None, _ico_path, _IMAGE_ICON, big_w, big_h, _LR_LOADFROMFILE)
                 if hicon_big:
                     user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, hicon_big)
-                # Small icon (title bar) — 16x16
+                # Small icon (title bar)
                 hicon_small = user32.LoadImageW(
-                    None, _ico_path, _IMAGE_ICON, 16, 16, _LR_LOADFROMFILE)
+                    None, _ico_path, _IMAGE_ICON, small_w, small_h, _LR_LOADFROMFILE)
                 if hicon_small:
                     user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, hicon_small)
             except Exception:
@@ -13848,14 +13875,26 @@ if __name__ == "__main__":
     _set_app_icon()  # Re-apply icon after display creation
     pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
 
+    # Check for Steam invite auto-connect launch parameter (+connect ip:port)
+    # When a friend accepts a Steam invite, the game is launched with this argument
+    _steam_connect_target = None
+    for _i, _arg in enumerate(sys.argv):
+        if _arg == '+connect' and _i + 1 < len(sys.argv):
+            _steam_connect_target = sys.argv[_i + 1]
+            logger.info(f"Steam invite detected: will auto-connect to {_steam_connect_target}")
+
     # Main menu loop
     while True:
-        main_menu = MainMenu(screen)
-        # Start menu music after MainMenu is loaded (avoids playing over black screen).
-        # Guard with is_playing() so returning from recap/recreate doesn't restart.
-        if not music_manager.is_playing():
-            music_manager.start_menu_music()
-        action = main_menu.run()
+        # If launched via Steam invite, skip main menu and go directly to multiplayer join
+        if _steam_connect_target:
+            action = 'steam_invite_join'
+        else:
+            main_menu = MainMenu(screen)
+            # Start menu music after MainMenu is loaded (avoids playing over black screen).
+            # Guard with is_playing() so returning from recap/recreate doesn't restart.
+            if not music_manager.is_playing():
+                music_manager.start_menu_music()
+            action = main_menu.run()
 
         if action == 'quit':
             pygame.quit()
@@ -13896,6 +13935,10 @@ if __name__ == "__main__":
                 campaign = CampaignScreen(screen)
                 mission_id = campaign.run()
 
+                if mission_id == 'quit':
+                    # Alt+F4 pressed — exit entire app
+                    pygame.quit()
+                    sys.exit()
                 if mission_id is None:
                     # User clicked Return to Main Menu
                     break
@@ -13904,6 +13947,11 @@ if __name__ == "__main__":
                 mission_data = MISSION_DATA.get(mission_id, {})
                 mission = MissionScreen(screen, mission_id, mission_data)
                 result = mission.run()
+
+                # Alt+F4 on mission screen — exit entire app
+                if result == 'quit':
+                    pygame.quit()
+                    sys.exit()
 
                 # Check if user launched a mission
                 if result and result.startswith('launch_'):
@@ -14054,7 +14102,9 @@ if __name__ == "__main__":
                             if outro_cutscene.has_cutscene:
                                 outro_cutscene.run()
 
-                        show_recap_if_ended(game)
+                        if show_recap_if_ended(game) == 'quit':
+                            pygame.quit()
+                            sys.exit()
 
                         # Clean up mission reference and territory filtering
                         _map_data.set_tutorial_mission(None)
@@ -14084,6 +14134,10 @@ if __name__ == "__main__":
             integrated_setup = IntegratedSetup(game.screen)
             setup_config = integrated_setup.run()
 
+            if setup_config == 'quit':
+                # Alt+F4 pressed — exit entire app
+                pygame.quit()
+                sys.exit()
             if setup_config is None:
                 # User cancelled setup - return to main menu
                 logger.info("Setup cancelled - returning to main menu")
@@ -14121,7 +14175,9 @@ if __name__ == "__main__":
             music_manager.stop()
 
             # Show post-game recap screen if game ended with a winner
-            show_recap_if_ended(game)
+            if show_recap_if_ended(game) == 'quit':
+                pygame.quit()
+                sys.exit()
 
             # If game returns 'main_menu', loop back to main menu
             if result == 'main_menu':
@@ -14155,6 +14211,126 @@ if __name__ == "__main__":
                 # Game exited normally (quit)
                 pygame.quit()
                 sys.exit()
+        elif action == 'steam_invite_join':
+            # Auto-join multiplayer game via Steam invite (+connect ip:port)
+            # Parse host address from the connect target
+            connect_target = _steam_connect_target
+            _steam_connect_target = None  # Clear so subsequent loops go to main menu
+
+            # Parse IP and port from connect string (format: "ip:port")
+            if ':' in connect_target:
+                host_ip, port_str = connect_target.rsplit(':', 1)
+                try:
+                    port = int(port_str)
+                except ValueError:
+                    port = 7777
+            else:
+                host_ip = connect_target
+                port = 7777
+
+            logger.info(f"Steam invite: connecting to {host_ip}:{port}")
+
+            # Stop menu music
+            music_manager.stop()
+
+            # Connect as client — reuses _run_join_setup logic from multiplayer_setup
+            from network.client import NetworkClient
+            from network.territory_selector import TerritorySelector
+
+            client = NetworkClient()
+            player_name = settings.get_player_name()
+
+            if not client.connect(host_ip, port=port, player_name=player_name):
+                logger.warning(f"Steam invite: failed to connect to {host_ip}:{port}")
+                # Fall back to main menu
+                music_manager.start_menu_music()
+                continue
+
+            logger.info(f"Steam invite: connected to {host_ip}:{port}")
+            local_player_index = getattr(client, 'player_index', 1)
+
+            # Show territory selection screen as client
+            selector = TerritorySelector(
+                screen, client, is_host=False,
+                num_players=4,
+                victory_condition=0,
+                taxation_level=0,
+                turn_mode=0,
+                lobby_state=None,
+                local_player_index=local_player_index
+            )
+            result = selector.run()
+
+            if result == 'quit':
+                # Alt+F4 pressed — exit entire app
+                client.disconnect()
+                pygame.quit()
+                sys.exit()
+            if not result or (isinstance(result, tuple) and len(result) == 2 and result[0] == 'kicked'):
+                # Cancelled or kicked — disconnect and return to main menu
+                client.disconnect()
+                music_manager.start_menu_music()
+                continue
+
+            # Unpack result and build config (same as multiplayer flow)
+            lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping = result
+            final_player_index = selector.local_player_index
+            client.player_index = final_player_index
+
+            # Build game config from lobby state (reuse MultiplayerSetup's builder)
+            # Create a lightweight instance just for the config builder method
+            mp_setup_tmp = MultiplayerSetup.__new__(MultiplayerSetup)
+            mp_setup_tmp.victory_options = ["Domination (45+)", "Capital Assault", "Total Conquest"]
+            mp_setup_tmp.turn_mode_options = ["Sequential", "Simultaneous"]
+            config = mp_setup_tmp._build_config_from_lobby(
+                lobby_state, victory_condition, taxation_level, turn_mode,
+                neutral_armies, randomize_bonuses, bonus_mapping
+            )
+
+            # Initialize and run game (same as regular multiplayer flow)
+            game = Game(existing_screen=screen, network_connection=client)
+            screen = game.screen
+            game.local_player_index = final_player_index
+
+            loading = LoadingScreen(screen, game, config, network_connection=client)
+            loading.run()
+
+            music_manager.start_game_music()
+
+            from game_logger import GameLogger
+            if hasattr(game, 'game_state') and game.game_state:
+                game.game_state.game_logger = GameLogger(game.game_state)
+
+            from replay_recorder import ReplayRecorder
+            if hasattr(game, 'game_state') and game.game_state:
+                game.game_state.replay_recorder = ReplayRecorder(game.game_state)
+
+            result = game.run()
+
+            music_manager.stop()
+            if show_recap_if_ended(game) == 'quit':
+                client.disconnect()
+                pygame.quit()
+                sys.exit()
+
+            # Cleanup client connection
+            client.disconnect()
+
+            if result == 'main_menu':
+                settings.load()
+                initial_resolution = settings.get_resolution()
+                initial_fullscreen = settings.is_fullscreen()
+                if initial_fullscreen:
+                    screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
+                else:
+                    screen = pygame.display.set_mode(initial_resolution)
+                _set_app_icon()
+                pygame.mouse.set_visible(False)
+                continue
+            else:
+                pygame.quit()
+                sys.exit()
+
         elif action == 'multiplayer':
             # Multiplayer setup flow
             game = Game(existing_screen=screen)
@@ -14164,6 +14340,10 @@ if __name__ == "__main__":
             multiplayer_setup = MultiplayerSetup(game.screen)
             setup_result = multiplayer_setup.run()
 
+            if setup_result == 'quit':
+                # Alt+F4 pressed — exit entire app
+                pygame.quit()
+                sys.exit()
             if setup_result is None:
                 # User cancelled - return to main menu
                 logger.info("Multiplayer setup cancelled - returning to main menu")
@@ -14212,7 +14392,14 @@ if __name__ == "__main__":
             music_manager.stop()
 
             # Show post-game recap screen if game ended with a winner
-            show_recap_if_ended(game)
+            if show_recap_if_ended(game) == 'quit':
+                # Cleanup network before exit
+                if mode == 'host':
+                    network_connection.stop()
+                elif mode == 'client':
+                    network_connection.disconnect()
+                pygame.quit()
+                sys.exit()
 
             # Cleanup network connection
             if mode == 'host':
@@ -14254,6 +14441,11 @@ if __name__ == "__main__":
                 browser = ReplayBrowser(screen)
                 browser_result = browser.run()
 
+                if browser_result and browser_result.get('action') == 'quit':
+                    # Alt+F4 pressed — exit entire app
+                    pygame.quit()
+                    sys.exit()
+
                 if not browser_result or browser_result.get('action') == 'back':
                     # Return to main menu
                     break
@@ -14262,7 +14454,11 @@ if __name__ == "__main__":
                     replay_path = browser_result.get('path')
                     if replay_path:
                         viewer = ReplayViewer(screen, replay_path)
-                        viewer.run()
+                        viewer_result = viewer.run()
+                        if viewer_result == 'quit':
+                            # Alt+F4 pressed in viewer — exit entire app
+                            pygame.quit()
+                            sys.exit()
                         # After viewer exits, loop back to browser
                         continue
                 break

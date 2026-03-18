@@ -420,7 +420,8 @@ class ReplayViewer:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                self.result = 'main_menu'
+                # Alt+F4: signal caller to exit the entire app
+                self.result = 'quit'
                 self.done = True
                 return
 

@@ -171,7 +171,8 @@ class CampaignScreen:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                # S3 fix: graceful exit instead of hard sys.exit() — let caller handle cleanup
+                # Alt+F4: signal caller to exit the entire app
+                self.selected_mission = 'quit'
                 self.cancelled = True
                 return
 
@@ -513,8 +514,8 @@ class MissionScreen:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                # S3 fix: graceful exit instead of hard sys.exit()
-                self.result = 'return'
+                # Alt+F4: signal caller to exit the entire app
+                self.result = 'quit'
                 self.done = True
                 return
 

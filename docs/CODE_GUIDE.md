@@ -1585,6 +1585,11 @@ The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' �
 **Wrong:** Adding feature without updating `GAME_MECHANICS.md`
 **Right:** Update docs whenever you change game rules/balance
 
+### ❌ Swallowing `pygame.QUIT` in screen classes
+**Wrong:** `if event.type == pygame.QUIT: self.cancelled = True` (returns to previous screen instead of exiting)
+**Right:** Return a `'quit'` signal that propagates up to the main loop, where `pygame.quit(); sys.exit()` is called.
+All screens must distinguish Alt+F4 (exit app) from Escape (go back). Callers must check `== 'quit'` **before** `is None` / `not result`.
+
 ---
 
 ## Sound & Music System
@@ -2165,7 +2170,7 @@ def is_action_allowed(self, action_type, **kwargs):
 
 **Architecture:** Singleton `AchievementManager` owns all definitions and stat tracking. `AchievementPanel` is a UI helper class created by `MainMenu` to render panel content. Achievement data persisted to `config.json` via `settings_manager`.
 
-**Steam integration:** `steam_integration.py` provides `SteamManager` singleton. On startup: `initialize()` calls `SteamInit()` + `RequestCurrentStats()`, then `pump_until_stats_ready()` waits for stats callback before `sync_to_steam()`. Achievement IDs are encoded to bytes before passing to SteamworksPy (no argtypes on achievement methods). Steam persona name auto-updates `settings.player_name` on startup; profile panel shows "(Steam)" indicator and disables name editing when Steam is active.
+**Steam integration:** `steam_integration.py` provides `SteamManager` singleton. On startup: `initialize()` calls `SteamInit()` + `RequestCurrentStats()`, then `pump_until_stats_ready()` waits for stats callback before `sync_to_steam()`. Achievement IDs are encoded to bytes before passing to SteamworksPy (no argtypes on achievement methods). Steam persona name auto-updates `settings.player_name` on startup; profile panel shows "(Steam)" indicator and disables name editing when Steam is active. **Friend invites:** `can_invite()` checks Steam is initialized, `get_online_friends()` enumerates friends via `GetFriendCount`/`GetFriendByIndex`/`GetFriendPersonaName`, `invite_friend(steam_id, connect_string)` sends invite via `InviteFriend` with host IP:port. Invited friends receive Steam notification; accepting launches game with `+connect ip:port` arg.
 
 **Data flow:** Game ends → `show_recap_if_ended()` → `achievement_manager.record_game_result(game)` → detects mode, increments stats, checks thresholds → returns newly earned list → `RecapScreen` shows preview popups → user returns to main menu → achievement panel shows all achievements. Campaign missions set `gs.winner = 0` and `gs.phase = 'ended'` in their `_start_victory` method to trigger this flow.
 
@@ -2186,6 +2191,7 @@ def is_action_allowed(self, action_type, **kwargs):
 - **Change preview popup**: Modify `_draw_achievement_preview()` / `_update_achievement_preview()` in `recap_screen.py`.
 - **Change profile title/icon UI**: Modify `_draw_profile_panel()` in `main_menu.py`.
 - **Change Steam achievement sync**: Modify `steam_integration.py` (`unlock_achievement`, `pump_until_stats_ready`). Achievement IDs must be bytes-encoded.
+- **Change Steam friend invites**: Modify `steam_integration.py` (`can_invite`, `get_online_friends`, `invite_friend`). Friend picker UI in `network/territory_selector.py` (`_draw_friend_picker`, `_handle_friend_picker_click`). Auto-connect via `+connect` launch param handled in `main.py` (`steam_invite_join` action).
 - **Change Steam name behavior**: Modify `_open_profile()` in `main_menu.py` (detection) and `_draw_profile_panel()` (UI). Startup auto-set in `main.py`.
 
 ## Recap Screen

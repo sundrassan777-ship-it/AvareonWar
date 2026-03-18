@@ -2,6 +2,39 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-18 - Icon Fix + Alt+F4 Exits Entire App
+
+- **Bug fix:** Missing `_set_app_icon()` call after fullscreen reapply in `apply_display_settings` — taskbar icon could revert to default Python icon on Windows with display scaling
+- **Enhancement:** Alt+F4 (`pygame.QUIT`) now exits the entire app from any screen
+  - Previously, Alt+F4 on setup/selector/recap/replay screens just returned to the previous screen
+  - All screens now propagate a `'quit'` signal; callers in main.py detect it and call `pygame.quit(); sys.exit()`
+  - Affected screens: IntegratedSetup, TerritorySelector, MultiplayerSetup, CampaignScreen, MissionScreen, RecapScreen, ReplayBrowser, ReplayViewer
+
+## 2026-03-18 - Steam Invite Friend for Multiplayer
+
+- **Feature:** "Invite Friend" button in multiplayer lobby (host-only, territory selector)
+  - Disabled with "(Steam not connected)" hint when Steam is unavailable
+  - Opens modal friend picker panel showing online Steam friends
+  - Each friend has an "Invite" / "Invited" button; sends Steam game invite with host IP:port
+  - Scrollable list with mouse wheel support, close via X / Escape / click outside
+- **Feature:** Auto-connect on Steam invite accept
+  - When invited friend accepts, game launches with `+connect ip:port` command-line argument
+  - Parses `+connect` from `sys.argv`, skips main menu, auto-joins host's lobby as client
+  - Falls back to main menu on connection failure
+- **Steam integration:** Added `can_invite()`, `get_online_friends()`, `invite_friend()` to `SteamManager`
+  - Uses SteamworksPy `GetFriendCount`/`GetFriendByIndex`/`GetFriendPersonaName` for friend enumeration
+  - Uses `InviteFriend(steam_id, connect_string)` for sending invites
+
+## 2026-03-18 - Fix Multiplayer Loading Screen Host Stuck
+
+- **Bug fix (CRITICAL):** Host permanently stuck on "Waiting for other players..." in multiplayer loading screen
+  - Root cause: `LoadingScreen` created a fresh `NetworkProtocol()` with seq=0, but the server's anti-replay check
+    had already tracked higher seq numbers from the lobby phase — client's GAME_READY silently rejected as duplicate
+  - Fix: Reuse `network_connection.protocol` instead of creating a fresh instance
+- **Bug fix (MEDIUM):** Client misinterpreted host's initial "I'm ready" broadcast as "all players ready"
+  - Host now only broadcasts GAME_READY as confirmation after ALL clients (and host) are ready
+  - Prevents client from prematurely exiting loading screen before true all-ready confirmation
+
 ## 2026-03-16 - Multiplayer Sync Deep Audit (Phase 2)
 
 - **Bug fix (HIGH):** Client SIM_ROUND_COMPLETE handler missing `finish_castle_upgrades()` and `_tick_building_xp()`

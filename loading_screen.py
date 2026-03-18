@@ -18,7 +18,6 @@ import random
 import pygame
 
 from network_config import MessageType
-from network.protocol import NetworkProtocol
 from global_sound import get_game_sound_tasks
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
@@ -149,7 +148,14 @@ class LoadingScreen:
         self.local_ready = False       # This player clicked "start"
         self.all_players_ready = False  # All remote players have sent GAME_READY
         self.remote_ready_players = set()  # Player indices that sent GAME_READY
-        self.protocol = NetworkProtocol() if self.is_multiplayer else None
+        # Reuse the network connection's protocol to maintain correct sequence numbers.
+        # A fresh protocol resets seq to 0, which the server's anti-replay check
+        # (server.py _handle_received_message) rejects as duplicate since the lobby
+        # phase already advanced the server's tracked seq for this client.
+        if self.is_multiplayer and network_connection:
+            self.protocol = network_connection.protocol
+        else:
+            self.protocol = None
 
         # Determine how many remote players we expect (for host readiness check)
         self.expected_remote_count = 0
@@ -403,8 +409,14 @@ class LoadingScreen:
         message = self.protocol.create_game_ready(player_index)
 
         if self.is_host:
-            # Host broadcasts to all connected clients
-            self.network_connection.broadcast_message(message)
+            # Host does NOT broadcast its own readiness — only broadcasts
+            # confirmation when all remote players are also ready. This prevents
+            # the client from misinterpreting "host is ready" as "all ready."
+            if len(self.remote_ready_players) >= self.expected_remote_count:
+                confirm = self.protocol.create_game_ready(0)
+                self.network_connection.broadcast_message(confirm)
+                self.all_players_ready = True
+                logger.info("All players ready at host click — game starting")
         else:
             # Client sends to server (which forwards to host)
             self.network_connection.send_message(message)
@@ -440,8 +452,10 @@ class LoadingScreen:
                     if remote_player is not None:
                         self.remote_ready_players.add(remote_player)
 
-                    # Check if all expected remote players are ready
-                    if len(self.remote_ready_players) >= self.expected_remote_count:
+                    # Check if all expected remote players AND the host are ready.
+                    # Require local_ready so host only broadcasts confirmation
+                    # when it has also clicked ready (not just when clients are ready).
+                    if self.local_ready and len(self.remote_ready_players) >= self.expected_remote_count:
                         # All clients loaded — broadcast GAME_READY back to confirm
                         confirm = self.protocol.create_game_ready(0)
                         self.network_connection.broadcast_message(confirm)

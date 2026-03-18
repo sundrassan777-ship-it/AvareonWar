@@ -255,6 +255,58 @@ class SteamManager:
             pass
 
     # ------------------------------------------------------------------
+    # Friend Invites
+    # ------------------------------------------------------------------
+
+    def can_invite(self):
+        """True if Steam is initialized and friend invite is possible."""
+        return self._initialized
+
+    def get_online_friends(self):
+        """Return list of online Steam friends as dicts: [{steam_id, name}, ...].
+        Returns empty list if Steam is unavailable or on error."""
+        if not self._initialized:
+            return []
+
+        try:
+            from steamworks.enums import FriendFlags
+            count = self._steamworks.Friends.GetFriendCount(FriendFlags.IMMEDIATE)
+            friends = []
+            for i in range(count):
+                steam_id = self._steamworks.Friends.GetFriendByIndex(i, FriendFlags.IMMEDIATE)
+                if not steam_id:
+                    continue
+                name = self._steamworks.Friends.GetFriendPersonaName(steam_id)
+                # GetFriendPersonaName returns c_char_p (bytes in Python 3)
+                if isinstance(name, bytes):
+                    name = name.decode('utf-8')
+                if name:
+                    friends.append({'steam_id': steam_id, 'name': name})
+            # Sort alphabetically by name for consistent display
+            friends.sort(key=lambda f: f['name'].lower())
+            logger.info(f"Found {len(friends)} Steam friends")
+            return friends
+        except Exception as e:
+            logger.warning(f"Failed to get Steam friends list: {e}")
+            return []
+
+    def invite_friend(self, steam_id, connect_string):
+        """Send a game invite to a Steam friend with a connection string.
+        The friend receives a Steam notification; accepting launches the game
+        with +connect <connect_string> as a command-line argument.
+        Returns True if the invite was sent successfully."""
+        if not self._initialized:
+            return False
+
+        try:
+            self._steamworks.Friends.InviteFriend(steam_id, _encode(connect_string))
+            logger.info(f"Steam invite sent to {steam_id} with connect string '{connect_string}'")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send Steam invite to {steam_id}: {e}")
+            return False
+
+    # ------------------------------------------------------------------
     # Callbacks (call periodically from game loop)
     # ------------------------------------------------------------------
 
