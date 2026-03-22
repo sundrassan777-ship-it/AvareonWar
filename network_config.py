@@ -11,7 +11,8 @@ import enum
 # types, PATCH for bug fixes. Server rejects clients with mismatched MAJOR version.
 # History: 1.0.0 = initial release (2-player + 4-player lobby, sequential + simultaneous)
 # History: 1.1.0 = sequential mode sync fix (research/hero training orders, FULL_STATE_SYNC)
-NETWORK_VERSION = "1.1.0"
+# History: 1.2.0 = disconnect elimination (DISCONNECT_ELIMINATION message, universal last-team-standing)
+NETWORK_VERSION = "1.2.0"
 
 # Connection Settings
 DEFAULT_PORT = 7777
@@ -87,6 +88,7 @@ class MessageType(str, enum.Enum):
     # Player State
     PLAYER_DISCONNECT = "PLAYER_DISCONNECT"  # Player disconnected (host -> clients)
     AI_TAKEOVER = "AI_TAKEOVER"              # AI now controlling player slot (host -> clients)
+    DISCONNECT_ELIMINATION = "DISCONNECT_ELIMINATION"  # Player eliminated after reconnect timeout (host -> all)
 
     # Gameplay - Orders
     MOVEMENT_ORDER = "MOVEMENT_ORDER"

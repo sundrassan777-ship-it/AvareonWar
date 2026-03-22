@@ -44,7 +44,7 @@ STATUS_GREEN = (80, 200, 80)
 DATA_PATH = os.path.join(os.path.dirname(__file__), 'campaign_data.json')
 
 # Mission IDs and tabs
-MISSION_IDS = ['mission_1', 'mission_2', 'mission_3', 'mission_4', 'mission_5', 'mission_6']
+MISSION_IDS = ['mission_1', 'mission_2', 'mission_3', 'mission_4', 'mission_5', 'mission_6', 'mission_7']
 TABS = ['briefing', 'lore', 'objectives', 'characters']
 TAB_LABELS = {'briefing': 'Briefing', 'lore': 'Lore', 'objectives': 'Objectives', 'characters': 'Characters'}
 

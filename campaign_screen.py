@@ -21,6 +21,9 @@ from config.constants import WHITE, BLACK, GRAY
 from global_sound import sound_manager
 from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.cursor import draw_custom_cursor
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # Brass gold color for special button text (matching integrated_setup)
 BRASS_COLOR = (181, 166, 66)
@@ -63,6 +66,9 @@ class CampaignScreen:
             {'id': 'mission_4', 'text': 'Chapter 4: Domination'},
             {'id': 'mission_5', 'text': 'Chapter 5: The First War'},
             {'id': 'mission_6', 'text': 'Chapter 6: The Second War'},
+            {'id': 'mission_7', 'text': 'Chapter 7: The Fall'},
+            # Greyed-out placeholder for future content
+            {'id': 'coming_soon', 'text': 'Coming Soon...', 'disabled': True},
         ]
 
         # Pagination constants — 4 missions per page for balanced layout
@@ -108,6 +114,10 @@ class CampaignScreen:
         campaign_font_size = max(14, int(24 * self.ui_scale))
         self.campaign_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', campaign_font_size)
 
+        # Tooltip font (matching main menu tooltip style)
+        tooltip_font_size = max(14, int(20 * self.ui_scale))
+        self.tooltip_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', tooltip_font_size)
+
         # Title font and position — golden "Campaign" text centered above buttons
         title_font_size = max(20, int(48 * self.ui_scale))
         self.title_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf', title_font_size)
@@ -128,6 +138,29 @@ class CampaignScreen:
         # Font for return button (matching integrated_setup: Cinzel-Regular, size 29 scaled)
         font_size = max(16, int(29 * self.ui_scale))
         self.button_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', font_size)
+
+        # Saved Games square button (bottom-left, matching Replays button pattern)
+        save_btn_size = int(120 * self.ui_scale)
+        save_btn_margin = int(20 * self.ui_scale)
+        self.save_games_button_rect = pygame.Rect(
+            save_btn_margin,
+            self.height - save_btn_size - save_btn_margin,
+            save_btn_size, save_btn_size
+        )
+        # Load saved games button icon
+        self.save_games_icon = None
+        try:
+            icon = pygame.image.load('assets/SaveGameButton.png').convert_alpha()
+            self.save_games_icon = pygame.transform.smoothscale(icon, (save_btn_size, save_btn_size))
+        except Exception as e:
+            logger.warning(f"Could not load SaveGameButton.png: {e}")
+        # Load icon border frame (same as main menu square buttons)
+        self.icon_border = None
+        try:
+            border = pygame.image.load('assets/mapicons/IconBorder.png').convert_alpha()
+            self.icon_border = pygame.transform.smoothscale(border, (save_btn_size, save_btn_size))
+        except Exception as e:
+            logger.warning(f"Could not load IconBorder.png: {e}")
 
     def _update_visible_buttons(self):
         """Recalculate which mission buttons are visible on the current page and assign rects"""
@@ -155,9 +188,11 @@ class CampaignScreen:
         """Process input events"""
         mouse_pos = pygame.mouse.get_pos()
 
-        # Update hover state (includes pagination arrows)
+        # Update hover state (includes pagination arrows and saved games button)
         self.hovered_button = None
-        if self.return_button_rect.collidepoint(mouse_pos):
+        if self.save_games_button_rect.collidepoint(mouse_pos):
+            self.hovered_button = 'saved_games'
+        elif self.return_button_rect.collidepoint(mouse_pos):
             self.hovered_button = 'return'
         elif self.current_page > 0 and self.left_arrow_rect.collidepoint(mouse_pos):
             self.hovered_button = 'page_left'
@@ -166,6 +201,7 @@ class CampaignScreen:
         else:
             for btn in self.campaign_buttons:
                 if btn['rect'].collidepoint(mouse_pos):
+                    # Disabled buttons still get hover (for tooltip) but use special id
                     self.hovered_button = btn['id']
                     break
 
@@ -186,7 +222,11 @@ class CampaignScreen:
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
-                    if self.return_button_rect.collidepoint(mouse_pos):
+                    if self.save_games_button_rect.collidepoint(mouse_pos):
+                        sound_manager.play_ui_click()
+                        self.clicked_button = 'saved_games'
+                        self.selected_mission = 'saved_games'
+                    elif self.return_button_rect.collidepoint(mouse_pos):
                         sound_manager.play_ui_click()
                         self.clicked_button = 'return'
                         self.cancelled = True
@@ -203,8 +243,10 @@ class CampaignScreen:
                         self.current_page += 1
                         self._update_visible_buttons()
                     else:
-                        # Campaign mission buttons - open mission screen
+                        # Campaign mission buttons - open mission screen (skip disabled)
                         for btn in self.campaign_buttons:
+                            if btn.get('disabled'):
+                                continue
                             if btn['rect'].collidepoint(mouse_pos):
                                 sound_manager.play_ui_click()
                                 self.clicked_button = btn['id']
@@ -232,14 +274,36 @@ class CampaignScreen:
         # Draw return button (matching integrated_setup style)
         self._draw_return_button()
 
+        # Draw Saved Games square button (bottom-left)
+        self._draw_saved_games_button()
+
         # Reset clicked state after render
         self.clicked_button = None
+
+    def _draw_tooltip(self, text, pos):
+        """Draw a tooltip near mouse position, matching main menu style. Supports multi-line via newline."""
+        font = self.tooltip_font
+        pad = int(6 * self.ui_scale)
+        lines = text.split('\n')
+        line_surfaces = [font.render(line, True, WHITE) for line in lines]
+        line_h = font.get_linesize()
+        tw = max(s.get_width() for s in line_surfaces) + pad * 2
+        th = len(line_surfaces) * line_h + pad * 2
+        tx = min(pos[0] + 15, self.width - tw - 5)
+        ty = max(pos[1] - th - 5, 5)
+        bg = pygame.Surface((tw, th), pygame.SRCALPHA)
+        bg.fill((30, 30, 50, 220))
+        pygame.draw.rect(bg, (150, 150, 150), (0, 0, tw, th), 1)
+        self.screen.blit(bg, (tx, ty))
+        for i, surf in enumerate(line_surfaces):
+            self.screen.blit(surf, (tx + pad, ty + pad + i * line_h))
 
     def _draw_campaign_button(self, btn):
         """Draw a campaign mission button using CampaignBTN.png"""
         rect = btn['rect']
         is_hovered = (self.hovered_button == btn['id'])
         is_clicked = (self.clicked_button == btn['id'])
+        is_disabled = btn.get('disabled', False)
 
         # Draw button background using CampaignBTN.png
         scaled_bg = pygame.transform.smoothscale(
@@ -248,22 +312,36 @@ class CampaignScreen:
         )
 
         button_surface = scaled_bg.copy()
-        # Base darkening (consistent with other buttons)
-        button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
 
-        if is_clicked:
-            # Bright flash on click
-            button_surface.fill((80, 80, 80, 0), special_flags=pygame.BLEND_RGBA_ADD)
-        elif is_hovered:
-            # Subtle brightness on hover
-            button_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
+        if is_disabled:
+            # Heavy darkening for greyed-out disabled look
+            button_surface.fill((50, 50, 50, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        else:
+            # Base darkening (consistent with other buttons)
+            button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
+
+            if is_clicked:
+                # Bright flash on click
+                button_surface.fill((80, 80, 80, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            elif is_hovered:
+                # Subtle brightness on hover
+                button_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
 
         self.screen.blit(button_surface, rect)
 
-        # Draw text (white, Cinzel-Regular)
-        text_surface = self.campaign_font.render(btn['text'], True, WHITE)
+        # Draw text — grey for disabled, white for normal
+        text_color = GRAY if is_disabled else WHITE
+        text_surface = self.campaign_font.render(btn['text'], True, text_color)
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
+
+        # Tooltip for disabled "Coming Soon" button on hover
+        if is_disabled and is_hovered:
+            self._draw_tooltip(
+                "The history of Avareon is always in the making.\n"
+                "Who knows what shall come up after the Second War...",
+                pygame.mouse.get_pos()
+            )
 
     def _draw_page_arrow(self, rect, direction, btn_id):
         """Draw a pagination arrow (triangle) with hover/click effects, slow pulse, and size breathing.
@@ -327,6 +405,40 @@ class CampaignScreen:
         text_surface = self.button_font.render("Return", True, WHITE)
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
+
+    def _draw_saved_games_button(self):
+        """Draw the Saved Games square button (bottom-left) with icon and border."""
+        rect = self.save_games_button_rect
+        is_hovered = (self.hovered_button == 'saved_games')
+        is_clicked = (self.clicked_button == 'saved_games')
+
+        # Draw icon or fallback
+        if self.save_games_icon:
+            btn_surf = self.save_games_icon.copy()
+        else:
+            # Fallback: dark square with text
+            btn_surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            btn_surf.fill((40, 40, 55, 200))
+
+        # Apply hover/click brightness (same pattern as main_menu _draw_replays_button)
+        if is_clicked:
+            bright = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            bright.fill((100, 100, 100, 100))
+            btn_surf.blit(bright, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        elif is_hovered:
+            bright = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            bright.fill((50, 50, 50, 50))
+            btn_surf.blit(bright, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+        self.screen.blit(btn_surf, rect.topleft)
+
+        # Draw border frame on top
+        if self.icon_border:
+            self.screen.blit(self.icon_border, rect.topleft)
+
+        # Tooltip on hover (matching main menu tooltip style)
+        if is_hovered:
+            self._draw_tooltip("Saved Games", pygame.mouse.get_pos())
 
 
 # Load mission data from JSON file (edited via Campaign_Text_Tool.py)

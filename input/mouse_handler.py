@@ -101,6 +101,10 @@ class MouseHandler:
         if self.game.options_menu_visible:
             return self.game.handle_options_menu_click(pos)  # Returns (handled, should_quit)
         
+        # Priority 3.5: Save dialog (if visible, blocks all other input)
+        if self.game.save_dialog_active:
+            return self.game._handle_save_dialog_click(pos)
+
         # Priority 4: Game menu (if visible)
         if self.game.game_menu_visible:
             return self.game.handle_game_menu_click(pos)  # Returns (handled, should_quit)
@@ -109,6 +113,12 @@ class MouseHandler:
         if pos[1] < self.top_panel_height:
             return self.game.handle_top_panel_click(pos)
         
+        # Priority 5.5: "Resolve Remaining Battles" button (below top panel during battle phase)
+        if getattr(self.game, 'resolve_all_battles_button', None):
+            if self.game.resolve_all_battles_button.collidepoint(pos):
+                self.game._handle_resolve_all_battles_click()
+                return True
+
         # Priority 6: Battle markers
         if hasattr(self.game, 'battle_markers'):
             for i, marker_rect in enumerate(self.game.battle_markers):

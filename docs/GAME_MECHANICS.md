@@ -383,10 +383,29 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
   - **Team-based:** Combined team territories count toward total
   - Solo players must own all territories individually
 
+**Universal Last-Team-Standing (all modes):**
+- Any player with 0 territories is automatically eliminated and skipped in turn order
+- If only one team has territories remaining, that team wins — regardless of victory condition
+- This runs **before** condition-specific checks (Domination threshold, etc.)
+- Example: In Domination mode, if you capture all enemy territories, you win immediately without needing 45
+
 **Team Victory Logic:**
 - Domination/Total Conquest aggregate territory counts per team
 - Only enemies can trigger Capital Assault eliminations
 - First team member with active territories represents winning team
+
+**Multiplayer Disconnect Elimination:**
+- When a player disconnects, AI takes over for 60 seconds (reconnection window)
+- If the player does not reconnect, they are eliminated:
+  - Territories distributed round-robin to living allies (alphabetical order)
+  - If no allies, territories become neutral
+  - All armies, buildings, heroes, and gold are destroyed
+- Chat messages notify all players of disconnect and elimination events
+
+**Anti-Win-Farming (Multiplayer):**
+- If all enemies were eliminated via disconnect and none earned >= 50 XP from gameplay actions, no XP is awarded for the game
+- Prevents exploiting disconnect elimination for easy XP farming
+- If at least one enemy was defeated normally (through battles), or had >= 50 XP, XP is awarded normally
 
 **Planned:**
 - Economic: Reach gold threshold

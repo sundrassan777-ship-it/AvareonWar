@@ -43,7 +43,8 @@ PANEL_GAP_REF = 120  # Gap between panels for battle icon and button
 PANEL_WIDTH_RATIO = 0.35  # Each panel takes 35% of screen width
 PANEL_HEIGHT_RATIO = 0.55  # Panel height as ratio of screen height
 PANEL_TOP_MARGIN_REF = 105  # Top margin for panels
-PANEL_CONTENT_PADDING_REF = 100  # Major padding inside panels for BattlePlayerScreen.png
+PANEL_CONTENT_PADDING_V_REF = 80  # Vertical (top) padding inside panels (reduced from 100 for 5 unit types)
+PANEL_CONTENT_PADDING_H_REF = 95  # Horizontal (left/right) padding for text breathing room
 
 # Strength bar dimensions (fill and PNG can be sized independently)
 BAR_FILL_WIDTH_RATIO = 0.20  # Fill width as ratio of screen width
@@ -84,9 +85,9 @@ PARTICLE_MAX_LIFETIME = 0.20  # Longer traversal time
 PARTICLE_ARC_HEIGHT = 0  # No arc - purely horizontal
 
 # Text settings (reference resolution)
-TEXT_LINE_HEIGHT_REF = 38  # Increased vertical spacing between lines
+TEXT_LINE_HEIGHT_REF = 34  # Vertical spacing between lines (reduced from 38 for 5 unit types)
 TEXT_PADDING_REF = 20  # Padding for fallback (not BattlePlayerScreen)
-REPORT_LINE_SPACING_REF = 8  # Extra spacing in battle report
+REPORT_LINE_SPACING_REF = 5  # Extra spacing in battle report (reduced from 8 for 5 unit types)
 
 
 # ========================================
@@ -666,7 +667,8 @@ class EnhancedBattleInterface:
         # Scaled values from reference constants
         panel_gap = s(PANEL_GAP_REF)
         panel_top_margin = s(PANEL_TOP_MARGIN_REF)
-        self.panel_content_padding = s(PANEL_CONTENT_PADDING_REF)
+        self.panel_content_padding_v = s(PANEL_CONTENT_PADDING_V_REF)
+        self.panel_content_padding_h = s(PANEL_CONTENT_PADDING_H_REF)
         self.bar_fill_height = s(BAR_FILL_HEIGHT_REF)
         self.bar_png_height = s(BAR_PNG_HEIGHT_REF)
         self.bar_top_margin = s(BAR_TOP_MARGIN_REF)
@@ -1349,11 +1351,12 @@ class EnhancedBattleInterface:
             pygame.draw.rect(self.screen, (40, 40, 60), rect)
             pygame.draw.rect(self.screen, WHITE, rect, 2)
 
-        # Content area with major padding for BattlePlayerScreen.png
-        padding = self.panel_content_padding if self.panel_bg else self.text_padding
-        content_x = rect.left + padding
-        content_width = rect.width - padding * 2
-        y = rect.top + padding
+        # Content area with separate H/V padding for BattlePlayerScreen.png
+        padding_h = self.panel_content_padding_h if self.panel_bg else self.text_padding
+        padding_v = self.panel_content_padding_v if self.panel_bg else self.text_padding
+        content_x = rect.left + padding_h
+        content_width = rect.width - padding_h * 2
+        y = rect.top + padding_v
 
         # Player name (colored) - wrap if too long
         name_lines = self._wrap_text(title, self.title_font, content_width)
@@ -1388,11 +1391,11 @@ class EnhancedBattleInterface:
                 unit_text = f"{count} {unit_type}"
                 unit_surface = self.small_font.render(unit_text, True, WHITE)
                 self.screen.blit(unit_surface, (content_x + int(10 * self.scale), y))
-                y += self.text_line_height - int(8 * self.scale)
+                y += self.text_line_height - int(10 * self.scale)  # Tighter spacing for 5 unit types
         else:
             no_units = self.small_font.render("No units", True, (150, 150, 150))
             self.screen.blit(no_units, (content_x + int(10 * self.scale), y))
-            y += self.text_line_height - int(8 * self.scale)
+            y += self.text_line_height - int(10 * self.scale)
 
         # Keep indicator (defender only)
         if is_defender and self.has_keep:
@@ -1627,11 +1630,12 @@ class EnhancedBattleInterface:
             pygame.draw.rect(self.screen, (40, 40, 60), self.report_panel_rect)
             pygame.draw.rect(self.screen, WHITE, self.report_panel_rect, 2)
 
-        # Content with major padding for BattlePlayerScreen.png
-        padding = self.panel_content_padding if self.panel_bg else self.text_padding
-        content_x = self.report_panel_rect.left + padding
-        content_width = self.report_panel_rect.width - padding * 2
-        y = self.report_panel_rect.top + padding
+        # Content with separate H/V padding for BattlePlayerScreen.png
+        padding_h = self.panel_content_padding_h if self.panel_bg else self.text_padding
+        padding_v = self.panel_content_padding_v if self.panel_bg else self.text_padding
+        content_x = self.report_panel_rect.left + padding_h
+        content_width = self.report_panel_rect.width - padding_h * 2
+        y = self.report_panel_rect.top + padding_v
         center_x = self.report_panel_rect.centerx
 
         # Title
@@ -1651,7 +1655,7 @@ class EnhancedBattleInterface:
                         (content_x, y),
                         (content_x + content_width, y),
                         1)
-        y += int(15 * self.scale)
+        y += int(12 * self.scale)  # Reduced from 15 for 5 unit types
 
         # Victory/Defeat
         if self.current_player_won:
@@ -1671,7 +1675,7 @@ class EnhancedBattleInterface:
                         (content_x, y),
                         (content_x + content_width, y),
                         1)
-        y += int(15 * self.scale)
+        y += int(12 * self.scale)  # Reduced from 15 for 5 unit types
 
         # Battle summary
         if self.battle_result:
@@ -1700,12 +1704,12 @@ class EnhancedBattleInterface:
 
                     unit_surface = self.small_font.render(unit_text, True, text_color)
                     self.screen.blit(unit_surface, (content_x, y))
-                    y += self.text_line_height - int(8 * self.scale)
+                    y += self.text_line_height - int(10 * self.scale)  # Tighter spacing for 5 unit types
             else:
                 # Fallback if no breakdown available
                 no_data = self.small_font.render("  No unit data available", True, (150, 150, 150))
                 self.screen.blit(no_data, (content_x, y))
-                y += self.text_line_height - int(8 * self.scale)
+                y += self.text_line_height - int(10 * self.scale)
 
             # Add spacing before total summary
             y += self.report_line_spacing

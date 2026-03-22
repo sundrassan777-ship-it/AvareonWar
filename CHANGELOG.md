@@ -2,6 +2,77 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-21 - Resolve Remaining Battles Button
+
+- **Feature:** "Resolve Remaining Battles" button during Battle Phase
+  - Appears below the phase indicator when the local player has pending battles
+  - Auto-resolves all battles where the player is the resolver (no battle reports)
+  - Uses GMenuButton.png with hover highlighting and tooltip
+  - Supports sequential mode, simultaneous mode, and multiplayer sync
+  - Hidden during tutorial missions and when battle UI is already open
+- **Modified:** main.py, rendering/ui_renderer.py, input/mouse_handler.py, docs/CODE_GUIDE.md
+
+## 2026-03-21 - Campaign Save/Load System
+
+- **Feature:** Campaign Save Game
+  - Save button in the in-game pause menu (campaign missions 2-7, disabled for tutorial)
+  - Save dialog with custom save name input (defaults to "Turn N")
+  - Duplicate names auto-append (1), (2), etc.
+  - Saves stored as gzip-compressed JSON in Saves/ directory
+  - Disabled during AI turns, intro sequences, and victory/defeat sequences with hover tooltips explaining why
+- **Feature:** Saved Games Browser
+  - Accessible via square button (bottom-left) on both campaign screen pages
+  - Scrollable list with Mission, Save Name, Date, and Turn columns
+  - Load and Delete buttons with confirmation dialog
+  - Uses SaveGameButton.png icon with IconBorder.png frame
+- **New files:** save_manager.py, save_browser.py
+- **Modified:** campaign_mission_2-7.py (get_save_state/restore_save_state methods), campaign_screen.py, rendering/ui_renderer.py, main.py, input/mouse_handler.py
+
+## 2026-03-21 - Disconnect Elimination + Universal Last-Team-Standing Victory
+
+- **Feature:** Multiplayer disconnect elimination
+  - When a multiplayer player disconnects and fails to reconnect within 60 seconds, they are eliminated
+  - Eliminated player's territories distributed round-robin to living allies, or neutralized if no allies
+  - All armies, buildings, heroes, and gold are destroyed
+  - Chat notifications shown for disconnect ("AI taking over") and elimination events
+  - New `DISCONNECT_ELIMINATION` network message type (network version 1.2.0)
+- **Feature:** Universal last-team-standing victory condition
+  - Any player with 0 territories is marked as eliminated and skipped in turn order
+  - If only one team has territories remaining, that team wins — regardless of victory condition
+  - Applies to all game modes (Custom, Multiplayer) and all victory types (Domination, Total Conquest, Capital Assault)
+  - Fixes: game no longer continues after all enemies are eliminated in Domination/Total Conquest modes
+- **Feature:** Anti-win-farming protection
+  - If all enemies were eliminated via disconnect and none had >= 50 XP from gameplay actions, no XP is awarded
+  - Prevents exploiting disconnect elimination for easy XP
+- **Fix:** Aggressive Diplomacy hero ability now triggers victory check after territory capture
+- **Fix:** Client now runs `check_victory()` after receiving `BATTLE_RESOLVE` for proper sync
+- **Fix:** `FULL_STATE_SYNC` and `SIM_ROUND_COMPLETE` now include `eliminated_players` and `disconnect_eliminations` for safety net sync
+
+## 2026-03-21 - Floating Chat Notifications
+
+- **Feature:** Chat messages now briefly appear as floating notifications in the top-left of the map area
+  - Messages display for 5 seconds then fade out over 1 second
+  - Up to 5 messages stack vertically; excess messages push oldest out immediately
+  - Player name shown in faction color (bold), message in white, team tag in blue
+  - Dark semi-transparent background for readability over map terrain
+  - Respects team/all channel visibility filtering
+  - New effect module: `ui/effects/chat_notification_effect.py`
+
+## 2026-03-20 - Campaign Mission 7: The Fall
+
+- **Feature:** Added two achievements for Mission 7
+  - "The Fall" — completion achievement for winning Chapter 7 (Campaign7Achiev.png icon, no reward)
+  - "Spending Spree" — bonus achievement for winning without ever exceeding 3500 gold (Campaign7BonusAchiev.png icon, rewards The Governor Icon)
+- **Feature:** New campaign mission "Chapter 7: The Fall"
+  - 41 territories (Mission 6 map + Damlére, Free Cities, Lunedale, Affrancian Uplands, March of Auverne, Carnae, Vense, Zjoal Islands)
+  - 2 factions: Human (Blue, 23 territories) vs Central Alliance (Red AI, 18 territories)
+  - Custom AI with garrison enforcement on 6 core territories (minimum 13 armies)
+  - 5 pre-assigned heroes across both factions
+  - Intro sequence with camera zoom/pan and 3 transmissions
+  - Victory/defeat transmissions with dynamic speaker based on defeat cause
+  - Victory: conquer all Central Alliance territories
+  - Defeat: lose Courtieux (King Aidam Narn), Lunedale (General Neil Hévilneu), or all territories
+
 ## 2026-03-18 - Fix Simultaneous Mode Multiplayer Bugs
 
 - **Bug fix (CRITICAL):** Client garrison desync — duplicate units spawned every round

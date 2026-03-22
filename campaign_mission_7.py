@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-# campaign_mission_6.py
-# Campaign Mission 6: The Second War
-# 3 factions: Human (Red) vs Northern Powers (Blue, Hard AI) + Independent States (Yellow, Med AI).
-# Blue and Yellow are allied against Human. 4 sequential quests with territory transfers.
-# Dynamic AI: Blue activates when Red attacks Yellow, angers when Red attacks Blue.
-# Victory: Complete all 4 quests. Defeat: Red loses all 4 core territories simultaneously.
+# campaign_mission_7.py
+# Campaign Mission 7: The Fall
+# 2 factions: Human (Blue, player 0) vs Central Alliance (Red AI, player 1).
+# Human has 23 territories, Central Alliance has 18 territories.
+# Custom AI with garrison enforcement on 6 core territories (min 13 armies).
+# Victory: Conquer all Central Alliance territories.
+# Defeat: Lose all territories, OR Courtieux falls, OR Lunedale falls.
 
 import copy
 import random
@@ -13,7 +14,7 @@ import time
 import map_data
 from utils.logger import get_logger
 # Shared campaign utilities (TransmissionOverlay, camera animations, endgame sequences)
-from campaign_utils import TransmissionOverlay, CameraZoomAnimation
+from campaign_utils import TransmissionOverlay, CameraZoomAnimation, CameraPanAnimation
 from campaign_utils import update_endgame_sequence, render_endgame_sequence
 
 logger = get_logger(__name__)
@@ -22,112 +23,90 @@ logger = get_logger(__name__)
 # MISSION CONFIGURATION
 # ============================================================================
 
-# All 33 territories enabled for this mission
-MISSION_6_TERRITORIES = [
-    # Player 0 (Human / Red): 5 starting territories
+# All 41 territories enabled for this mission (Mission 6's 33 + 8 new)
+MISSION_7_TERRITORIES = [
+    # Player 0 (Human / Blue): 23 starting territories
+    "Aelatania", "Courtieux", "Londia", "Zjoal Islands",
+    "March of Auverne", "Affrancian Uplands", "Carnae", "Vense",
+    "Damlére", "Role", "Mose", "Vice", "Oucine", "Riar",
+    "Odatria", "Conda", "Ahara", "Espoia", "Nefrid", "Ajuna",
+    "Lunedale", "Free Cities", "Cinto",
+    # Player 1 (Central Alliance / Red): 18 starting territories
     "Nordica", "Leuse Valley", "Velognia", "Valeonia", "Sordia",
-    # Player 1 (Northern Powers / Blue): 5 starting territories
-    "Duchy of Daurels", "Northern Heilonia", "Aelatania", "Londia", "Courtieux",
-    # Player 2 (Independent States / Yellow): 23 starting territories
+    "Duchy of Daurels", "Northern Heilonia", "Révia", "Venexia",
     "Daomea", "Ahtep", "Amennia", "Liadnon", "Sstep",
     "Anodia", "Southern Quil'en", "Northern Quil'en", "Amorian Shores",
-    "Venexia", "Révia",
-    "Role", "Vice", "Mose", "Riar", "Ajuna", "Espoia",
-    "Nefrid", "Conda", "Odatria", "Cinto", "Oucine", "Ahara",
 ]
 
 # Faction territory ownership mapping
 FACTION_TERRITORIES = {
-    0: ["Nordica", "Leuse Valley", "Velognia", "Valeonia", "Sordia"],
-    1: ["Duchy of Daurels", "Northern Heilonia", "Aelatania", "Londia", "Courtieux"],
-    2: ["Daomea", "Ahtep", "Amennia", "Liadnon", "Sstep",
-        "Anodia", "Southern Quil'en", "Northern Quil'en", "Amorian Shores",
-        "Venexia", "Révia",
-        "Role", "Vice", "Mose", "Riar", "Ajuna", "Espoia",
-        "Nefrid", "Conda", "Odatria", "Cinto", "Oucine", "Ahara"],
+    0: ["Aelatania", "Courtieux", "Londia", "Zjoal Islands",
+        "March of Auverne", "Affrancian Uplands", "Carnae", "Vense",
+        "Damlére", "Role", "Mose", "Vice", "Oucine", "Riar",
+        "Odatria", "Conda", "Ahara", "Espoia", "Nefrid", "Ajuna",
+        "Lunedale", "Free Cities", "Cinto"],
+    1: ["Nordica", "Leuse Valley", "Velognia", "Valeonia", "Sordia",
+        "Duchy of Daurels", "Northern Heilonia", "Révia", "Venexia",
+        "Daomea", "Ahtep", "Amennia", "Liadnon", "Sstep",
+        "Anodia", "Southern Quil'en", "Northern Quil'en", "Amorian Shores"],
 }
 
-# Player colors: Red (human), Blue (Northern Powers), Yellow (Independent States)
+# Player colors: Blue (human), Red (Central Alliance)
 PLAYER_COLORS = [
-    (255, 100, 100),   # Player 0: Red (human)
-    (100, 150, 255),   # Player 1: Blue (Northern Powers)
-    (255, 220, 100),   # Player 2: Yellow (Independent States)
+    (100, 150, 255),   # Player 0: Blue (human)
+    (255, 100, 100),   # Player 1: Red (Central Alliance)
 ]
 
 # Faction display names
 FACTION_NAMES = {
     0: None,                    # Human player (use profile name)
-    1: "Northern Powers",
-    2: "Independent States",
+    1: "Central Alliance",
 }
 
 # Starting gold per faction
 STARTING_GOLD = {
-    0: 500,
-    1: 1650,
-    2: 350,
+    0: 1500,
+    1: 25000,
 }
 
-# Territories Red cannot attack at game start (unlocked progressively via quests)
-INITIALLY_BLOCKED_TERRITORIES = {
-    "Venexia", "Révia", "Liadnon", "Northern Heilonia", "Duchy of Daurels",
-    "Aelatania", "Courtieux", "Londia", "Amennia", "Sstep", "Ahtep", "Daomea",
-    "Role", "Vice", "Mose", "Riar", "Ajuna", "Espoia",
-    "Nefrid", "Conda", "Odatria", "Cinto", "Oucine", "Ahara",
-}
+# Core AI territories that must maintain minimum garrison (enforced by custom AI)
+CORE_TERRITORIES = {"Ahtep", "Sordia", "Leuse Valley", "Nordica", "Valeonia", "Velognia"}
+CORE_MIN_GARRISON = 13
 
-# Quest target territories (sequential — each must be completed before the next)
-QUEST_1_TARGETS = ["Anodia", "Southern Quil'en", "Amorian Shores", "Northern Quil'en"]
-QUEST_2_TARGETS = ["Liadnon", "Sstep", "Amennia"]
-QUEST_3_TARGETS = ["Révia", "Venexia"]
-QUEST_4_TARGETS = ["Northern Heilonia", "Duchy of Daurels", "Londia"]
-
-# Territories transferred to Red on Quest 1 completion
-QUEST_1_TRANSFER_TO_RED = ["Ahtep", "Daomea"]
-
-# Territories transferred to Blue on Quest 1 completion
-QUEST_1_TRANSFER_TO_BLUE = [
-    "Role", "Vice", "Mose", "Riar", "Ajuna", "Espoia",
-    "Nefrid", "Conda", "Odatria", "Cinto", "Oucine", "Ahara",
-    "Amennia", "Sstep", "Liadnon",
-]
-
-# Territories unblocked for Red attack after each quest
-QUEST_1_UNBLOCK = [
-    "Role", "Vice", "Mose", "Riar", "Ajuna", "Espoia",
-    "Nefrid", "Conda", "Odatria", "Cinto", "Oucine", "Ahara",
-    "Amennia", "Sstep", "Liadnon",
-]
-QUEST_2_UNBLOCK = ["Révia", "Venexia"]
-QUEST_3_UNBLOCK = ["Northern Heilonia", "Duchy of Daurels", "Aelatania", "Courtieux", "Londia"]
-
-# Territories transferred to Blue on Quest 2 completion
-QUEST_2_TRANSFER_TO_BLUE = ["Venexia", "Révia"]
-
-# Defeat condition: Red loses ALL of these simultaneously
-DEFEAT_TERRITORIES = ["Leuse Valley", "Nordica", "Valeonia", "Velognia"]
+# Frontline + frontline-adjacent AI territories (get 7 starting units)
+FRONTLINE_TERRITORIES = {"Duchy of Daurels", "Northern Heilonia", "Daomea",
+                         "Amennia", "Révia", "Venexia"}
 
 # Mission speaker name for transmissions
-MISSION_6_SPEAKER = "King Leonid Royen"
+MISSION_7_SPEAKER = "King Aidam Narn"
 
-# Intro sequence: zoom to Leuse Valley + opening transmissions
+# Intro sequence: zoom to Courtieux, pan to Lunedale and back, 3 transmissions
+# Format: (action, target/duration, text)
+# Estimated durations: ~2.5 words/sec + 1s buffer
 INTRO_SEQUENCE = [
-    # Step 0: Zoom to Leuse Valley
-    ("zoom_to", "Leuse Valley", ""),
-    # Step 1-4: Opening narrative transmissions (durations = voice file length + 1s)
-    ("wait", 8.9, "Even though Azincourne fell, we cannot relent. We are not safe for as long as Azincourne is allowed to prosper."),
-    ("wait", 11.1, "Conquest at this point, however, would be ill-advised. The borderlands are massively secured. We need allies and resources for a full-scale invasion."),
-    ("wait", 12.3, "Our ally, Sordia, will join our fight. Our common ancestry will be the cornerstone of our alliance. However, they are far to the southwest."),
-    ("wait", 9.8, "We need to build a corridor between us and them. Take over the states of Quil'en and Anodia - we will use their resources for our war."),
-    # Step 5: Start gameplay
+    # Step 0: Zoom to Courtieux
+    ("zoom_to", "Courtieux", ""),
+    # Step 1: Opening transmission (M7T1: 7.16s + 0.5s buffer)
+    ("wait", 7.7, "The Naragonese attack against Avantgardia has failed. "
+                   "We must strike hard and fast while they are in disarray."),
+    # Step 2: Pan camera to Lunedale over 1s
+    ("pan_to", "Lunedale", ""),
+    # Step 3: Transmission about eastern allies (M7T2: 6.37s + 0.5s buffer)
+    ("wait", 6.9, "Allies of Northern Powers are also prepared to strike from the east. "
+                   "Let us join them in an attack!"),
+    # Step 4: Pan camera back to Courtieux over 1s
+    ("pan_to", "Courtieux", ""),
+    # Step 5: Final rallying cry (M7T3: 2.85s + 0.5s buffer)
+    ("wait", 3.4, "The fall of Naragonthid and their allies is upon us!"),
+    # Step 6: Start gameplay
     ("start_game", 0, ""),
 ]
 
-# Map intro step indices to voice keys (step 0 is zoom, steps 1-4 are transmissions)
-INTRO_STEP_TO_VOICE = {1: "M6T1", 2: "M6T2", 3: "M6T3", 4: "M6T4"}
+# Map intro step indices to voice keys for transmission sound playback
+INTRO_STEP_TO_VOICE = {1: "M7T1", 3: "M7T2", 5: "M7T3"}
 
 # ============================================================================
-# UNIT CREATION HELPERS (same pattern as campaign_mission_5.py)
+# UNIT CREATION HELPERS
 # ============================================================================
 
 _global_unit_id = 0
@@ -166,219 +145,253 @@ def _make_random_units(count, level=0):
 # ============================================================================
 
 TERRITORY_SETUP = {
-    # ========== HUMAN (Player 0, Red) ==========
-    "Sordia": {
+    # ========== HUMAN (Player 0, Blue) — 23 territories ==========
+    "Courtieux": {
         "owner": 0,
-        "buildings": {0: "Keep"},
-        "units": _make_units([("Swordsman", 1), ("Archer", 1), ("Pikeman", 1), ("Cavalry", 1)]),
+        "buildings": {0: "Keep", 1: "Barracks", 2: "Training Grounds"},
+        "units": _make_random_units(13, level=5),
     },
-    "Nordica": {
+    "Lunedale": {
         "owner": 0,
-        "buildings": {0: "Barracks"},
-        "units": _make_units([("Swordsman", 1), ("Archer", 1), ("Pikeman", 1), ("Cavalry", 1)]),
+        "buildings": {0: "Keep", 1: "Farm"},
+        "units": _make_random_units(random.randint(6, 7)),
     },
-    "Leuse Valley": {
+    "Affrancian Uplands": {
         "owner": 0,
-        "buildings": {0: "Keep", 1: "Training Grounds"},
-        "units": _make_units([("Swordsman", 2), ("Archer", 2), ("Pikeman", 2), ("Cavalry", 2), ("Captain", 1)]),
+        "buildings": {0: "Keep", 1: "Farm"},
+        "units": _make_random_units(random.randint(6, 7)),
     },
-    "Velognia": {
+    "Londia": {
+        "owner": 0,
+        "buildings": {0: "Keep", 1: "Barracks"},
+        "units": _make_random_units(9, level=5),
+    },
+    "Aelatania": {
+        "owner": 0,
+        "buildings": {0: "Barracks", 1: "Barracks"},
+        "units": _make_random_units(9, level=5),
+    },
+    "Carnae": {
+        "owner": 0,
+        "buildings": {0: "Mine", 1: "Barracks"},
+        "units": _make_random_units(random.randint(4, 6)),
+    },
+    "March of Auverne": {
+        "owner": 0,
+        "buildings": {0: "Training Grounds"},
+        "units": _make_random_units(random.randint(6, 7)),
+    },
+    "Vense": {
+        "owner": 0,
+        "buildings": {0: "Mine"},
+        "units": _make_random_units(random.randint(4, 6)),
+    },
+    "Damlére": {
+        "owner": 0,
+        "buildings": {0: "Mine"},
+        "units": _make_random_units(8),
+    },
+    "Role": {
         "owner": 0,
         "buildings": {0: "Farm"},
-        "units": _make_units([("Swordsman", 1), ("Archer", 1), ("Pikeman", 1), ("Cavalry", 1)]),
+        "units": _make_random_units(1),
     },
-    "Valeonia": {
+    "Vice": {
         "owner": 0,
-        "buildings": {0: "Keep"},
-        "units": _make_units([("Swordsman", 1), ("Archer", 1), ("Pikeman", 1), ("Cavalry", 1), ("Captain", 1)]),
+        "buildings": {0: "Farm"},
+        "units": _make_random_units(1),
+    },
+    "Mose": {
+        "owner": 0,
+        "buildings": {0: "Farm"},
+        "units": _make_random_units(1),
+    },
+    "Ajuna": {
+        "owner": 0,
+        "buildings": {0: "Farm"},
+        "units": _make_random_units(1),
+    },
+    "Odatria": {
+        "owner": 0,
+        "buildings": {0: "Barracks", 1: "Farm"},
+        "units": _make_random_units(1),
+    },
+    "Oucine": {
+        "owner": 0,
+        "buildings": {0: "Barracks", 1: "Farm"},
+        "units": _make_random_units(1),
+    },
+    "Conda": {
+        "owner": 0,
+        "buildings": {0: "Training Grounds", 1: "Farm"},
+        "units": _make_random_units(1),
+    },
+    "Cinto": {
+        "owner": 0,
+        "buildings": {0: "Mine"},
+        "units": _make_random_units(1),
+    },
+    "Espoia": {
+        "owner": 0,
+        "buildings": {0: "Farm"},
+        "units": _make_random_units(1),
+    },
+    "Free Cities": {
+        "owner": 0,
+        "buildings": {0: "Barracks", 1: "Farm"},
+        "units": _make_random_units(random.randint(6, 7)),
+    },
+    "Zjoal Islands": {
+        "owner": 0,
+        "buildings": {},
+        "units": _make_random_units(1),
+    },
+    "Riar": {
+        "owner": 0,
+        "buildings": {},
+        "units": _make_random_units(1),
+    },
+    "Ahara": {
+        "owner": 0,
+        "buildings": {},
+        "units": _make_random_units(1),
+    },
+    "Nefrid": {
+        "owner": 0,
+        "buildings": {},
+        "units": _make_random_units(1),
     },
 
-    # ========== NORTHERN POWERS (Player 1, Blue) ==========
-    "Aelatania": {
-        "owner": 1,
-        "buildings": {0: "Keep", 1: "Barracks"},
-        "units": _make_random_units(15),
-    },
+    # ========== CENTRAL POWERS (Player 1, Red) — 18 territories ==========
+    # Frontline territories (7 units each)
     "Duchy of Daurels": {
         "owner": 1,
         "buildings": {0: "Keep", 1: "Barracks"},
-        "units": _make_random_units(15),
+        "units": _make_random_units(7),
     },
     "Northern Heilonia": {
         "owner": 1,
-        "buildings": {0: "Farm", 1: "Barracks", 2: "Farm"},
-        "units": _make_random_units(9),
-    },
-    "Londia": {
-        "owner": 1,
-        "buildings": {0: "Farm", 1: "Barracks"},
-        "units": _make_random_units(9),
-    },
-    "Courtieux": {
-        "owner": 1,
-        "buildings": {0: "Keep", 1: "Barracks", 2: "Farm"},
-        "units": _make_random_units(15),
-    },
-
-    # ========== INDEPENDENT STATES (Player 2, Yellow) — specific buildings ==========
-    "Révia": {
-        "owner": 2,
-        "buildings": {0: "Square", 1: "Keep"},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Venexia": {
-        "owner": 2,
-        "buildings": {0: "Barracks", 1: "Farm"},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Amorian Shores": {
-        "owner": 2,
-        "buildings": {0: "Keep", 1: "Barracks"},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-
-    # ========== INDEPENDENT STATES (Player 2, Yellow) — no specific buildings ==========
-    "Anodia": {
-        "owner": 2,
-        "buildings": {},  # Filled randomly in _setup_initial_state
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Southern Quil'en": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Northern Quil'en": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+        "buildings": {0: "Barracks", 1: "Barracks", 2: "Training Grounds"},
+        "units": _make_random_units(7),
     },
     "Daomea": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+        "owner": 1,
+        "buildings": {0: "Barracks", 1: "Training Grounds"},
+        "units": _make_random_units(7),
+    },
+    # Frontline-adjacent territories (7 units each)
+    "Amennia": {
+        "owner": 1,
+        "buildings": {0: "Barracks", 1: "Farm"},
+        "units": _make_random_units(7),
+    },
+    "Révia": {
+        "owner": 1,
+        "buildings": {0: "Farm", 1: "Mine"},
+        "units": _make_random_units(7),
+    },
+    "Venexia": {
+        "owner": 1,
+        "buildings": {0: "Farm", 1: "Mine"},
+        "units": _make_random_units(7),
+    },
+    # Core castle territories (15 units each, min 13 garrison enforced)
+    "Leuse Valley": {
+        "owner": 1,
+        "buildings": {0: "Keep", 1: "Farm", 2: "Barracks"},
+        "units": _make_random_units(15),
+    },
+    "Valeonia": {
+        "owner": 1,
+        "buildings": {0: "Keep", 1: "Barracks"},
+        "units": _make_random_units(15),
+    },
+    "Sordia": {
+        "owner": 1,
+        "buildings": {0: "Keep", 1: "Barracks", 2: "Mine"},
+        "units": _make_random_units(15),
     },
     "Ahtep": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+        "owner": 1,
+        "buildings": {0: "Keep", 1: "Farm", 2: "Barracks"},
+        "units": _make_random_units(15),
     },
-    "Amennia": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+    # Core non-castle territories (15 units each, min 13 garrison enforced)
+    "Nordica": {
+        "owner": 1,
+        "buildings": {0: "Keep", 1: "Barracks"},
+        "units": _make_random_units(15),
     },
+    "Velognia": {
+        "owner": 1,
+        "buildings": {0: "Farm", 1: "Mine"},
+        "units": _make_random_units(15),
+    },
+    # Interior territories (5-7 random units each)
     "Liadnon": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+        "owner": 1,
+        "buildings": {0: "Barracks", 1: "Mine"},
+        "units": _make_random_units(random.randint(5, 7)),
     },
     "Sstep": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+        "owner": 1,
+        "buildings": {0: "Farm", 1: "Barracks"},
+        "units": _make_random_units(random.randint(5, 7)),
     },
-    "Role": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+    "Anodia": {
+        "owner": 1,
+        "buildings": {0: "Barracks", 1: "Farm"},
+        "units": _make_random_units(random.randint(5, 7)),
     },
-    "Vice": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+    "Southern Quil'en": {
+        "owner": 1,
+        "buildings": {0: "Farm", 1: "Mine"},
+        "units": _make_random_units(random.randint(5, 7)),
     },
-    "Mose": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+    "Northern Quil'en": {
+        "owner": 1,
+        "buildings": {0: "Farm", 1: "Mine"},
+        "units": _make_random_units(random.randint(5, 7)),
     },
-    "Riar": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Ajuna": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Espoia": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Nefrid": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Conda": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Odatria": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Cinto": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Oucine": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
-    },
-    "Ahara": {
-        "owner": 2,
-        "buildings": {},
-        "units": _make_random_units(random.randint(1, 4)),
+    "Amorian Shores": {
+        "owner": 1,
+        "buildings": {0: "Farm", 1: "Mine"},
+        "units": _make_random_units(random.randint(5, 7)),
     },
 }
 
 
 # ============================================================================
-# MISSION 6 CLASS
+# MISSION 7 CLASS
 # ============================================================================
 
-class Mission6:
+class Mission7:
     """
-    Campaign Mission 6: The Second War
+    Campaign Mission 7: The Fall
 
-    3 factions: Human (Red) vs Northern Powers (Blue) + Independent States (Yellow).
-    Blue and Yellow are allied (team 1). Human is solo (team 0).
-    4 sequential quests with territory transfers and progressive unlocking.
-    Dynamic AI: Blue activates when Red attacks Yellow, angers when Red attacks Blue.
-    Victory: Complete all 4 quests. Defeat: Red loses all 4 core territories.
+    2 factions: Human (Blue) vs Central Alliance (Red AI, Hard).
+    Human has 23 territories, Central Alliance has 18 territories.
+    Custom AI with garrison enforcement on 6 core territories.
+    Victory: Conquer all Central Alliance territories.
+    Defeat: Lose all territories, OR Courtieux falls (King Aidam Narn dies),
+            OR Lunedale falls (General Neil Hévilneu dies).
     """
 
     def __init__(self, game_state, main_game):
         self.game_state = game_state
         self.main_game = main_game
-        self.mission_id = 'mission_6'
+        self.mission_id = 'mission_7'
         self.active = True
 
-        # AI turn timing (0.5s fast turns, same as missions 4/5)
+        # Bonus achievement: "Spending Spree" — disqualified if player gold ever exceeds 3500
+        self._spending_spree_disqualified = False
+
+        # AI turn timing (0.5s fast turns, same as missions 5/6)
         self.ai_turn_timer = 0.0
         self._ai_executed_this_turn = False  # Guard: prevent duplicate AI execution per turn
 
-        # AI turn counter per faction
-        self.faction_turn_count = {1: 0, 2: 0}
-
-        # --- Dynamic AI behavior flags ---
-        # Blue (Northern Powers) starts passive — activated by player actions
-        self.blue_active = False     # Blue can attack Red when True
-        self.blue_angered = False    # Blue uses 3 armies instead of 1 when True
-
-        # Blocked territories: Red cannot send armies to these territories
-        self._blocked_territories = set(INITIALLY_BLOCKED_TERRITORIES)
-
-        # Quest state: tracks which quest is currently active (1-4)
-        self.current_quest = 1
+        # AI turn counter
+        self.faction_turn_count = {1: 0}
 
         # Intro sequence state
         self.intro_active = True
@@ -401,15 +414,14 @@ class Mission6:
         # Inter-transmission pause timer (1s silent gap between consecutive voiced intro steps)
         self._intro_pause_timer = 0.0
 
-        # Quest log — 4 objectives (sequential)
+        # Quest log — 3 objectives (all visible from start)
         self.quest_log = [
-            {'text': 'Conquer Anodia, Southern Quil\'en, Amorian Shores and Northern Quil\'en', 'completed': False},
-            {'text': 'Conquer Liadnon, Sstep and Amennia', 'completed': False},
-            {'text': 'Conquer Révia and Venexia', 'completed': False},
-            {'text': 'Conquer Northern Heilonia, Duchy of Daurels and Londia', 'completed': False},
+            {'text': 'Conquer all territories of the Central Alliance', 'completed': False},
+            {'text': 'King Aidam Narn must survive in Courtieux', 'completed': False},
+            {'text': 'General Neil Hévilneu must survive in Lunedale', 'completed': False},
         ]
 
-        # Victory/defeat sequence state (same attrs as missions 4/5, needed by campaign_utils)
+        # Victory/defeat sequence state (same attrs as missions 4/5/6, needed by campaign_utils)
         self.game_frozen = False
         self.victory_sequence_active = False
         self.victory_phase = None
@@ -429,9 +441,14 @@ class Mission6:
         self._victory_waiting = False
         self._defeat_waiting = False
 
-        # Defeat text and voice key (set dynamically based on defeat cause)
-        self._defeat_text = "We have lost our homeland. All is lost."
-        self._defeat_voice_key = "M6T12"
+        # Track which enemy hero capture transmissions have been shown (prevent duplicates)
+        self._announced_captures = set()
+
+        # Defeat text, speaker, duration, and voice key (set dynamically based on defeat cause)
+        self._defeat_text = "We have lost everything. All is lost."
+        self._defeat_speaker = MISSION_7_SPEAKER
+        self._defeat_duration = 3.0
+        self._defeat_voice_key = "M7T9"
 
         # Allow turn timer to auto-end player turns
         self.allow_timer_expiry = True
@@ -440,37 +457,38 @@ class Mission6:
         self.original_flag_icons = None
 
         # Set up territory filtering
-        map_data.set_enabled_territories(MISSION_6_TERRITORIES)
+        map_data.set_enabled_territories(MISSION_7_TERRITORIES)
 
         # Set up initial game state
         self._setup_initial_state()
 
-        # Pre-assign starting heroes to the human player
+        # Pre-assign starting heroes
         self._assign_starting_heroes()
 
         # Start intro sequence
         self._start_intro_sequence()
 
-        logger.info("Mission 6 'The Second War' initialized: 33 territories, 3 factions, teams [0, 1, 1]")
+        logger.info("Mission 7 'The Fall' initialized: 41 territories, 2 factions (23 human, 18 AI)")
 
     def _setup_initial_state(self):
-        """Configure the game state for Mission 6 scenario."""
+        """Configure the game state for Mission 7 scenario."""
         gs = self.game_state
 
-        # Set player colors (3 players)
+        # Set player colors (2 players)
         for i, color in enumerate(PLAYER_COLORS):
             if i < len(gs.player_colors):
                 gs.player_colors[i] = color
 
-        # Remap flag icons to match player colors
-        # Default flag order: 0=Red, 1=Blue, 2=Green, 3=Yellow
-        # Mission 6: Player 0=Red (keep), Player 1=Blue (keep), Player 2=Yellow (from slot 3)
+        # Remap flag icons: Human (player 0) = Blue flags (slot 1), AI (player 1) = Red flags (slot 0)
+        # army_flag_icons is a dict keyed by player_index (0, 1, ... , -1 for neutral)
         game = self.main_game
-        if hasattr(game, 'army_flag_icons') and len(game.army_flag_icons) >= 4:
-            self.original_flag_icons = {i: game.army_flag_icons[i] for i in range(4)}
-            # Player 0 (Red) = original index 0 — no change needed
-            # Player 1 (Blue) = original index 1 — no change needed
-            game.army_flag_icons[2] = self.original_flag_icons[3]  # Yellow for Independent States
+        if hasattr(game, 'army_flag_icons') and 0 in game.army_flag_icons and 1 in game.army_flag_icons:
+            self.original_flag_icons = {k: v for k, v in game.army_flag_icons.items()}
+            # Swap flag icons: player 0 gets Blue (originally slot 1), player 1 gets Red (originally slot 0)
+            original_0 = self.original_flag_icons[0]
+            original_1 = self.original_flag_icons[1]
+            game.army_flag_icons[0] = original_1  # Human (player 0) = Blue flags
+            game.army_flag_icons[1] = original_0  # Central Alliance (player 1) = Red flags
 
         # Set faction names
         for player_id, name in FACTION_NAMES.items():
@@ -482,10 +500,12 @@ class Mission6:
             if player_id < gs.num_players:
                 gs.player_gold[player_id] = gold
 
-        # Set up alliances: Blue (1) and Yellow (2) allied against Red (0)
-        gs.player_teams[0] = 0  # Red: team 0 (solo)
-        gs.player_teams[1] = 1  # Blue: team 1
-        gs.player_teams[2] = 1  # Yellow: team 1
+        # Set up teams: opposing teams
+        gs.player_teams[0] = 0  # Human: team 0
+        gs.player_teams[1] = 1  # Central Alliance: team 1
+
+        # Set AI difficulty to Hard
+        gs.player_ai_difficulty[1] = 2
 
         # Configure each territory from TERRITORY_SETUP
         for territory, config in TERRITORY_SETUP.items():
@@ -493,7 +513,6 @@ class Mission6:
             gs.territory_owners[territory] = owner
 
             # Clear any pre-existing garrisons from default game init
-            # (prevents stale armies from other players appearing in mission territories)
             gs.territory_garrisons[territory] = {}
 
             # Set buildings
@@ -508,61 +527,47 @@ class Mission6:
             gs.set_garrison_armies(territory, owner, unmoved=unmoved, moved=0, units=units)
 
         # Clear ownership, garrisons, and buildings for all non-mission territories
-        # (prevents default game init from leaving stale armies/buildings on the map)
-        mission_set = set(MISSION_6_TERRITORIES)
+        mission_set = set(MISSION_7_TERRITORIES)
         for territory in list(gs.territory_owners.keys()):
             if territory not in mission_set:
                 gs.territory_owners[territory] = -1
                 gs.territory_garrisons[territory] = {}
                 gs.buildings[territory] = {}
 
-        # Fill empty plots in AI territories with random Farm/Mine/Barracks
-        self._fill_ai_empty_plots()
+        # Set castle upgrades for 7 territories (3 human + 4 AI)
+        # Human castles: Courtieux, Lunedale, Affrancian Uplands (plot 0 = Keep)
+        gs.castle_upgrades['Courtieux'] = {0: True}
+        gs.castle_upgrades['Lunedale'] = {0: True}
+        gs.castle_upgrades['Affrancian Uplands'] = {0: True}
+        # AI castles: Leuse Valley, Valeonia, Sordia, Ahtep (plot 0 = Keep)
+        gs.castle_upgrades['Leuse Valley'] = {0: True}
+        gs.castle_upgrades['Valeonia'] = {0: True}
+        gs.castle_upgrades['Sordia'] = {0: True}
+        gs.castle_upgrades['Ahtep'] = {0: True}
 
         # Invalidate bonus cache after bulk territory setup
         gs.invalidate_territorial_bonus_cache()
 
         # Set starting territories for reference
-        gs.player_starting_territories[0] = "Leuse Valley"
-        gs.player_starting_territories[1] = "Aelatania"
-        gs.player_starting_territories[2] = "Révia"
+        gs.player_starting_territories[0] = "Courtieux"
+        gs.player_starting_territories[1] = "Nordica"
 
         # --- Pre-researched technologies ---
-        self._pre_research_techs(0, max_row=2)  # Red: rows 0-2
-        self._pre_research_techs(2, max_row=2)  # Yellow: rows 0-2
-        self._pre_research_techs(1, max_row=5)  # Blue: rows 0-5 (needs castle)
+        # Human: first row (row 0) in all 3 columns
+        self._pre_research_techs(0, max_row=0)
+        # Central Alliance: first 5 rows (rows 0-4) in all 3 columns
+        self._pre_research_techs(1, max_row=4)
 
-        logger.info("Mission 6 initial state configured: 33 territories, alliances [0] vs [1,2]")
-
-    def _fill_ai_empty_plots(self):
-        """Fill unspecified plots in AI territories with random Farm/Mine/Barracks.
-        Human (player 0) unspecified plots remain empty."""
-        gs = self.game_state
-        random_buildings = ['Farm', 'Mine', 'Barracks']
-
-        for territory, config in TERRITORY_SETUP.items():
-            owner = config["owner"]
-            if owner == 0:
-                continue  # Human plots stay empty if not specified
-
-            plots = map_data.get_plots(territory)
-            buildings = gs.buildings.get(territory, {})
-
-            for plot_idx in range(len(plots)):
-                if plot_idx in buildings:
-                    continue  # Already has a building
-                # Fill with random building
-                gs.buildings[territory][plot_idx] = random.choice(random_buildings)
+        logger.info("Mission 7 initial state configured: 41 territories, teams [0] vs [1]")
 
     def _pre_research_techs(self, player_id, max_row):
         """Pre-research all techs in rows 0 through max_row for all 3 columns.
         Mirrors finish_research() logic for applying effects."""
         gs = self.game_state
 
-        # For rows 3+, player needs a Castle. Set it up on a Keep territory.
-        if max_row >= 3 and player_id == 1:
-            # Blue: Castle at Aelatania (plot 0 = Keep)
-            gs.castle_upgrades['Aelatania'] = {0: True}
+        # For rows 3+: player needs a Castle. AI has castles at Leuse Valley, etc.
+        # Human has castles at Courtieux, Lunedale, Affrancian Uplands.
+        # castle_upgrades already set in _setup_initial_state.
 
         # Build list of tech IDs to research
         tech_ids = []
@@ -607,12 +612,6 @@ class Mission6:
             # tech_1_4: Raze the Countryside — destroy enemy Farm/Mine on conquest (checked inline)
             gs.player_hero_limit[player_id] = 4                    # tech_2_4: hero limit to 4
 
-        # Row 5: tech_0_5 (Efficient Mining II), tech_1_5 (Cavalry Mastery), tech_2_5 (Improved Command II)
-        if max_row >= 5:
-            # tech_0_5: Efficient Mining II — +20% Mine income again (checked inline)
-            # tech_1_5: Cavalry Mastery — Cavalry strength bonus (checked inline)
-            gs.player_command_limit[player_id] += 35               # tech_2_5: +35 command limit (total +70)
-
         # Unlock next tier techs (row after max_row) if available
         next_row = max_row + 1
         if next_row < 7:
@@ -620,29 +619,58 @@ class Mission6:
                 gs.player_tech_available[player_id].add(f"tech_{col}_{next_row}")
 
     def _assign_starting_heroes(self):
-        """Pre-assign Vearen Asford (Leuse Valley) and Halon Nextroy (Valeonia) to Red."""
+        """Pre-assign heroes to both factions."""
         gs = self.game_state
 
+        # --- Human heroes (player 0) ---
         if 0 not in gs.heroes:
             gs.heroes[0] = {}
         if 0 not in gs.hero_ownership:
             gs.hero_ownership[0] = set()
 
-        # Vearen Asford at Leuse Valley Keep (plot 0)
-        gs.heroes[0]["Vearen Asford"] = {
-            'keep_territory': 'Leuse Valley',
-            'keep_plot': 0  # Keep is at plot index 0 for Leuse Valley
+        # Aidam Narn at Courtieux Keep (plot 0) — defeat condition if killed
+        gs.heroes[0]["Aidam Narn"] = {
+            'keep_territory': 'Courtieux',
+            'keep_plot': 0
         }
-        gs.hero_ownership[0].add("Vearen Asford")
+        gs.hero_ownership[0].add("Aidam Narn")
 
-        # Halon Nextroy at Valeonia Keep (plot 0)
-        gs.heroes[0]["Halon Nextroy"] = {
-            'keep_territory': 'Valeonia',
-            'keep_plot': 0  # Keep is at plot index 0 for Valeonia
+        # Neil Hévilneu at Lunedale Keep (plot 0) — defeat condition if killed
+        gs.heroes[0]["Neil Hévilneu"] = {
+            'keep_territory': 'Lunedale',
+            'keep_plot': 0
         }
-        gs.hero_ownership[0].add("Halon Nextroy")
+        gs.hero_ownership[0].add("Neil Hévilneu")
 
-        logger.info("Assigned Vearen Asford to Leuse Valley Keep, Halon Nextroy to Valeonia Keep")
+        # Erec Silvyr at Londia Keep (plot 0) — NOT a defeat condition
+        gs.heroes[0]["Erec Silvyr"] = {
+            'keep_territory': 'Londia',
+            'keep_plot': 0
+        }
+        gs.hero_ownership[0].add("Erec Silvyr")
+
+        # --- Central Alliance heroes (player 1) ---
+        if 1 not in gs.heroes:
+            gs.heroes[1] = {}
+        if 1 not in gs.hero_ownership:
+            gs.hero_ownership[1] = set()
+
+        # Vearen Asford at Duchy of Daurels Keep (plot 0)
+        gs.heroes[1]["Vearen Asford"] = {
+            'keep_territory': 'Duchy of Daurels',
+            'keep_plot': 0
+        }
+        gs.hero_ownership[1].add("Vearen Asford")
+
+        # Darius Brennhen at Nordica Keep (plot 0)
+        gs.heroes[1]["Darius Brennhen"] = {
+            'keep_territory': 'Nordica',
+            'keep_plot': 0
+        }
+        gs.hero_ownership[1].add("Darius Brennhen")
+
+        logger.info("Assigned heroes: Human (Aidam Narn, Neil Hévilneu, Erec Silvyr), "
+                     "Central Alliance (Vearen Asford, Darius Brennhen)")
 
     # ========================================================================
     # INTRO SEQUENCE
@@ -688,13 +716,35 @@ class Mission6:
             self.intro_waiting_for_zoom = True
             self.intro_timer = 0.0
 
+        elif action == 'pan_to':
+            # Smooth pan to target territory over 1 second (no zoom change)
+            try:
+                import main as _main
+                map_area_height = _main.MAP_HEIGHT
+            except (ImportError, AttributeError):
+                map_area_height = self.main_game.screen.get_height()
+            camera = self.main_game.camera
+            sw = self.main_game.screen.get_width()
+            target_center = self.main_game.scaled_centers.get(
+                param, map_data.get_territory_center(param)
+            )
+            self.camera_animation = CameraPanAnimation(
+                camera_handler=camera,
+                target_center_world=target_center,
+                duration=1.0,
+                screen_width=sw,
+                map_area_height=map_area_height,
+            )
+            self.intro_waiting_for_zoom = True
+            self.intro_timer = 0.0
+
         elif action == 'wait':
             # Show transmission text and wait for duration
             self.intro_timer = 0.0
             if text:
-                self._show_transmission(text, speaker=MISSION_6_SPEAKER)
+                self._show_transmission(text, speaker=MISSION_7_SPEAKER)
                 self.transmission_duration = param
-                # Play voice line for this intro step
+                # Play voice line for this intro step (if available)
                 voice_key = INTRO_STEP_TO_VOICE.get(self.intro_step_index)
                 if voice_key:
                     from global_sound import play_transmission_sound
@@ -720,10 +770,10 @@ class Mission6:
         logger.info("Intro sequence complete — gameplay begins")
 
     # ========================================================================
-    # TRANSMISSION HELPERS
+    # TRANSMISSION SYSTEM
     # ========================================================================
 
-    def _show_transmission(self, text, speaker="Commander"):
+    def _show_transmission(self, text, speaker=MISSION_7_SPEAKER):
         """Show or update the transmission overlay with optional speaker name."""
         import main as _main
         TOP_PANEL_HEIGHT = _main.TOP_PANEL_HEIGHT
@@ -798,10 +848,8 @@ class Mission6:
             'active': self.active,
             'quest_log': self.quest_log,
             'faction_turn_count': {str(k): v for k, v in self.faction_turn_count.items()},
-            'current_quest': self.current_quest,
-            'blue_active': self.blue_active,
-            'blue_angered': self.blue_angered,
-            '_blocked_territories': sorted(list(self._blocked_territories)),
+            '_spending_spree_disqualified': self._spending_spree_disqualified,
+            '_announced_captures': sorted(list(self._announced_captures)),
             'intro_active': self.intro_active,
             'intro_step_index': self.intro_step_index,
             'game_paused': self.game_paused,
@@ -809,6 +857,8 @@ class Mission6:
             'allow_timer_expiry': self.allow_timer_expiry,
             'game_frozen': self.game_frozen,
             '_defeat_text': self._defeat_text,
+            '_defeat_speaker': self._defeat_speaker,
+            '_defeat_duration': self._defeat_duration,
             '_defeat_voice_key': self._defeat_voice_key,
         }
 
@@ -817,12 +867,10 @@ class Mission6:
         self.active = data.get('active', True)
         self.quest_log = data.get('quest_log', self.quest_log)
         self.faction_turn_count = {int(k): v for k, v in data.get('faction_turn_count', {}).items()} or self.faction_turn_count
-        self.current_quest = data.get('current_quest', 1)
-        self.blue_active = data.get('blue_active', False)
-        self.blue_angered = data.get('blue_angered', False)
-        self._blocked_territories = set(data.get('_blocked_territories', []))
+        self._spending_spree_disqualified = data.get('_spending_spree_disqualified', False)
+        self._announced_captures = set(data.get('_announced_captures', []))
         # Skip intro on load — player is resuming mid-game
-        # Clear all intro/transmission state so constructor's intro doesn't replay
+        # Clear all intro/transmission state so constructor's _start_intro_sequence() doesn't replay
         self.intro_active = False
         self.intro_step_index = 0
         self.intro_waiting_for_zoom = False
@@ -836,6 +884,8 @@ class Mission6:
         self.allow_timer_expiry = data.get('allow_timer_expiry', True)
         self.game_frozen = data.get('game_frozen', False)
         self._defeat_text = data.get('_defeat_text', self._defeat_text)
+        self._defeat_speaker = data.get('_defeat_speaker', self._defeat_speaker)
+        self._defeat_duration = data.get('_defeat_duration', self._defeat_duration)
         self._defeat_voice_key = data.get('_defeat_voice_key', self._defeat_voice_key)
 
     # ========================================================================
@@ -849,7 +899,7 @@ class Mission6:
         # Cap delta_time to prevent animation jumps on large frame times
         delta_time = min(delta_time, 0.05)
 
-        # Update camera animation (zoom)
+        # Update camera animation (zoom/pan)
         if self.camera_animation:
             self.camera_animation.update(delta_time)
             if not self.camera_animation.active:
@@ -885,6 +935,12 @@ class Mission6:
                         self.intro_step_index += 1
                         self._execute_intro_step()
 
+        # Bonus "Spending Spree": disqualify if player gold ever exceeds 3500
+        if not self.intro_active and not self._spending_spree_disqualified:
+            if self.game_state.player_gold[0] > 3500:
+                self._spending_spree_disqualified = True
+                logger.info(f"Spending Spree disqualified: player gold {self.game_state.player_gold[0]} exceeded 3500")
+
         # Instant AI turns: skip turn announcement animation for AI players
         if not self.intro_active:
             gs = self.game_state
@@ -919,13 +975,14 @@ class Mission6:
                 self._pending_victory = True
                 self.game_paused = True
 
-                text = "The Azincourne heartland lies wide open! They will surely not be able to withstand our might and sue for peace!"
-                self._show_transmission(text, speaker=MISSION_6_SPEAKER)
-                self.transmission_duration = 8.3
+                # Show victory transmission with voice (M7T6: 4.62s + 0.5s buffer)
+                text = "The war machine of the Central Alliance has been crushed! Victory is ours!"
+                self._show_transmission(text, speaker=MISSION_7_SPEAKER)
+                self.transmission_duration = 5.1
                 self.transmission_timer = 0.0
                 # Play victory voice line
                 from global_sound import play_transmission_sound
-                play_transmission_sound("M6T11")
+                play_transmission_sound("M7T6")
 
         # Deferred defeat: same pattern
         if self._defeat_waiting and gameplay_idle:
@@ -934,8 +991,9 @@ class Mission6:
                 self._pending_defeat = True
                 self.game_paused = True
 
-                self._show_transmission(self._defeat_text, speaker=MISSION_6_SPEAKER)
-                self.transmission_duration = 4.6
+                # Show defeat transmission with appropriate speaker and voice
+                self._show_transmission(self._defeat_text, speaker=self._defeat_speaker)
+                self.transmission_duration = self._defeat_duration
                 self.transmission_timer = 0.0
                 # Play defeat voice line
                 from global_sound import play_transmission_sound
@@ -956,18 +1014,18 @@ class Mission6:
         return None
 
     # ========================================================================
-    # AI CONTROL — custom AI with dynamic behavior
+    # AI CONTROL — custom AI with garrison enforcement on core territories
     # ========================================================================
 
     @property
     def block_ai(self):
-        """Block normal AI for all AI players — Mission6 controls their behavior."""
+        """Block normal AI for Central Alliance — Mission7 controls their behavior."""
         if self.intro_active:
             return True
         current_player = self.game_state.current_player
         if current_player == 0:
             return False  # Human player
-        return True  # Block normal AI for all AI factions
+        return True  # Block normal AI, use custom AI with garrison enforcement
 
     @property
     def block_ai_thinking(self):
@@ -975,10 +1033,16 @@ class Mission6:
 
     def get_ai_thinking_text(self):
         """Override AI thinking indicator."""
-        return ("Enemies thinking...", "")
+        return ("Central Alliance thinking...", "")
 
     def execute_ai_turn_override(self):
-        """Called instead of normal AI execution. Dispatches to custom faction AI."""
+        """Called instead of normal AI execution. Dispatches to custom faction AI
+        that respects core territory garrison requirements.
+
+        Note: Called EVERY FRAME by ai_player.execute_turn() because block_ai
+        bypasses the turn_in_progress guard. We use _ai_executed_this_turn to
+        ensure the AI logic only runs once per turn.
+        """
         current_player = self.game_state.current_player
         if current_player == 0:
             return
@@ -988,7 +1052,7 @@ class Mission6:
             return
         self._ai_executed_this_turn = True
 
-        # Execute the custom faction AI
+        # Execute the custom faction AI with garrison enforcement
         self._execute_faction_ai(current_player)
 
     def update_ai_turn(self, delta_time):
@@ -1022,7 +1086,7 @@ class Mission6:
         self.ai_turn_timer += delta_time
         if self.ai_turn_timer >= 0.5:
             self.ai_turn_timer = 0.0
-            self._ai_executed_this_turn = False  # Reset guard for next AI player
+            self._ai_executed_this_turn = False  # Reset guard for next turn
             gs.next_player()
 
         return True
@@ -1037,67 +1101,59 @@ class Mission6:
                 gs.resolve_battle(battle_idx)
 
     # ========================================================================
-    # CUSTOM FACTION AI — build, train, reinforce, attack with dynamic rules
+    # CUSTOM FACTION AI — build, train, reinforce, attack with garrison limits
     # ========================================================================
 
     def _execute_faction_ai(self, player_id):
-        """Execute AI for a faction: build, train, reinforce, then attack.
+        """Execute AI for Central Alliance: build, train, reinforce, then attack.
 
-        Blue (player 1): Initially passive. Activated when Red attacks Yellow.
-          - Activation: can attack Red with max 1 army per source, can train.
-          - After Quest 2: can attack with max 2 armies per source.
-          - After Quest 3+: can attack with max 3 armies per source.
-          - Core territories (Daurels, Aelatania, Londia, Courtieux) keep min 11 armies.
-          - Always fortifies own territories only (never Yellow's).
-
-        Yellow (player 2): Never attacks Red.
-          - Can train, but max 6 armies per territory.
-          - Fortifies own territories only (path must not cross other players').
+        All movement respects CORE_MIN_GARRISON — core territories never go
+        below 13 units. Full aggression otherwise (Hard AI behavior).
         """
         gs = self.game_state
 
-        # Increment turn counter for this faction
+        # Increment turn counter
         self.faction_turn_count[player_id] = self.faction_turn_count.get(player_id, 0) + 1
 
         # Find territories owned by this faction
-        my_territories = [t for t in MISSION_6_TERRITORIES
+        my_territories = [t for t in MISSION_7_TERRITORIES
                          if gs.territory_owners.get(t) == player_id]
 
         if not my_territories:
             return  # Faction eliminated
 
-        # Phase 1: Build structures on empty plots (always)
+        # Phase 1: Build structures on empty plots
         self._ai_build(player_id, my_territories)
 
-        # Phase 2: Train units (with faction-specific rules)
-        if player_id == 1:
-            # Blue: can only train when activated
-            if self.blue_active:
-                self._ai_train(player_id, my_territories, max_per_territory=None)
-        elif player_id == 2:
-            # Yellow: can always train, max 6 armies per territory
-            self._ai_train(player_id, my_territories, max_per_territory=6)
+        # Phase 2: Train units at all barracks
+        self._ai_train(player_id, my_territories)
 
-        # Phase 3: Reinforce own territories (Blue only — Yellow cannot reinforce)
-        if player_id == 1:
-            self._ai_reinforce(player_id, my_territories)
+        # Phase 3: Reinforce frontline from rear (respecting core garrison requirements)
+        self._ai_reinforce(player_id, my_territories)
 
-        # Phase 4: Attack enemy territories (with faction-specific rules)
-        if player_id == 1:
-            # Blue: only attacks Red when activated
-            if self.blue_active:
-                # Scale attack strength by quest progress:
-                # Quest 1 active: 1 unit per attack
-                # After Quest 2: 2 units per attack
-                # After Quest 3+: 3 units per attack
-                if self.current_quest >= 4:
-                    max_units_per_attack = 3
-                elif self.current_quest >= 3:
-                    max_units_per_attack = 2
-                else:
-                    max_units_per_attack = 1
-                self._ai_attack(player_id, my_territories, max_units_per_attack)
-        # Yellow: never attacks Red (no attack phase)
+        # Phase 4: Attack enemy territories with full aggression
+        self._ai_attack(player_id, my_territories)
+
+    def _get_available_units(self, territory, player_id):
+        """Get units available to move (above garrison minimum for core territories).
+
+        Returns list of ready units that can be moved without violating
+        the territory's core garrison requirement.
+        """
+        gs = self.game_state
+        garrison = gs.territory_garrisons.get(territory, {}).get(player_id, {})
+        units = garrison.get('units', [])
+        ready_units = [u for u in units if u.get('status') == 'ready']
+
+        # Core territories must keep at least CORE_MIN_GARRISON armies
+        if territory in CORE_TERRITORIES:
+            total_units = len(units)
+            spare = total_units - CORE_MIN_GARRISON
+            if spare <= 0:
+                return []
+            return ready_units[:spare]
+
+        return ready_units
 
     def _ai_build(self, player_id, my_territories):
         """Build structures on empty plots. Prioritize Barracks, then economy."""
@@ -1128,6 +1184,7 @@ class Mission6:
 
                 cost = gs.get_building_cost(building_type, player=player_id)
                 if gs.player_gold[player_id] >= cost:
+                    # Use try/finally to restore current_player on exception
                     original_player = gs.current_player
                     try:
                         gs.current_player = player_id
@@ -1136,11 +1193,11 @@ class Mission6:
                         gs.current_player = original_player
                     break  # One building per territory per turn
 
-    def _ai_train(self, player_id, my_territories, max_per_territory=None):
-        """Train units at all barracks. Optionally cap total armies per territory."""
+    def _ai_train(self, player_id, my_territories):
+        """Train units at all barracks whenever affordable. Cycle unit types for variety."""
         gs = self.game_state
 
-        # Cycle through unit types for variety
+        # Cycle through unit types for variety (based on game turn number)
         unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']
         type_idx = gs.turn_number % len(unit_types)
 
@@ -1155,12 +1212,10 @@ class Mission6:
                 if plot_idx in training_queue:
                     continue
 
-                # Check army limit (global max or per-territory cap)
+                # Check army limit
                 total_units = sum(len(g.get('units', []))
                                   for g in gs.territory_garrisons.get(territory, {}).values())
                 if total_units >= gs.MAX_ARMIES_PER_TERRITORY:
-                    continue
-                if max_per_territory is not None and total_units >= max_per_territory:
                     continue
 
                 # Pick unit type and check affordability
@@ -1178,18 +1233,17 @@ class Mission6:
     def _ai_reinforce(self, player_id, my_territories):
         """Move units from rear territories toward frontline.
 
-        Both Blue and Yellow: only fortify own territories.
-        Yellow: path must not cross other players' territory (only move through own).
+        Respects CORE_MIN_GARRISON on core territories. Unlimited budget otherwise.
         """
         gs = self.game_state
         units_moved = 0
         max_units = 999  # No ramp limit on reinforcements
 
-        # Identify enemy territories (not owned by self or allies)
+        # Identify enemy territories (not owned by self)
         enemy_territories = set()
-        for t in MISSION_6_TERRITORIES:
+        for t in MISSION_7_TERRITORIES:
             t_owner = gs.territory_owners.get(t, -1)
-            if t_owner >= 0 and t_owner != player_id and not gs.are_allies(player_id, t_owner):
+            if t_owner >= 0 and t_owner != player_id:
                 enemy_territories.add(t)
 
         if not enemy_territories:
@@ -1211,24 +1265,15 @@ class Mission6:
             if units_moved >= max_units:
                 break
 
-            garrison = gs.territory_garrisons.get(rear_t, {}).get(player_id, {})
-            ready_units = [u for u in garrison.get('units', []) if u.get('status') == 'ready']
-            if not ready_units:
+            available = self._get_available_units(rear_t, player_id)
+            if not available:
                 continue
-
-            # Core Blue territories must keep at least BLUE_MIN_GARRISON armies
-            if rear_t in self.BLUE_MIN_GARRISON_TERRITORIES:
-                total_units = len(garrison.get('units', []))
-                spare = total_units - self.BLUE_MIN_GARRISON
-                if spare <= 0:
-                    continue
-                ready_units = ready_units[:spare]
 
             # Find adjacent OWN territory closer to frontline
             neighbors = map_data.get_neighbors(rear_t)
             best_target = None
             for n in neighbors:
-                # Only move to own territories (never to ally territories)
+                # Only move to own territories
                 if gs.territory_owners.get(n) != player_id:
                     continue
                 if n in frontline:
@@ -1243,54 +1288,49 @@ class Mission6:
                                    for g in gs.territory_garrisons.get(best_target, {}).values())
                 available_slots = gs.MAX_ARMIES_PER_TERRITORY - target_units
                 remaining_budget = max_units - units_moved
-                count = min(len(ready_units), available_slots, remaining_budget)
-                units_to_move = ready_units[:count]
+                count = min(len(available), available_slots, remaining_budget)
+                units_to_move = available[:count]
 
                 if units_to_move:
                     unit_ids = [u['id'] for u in units_to_move]
                     gs.add_movement_order_for_units(rear_t, best_target, unit_ids, player=player_id)
                     units_moved += len(units_to_move)
 
-    # Core Blue territories that must maintain minimum garrison of 11 armies
-    BLUE_MIN_GARRISON_TERRITORIES = {"Duchy of Daurels", "Aelatania", "Londia", "Courtieux"}
-    BLUE_MIN_GARRISON = 11
+    def _ai_attack(self, player_id, my_territories):
+        """Attack enemy territories with full aggression (Hard AI).
 
-    def _ai_attack(self, player_id, my_territories, max_units_per_attack):
-        """Attack enemy territories from every available source territory.
-
-        Only targets Red (player 0) territories — never attacks allied Yellow.
-        max_units_per_attack: cap on units sent from each source (1=active, 3=angered).
-        Each target territory can be attacked from at most 2 different sources.
-        Every source with ready units will attack if a valid target exists.
-        Core Blue territories (Daurels, Aelatania, Londia, Courtieux) keep at least 11 armies.
+        Respects CORE_MIN_GARRISON for core source territories.
+        Each target can be attacked from up to 2 sources.
+        Every source with available units will attack if a valid target exists.
         """
         gs = self.game_state
 
-        # Find Red territories adjacent to our territories (only attack Red)
-        red_territories = set()
-        for t in MISSION_6_TERRITORIES:
-            if gs.territory_owners.get(t, -1) == 0:
-                red_territories.add(t)
+        # Find enemy territories adjacent to our territories
+        enemy_territories = set()
+        for t in MISSION_7_TERRITORIES:
+            t_owner = gs.territory_owners.get(t, -1)
+            if t_owner >= 0 and t_owner != player_id:
+                enemy_territories.add(t)
 
-        if not red_territories:
+        if not enemy_territories:
             return
 
-        # Build attack candidates: (source, target, ready_count, score)
+        # Build attack candidates: (source, target, available_count, score)
         attack_candidates = []
         for my_t in my_territories:
-            garrison = gs.territory_garrisons.get(my_t, {}).get(player_id, {})
-            ready_units = [u for u in garrison.get('units', []) if u.get('status') == 'ready']
-            if not ready_units:
+            available = self._get_available_units(my_t, player_id)
+            if not available:
                 continue
 
             neighbors = map_data.get_neighbors(my_t)
             for neighbor in neighbors:
-                if neighbor in red_territories:
-                    # Score: prefer targets where we have numerical advantage
-                    target_garrison = gs.territory_garrisons.get(neighbor, {}).get(0, {})
-                    target_count = len(target_garrison.get('units', []))
-                    score = len(ready_units) - target_count
-                    attack_candidates.append((my_t, neighbor, len(ready_units), score))
+                if neighbor in enemy_territories:
+                    # Score: prefer weakly defended targets
+                    target_owner = gs.territory_owners.get(neighbor, -1)
+                    target_garrison = gs.territory_garrisons.get(neighbor, {}).get(target_owner, {})
+                    target_units = len(target_garrison.get('units', []))
+                    score = len(available) - target_units  # Higher = better odds
+                    attack_candidates.append((my_t, neighbor, len(available), score))
 
         # Sort by score (best odds first)
         attack_candidates.sort(key=lambda x: x[3], reverse=True)
@@ -1305,181 +1345,18 @@ class Mission6:
             if target_source_count.get(target, 0) >= 2:
                 continue  # Max 2 sources per target territory
 
-            # Re-fetch ready units (may have changed)
-            garrison = gs.territory_garrisons.get(my_t, {}).get(player_id, {})
-            ready_units = [u for u in garrison.get('units', []) if u.get('status') == 'ready']
-            if not ready_units:
+            # Re-fetch available units (may have changed from reinforcement orders)
+            available = self._get_available_units(my_t, player_id)
+            if not available:
                 continue
 
-            # Core Blue territories must keep at least BLUE_MIN_GARRISON armies
-            if my_t in self.BLUE_MIN_GARRISON_TERRITORIES:
-                total_units = len(garrison.get('units', []))
-                spare = total_units - self.BLUE_MIN_GARRISON
-                if spare <= 0:
-                    continue  # Not enough to attack while keeping minimum garrison
-                ready_units = ready_units[:spare]  # Cap to spare units only
-
-            # Send up to max_units_per_attack units from this source
-            send_count = min(len(ready_units), max_units_per_attack)
-            units_to_send = ready_units[:send_count]
-            unit_ids = [u['id'] for u in units_to_send]
+            # Send all available units (full aggression, Hard AI)
+            unit_ids = [u['id'] for u in available]
             gs.add_movement_order_for_units(my_t, target, unit_ids, player=player_id)
             used_sources.add(my_t)
             target_source_count[target] = target_source_count.get(target, 0) + 1
-            logger.debug(f"AI {player_id} attacking {target} from {my_t} with "
-                       f"{send_count} units (max {max_units_per_attack}/attack)")
-
-    # ========================================================================
-    # TERRITORY TRANSFERS (programmatic ownership change)
-    # ========================================================================
-
-    def _transfer_territories(self, territories, new_owner):
-        """Transfer territories to new_owner, keeping existing buildings and armies.
-
-        Buildings are territory-keyed (not player-keyed) so they stay automatically.
-        Garrison units are moved from old owner's garrison to new owner's garrison.
-        """
-        gs = self.game_state
-        for territory in territories:
-            old_owner = gs.territory_owners.get(territory, -1)
-            if old_owner == new_owner:
-                continue  # Already owned by target
-
-            gs.territory_owners[territory] = new_owner
-
-            # Transfer garrison from old owner to new owner
-            old_garrison = gs.territory_garrisons.get(territory, {}).get(old_owner, {})
-            if old_garrison and old_garrison.get('units'):
-                units = old_garrison.get('units', [])
-                unmoved = old_garrison.get('unmoved', 0)
-                moved = old_garrison.get('moved', 0)
-                # Clear old garrison — delete key entirely to avoid empty dict
-                # that would crash reset_garrison_moved_status (expects 'units' key)
-                if territory in gs.territory_garrisons and old_owner in gs.territory_garrisons[territory]:
-                    del gs.territory_garrisons[territory][old_owner]
-                # Set new garrison under new owner
-                gs.set_garrison_armies(territory, new_owner, unmoved=unmoved, moved=moved, units=units)
-            else:
-                # No garrison to transfer — ensure new owner has empty entry
-                if territory not in gs.territory_garrisons:
-                    gs.territory_garrisons[territory] = {}
-
-        gs.invalidate_territorial_bonus_cache()
-        logger.info(f"Transferred {len(territories)} territories to player {new_owner}")
-
-    # ========================================================================
-    # QUEST SYSTEM (sequential quests with territory transfers)
-    # ========================================================================
-
-    def _check_quest_completion(self):
-        """Check if the current quest's targets are all owned by Red (player 0)."""
-        gs = self.game_state
-
-        if self.current_quest == 1:
-            if all(gs.territory_owners.get(t) == 0 for t in QUEST_1_TARGETS):
-                self._complete_quest_1()
-        elif self.current_quest == 2:
-            if all(gs.territory_owners.get(t) == 0 for t in QUEST_2_TARGETS):
-                self._complete_quest_2()
-        elif self.current_quest == 3:
-            if all(gs.territory_owners.get(t) == 0 for t in QUEST_3_TARGETS):
-                self._complete_quest_3()
-        elif self.current_quest == 4:
-            if all(gs.territory_owners.get(t) == 0 for t in QUEST_4_TARGETS):
-                self._complete_quest_4()
-
-    def _complete_quest_1(self):
-        """Quest 1 complete: Conquer Anodia, S. Quil'en, Amorian Shores, N. Quil'en.
-
-        Aftermath:
-        - Red gains Ahtep + Daomea (with existing buildings/armies)
-        - 15 southern territories transfer to Blue
-        - Those territories become attackable by Red
-        """
-        self.quest_log[0]['completed'] = True
-        self.current_quest = 2
-        logger.info("Quest 1 complete — transferring territories")
-
-        # Transfer Ahtep and Daomea to Red (player 0)
-        self._transfer_territories(QUEST_1_TRANSFER_TO_RED, 0)
-
-        # Transfer 15 southern territories to Blue (player 1)
-        self._transfer_territories(QUEST_1_TRANSFER_TO_BLUE, 1)
-
-        # Unblock those territories for Red attack
-        for t in QUEST_1_UNBLOCK:
-            self._blocked_territories.discard(t)
-
-        # Also unblock Ahtep and Daomea (now owned by Red, but remove from blocked set)
-        self._blocked_territories.discard("Ahtep")
-        self._blocked_territories.discard("Daomea")
-
-        # Two-part quest 1 completion transmission (durations = voice file length + 1s)
-        self._queue_transmission(
-            "Our alliance is secure. And look, the mighty empiurate of Ahtep agreed to join our cause.",
-            7.6, "M6T5"
-        )
-        self._queue_transmission(
-            "We will use their military to advance our ends, but beware - "
-            "Azincourne has also found more allies. Push through Sstep, Liadnon "
-            "and Amennia to secure our heartland.",
-            13.0, "M6T6"
-        )
-
-    def _complete_quest_2(self):
-        """Quest 2 complete: Conquer Liadnon, Sstep, Amennia.
-
-        Aftermath:
-        - Venexia and Révia transfer to Blue (with buildings/armies)
-        - Révia and Venexia become attackable by Red
-        """
-        self.quest_log[1]['completed'] = True
-        self.current_quest = 3
-        logger.info("Quest 2 complete — transferring Venexia and Révia to Blue")
-
-        # Transfer Venexia and Révia to Blue (player 1)
-        self._transfer_territories(QUEST_2_TRANSFER_TO_BLUE, 1)
-
-        # Unblock for Red attack
-        for t in QUEST_2_UNBLOCK:
-            self._blocked_territories.discard(t)
-
-        self._queue_transmission(
-            "We have rid Azincourne of its allies. Now it is time to strike. "
-            "We must bypass the fortified borderlands by conquering the weak "
-            "states of Venexia and Révia.",
-            12.2, "M6T7"
-        )
-
-    def _complete_quest_3(self):
-        """Quest 3 complete: Conquer Révia and Venexia.
-
-        Aftermath:
-        - Unlock Northern Blue territories for attack (N. Heilonia, Daurels, Aelatania, Courtieux, Londia)
-        """
-        self.quest_log[2]['completed'] = True
-        self.current_quest = 4
-        logger.info("Quest 3 complete — unlocking northern territories")
-
-        # Unblock the Northern Powers' core territories for Red attack
-        for t in QUEST_3_UNBLOCK:
-            self._blocked_territories.discard(t)
-
-        self._queue_transmission(
-            "We are on the borders of Azincourne! Strike their heartland! "
-            "Decimate their territories of Duchy of Daurels, Northern Heilonia and Londia!",
-            11.1, "M6T8"
-        )
-
-    def _complete_quest_4(self):
-        """Quest 4 complete: Conquer N. Heilonia, Duchy of Daurels, Londia.
-
-        Aftermath: Victory!
-        """
-        self.quest_log[3]['completed'] = True
-        logger.info("Quest 4 complete — VICTORY!")
-
-        self._start_victory()
+            logger.debug(f"AI {player_id} turn {self.faction_turn_count[player_id]}: "
+                       f"attacking {target} from {my_t} with {len(available)} units")
 
     # ========================================================================
     # ACTION GATING
@@ -1524,27 +1401,21 @@ class Mission6:
     # ========================================================================
 
     def is_territory_interactive(self, territory_name):
-        """All 33 mission territories are viewable/hoverable."""
+        """All 41 mission territories are viewable/hoverable."""
         if not self.active:
             return True
-        return territory_name in MISSION_6_TERRITORIES
+        return territory_name in MISSION_7_TERRITORIES
 
     def is_attack_target_blocked(self, territory_name):
-        """Check if Red player is blocked from sending armies to this territory.
-
-        Returns True if territory is in the blocked set and current player is Red (0).
-        Used by main.py right-click handler to prevent army orders to restricted territories.
-        """
-        if self.game_state.current_player != 0:
-            return False
-        return territory_name in self._blocked_territories
+        """No attack restrictions in Mission 7 — all territories are valid targets."""
+        return False
 
     def get_adjacency_override(self, territory):
-        """No special adjacency restrictions in Mission 6."""
+        """No special adjacency restrictions in Mission 7."""
         return None
 
     def get_highlight_territory(self):
-        """No step-based territory highlighting in Mission 6."""
+        """No step-based territory highlighting in Mission 7."""
         return None
 
     def should_highlight_plot(self, territory, plot_index):
@@ -1562,69 +1433,107 @@ class Mission6:
         if event_type == 'territory_conquered':
             territory = kwargs.get('territory')
             new_owner = kwargs.get('new_owner')
+            self._check_enemy_hero_captured(territory, new_owner)
             self._on_territory_conquered(territory, new_owner)
 
-    def _on_territory_conquered(self, territory, new_owner):
-        """Handle territory conquest — check quests, dynamic AI triggers, and defeat condition.
+        elif event_type == 'hero_killed':
+            # Handle hero death from Regicide (or other non-conquest causes)
+            hero_name = kwargs.get('hero_name')
+            killer = kwargs.get('killer')
+            if killer == 0 and hero_name and hero_name not in self._announced_captures:
+                self._announced_captures.add(hero_name)
+                # Show capture transmission for known enemy heroes
+                if hero_name == 'Vearen Asford':
+                    self._queue_transmission(
+                        "Naragonese general Vearen Asford has been captured!",
+                        3.6, "M7T4"
+                    )
+                elif hero_name == 'Darius Brennhen':
+                    self._queue_transmission(
+                        "Lord of Noxefort, Darius Brennhen, has been captured!",
+                        3.7, "M7T5"
+                    )
 
-        Quest completion: checked when Red conquers any territory.
-        Blue activation: when Red conquers a Yellow territory.
-        Blue anger: when Red conquers a Blue territory (overrides activation).
-        Defeat: Red loses ALL 4 core territories simultaneously.
+    def _check_enemy_hero_captured(self, territory, new_owner):
+        """Show transmission when an enemy hero is captured (their keep territory conquered).
+
+        Called before _on_territory_conquered so the transmission is queued
+        before any victory/defeat sequence starts.
+        Hero death happens in kill_heroes_in_keep() before this callback,
+        so the hero is already removed from gs.heroes[1] when we check.
+        """
+        if new_owner != 0:
+            return  # Only show for human conquests
+
+        # Check if Vearen Asford's keep was here (hero already killed by game engine)
+        if territory == 'Duchy of Daurels' and 'Vearen Asford' not in self._announced_captures:
+            gs = self.game_state
+            if "Vearen Asford" not in gs.heroes.get(1, {}):
+                self._announced_captures.add('Vearen Asford')
+                self._queue_transmission(
+                    "Naragonese general Vearen Asford has been captured!",
+                    3.6, "M7T4"
+                )
+
+        # Check if Darius Brennhen's keep was here
+        if territory == 'Nordica' and 'Darius Brennhen' not in self._announced_captures:
+            gs = self.game_state
+            if "Darius Brennhen" not in gs.heroes.get(1, {}):
+                self._announced_captures.add('Darius Brennhen')
+                self._queue_transmission(
+                    "Lord of Noxefort, Darius Brennhen, has been captured!",
+                    3.7, "M7T5"
+                )
+
+    def _on_territory_conquered(self, territory, new_owner):
+        """Handle territory conquest — check victory/defeat conditions.
+
+        Victory: Central Alliance (player 1) owns 0 territories on the map.
+        Defeat: Human loses Courtieux (King Aidam Narn dies),
+                OR Human loses Lunedale (General Neil Hévilneu dies),
+                OR Human owns 0 territories.
         """
         gs = self.game_state
 
-        # --- DYNAMIC AI TRIGGERS (only when Red conquers) ---
-        if new_owner == 0:
-            # Check which faction previously owned this territory
-            # (We check the original faction lists, not current owners, since transfers happen)
-
-            # Trigger: Red attacks Yellow territory → Blue activates
-            # We check if the territory was owned by Yellow (player 2) before conquest
-            # Since new_owner is 0 and the territory was just conquered, the old owner
-            # was whoever owned it. We can detect this by checking if Blue should activate.
-            # Simpler: if territory was in Yellow's starting set or is currently Yellow-owned
-            # after transfers, Blue activates.
-            # Actually, we already know the conquest happened — the old owner was NOT Red.
-            # We need to know if it was Yellow (2) or Blue (1).
-            # The territory_owners was already updated to new_owner=0 before this callback,
-            # so we can't read the old owner. Instead, we track based on territory lists.
-
-            # For activation trigger: if territory was NOT one of Blue's starting territories
-            # and Blue is not yet active, this was likely a Yellow territory → activate Blue
-            if not self.blue_angered:
-                if territory in FACTION_TERRITORIES[1] or territory in QUEST_3_UNBLOCK:
-                    # Red conquered a Blue territory → anger Blue
-                    if not self.blue_angered:
-                        self.blue_angered = True
-                        self.blue_active = True
-                        logger.info(f"Blue angered! Red conquered Blue territory {territory}")
-                        self._queue_transmission(
-                            "The Northern Powers amass their forces against us. They send even more forces to attack!",
-                            7.0, "M6T9"
-                        )
-                elif not self.blue_active:
-                    # Red conquered a non-Blue territory (Yellow) → activate Blue
-                    self.blue_active = True
-                    logger.info(f"Blue activated! Red conquered Yellow territory {territory}")
-                    self._queue_transmission(
-                        "The Northern Powers have taken notice of our expansion. "
-                        "They are sending skirmishing forces against us!",
-                        7.5, "M6T10"
-                    )
-
-            # Check quest completion whenever Red conquers a territory
-            self._check_quest_completion()
-
-        # --- DEFEAT CHECK: Red lost ALL 4 core territories ---
-        all_core_lost = all(
-            gs.territory_owners.get(t) != 0
-            for t in DEFEAT_TERRITORIES
-        )
-        if all_core_lost:
-            logger.info("Red lost all 4 core territories — defeat!")
-            self._defeat_text = "We have lost our homeland. All is lost."
+        # --- DEFEAT CHECK: Courtieux captured — King Aidam Narn dies ---
+        if territory == 'Courtieux' and new_owner != 0:
+            logger.info("Courtieux captured — King Aidam Narn has fallen! Defeat!")
+            self._defeat_text = "King of Azincourne is dead! The alliance is lost!"
+            self._defeat_speaker = "General Neil Hévilneu"
+            self._defeat_duration = 4.4
+            self._defeat_voice_key = "M7T7"
             self._start_defeat()
+            return
+
+        # --- DEFEAT CHECK: Lunedale captured — General Neil Hévilneu dies ---
+        if territory == 'Lunedale' and new_owner != 0:
+            logger.info("Lunedale captured — General Neil Hévilneu has fallen! Defeat!")
+            self._defeat_text = "General Hévilneu is dead! Without his tactical command, our effort is lost!"
+            self._defeat_speaker = MISSION_7_SPEAKER
+            self._defeat_duration = 5.8
+            self._defeat_voice_key = "M7T8"
+            self._start_defeat()
+            return
+
+        # --- DEFEAT CHECK: Human owns 0 territories ---
+        human_territories = [t for t in MISSION_7_TERRITORIES
+                            if gs.territory_owners.get(t) == 0]
+        if not human_territories:
+            logger.info("Human lost all territories — defeat!")
+            self._defeat_text = "We have lost everything. All is lost."
+            self._defeat_speaker = MISSION_7_SPEAKER
+            self._defeat_duration = 3.0
+            self._defeat_voice_key = "M7T9"
+            self._start_defeat()
+            return
+
+        # --- VICTORY CHECK: Central Alliance owns 0 territories ---
+        ai_territories = [t for t in MISSION_7_TERRITORIES
+                         if gs.territory_owners.get(t) == 1]
+        if not ai_territories:
+            logger.info("Central Alliance eliminated — VICTORY!")
+            self.quest_log[0]['completed'] = True
+            self._start_victory()
 
     # ========================================================================
     # VICTORY SEQUENCE
@@ -1703,34 +1612,13 @@ class Mission6:
     # ========================================================================
 
     def get_quest_log(self):
-        """Return visible quests only: completed quests + current active quest.
-        Future quests are hidden until the previous quest is completed."""
-        visible = []
-        for i, quest in enumerate(self.quest_log):
-            if quest['completed']:
-                visible.append(quest)
-            elif i + 1 == self.current_quest:
-                # Show the currently active quest (quest indices are 1-based in current_quest)
-                visible.append(quest)
-            # Future quests are not shown
-        return visible
-
-    # ========================================================================
-    # ACHIEVEMENT INTEGRATION
-    # ========================================================================
+        """Return all 3 quests (all visible from start)."""
+        return self.quest_log
 
     def get_bonus_conditions(self):
-        """Return bonus achievement conditions for Mission 6.
-
-        Bonus "Red World": Northern Powers (player 1) owns no territories.
-        Covers both their starting 5 and any they may have conquered during the game.
-        """
-        gs = self.game_state
-        northern_powers_has_no_territories = not any(
-            gs.territory_owners.get(t) == 1 for t in MISSION_6_TERRITORIES
-        )
+        """Return bonus condition flags for achievement system."""
         return {
-            'campaign_mission_6_bonus': northern_powers_has_no_territories,
+            'campaign_mission_7_bonus': not self._spending_spree_disqualified,
         }
 
     # ========================================================================
@@ -1740,7 +1628,7 @@ class Mission6:
     def _cleanup(self):
         """Clean up mission state when exiting."""
         from global_sound import stop_transmission_sound
-        logger.info("Cleaning up Mission 6")
+        logger.info("Cleaning up Mission 7")
         stop_transmission_sound()
         map_data.clear_enabled_territories()
 

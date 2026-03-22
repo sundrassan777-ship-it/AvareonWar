@@ -74,6 +74,7 @@ from config.font_manager import FontManager
 from steam_integration import steam_manager
 # Import sparkle version of turn announcement (can switch back to turn_announcement_effect if needed)
 from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
+from ui.effects.chat_notification_effect import ChatNotificationEffect
 from global_sound import sound_manager, play_structure_sound  # Global sound manager instance
 from music_manager import music_manager, MUSIC_END_EVENT  # Background music system
 from tutorial_mission import CameraAnimation  # Reuse for Custom Game / Multiplayer start zoom
@@ -450,6 +451,7 @@ class Game:
         self.castle_upgrade_button = None
         self.castle_upgrade_cancel_button = None
         self.bonuses_button_rect = None
+        self.resolve_all_battles_button = None  # "Resolve Remaining Battles" button rect (below top panel during battle phase)
         self.sidebar_tab_buttons = {}
         self.hero_selection_buttons = {}
         self.technology_buttons = {}
@@ -1069,8 +1071,19 @@ class Game:
         self.game_menu_visible = False  # Is game menu open?
         self.menu_button = None  # Rect for menu button in top panel
         self.menu_resume_button = None  # Rect for Resume Game button
+        self.menu_save_button = None  # Rect for Save Game button (campaign only)
         self.menu_options_button = None  # Rect for Options button
         self.menu_quit_button = None  # Rect for Quit to Main Menu button
+
+        # Save dialog system (campaign save game)
+        self.save_dialog_active = False  # Is save name dialog open?
+        self.save_name_input = ""  # Current text in save name field
+        self.save_name_cursor_visible = True  # Blinking cursor state
+        self.save_name_cursor_timer = 0  # Cursor blink timer
+        self.save_feedback_message = None  # "Saved!" or error message
+        self.save_feedback_timer = 0  # Timer for feedback display
+        self.save_dialog_save_button = None  # Rect for Save button in dialog
+        self.save_dialog_cancel_button = None  # Rect for Cancel button in dialog
 
         # Pause state (single-player only: game pauses when menu/options are open)
         self.game_paused = False
@@ -1163,6 +1176,12 @@ class Game:
                 self.font_manager.get_bold_font(size)
             except Exception:
                 pass  # Ignore errors for sizes that fail to load
+
+        # Floating chat notification effect — shows new messages briefly on map area
+        self.chat_notification_effect = ChatNotificationEffect(
+            TOP_PANEL_HEIGHT, self.game_state, self.local_player_index,
+            self.small_font, self.small_font_bold
+        )
 
         # Initialize drawing helpers (Phase 3: added small_font_bold for tooltip names)
         self.helpers = DrawingHelpers(
@@ -1525,6 +1544,10 @@ class Game:
                             self.sim_state.eliminate_player(player_index)
                             logger.info(f"[NETWORK] Capital Assault: eliminated Player {player_index + 1} on client")
 
+                # Universal last-team-standing: check victory on client after territory change
+                # (host already checks via _update_battle_results; client needs this for sync)
+                self.game_state.check_victory()
+
                 # Check if all battles resolved
                 if len(self.game_state.pending_battles) == 0:
                     if self.sim_state is not None:
@@ -1720,6 +1743,37 @@ class Game:
                     if not hasattr(self.game_state, 'disconnected_players'):
                         self.game_state.disconnected_players = set()
                     self.game_state.disconnected_players.add(player_index)
+
+                    # Chat notification: inform all players about the disconnect
+                    player_name = self.game_state.player_names[player_index] if self.game_state.player_names[player_index] else f"Player {player_index + 1}"
+                    self.game_state.add_chat_message(0, f"{player_name} has disconnected. AI taking over.")
+
+        elif msg_type == MessageType.DISCONNECT_ELIMINATION:
+            # Player eliminated after reconnect timeout (60s) — both host and clients process this
+            player_index = data.get('player_index')
+            if player_index is not None and 0 <= player_index < self.game_state.num_players:
+                logger.info(f"[NETWORK] Player {player_index + 1} eliminated (disconnect timeout)")
+
+                # Chat notification
+                player_name = self.game_state.player_names[player_index] if self.game_state.player_names[player_index] else f"Player {player_index + 1}"
+                self.game_state.add_chat_message(0, f"{player_name} has been disconnected and eliminated.")
+
+                # Execute disconnect elimination (ally territory distribution + cleanup)
+                self.game_state.eliminate_player_disconnect(player_index)
+
+                # Sync simultaneous mode if active
+                if self.sim_state is not None:
+                    self.sim_state.eliminate_player(player_index)
+
+                # Sequential mode: if eliminated player's turn is active, advance to next
+                if (self.sim_state is None and
+                    self.game_state.current_player == player_index and
+                    self.game_state.phase == 'playing'):
+                    logger.info(f"[NETWORK] Eliminated player's turn was active — advancing to next player")
+                    self.game_state.next_player()
+
+                # Check victory after elimination (universal last-team-standing)
+                self.game_state.check_victory()
 
         # ========== SIMULTANEOUS MODE MESSAGES ==========
 
@@ -2048,7 +2102,13 @@ class Game:
 
                 if 'eliminated_players' in data:
                     self.sim_state.eliminated_players = set(data['eliminated_players'])
+                    # Also sync to game_state's eliminated_players tracker
+                    self.game_state.eliminated_players = set(data['eliminated_players'])
                     logger.debug(f"[NETWORK] Sync: eliminated_players = {self.sim_state.eliminated_players}")
+
+                if 'disconnect_eliminations' in data:
+                    self.game_state.disconnect_eliminations = set(data['disconnect_eliminations'])
+                    logger.debug(f"[NETWORK] Sync: disconnect_eliminations = {self.game_state.disconnect_eliminations}")
 
                 # Sync hero data - ensures passive abilities (Haste, Defiance, etc.) are consistent
                 if 'heroes' in data:
@@ -2408,6 +2468,17 @@ class Game:
             if 'player_master_negotiator_active' in data:
                 self.game_state.player_master_negotiator_active = list(data['player_master_negotiator_active'])
 
+            # Disconnect elimination tracking — safety net for elimination state sync
+            if 'eliminated_players' in data:
+                self.game_state.eliminated_players = set(data['eliminated_players'])
+                logger.debug(f"[SYNC] eliminated_players = {self.game_state.eliminated_players}")
+            if 'disconnect_eliminations' in data:
+                self.game_state.disconnect_eliminations = set(data['disconnect_eliminations'])
+                logger.debug(f"[SYNC] disconnect_eliminations = {self.game_state.disconnect_eliminations}")
+
+            # Check victory after applying authoritative state (catches any missed eliminations)
+            self.game_state.check_victory()
+
             logger.info("[NETWORK] FULL_STATE_SYNC applied successfully")
 
         else:
@@ -2730,6 +2801,9 @@ class Game:
             # Sync fix: transient hero ability state — prevents desync if ability message lost
             'embargo_blocked_players': list(self.game_state.embargo_blocked_players),
             'player_master_negotiator_active': list(self.game_state.player_master_negotiator_active),
+            # Disconnect elimination tracking — safety net for elimination state sync
+            'eliminated_players': list(self.game_state.eliminated_players),
+            'disconnect_eliminations': list(self.game_state.disconnect_eliminations),
         }
 
         self._send_action_to_remote(MessageType.FULL_STATE_SYNC, state_data)
@@ -2950,6 +3024,8 @@ class Game:
             # Overflow territories — client never runs _process_overflow_territories(),
             # so sync the dict to prevent stale overflow icons and state divergence
             'overflow_territories': dict(self.sim_state.overflow_territories) if self.sim_state else {},
+            # Disconnect elimination tracking — safety net for elimination state sync
+            'disconnect_eliminations': list(self.game_state.disconnect_eliminations),
         }
 
         self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, authoritative_data)
@@ -3711,6 +3787,12 @@ class Game:
             self.TOP_PANEL_HEIGHT = TOP_PANEL_HEIGHT
             self.BOTTOM_UI_HEIGHT = BOTTOM_UI_HEIGHT
             self.MAP_HEIGHT = MAP_HEIGHT
+
+            # Update chat notification effect with new layout/fonts
+            if self.chat_notification_effect:
+                self.chat_notification_effect.on_resolution_change(
+                    TOP_PANEL_HEIGHT, self.small_font, self.small_font_bold
+                )
 
             # Update helpers with new fonts/screen
             self.helpers = DrawingHelpers(self.screen, self.font, self.small_font, self.large_font,
@@ -6345,6 +6427,15 @@ class Game:
                     display = bonus_info['display']
                     formatted = bonus_info['format'].format(total_value)
                     lines.append([("small_bold", f"{formatted} {display}", white_color)])
+
+        elif button_type == 'resolve_all_battles':
+            # "Resolve Remaining Battles" button tooltip
+            lines = [
+                [("normal_bold", "Resolve Remaining Battles", gold_color)],
+                [("small", "Resolve all remaining battles that are", white_color)],
+                [("small", "pending your action. These battles will", white_color)],
+                [("small", "provide no battle reports.", white_color)],
+            ]
 
         if not lines:
             return
@@ -9525,6 +9616,10 @@ class Game:
                 self.map_renderer.sync_production_glow_effects()
                 self.map_renderer.update_production_glow_effects(delta_time)
 
+                # Update floating chat notifications (polls for new messages)
+                if self.chat_notification_effect:
+                    self.chat_notification_effect.update(delta_time)
+
                 # Check and trigger turn announcement effect if needed
                 if self.game_state.turn_announcement_active and self.turn_announcement_effect is None:
                     # Trigger new turn announcement
@@ -10332,7 +10427,11 @@ class Game:
             
             # Draw chat input box (appears above bottom UI when active) (Phase 4D: inlined)
             self.ui_renderer.draw_chat_input()
-            
+
+            # Draw floating chat notifications (top-left of map, below top panel)
+            if self.chat_notification_effect:
+                self.chat_notification_effect.render(self.screen)
+
             # P7 fix: removed duplicate building button hover tracking here —
             # already handled in update_frame_tooltips() called at line 9373
 
@@ -10356,6 +10455,23 @@ class Game:
             # Draw game menu (on top of everything, if visible) (Phase 4D: inlined)
             if self.game_menu_visible:
                 self.ui_renderer.draw_game_menu()
+
+            # Draw save dialog (on top of game menu, if visible)
+            if self.save_dialog_active:
+                # Update cursor blink timer
+                self.save_name_cursor_timer += self.clock.get_time()
+                if self.save_name_cursor_timer >= 500:
+                    self.save_name_cursor_visible = not self.save_name_cursor_visible
+                    self.save_name_cursor_timer = 0
+                self.ui_renderer.draw_save_dialog()
+
+            # Update save feedback timer and render feedback in map area
+            if self.save_feedback_timer > 0:
+                self.save_feedback_timer -= self.clock.get_time()
+                if self.save_feedback_timer <= 0:
+                    self.save_feedback_message = None
+                else:
+                    self.ui_renderer.draw_save_feedback()
 
             # Draw options menu (on top of game menu, if visible) (Phase 4D: inlined)
             if self.options_menu_visible:
@@ -10466,6 +10582,10 @@ class Game:
         if not self.game_menu_visible:
             return (False, False)
 
+        # If save dialog is active, handle its clicks instead of menu clicks
+        if self.save_dialog_active:
+            return self._handle_save_dialog_click(pos)
+
         # Resume Game button
         if self.menu_resume_button:
             if self.menu_resume_button.collidepoint(pos):
@@ -10474,7 +10594,20 @@ class Game:
                 self.game_menu_visible = False
                 self._unpause_game()
                 return (True, False)
-        
+
+        # Save Game button (campaign only, set by ui_renderer when enabled)
+        if self.menu_save_button:
+            if self.menu_save_button.collidepoint(pos):
+                self.sound_manager.play_ui_click()
+                self.trigger_click_flash('menu_button', 'save')
+                # Open save dialog with default name
+                self.save_dialog_active = True
+                self.save_name_input = f"Turn {self.game_state.turn_number}"
+                self.save_name_cursor_visible = True
+                self.save_name_cursor_timer = 0
+                self.game_menu_visible = False
+                return (True, False)
+
         # Options button
         if self.menu_options_button:
             if self.menu_options_button.collidepoint(pos):
@@ -10513,6 +10646,67 @@ class Game:
         # Click was on menu overlay but not on any button - consume click anyway
         # This prevents clicks from passing through the menu to the game
         return (True, False)
+
+    def _handle_save_dialog_click(self, pos):
+        """Handle clicks on the save name dialog buttons."""
+        if self.save_dialog_save_button and self.save_dialog_save_button.collidepoint(pos):
+            self._execute_save_game()
+            return (True, False)
+
+        if self.save_dialog_cancel_button and self.save_dialog_cancel_button.collidepoint(pos):
+            self.sound_manager.play_ui_click()
+            self.trigger_click_flash('save_dialog', 'cancel')
+            self.save_dialog_active = False
+            self.game_menu_visible = True  # Return to game menu
+            return (True, False)
+
+        # Consume click on dialog overlay
+        return (True, False)
+
+    def _execute_save_game(self):
+        """Perform the actual save game operation."""
+        self.sound_manager.play_ui_click()
+        self.trigger_click_flash('save_dialog', 'save')
+
+        save_name = self.save_name_input.strip()
+        if not save_name:
+            save_name = f"Turn {self.game_state.turn_number}"
+
+        from save_manager import save_game
+        result = save_game(self.game_state, self.tutorial_mission, save_name)
+
+        self.save_dialog_active = False
+        if result:
+            self.save_feedback_message = "Saved!"
+            self.save_feedback_timer = 2000  # Show for 2 seconds
+            self.game_menu_visible = True  # Return to game menu showing feedback
+        else:
+            self.save_feedback_message = "Save failed!"
+            self.save_feedback_timer = 2000
+            self.game_menu_visible = True
+
+    def handle_save_dialog_keydown(self, event):
+        """Handle keyboard input for the save name dialog."""
+        if not self.save_dialog_active:
+            return False
+
+        if event.key == pygame.K_RETURN:
+            self._execute_save_game()
+            return True
+        elif event.key == pygame.K_ESCAPE:
+            self.save_dialog_active = False
+            self.game_menu_visible = True
+            return True
+        elif event.key == pygame.K_BACKSPACE:
+            self.save_name_input = self.save_name_input[:-1]
+            return True
+        elif event.unicode and len(self.save_name_input) < 50:
+            # Filter out control characters, allow printable chars
+            if event.unicode.isprintable():
+                self.save_name_input += event.unicode
+            return True
+
+        return True  # Consume all keys while dialog is open
 
     @property
     def is_game_paused(self):
@@ -11295,6 +11489,10 @@ class Game:
         Returns:
             bool: True if key was handled
         """
+        # Save dialog keyboard input takes priority over all other keyboard handling
+        if self.save_dialog_active:
+            return self.handle_save_dialog_keydown(event)
+
         # Prepare UI state for handler
         ui_state = {
             'options_menu_visible': self.options_menu_visible,
@@ -12214,6 +12412,145 @@ class Game:
 
         return False
 
+    def _handle_resolve_all_battles_click(self):
+        """
+        Handle click on the "Resolve Remaining Battles" button.
+
+        Plays UI click sound, triggers click flash, then auto-resolves
+        all pending battles where the local player is the resolver.
+        No battle reports are shown.
+        """
+        self.sound_manager.play_ui_click()
+        self.trigger_click_flash('top_button', 'resolve_all_battles')
+        self._resolve_all_pending_battles()
+
+    def _resolve_all_pending_battles(self):
+        """
+        Auto-resolve all pending battles where the local player is the resolver.
+
+        Resolves battles silently (no battle reports or UI feedback).
+        Handles multiplayer sync, alliance markers (sim mode), Capital Assault
+        elimination sync, and turn/round advancement after all battles are done.
+
+        Called by _handle_resolve_all_battles_click() when the player clicks
+        the "Resolve Remaining Battles" button during battle phase.
+        """
+        local_player = self.get_local_player()
+        safety_limit = 100  # Prevent infinite loop
+        iterations = 0
+
+        while self.game_state.pending_battles and iterations < safety_limit:
+            iterations += 1
+
+            # Find the first battle where we're the resolver
+            # (resolve_battle pops from list, so we must re-scan each iteration)
+            resolvable_idx = None
+            for idx, b in enumerate(self.game_state.pending_battles):
+                if self.sim_state is not None:
+                    # Simultaneous mode: only resolve battles where we're the designated resolver
+                    if getattr(b, 'resolver', None) == local_player:
+                        resolvable_idx = idx
+                        break
+                else:
+                    # Sequential mode: current player resolves all battles on their turn
+                    resolvable_idx = idx
+                    break
+
+            if resolvable_idx is None:
+                break  # No more battles for us to resolve
+
+            battle = self.game_state.pending_battles[resolvable_idx]
+            territory = battle.territory
+
+            # Resolve the battle (removes it from pending_battles)
+            self.game_state.resolve_battle(resolvable_idx)
+
+            # In sim mode, clear the sequential ready flag — sim mode uses complete_round() instead
+            if self.sim_state is not None:
+                self.game_state.ready_to_advance_turn = False
+
+            new_owner = self.game_state.territory_owners.get(territory, -1)
+
+            # Handle alliance markers in simultaneous mode
+            # (same logic as _finalize_enhanced_battle)
+            alliance_marker = None
+            if self.sim_state is not None and battle.resolved and hasattr(battle, 'team_members_map'):
+                winner = battle.winner
+                if winner is not None and winner in battle.team_members_map:
+                    winning_team_members = battle.team_members_map[winner]
+                    original_owner = getattr(battle, 'original_owner', -1)
+                    original_owner_team = self.game_state.player_teams[original_owner] if original_owner >= 0 else -1
+                    winner_team = -1 if winner == -1 else self.game_state.player_teams[winner]
+                    is_defensive = (original_owner >= 0 and original_owner_team == winner_team)
+                    if winner != -1 and len(winning_team_members) > 1 and not is_defensive:
+                        alliance_marker = {
+                            'type': 'alliance',
+                            'territory': territory,
+                            'players': winning_team_members,
+                            'chooser': self.sim_state.phase_manager.alliance_handler.determine_chooser(
+                                territory, winning_team_members
+                            )
+                        }
+                        self.sim_state.phase_manager.pending_alliance_markers.append(alliance_marker)
+
+            # Multiplayer: send battle result to remote players (same pattern as AI auto-resolve)
+            if self.multiplayer_mode:
+                battle_data = {
+                    'territory': territory,
+                    'winner': battle.winner if battle.resolved else -1,
+                    'surviving_armies': getattr(battle, 'surviving_armies', 0),
+                    'new_owner': new_owner
+                }
+                # Include surviving units composition for garrison sync
+                if new_owner is not None and territory:
+                    garrison = self.game_state.territory_garrisons.get(territory, {})
+                    winner_garrison = garrison.get(new_owner, {})
+                    units = winner_garrison.get('units', [])
+                    if units:
+                        battle_data['surviving_units'] = [
+                            {'id': u.get('id', i), 'type': u.get('type', 'Swordsman'), 'status': 'moved'}
+                            for i, u in enumerate(units)
+                        ]
+                if alliance_marker:
+                    battle_data['alliance_marker'] = alliance_marker
+                self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
+
+            # Capital Assault: sync battle-based eliminations to sim_state
+            if self.sim_state is not None and self.game_state.victory_condition == "Capital Assault":
+                for pid in range(self.game_state.num_players):
+                    if (pid not in self.sim_state.eliminated_players and
+                        all(owner != pid for owner in self.game_state.territory_owners.values())):
+                        self.sim_state.eliminate_player(pid)
+                        logger.info(f"[SIM] Synced elimination of Player {pid + 1} to sim_state after auto-resolve")
+
+        # Post-loop: advance turn or complete round
+        if not self.game_state.pending_battles:
+            if self.sim_state is not None:
+                # Simultaneous mode: complete round if no pending alliance markers
+                if self.sim_state.sim_phase == 'resolving':
+                    if not self.sim_state.phase_manager.pending_alliance_markers:
+                        if not self.multiplayer_mode or self.local_player_index == 0:
+                            self.sim_state.complete_round()
+                        else:
+                            logger.info(f"[CLIENT] Waiting for SIM_ROUND_COMPLETE from host")
+            else:
+                # Sequential mode: advance to next player
+                if self.game_state.ready_to_advance_turn:
+                    logger.info(f"[TURN_DEBUG] _resolve_all_pending_battles: advancing turn")
+                    self.game_state._advance_to_next_player()
+                    if self.multiplayer_mode:
+                        self._send_action_to_remote(MessageType.TURN_END, {})
+                        self._send_full_state_sync()
+                        if self.local_player_index == 1:
+                            checksum = self.game_state.calculate_state_checksum()
+                            self._send_action_to_remote(MessageType.STATE_CHECKSUM, {
+                                'checksum': checksum,
+                                'turn_number': self.game_state.turn_number
+                            })
+
+        # Clear the button rect (button disappears after click)
+        self.resolve_all_battles_button = None
+
     def handle_alliance_marker_click(self, pos, marker):
         """
         Handle clicks on alliance markers to show ownership choice UI.
@@ -12910,13 +13247,16 @@ class Game:
             plot_at_pos = self.get_plot_at_pos(world_pos)
             
             # Check if hovering over map button (building or training icon)
-            hovering_map_button = (self.hover_target_button and 
+            hovering_map_button = (self.hover_target_button and
                                   self.hover_target_button[0] in ['map_building', 'map_training'])
-            
+            # Check if hovering over "Resolve Remaining Battles" button (below top panel)
+            hovering_resolve_btn = (getattr(self, 'resolve_all_battles_button', None) and
+                                   self.resolve_all_battles_button.collidepoint(self.mouse_pos))
+
             # INSTANT HIGHLIGHTS (no delay)
             # Suppress territory glow when hovering over map buttons OR plots OR alliance popup is open
             alliance_popup_open = getattr(self, 'alliance_choice_popup_visible', False)
-            if not hovering_map_button and not plot_at_pos and not alliance_popup_open:
+            if not hovering_map_button and not hovering_resolve_btn and not plot_at_pos and not alliance_popup_open:
                 self.hovered_army = army_at_pos
                 if not self.hovered_army:
                     self.hovered_territory = territory_at_pos
@@ -12932,12 +13272,15 @@ class Game:
             # 1. Currently hovering over a map building/training icon
             # 2. Currently hovering over a plot itself
             # 3. Alliance choice popup is open
+            # 4. Hovering over "Resolve Remaining Battles" button
             # Both territory and army tooltips show regardless of which building
             # UI is open (barracks, keep, plot selection, etc.)
             should_track_territory = (not hovering_map_button and
+                                     not hovering_resolve_btn and
                                      not plot_at_pos and
                                      not alliance_popup_open)
             should_track_army = (not hovering_map_button and
+                                not hovering_resolve_btn and
                                 not alliance_popup_open)
 
             # Check if we're hovering over something new (army or territory tracked independently)
@@ -13069,9 +13412,24 @@ class Game:
                 self.show_tooltip_button = None
                 self.hover_start_time_button = None
 
+        # Track "Resolve Remaining Battles" button hover (below top panel)
+        if getattr(self, 'resolve_all_battles_button', None):
+            if self.resolve_all_battles_button.collidepoint(self.mouse_pos):
+                self.update_button_hover(('resolve_all_battles', None), 'resolve_all_battles')
+            else:
+                # Clear resolve button hover if moving away
+                if self.hover_target_button and self.hover_target_button[0] == 'resolve_all_battles':
+                    self.update_button_hover(None, 'resolve_all_battles')
+        else:
+            # Clear resolve button hover if button doesn't exist
+            if self.hover_target_button and self.hover_target_button[0] == 'resolve_all_battles':
+                self.hover_target_button = None
+                self.show_tooltip_button = None
+                self.hover_start_time_button = None
+
         # Check tooltip timer every frame (automatic tooltip appearance)
         # THIS MUST HAPPEN AFTER ALL DRAWING where hover is tracked
-        
+
         # Check MAP tooltip timer (army/territory)
         if self.hover_start_time is not None:
             current_time = pygame.time.get_ticks()
@@ -13101,8 +13459,8 @@ class Game:
             # Show button tooltip for top panel buttons (territorial bonuses, etc.)
             self.draw_button_tooltip(self.mouse_pos, self.show_tooltip_button)
         elif in_map_area:  # Only show tooltip when hovering map area (not sidebar, not top panel)
-            # Show button tooltip for map building/training/hero icons first
-            if self.show_tooltip_button and self.show_tooltip_button[0] in ['map_building', 'map_training', 'map_hero_training']:
+            # Show button tooltip for map building/training/hero icons or resolve-all-battles button first
+            if self.show_tooltip_button and self.show_tooltip_button[0] in ['map_building', 'map_training', 'map_hero_training', 'resolve_all_battles']:
                 self.draw_button_tooltip(self.mouse_pos, self.show_tooltip_button)
             # Show army tooltip if hovering over an army, otherwise show territory tooltip
             # Use show_tooltip_* variables which have the delay applied
@@ -13924,6 +14282,132 @@ if __name__ == "__main__":
         logger.info(f"Steam invite detected: will auto-connect to {_steam_connect_target}")
 
     # Main menu loop
+    def _launch_saved_game(screen, save_data, music_manager):
+        """
+        Load a saved campaign game from save_data and run it.
+
+        Flow: LoadingScreen (init fresh game) -> overwrite state from save ->
+        create mission -> restore mission state -> game.run() -> cleanup.
+
+        Returns game_result ('quit', 'campaign', 'main_menu', etc.)
+        """
+        import importlib
+        import map_data as _map_data
+        from save_manager import deserialize_game_state
+
+        metadata = save_data.get('metadata', {})
+        game_config = save_data.get('game_config', {})
+        mission_id = metadata.get('mission_id', '')
+
+        # Look up mission registry to get map path and class
+        # Reuse the same _MISSION_REGISTRY defined inside the campaign loop
+        _SAVE_MISSION_REGISTRY = {
+            'mission_2': {'import': ('campaign_mission_2', 'Mission2'), 'map': 'assets/CampaignMaps/Campaign2Map.png'},
+            'mission_3': {'import': ('campaign_mission_3', 'Mission3'), 'map': 'assets/CampaignMaps/Campaign3Map.png'},
+            'mission_4': {'import': ('campaign_mission_4', 'Mission4'), 'map': 'assets/CampaignMaps/Campaign4Map.png'},
+            'mission_5': {'import': ('campaign_mission_5', 'Mission5'), 'map': 'assets/CampaignMaps/Campaign5Map.png'},
+            'mission_6': {'import': ('campaign_mission_6', 'Mission6'), 'map': 'assets/CampaignMaps/Campaign6Map.png'},
+            'mission_7': {'import': ('campaign_mission_7', 'Mission7'), 'map': 'assets/CampaignMaps/Campaign6Map.png'},
+        }
+
+        mission_info = _SAVE_MISSION_REGISTRY.get(mission_id)
+        if not mission_info:
+            logger.error(f"Cannot load save: unknown mission_id '{mission_id}'")
+            return None
+
+        # Build setup config from saved game_config
+        setup_config = {
+            'num_players': game_config.get('num_players', 2),
+            'player_is_ai': game_config.get('player_is_ai', [False, True]),
+            'player_ai_difficulty': game_config.get('player_ai_difficulty', [0, 0]),
+            'player_teams': game_config.get('player_teams', [0, 1]),
+            'win_condition': game_config.get('victory_condition', 'Total Conquest'),
+            'taxation_level': game_config.get('taxation_level', 0),
+        }
+
+        # Dynamic import of mission class
+        module = importlib.import_module(mission_info['import'][0])
+        MissionClass = getattr(module, mission_info['import'][1])
+
+        # Stop menu music before loading
+        music_manager.stop()
+
+        # Create game with campaign map, run loading screen
+        game = Game(existing_screen=screen, campaign_map=mission_info['map'])
+        screen = game.screen
+        loading = LoadingScreen(screen, game, setup_config, mission_id=mission_id)
+        loading.run()
+
+        # Create mission object FIRST — constructor calls _setup_initial_state() which
+        # sets territory filtering, display names, flag icons, and initial game state.
+        # We overwrite the game state AFTER so saved data takes precedence.
+        mission_obj = MissionClass(game.game_state, game)
+
+        # NOW overwrite the freshly initialized game state with saved data
+        # (this replaces the initial territory owners, armies, buildings, etc. set by the mission)
+        deserialize_game_state(game.game_state, save_data.get('game_state', {}))
+
+        # Restore player config from save (names, colors, etc.)
+        if 'player_names' in game_config:
+            game.game_state.player_names = list(game_config['player_names'])
+        if 'player_colors' in game_config:
+            # Convert inner lists back to tuples (JSON deserializes tuples as lists)
+            game.game_state.player_colors = [tuple(c) for c in game_config['player_colors']]
+
+        # Restore mission-specific state from save (skips intro, restores quest progress, etc.)
+        mission_state = save_data.get('mission_state', {})
+        if hasattr(mission_obj, 'restore_save_state'):
+            mission_obj.restore_save_state(mission_state)
+
+        # Reset XP earned to 0 — prevents exploit where player saves, finishes game (earning XP),
+        # then reloads and replays the same section to double-count pre-save XP.
+        # Only post-load actions will count toward XP.
+        gs = game.game_state
+        for p in range(gs.num_players):
+            if p in gs.player_stats and 'xp_earned' in gs.player_stats[p]:
+                gs.player_stats[p]['xp_earned'] = 0
+
+        # Log hero state after deserialization for debugging
+        for p, heroes in gs.heroes.items():
+            if heroes:
+                hero_names = list(heroes.keys())
+                logger.info(f"Save load: Player {p} heroes restored: {hero_names}")
+
+        # Wire up mission references
+        game.tutorial_mission = mission_obj
+        game.game_state.tutorial_mission = mission_obj
+        _map_data.set_tutorial_mission(mission_obj)
+
+        # Stop any lingering transmission sound from skipped intro
+        from global_sound import stop_transmission_sound
+        stop_transmission_sound()
+
+        # Start game music
+        music_manager.start_game_music()
+
+        game_result = game.run()
+
+        # Stop game music
+        music_manager.stop()
+
+        # Post-mission outro cutscene (only after victory)
+        if game_result == 'campaign':
+            from cutscene_player import CutscenePlayer
+            outro_cutscene = CutscenePlayer(screen, f"{mission_id}_outro")
+            if outro_cutscene.has_cutscene:
+                outro_cutscene.run()
+
+        if show_recap_if_ended(game) == 'quit':
+            pygame.quit()
+            sys.exit()
+
+        # Clean up mission reference and territory filtering
+        _map_data.set_tutorial_mission(None)
+        _map_data.clear_enabled_territories()
+        _map_data.clear_territory_display_names()
+
+        return game_result
+
     while True:
         # If launched via Steam invite, skip main menu and go directly to multiplayer join
         if _steam_connect_target:
@@ -13982,6 +14466,26 @@ if __name__ == "__main__":
                 if mission_id is None:
                     # User clicked Return to Main Menu
                     break
+
+                # Saved Games button clicked — open save browser
+                if mission_id == 'saved_games':
+                    from save_browser import SaveBrowser
+                    browser = SaveBrowser(screen)
+                    browser_result = browser.run()
+
+                    if browser_result and browser_result.get('action') == 'quit':
+                        pygame.quit()
+                        sys.exit()
+
+                    if browser_result and browser_result.get('action') == 'load':
+                        # Load saved game flow
+                        save_data = browser_result['save_data']
+                        _load_result = _launch_saved_game(screen, save_data, music_manager)
+                        if _load_result == 'quit':
+                            pygame.quit()
+                            sys.exit()
+                    # Return to campaign screen (regardless of load/back)
+                    continue
 
                 # User selected a mission - open mission screen
                 mission_data = MISSION_DATA.get(mission_id, {})
@@ -14103,6 +14607,20 @@ if __name__ == "__main__":
                                 'player2_territory': 'Lobardia',
                                 'player3_territory': 'Venexia',
                                 'player4_territory': 'Valeonia',
+                            },
+                        },
+                        'mission_7': {
+                            'import': ('campaign_mission_7', 'Mission7'),
+                            'map': 'assets/CampaignMaps/Campaign6Map.png',  # Same map as Mission 6
+                            'config': {
+                                'num_players': 2,
+                                'player_is_ai': [False, True],
+                                'player_ai_difficulty': [0, 2],
+                                'player_teams': [0, 1],
+                                'win_condition': 'Total Conquest',
+                                'taxation_level': 0,
+                                'player1_territory': 'Courtieux',
+                                'player2_territory': 'Nordica',
                             },
                         },
                     }

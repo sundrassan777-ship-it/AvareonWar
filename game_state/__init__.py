@@ -353,6 +353,15 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         for i in range(num_players):
             self.player_gold[i] = self.starting_gold
 
+        # Eliminated players tracking (universal — players with 0 territories)
+        # Updated by check_victory() and eliminate_player_disconnect()
+        # Synced via FULL_STATE_SYNC and SIM_ROUND_COMPLETE
+        self.eliminated_players = set()
+
+        # Players eliminated specifically via multiplayer disconnect timeout
+        # Used by anti-win-farming XP check (player_level.py)
+        self.disconnect_eliminations = set()
+
         # Post-game statistics tracking (cumulative counters per player for recap screen)
         self.player_stats = {}
         for i in range(num_players):
@@ -790,8 +799,13 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         logger.info(f"[TURN_DEBUG]   current_player: {self.current_player} -> {(self.current_player + 1) % self.num_players}, "
                      f"turn_number: {self.turn_number}, pending_battles: {len(self.pending_battles)}")
 
-        # Switch to next player
+        # Switch to next player, skipping eliminated players (0 territories)
         self.current_player = (self.current_player + 1) % self.num_players
+        attempts = 0
+        while (self.current_player in self.eliminated_players
+               and attempts < self.num_players):
+            self.current_player = (self.current_player + 1) % self.num_players
+            attempts += 1
         self.selected_territory = None
         self.selected_army = None  # Clear army selection
 

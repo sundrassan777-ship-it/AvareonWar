@@ -470,7 +470,7 @@ ACHIEVEMENTS = [
         'icon': 'assets/achievements/AchievementIcons/Campaign5BonusAchiev.png',
         'reward_type': 'icon',
         'reward_id': 'assets/achievements/RewardsIcons/AlexiusBrennhen.png',
-        'reward_name': 'Alexius Brennhen',
+        'reward_name': 'Alexius Brennhen Icon',
         'stat_key': 'campaign_mission_5_bonus',
         'stat_threshold': 1,
     },
@@ -495,8 +495,33 @@ ACHIEVEMENTS = [
         'icon': 'assets/achievements/AchievementIcons/Campaign6BonusAchiev.png',
         'reward_type': 'icon',
         'reward_id': 'assets/achievements/RewardsIcons/KalanIcon.png',
-        'reward_name': 'Lord Kalan',
+        'reward_name': 'Lord Kalan Icon',
         'stat_key': 'campaign_mission_6_bonus',
+        'stat_threshold': 1,
+    },
+    # Mission 7: The Fall — completion
+    {
+        'id': 'campaign_mission_7',
+        'name': 'The Fall',
+        'description': 'Complete Chapter 7: The Fall.',
+        'category': 'campaign',
+        'icon': 'assets/achievements/AchievementIcons/Campaign7Achiev.png',
+        'reward_type': None,
+        'reward_id': None,
+        'stat_key': 'campaign_mission_7_completed',
+        'stat_threshold': 1,
+    },
+    # Mission 7 Bonus: Spending Spree — win without ever exceeding 3500 gold
+    {
+        'id': 'campaign_mission_7_bonus',
+        'name': 'Spending Spree',
+        'description': 'Win Mission 7: The Fall without ever accumulating over 3500 Gold.',
+        'category': 'campaign',
+        'icon': 'assets/achievements/AchievementIcons/Campaign7BonusAchiev.png',
+        'reward_type': 'icon',
+        'reward_id': 'assets/achievements/AchievementIcons/Campaign7BonusAchiev.png',
+        'reward_name': 'The Governor Icon',
+        'stat_key': 'campaign_mission_7_bonus',
         'stat_threshold': 1,
     },
 ]
@@ -528,6 +553,7 @@ ALL_REWARD_ICON_PATHS = [
     'assets/achievements/RewardsIcons/Knight.png',
     'assets/achievements/RewardsIcons/regnus.png',
     'assets/achievements/RewardsIcons/AlexiusBrennhen.png',
+    'assets/achievements/AchievementIcons/Campaign7BonusAchiev.png',
 ]
 
 # Build lookup: reward_icon_path -> achievement that awards it (or None)

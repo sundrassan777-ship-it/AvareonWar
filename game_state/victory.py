@@ -33,6 +33,21 @@ class VictoryMixin:
         logger.debug(f"check_victory: Victory Condition: {self.victory_condition}")
         logger.debug(f"check_victory: Territory counts: {territory_counts}")
 
+        # Mark players with 0 territories as eliminated (universal tracking)
+        # Both host and client run this independently — deterministic based on territory_owners
+        for i in range(self.num_players):
+            if territory_counts[i] == 0 and i not in self.eliminated_players:
+                self.eliminated_players.add(i)
+                logger.info(f"[ELIMINATION] Player {i + 1} has 0 territories — marked as eliminated")
+
+        # Universal last-team-standing check (applies to ALL victory conditions)
+        # If only one team has territories remaining, that team wins immediately
+        active_players = [i for i, count in enumerate(territory_counts) if count > 0]
+        if len(active_players) > 0:
+            result = self._check_last_team_standing(active_players, territory_counts)
+            if result >= 0:
+                return result
+
         # Route to appropriate victory check based on victory_condition
         if self.victory_condition == "Domination (45+)":
             return self._check_domination_victory(territory_counts)
@@ -44,6 +59,48 @@ class VictoryMixin:
         # Fallback to Domination if unknown victory condition
         logger.warning(f"Unknown victory condition '{self.victory_condition}', defaulting to Domination")
         return self._check_domination_victory(territory_counts)
+
+    def _check_last_team_standing(self, active_players, territory_counts):
+        """
+        Universal last-team-standing check — if only one team remains with territories,
+        that team wins regardless of the specific victory condition.
+
+        Args:
+            active_players: List of player indices with > 0 territories
+            territory_counts: Territory count per player
+
+        Returns:
+            int: Winner player index, or -1 if multiple teams still active
+        """
+        if hasattr(self, 'player_teams') and self.player_teams:
+            active_teams = set(self.player_teams[i] for i in active_players)
+            if len(active_teams) == 1:
+                winner = active_players[0]  # First active player as team representative
+                self.winner = winner
+                self.phase = 'ended'
+                team_num = self.player_teams[winner]
+                self.add_message(f"")
+                self.add_message(f"============================")
+                self.add_message(f"   TEAM {team_num + 1} WINS!")
+                self.add_message(f"   (Last team standing)")
+                self.add_message(f"============================")
+                logger.info(f"LAST TEAM STANDING VICTORY for Team {team_num + 1}!")
+                return winner
+        else:
+            # No teams (FFA) — last player standing wins
+            if len(active_players) == 1:
+                winner = active_players[0]
+                self.winner = winner
+                self.phase = 'ended'
+                self.add_message(f"")
+                self.add_message(f"============================")
+                self.add_message(f"   PLAYER {winner + 1} WINS!")
+                self.add_message(f"   (Last player standing)")
+                self.add_message(f"============================")
+                logger.info(f"LAST PLAYER STANDING VICTORY for Player {winner + 1}!")
+                return winner
+
+        return -1
 
     def _check_domination_victory(self, territory_counts):
         """
@@ -300,10 +357,115 @@ class VictoryMixin:
                 del self.territory_garrisons[territory][player_index]
                 self.sync_legacy_garrison_data(territory)
 
+        # Mark as eliminated in universal tracker
+        self.eliminated_players.add(player_index)
+
         # Add message log
         self.add_message(f"")
         self.add_message(f"============================")
         self.add_message(f"Player {player_index + 1} ELIMINATED!")
         self.add_message(f"Capital conquered - all territories neutralized")
+        self.add_message(f"============================")
+        self.add_message(f"")
+
+    def eliminate_player_disconnect(self, player_index):
+        """
+        Eliminate a disconnected player after reconnection timeout expires.
+
+        Territories are distributed round-robin to living allies (if any),
+        otherwise they become neutral. All armies, buildings, and heroes are destroyed.
+        Allies receive empty land (no buildings/armies transfer).
+
+        Territory sort: alphabetical. Ally sort: by player index. Both deterministic
+        for consistent results across host and all clients.
+
+        Args:
+            player_index (int): Index of the disconnected player to eliminate
+        """
+        player_territories = [t for t, owner in self.territory_owners.items()
+                             if owner == player_index]
+        # Sort alphabetically for deterministic distribution across network
+        player_territories.sort()
+
+        logger.info(f"[DISCONNECT ELIM] Eliminating Player {player_index + 1} (disconnect timeout)")
+        logger.info(f"[DISCONNECT ELIM] Processing {len(player_territories)} territories")
+
+        # Find living allies (same team, have territories, not the eliminated player)
+        allies = []
+        territory_counts = [0] * self.num_players
+        for owner in self.territory_owners.values():
+            if owner >= 0:
+                territory_counts[owner] += 1
+        for p in range(self.num_players):
+            if p != player_index and self.are_allies(player_index, p) and territory_counts[p] > 0:
+                allies.append(p)
+        # Sorted by player index (already in order from range())
+
+        for i, territory in enumerate(player_territories):
+            # 1. Destroy all buildings
+            self.destroy_buildings(territory, player_index, new_owner=-1)
+
+            # 2. Remove all units
+            self.territory_garrisons[territory] = {}
+            if territory in self.army_units:
+                self.army_units[territory] = []
+            self.armies[territory] = 0
+            self.armies_unmoved[territory] = 0
+            self.armies_moved[territory] = 0
+
+            # 3. Assign territory: round-robin to allies, or neutral
+            if allies:
+                new_owner = allies[i % len(allies)]
+                self.territory_owners[territory] = new_owner
+            else:
+                self.territory_owners[territory] = -1
+
+            self._territory_owners_version += 1
+            self.invalidate_income_cache()
+            self.invalidate_army_count_cache()
+            self.invalidate_territorial_bonus_cache()
+
+            # 4. Cancel training queues
+            if territory in self.training_queue:
+                del self.training_queue[territory]
+            if territory in self.hero_training_queue:
+                del self.hero_training_queue[territory]
+
+        # Clean up hero cooldowns and silence status
+        if hasattr(self, 'hero_ability_cooldowns') and player_index in self.hero_ability_cooldowns:
+            del self.hero_ability_cooldowns[player_index]
+        if hasattr(self, 'hero_silence_status'):
+            self.hero_silence_status[player_index] = 0
+        # Remove eliminated player's heroes
+        if hasattr(self, 'heroes') and player_index in self.heroes:
+            self.heroes[player_index] = {}
+        if hasattr(self, 'hero_ownership') and player_index in self.hero_ownership:
+            self.hero_ownership[player_index] = set()
+
+        # Clean up allied garrisons the eliminated player had in other territories
+        for territory in list(self.territory_garrisons.keys()):
+            if territory not in player_territories and player_index in self.territory_garrisons[territory]:
+                del self.territory_garrisons[territory][player_index]
+                self.sync_legacy_garrison_data(territory)
+
+        # Zero out the player's gold
+        if 0 <= player_index < len(self.player_gold):
+            self.player_gold[player_index] = 0
+
+        # Mark as eliminated
+        self.eliminated_players.add(player_index)
+        self.disconnect_eliminations.add(player_index)
+
+        # Log messages
+        player_name = self.player_names[player_index] if self.player_names[player_index] else f"Player {player_index + 1}"
+        if allies:
+            ally_names = ", ".join(str(a + 1) for a in allies)
+            distribution_msg = f"Territories distributed to allies (Player {ally_names})"
+        else:
+            distribution_msg = "All territories neutralized"
+        self.add_message(f"")
+        self.add_message(f"============================")
+        self.add_message(f"{player_name} ELIMINATED!")
+        self.add_message(f"Disconnected - {distribution_msg}")
         self.add_message(f"============================")
         self.add_message(f"")

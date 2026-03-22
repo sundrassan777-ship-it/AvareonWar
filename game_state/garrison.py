@@ -11,6 +11,7 @@ sync to the legacy army tracking arrays.
 
 import math
 import time
+import map_data
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -60,12 +61,36 @@ class GarrisonMixin:
         self.garrison_positions[territory][player_index] = next_pos
         return next_pos
 
+    def _clamp_to_polygon(self, x, y, center_x, center_y, polygon):
+        """Clamp a flag position to stay within territory polygon.
+        Shrinks toward center if outside, but enforces a minimum distance
+        so flags don't collide in small territories."""
+        if map_data.point_in_polygon((x, y), polygon):
+            return (x, y)
+        # Position is outside polygon — shrink toward center at decreasing scales
+        # Minimum scale 0.4 ensures flags stay at least 10 world units from center
+        # (20 units apart for 2 opposing flags) to prevent visual collision
+        dx = x - center_x
+        dy = y - center_y
+        min_scale = 0.4
+        best = None
+        for scale in (0.75, 0.5, min_scale):
+            nx = center_x + dx * scale
+            ny = center_y + dy * scale
+            if map_data.point_in_polygon((nx, ny), polygon):
+                return (nx, ny)
+            best = (nx, ny)
+        # For very small territories, use the minimum-distance position even if
+        # slightly outside polygon — colliding flags are worse than a small overshoot
+        return best
+
     def get_flag_positions_for_territory(self, territory, center_x, center_y, num_positions=4):
         """
         Generate multiple flag positions for a territory to show different garrisons.
 
         Returns positions arranged in a circle around the territory center.
         Positions are in world coordinates (before screen transformation).
+        Positions are clamped to stay within the territory polygon.
 
         Args:
             territory: Territory name
@@ -76,7 +101,14 @@ class GarrisonMixin:
         Returns:
             list: List of (x, y) tuples for flag positions
         """
-        # Distance from center for flag positions (adjust based on territory size)
+        # Check cache — world coords don't change during a game session
+        if not hasattr(self, '_flag_position_cache'):
+            self._flag_position_cache = {}
+        cache_key = (territory, num_positions)
+        if cache_key in self._flag_position_cache:
+            return self._flag_position_cache[cache_key]
+
+        # Distance from center for flag positions
         radius = 25  # World coordinate units (will be scaled with map)
 
         positions = []
@@ -103,6 +135,13 @@ class GarrisonMixin:
                 y = center_y + radius * math.sin(angle)
                 positions.append((x, y))
 
+        # Clamp positions to stay within territory polygon
+        polygon = map_data.TERRITORY_POLYGONS.get(territory)
+        if polygon:
+            positions = [self._clamp_to_polygon(x, y, center_x, center_y, polygon)
+                         for x, y in positions]
+
+        self._flag_position_cache[cache_key] = positions
         return positions
 
     def get_territory_total_armies(self, territory):

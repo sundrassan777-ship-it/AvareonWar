@@ -1288,5 +1288,202 @@
         "subtitle": "Now, forces of Azincourne were rallied and ready to liberate their homeland from their invaders - and to bring them to justice."
       }
     ]
+  },
+  "mission_7_intro": {
+    "slides": [
+      {
+        "image": "assets/cutscenes/M7C1I1.png",
+        "camera_a": {
+          "x": 59.08421052631576,
+          "y": 337.69172932330827,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 731.0210526315789,
+          "y": 305.424060150376,
+          "width": 768,
+          "height": 432,
+          "rotation": 0
+        },
+        "pan_duration": 9.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M7C1I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "After their victory in Avantgardia, the Azincournean army pressed on and drove the Naragonese out of Londia."
+      },
+      {
+        "image": "assets/cutscenes/M7C1I2.png",
+        "camera_a": {
+          "x": 225.38796992481207,
+          "y": 95.9353383458647,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 6.159398496240783,
+          "y": 287.56005639097725,
+          "width": 1165.96992481203,
+          "height": 655.8580827067669,
+          "rotation": 0
+        },
+        "pan_duration": 11.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M7C1I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "In the meantime, Ahtep started waging offensive campaigns in territories of Nordia and Damlére - straight on the doorstep of the Affrancian nations of the east."
+      },
+      {
+        "image": "assets/cutscenes/M7C1I3.png",
+        "camera_a": {
+          "x": 120.69720597790774,
+          "y": 370.86503295275224,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 47.74959621275411,
+          "y": 143.58776571057274,
+          "width": 1422.6416597048176,
+          "height": 800.23593358396,
+          "rotation": 0
+        },
+        "pan_duration": 14.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M7C1I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The Affrancians now saw that they could not ignore the threat of the Central Alliance anymore, and joined the Northern Powers, quickly mobilizing to strike from the eastern front. A strike, that would prove to be decisive."
+      }
+    ]
+  },
+  "mission_7_outro": {
+    "slides": [
+      {
+        "image": "assets/cutscenes/M7C2I1.png",
+        "camera_a": {
+          "x": 397.8511278195489,
+          "y": 42.04060150375943,
+          "width": 921,
+          "height": 518,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 63.068504594820524,
+          "y": 100.62406015037595,
+          "width": 1459.7999999999997,
+          "height": 821.1374999999999,
+          "rotation": 0
+        },
+        "pan_duration": 8.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M7C2I1V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The Second Continental War was over and the Central Alliance was defeated by the coalition of the Northern Powers."
+      },
+      {
+        "image": "assets/cutscenes/M7C2I2.png",
+        "camera_a": {
+          "x": 590.4040100250626,
+          "y": 42.55388471177949,
+          "width": 789.870008354219,
+          "height": 444.30187969924816,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 61.72230576441109,
+          "y": 234.07769423558898,
+          "width": 1340.8015037593984,
+          "height": 754.2008458646617,
+          "rotation": 0
+        },
+        "pan_duration": 14.5,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M7C2I2V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "The war itself was over, but it had consequences. Naragonthid, Azincourne and multiple other states have been devastated, and the people of all nations were calling for justice."
+      },
+      {
+        "image": "assets/cutscenes/M7C2I3.png",
+        "camera_a": {
+          "x": 487.1624060150376,
+          "y": 209.88421052631583,
+          "width": 921,
+          "height": 518,
+          "rotation": 0.0
+        },
+        "camera_b": {
+          "x": 51.71405787195249,
+          "y": 101.24622161464265,
+          "width": 1475.3229285334546,
+          "height": 829.8691473000682,
+          "rotation": 0
+        },
+        "pan_duration": 14.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M7C2I3V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "This was carried out by multiple international conferences that formed the foundation of new world order. However, as it usually goes with the world, things have not progressed as smoothly as everyone hoped."
+      },
+      {
+        "image": "assets/cutscenes/M7C2I4.png",
+        "camera_a": {
+          "x": 109.89924812030063,
+          "y": 192.94586466165413,
+          "width": 1362.8992481203009,
+          "height": 766.6308270676693,
+          "rotation": 0
+        },
+        "camera_b": {
+          "x": 714.1052631578943,
+          "y": 29.899906015037573,
+          "width": 550.8135338345869,
+          "height": 309.83261278195516,
+          "rotation": 0
+        },
+        "pan_duration": 14.0,
+        "crossfade_duration": 1.0,
+        "easing": "linear",
+        "audio": "assets/cutscenes/M7C2I4V.mp3",
+        "audio_volume": 0.75,
+        "audio_start_delay": 0.0,
+        "music": "",
+        "music_volume": 0.4,
+        "music_start_delay": 0.0,
+        "subtitle": "While the world was at peace for now... would it remain? With a peace so fragile, the will of a single person could change the course of the world... and it yet might."
+      }
+    ]
   }
 }

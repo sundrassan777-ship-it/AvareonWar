@@ -72,7 +72,7 @@ ASPECT_RATIO = 16.0 / 9.0
 # Corner handle size for rect resizing (in screen pixels)
 HANDLE_SIZE = 8
 
-# All possible cutscene IDs (4 missions x intro/outro)
+# All possible cutscene IDs (7 missions x intro/outro)
 CUTSCENE_IDS = [
     'mission_1_intro', 'mission_1_outro',
     'mission_2_intro', 'mission_2_outro',
@@ -80,6 +80,7 @@ CUTSCENE_IDS = [
     'mission_4_intro', 'mission_4_outro',
     'mission_5_intro', 'mission_5_outro',
     'mission_6_intro', 'mission_6_outro',
+    'mission_7_intro', 'mission_7_outro',
 ]
 
 # Easing options
@@ -914,7 +915,7 @@ class CutsceneTool:
         slide_label = f"Slide {self.current_slide_idx + 1}/{max(1, num_slides)}"
         slide_text = self.font_bold.render(slide_label, True, YELLOW)
 
-        nav_x = WINDOW_WIDTH - UI_PANEL_WIDTH - 280
+        nav_x = WINDOW_WIDTH - UI_PANEL_WIDTH - 230
         self.screen.blit(slide_text, (nav_x, y + (btn_h - slide_text.get_height()) // 2))
 
         # Navigation buttons: < > + -

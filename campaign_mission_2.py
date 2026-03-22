@@ -550,6 +550,48 @@ class Mission2:
                 and not gs.turn_announcement_active)
 
     # ========================================================================
+    # SAVE / RESTORE STATE (for campaign save system)
+    # ========================================================================
+
+    def get_save_state(self):
+        """Serialize mission-specific state for save game."""
+        return {
+            'active': self.active,
+            'quest_log': self.quest_log,
+            'faction_awakened': {str(k): v for k, v in self.faction_awakened.items()},
+            'faction_defeated': {str(k): v for k, v in self.faction_defeated.items()},
+            'bonus_valeonia_first': self.bonus_valeonia_first,
+            'intro_active': self.intro_active,
+            'intro_step_index': self.intro_step_index,
+            'game_paused': self.game_paused,
+            'timer_visible': self.timer_visible,
+            'allow_timer_expiry': self.allow_timer_expiry,
+            'game_frozen': self.game_frozen,
+        }
+
+    def restore_save_state(self, data):
+        """Restore mission-specific state from save game data."""
+        self.active = data.get('active', True)
+        self.quest_log = data.get('quest_log', self.quest_log)
+        self.faction_awakened = {int(k): v for k, v in data.get('faction_awakened', {}).items()} or self.faction_awakened
+        self.faction_defeated = {int(k): v for k, v in data.get('faction_defeated', {}).items()} or self.faction_defeated
+        self.bonus_valeonia_first = data.get('bonus_valeonia_first', None)
+        # Skip intro on load — player is resuming mid-game
+        # Clear all intro/transmission state so constructor's intro doesn't replay
+        self.intro_active = False
+        self.intro_step_index = 0
+        self.intro_waiting_for_zoom = False
+        self.camera_animation = None
+        self._intro_pause_timer = 0.0
+        self.transmission_overlay = None
+        self.transmission_queue = []
+        self.transmission_duration = 0.0
+        self.game_paused = False
+        self.timer_visible = data.get('timer_visible', True)
+        self.allow_timer_expiry = data.get('allow_timer_expiry', True)
+        self.game_frozen = data.get('game_frozen', False)
+
+    # ========================================================================
     # FRAME UPDATE
     # ========================================================================
 

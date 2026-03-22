@@ -398,6 +398,10 @@ class UIRenderer:
                 phase_text_rect = phase_text_surface.get_rect(center=phase_rect.center)
                 self.game.screen.blit(phase_text_surface, phase_text_rect)
 
+                # "Resolve Remaining Battles" button (below top panel, overlaying map)
+                # Shown during battle phase when local player has resolvable battles
+                self._draw_resolve_all_battles_button(scale)
+
                 # Territorial Bonuses button (right of phase indicator)
                 # Scale button size with top panel height (80% of panel height, matching phase indicator scaling)
                 button_size = int(self.TOP_PANEL_HEIGHT * 0.8)  # 80% of panel height (32px at 40px panel, scales up)
@@ -586,6 +590,79 @@ class UIRenderer:
             fps_rect = fps_text.get_rect(topright=(self.WINDOW_WIDTH - 10, 2))
             self.game.screen.blit(fps_text, fps_rect)
 
+    def _draw_resolve_all_battles_button(self, scale):
+        """
+        Draw "Resolve Remaining Battles" button below the top panel during battle phase.
+
+        Appears only when the local player has pending battles to resolve.
+        Uses GMenuButton.png background with hover highlighting.
+        Hidden during tutorial missions and when battle UI is open.
+        """
+        game = self.game
+        gs = game.game_state
+
+        # Clear rect by default — only set when button is visible
+        game.resolve_all_battles_button = None
+
+        # Guard: only during battle phase with pending battles
+        if not gs.pending_battles:
+            return
+        in_battle_phase = False
+        sim_state = getattr(game, 'sim_state', None)
+        if gs.turn_phase == 'battles':
+            in_battle_phase = True
+        elif sim_state is not None and sim_state.sim_phase == 'resolving':
+            in_battle_phase = True
+        if not in_battle_phase:
+            return
+
+        # Guard: not when battle UI is open, game paused, or tutorial (mission 1) active
+        if game.enhanced_battle_ui is not None or game.battle_popup_visible:
+            return
+        if game.is_game_paused:
+            return
+        # Only hide for the actual tutorial mission (mission_1), not other campaign missions
+        if (game.tutorial_mission and game.tutorial_mission.active
+                and getattr(game.tutorial_mission, 'mission_id', '') == 'mission_1'):
+            return
+
+        # Guard: local player must have at least one resolvable battle
+        local_player = game.get_local_player()
+        has_resolvable = False
+        for battle in gs.pending_battles:
+            if sim_state is not None:
+                if getattr(battle, 'resolver', None) == local_player:
+                    has_resolvable = True
+                    break
+            else:
+                # Sequential mode: current player resolves all battles on their turn
+                if gs.current_player == local_player:
+                    has_resolvable = True
+                    break
+        if not has_resolvable:
+            return
+
+        # Position: centered horizontally, just below top panel border
+        btn_width = int(260 * scale)
+        btn_height = int(32 * scale)
+        btn_x = (self.WINDOW_WIDTH - btn_width) // 2
+        btn_y = self.TOP_PANEL_HEIGHT + int(4 * scale)
+        btn_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+
+        # Render using GMenuButton.png with hover/click feedback
+        game.helpers.draw_feedback_button(
+            btn_rect, None,
+            game.mouse_pos, game.clicked_element,
+            'top_button', 'resolve_all_battles',
+            text="Resolve Remaining Battles",
+            text_color=(255, 255, 255),
+            font=game.small_font_bold,
+            bg_image=game.menu_button_img
+        )
+
+        # Store rect for click detection and hover tracking
+        game.resolve_all_battles_button = btn_rect
+
     def _draw_connection_status(self):
         """
         Draw connection status indicator for multiplayer.
@@ -635,17 +712,35 @@ class UIRenderer:
         return text_rect.width + 30
 
 
+    def _get_save_disabled_reason(self):
+        """Check if Save Game should be disabled and return the reason, or None if enabled."""
+        mission = self.game.tutorial_mission
+        if mission is None:
+            return None  # Not campaign — button won't be shown at all
+
+        if getattr(mission, 'mission_id', '') == 'mission_1':
+            return "Cannot save game in the Tutorial mission."
+
+        gs = self.game.game_state
+        if gs and gs.current_player != 0:
+            return "Can only save during your turn."
+
+        if getattr(mission, 'intro_active', False):
+            return "Cannot save during intro sequence."
+
+        if (getattr(mission, 'victory_sequence_active', False) or
+                getattr(mission, 'defeat_sequence_active', False)):
+            return "Cannot save during victory/defeat sequence."
+
+        return None
+
     def draw_game_menu(self):
         """
         Draw the game menu modal overlay.
-        
-        Shows a centered menu with three options:
-        - Resume Game (close menu, return to game)
-        - Options (open options menu - not yet implemented)
-        - Quit to Main Menu (exit game for now)
-        
-        All buttons have hover highlighting and click flash feedback.
-        Background is semi-transparent overlay that disables other UI.
+
+        Shows Resume Game, Save Game (campaign only), Options, and Quit buttons.
+        Save Game is only shown during campaign missions and disabled during
+        tutorial, AI turns, intro, and victory/defeat sequences.
         """
         # H7 fix: Use dedicated menu overlay (non-SRCALPHA) to avoid corrupting
         # _reusable_overlay which other code (battle popups) expects to be SRCALPHA.
@@ -656,71 +751,234 @@ class UIRenderer:
             self._menu_overlay.fill((0, 0, 0))
         self.game.screen.blit(self._menu_overlay, (0, 0))
 
-        # Menu panel (centered) - Scaled based on 1600×900 reference resolution
-        # Uses InGameMenuBG.png as background image
+        # Determine if we're in campaign mode (show Save button)
+        is_campaign = self.game.tutorial_mission is not None
+        save_disabled_reason = self._get_save_disabled_reason() if is_campaign else None
+
+        # Menu panel (centered) - Scaled based on 1600x900 reference resolution
         scale = self.WINDOW_WIDTH / 1600.0
         menu_width = int(400 * scale)
-        menu_height = int(350 * scale)
+        # Taller panel when campaign (4 buttons) vs non-campaign (3 buttons)
+        menu_height = int(420 * scale) if is_campaign else int(350 * scale)
         menu_x = (self.WINDOW_WIDTH - menu_width) // 2
         menu_y = (self.WINDOW_HEIGHT - menu_height) // 2
 
         menu_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
 
         # FPS OPTIMIZATION 5A: Cache scaled game menu background
-        # Only re-scales when menu dimensions change (i.e., on window resize)
         menu_size = (menu_width, menu_height)
         if self._cached_game_menu_bg is None or self._cached_game_menu_bg_size != menu_size:
             self._cached_game_menu_bg = pygame.transform.scale(self.game.ingame_menu_bg, menu_size)
             self._cached_game_menu_bg_size = menu_size
         self.game.screen.blit(self._cached_game_menu_bg, (menu_x, menu_y))
 
-        # Title - moved down a few pixels (FPS OPTIMIZATION 4.1: cached)
+        # Title
         title_text = self.get_cached_text("Game Menu", self.game.large_font, WHITE, "large")
         title_rect = title_text.get_rect(centerx=menu_x + menu_width // 2, y=menu_y + int(38 * scale))
         self.game.screen.blit(title_text, title_rect)
 
-        # Separator line - moved down a few pixels
+        # Separator line
         pygame.draw.line(self.game.screen, (150, 150, 150),
                         (menu_x + int(40 * scale), menu_y + int(83 * scale)),
                         (menu_x + menu_width - int(40 * scale), menu_y + int(83 * scale)), 2)
 
-        # Button dimensions - using Main Menu button sizes (400×70 at 1600×900)
-        # Reusing MainMenuButtonNew.png for consistent look
-        button_width = int(300 * scale)  # Slightly smaller than main menu to fit 400px panel
-        button_height = int(60 * scale)  # Proportionally adjusted from 70
+        # Button dimensions
+        button_width = int(300 * scale)
+        button_height = int(60 * scale)
         button_x = menu_x + (menu_width - button_width) // 2
         button_spacing = int(70 * scale)
 
-        # Resume Game button - uses GMenuButton.png for polished look
+        # Resume Game button
         resume_y = menu_y + int(105 * scale)
         resume_rect = pygame.Rect(button_x, resume_y, button_width, button_height)
         self.game.helpers.draw_feedback_button(resume_rect, None,
                                   self.game.mouse_pos, self.game.clicked_element,
                                   'menu_button', 'resume',
                                   text="Resume Game", text_color=WHITE, font=self.game.font_bold,
-                                  bg_image=self.game.menu_button_img)  # Changed to GMenuButton.png
+                                  bg_image=self.game.menu_button_img)
         self.game.menu_resume_button = resume_rect
 
-        # Options button - uses GMenuButton.png for polished look
-        options_y = resume_y + button_spacing
-        options_rect = pygame.Rect(button_x, options_y, button_width, button_height)
+        # Track next button Y position
+        next_y = resume_y + button_spacing
+
+        # Save Game button (campaign only)
+        self.game.menu_save_button = None
+        if is_campaign:
+            save_rect = pygame.Rect(button_x, next_y, button_width, button_height)
+            if save_disabled_reason:
+                # Draw disabled button (dimmed, no hover/click effects)
+                # Manually draw the darkened button bg without feedback
+                self.game.helpers.draw_feedback_button(save_rect, None,
+                                          (-1, -1), None,  # fake mouse pos + no click = no hover/click effects
+                                          'menu_button', 'save_disabled',
+                                          text="Save Game", text_color=(120, 120, 120), font=self.game.font_bold,
+                                          bg_image=self.game.menu_button_img)
+                # Show tooltip on hover explaining why save is disabled
+                if save_rect.collidepoint(self.game.mouse_pos):
+                    self._draw_save_disabled_tooltip(save_rect, save_disabled_reason, scale)
+            else:
+                self.game.helpers.draw_feedback_button(save_rect, None,
+                                          self.game.mouse_pos, self.game.clicked_element,
+                                          'menu_button', 'save',
+                                          text="Save Game", text_color=WHITE, font=self.game.font_bold,
+                                          bg_image=self.game.menu_button_img)
+                self.game.menu_save_button = save_rect
+            next_y += button_spacing
+
+        # Options button
+        options_rect = pygame.Rect(button_x, next_y, button_width, button_height)
         self.game.helpers.draw_feedback_button(options_rect, None,
                                   self.game.mouse_pos, self.game.clicked_element,
                                   'menu_button', 'options',
                                   text="Options", text_color=WHITE, font=self.game.font_bold,
-                                  bg_image=self.game.menu_button_img)  # Changed to GMenuButton.png
+                                  bg_image=self.game.menu_button_img)
         self.game.menu_options_button = options_rect
 
-        # Quit to Main Menu button - uses GMenuButton.png for polished look
-        quit_y = options_y + button_spacing
+        # Quit to Main Menu button
+        quit_y = next_y + button_spacing
         quit_rect = pygame.Rect(button_x, quit_y, button_width, button_height)
         self.game.helpers.draw_feedback_button(quit_rect, None,
                                   self.game.mouse_pos, self.game.clicked_element,
                                   'menu_button', 'quit',
                                   text="Quit to Main Menu", text_color=WHITE, font=self.game.font_bold,
-                                  bg_image=self.game.menu_button_img)  # Changed to GMenuButton.png
+                                  bg_image=self.game.menu_button_img)
         self.game.menu_quit_button = quit_rect
-    
+
+        # Save feedback is rendered separately via draw_save_feedback() in the main game area
+
+    def _draw_save_disabled_tooltip(self, button_rect, reason, scale):
+        """Draw tooltip above the disabled Save button explaining why it's disabled."""
+        tooltip_font = self.game.small_font
+        text_surf = tooltip_font.render(reason, True, (255, 220, 150))
+        tw, th = text_surf.get_size()
+        pad = int(8 * scale)
+        # Position tooltip above the button, centered
+        tx = button_rect.centerx - (tw + pad * 2) // 2
+        ty = button_rect.top - th - pad * 2 - int(5 * scale)
+        bg_rect = pygame.Rect(tx, ty, tw + pad * 2, th + pad * 2)
+        # Dark background with border
+        pygame.draw.rect(self.game.screen, (30, 30, 30), bg_rect, border_radius=4)
+        pygame.draw.rect(self.game.screen, (100, 100, 100), bg_rect, 1, border_radius=4)
+        self.game.screen.blit(text_surf, (tx + pad, ty + pad))
+
+    def draw_save_dialog(self):
+        """
+        Draw the save game name input dialog.
+
+        Modal overlay with text input field, Save and Cancel buttons.
+        Shown when player clicks Save Game in the game menu.
+        """
+        # Dark overlay
+        size = (self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
+        if not hasattr(self, '_menu_overlay') or self._menu_overlay is None or self._menu_overlay.get_size() != size:
+            self._menu_overlay = pygame.Surface(size)
+            self._menu_overlay.set_alpha(180)
+            self._menu_overlay.fill((0, 0, 0))
+        self.game.screen.blit(self._menu_overlay, (0, 0))
+
+        scale = self.WINDOW_WIDTH / 1600.0
+
+        # Dialog panel
+        dialog_width = int(450 * scale)
+        dialog_height = int(250 * scale)
+        dialog_x = (self.WINDOW_WIDTH - dialog_width) // 2
+        dialog_y = (self.WINDOW_HEIGHT - dialog_height) // 2
+
+        # Background (reuse ingame menu bg, scaled to dialog size)
+        dialog_size = (dialog_width, dialog_height)
+        dialog_bg = pygame.transform.scale(self.game.ingame_menu_bg, dialog_size)
+        self.game.screen.blit(dialog_bg, (dialog_x, dialog_y))
+
+        # Title
+        title_text = self.get_cached_text("Save Game", self.game.large_font, WHITE, "large")
+        title_rect = title_text.get_rect(centerx=dialog_x + dialog_width // 2,
+                                          y=dialog_y + int(25 * scale))
+        self.game.screen.blit(title_text, title_rect)
+
+        # Separator
+        sep_y = dialog_y + int(65 * scale)
+        pygame.draw.line(self.game.screen, (150, 150, 150),
+                        (dialog_x + int(30 * scale), sep_y),
+                        (dialog_x + dialog_width - int(30 * scale), sep_y), 2)
+
+        # "Save name:" label
+        label_text = self.get_cached_text("Save name:", self.game.font_bold, (200, 200, 200), "save_label")
+        self.game.screen.blit(label_text, (dialog_x + int(35 * scale), dialog_y + int(80 * scale)))
+
+        # Text input field
+        input_x = dialog_x + int(35 * scale)
+        input_y = dialog_y + int(105 * scale)
+        input_width = dialog_width - int(70 * scale)
+        input_height = int(35 * scale)
+        input_rect = pygame.Rect(input_x, input_y, input_width, input_height)
+        pygame.draw.rect(self.game.screen, (40, 40, 50), input_rect, border_radius=4)
+        pygame.draw.rect(self.game.screen, (150, 150, 150), input_rect, 1, border_radius=4)
+
+        # Render input text with blinking cursor
+        display_text = self.game.save_name_input
+        cursor_char = "|" if self.game.save_name_cursor_visible else ""
+        input_surf = self.game.font_bold.render(display_text + cursor_char, True, WHITE)
+        # Clip text to fit input field
+        clip_rect = pygame.Rect(0, 0, input_width - int(12 * scale), input_height)
+        text_y = input_y + (input_height - input_surf.get_height()) // 2
+        self.game.screen.blit(input_surf, (input_x + int(6 * scale), text_y), area=clip_rect)
+
+        # Save and Cancel buttons
+        btn_width = int(150 * scale)
+        btn_height = int(50 * scale)
+        btn_y = dialog_y + int(165 * scale)
+        btn_gap = int(30 * scale)
+
+        # Save button (left)
+        save_x = dialog_x + dialog_width // 2 - btn_width - btn_gap // 2
+        save_rect = pygame.Rect(save_x, btn_y, btn_width, btn_height)
+        self.game.helpers.draw_feedback_button(save_rect, None,
+                                  self.game.mouse_pos, self.game.clicked_element,
+                                  'save_dialog', 'save',
+                                  text="Save", text_color=WHITE, font=self.game.font_bold,
+                                  bg_image=self.game.menu_button_img)
+        self.game.save_dialog_save_button = save_rect
+
+        # Cancel button (right)
+        cancel_x = dialog_x + dialog_width // 2 + btn_gap // 2
+        cancel_rect = pygame.Rect(cancel_x, btn_y, btn_width, btn_height)
+        self.game.helpers.draw_feedback_button(cancel_rect, None,
+                                  self.game.mouse_pos, self.game.clicked_element,
+                                  'save_dialog', 'cancel',
+                                  text="Cancel", text_color=WHITE, font=self.game.font_bold,
+                                  bg_image=self.game.menu_button_img)
+        self.game.save_dialog_cancel_button = cancel_rect
+
+    def draw_save_feedback(self):
+        """Draw save feedback message in the top-left corner of the map area (visible and large)."""
+        if not self.game.save_feedback_message or self.game.save_feedback_timer <= 0:
+            return
+
+        scale = self.WINDOW_WIDTH / 1600.0
+        # Use large font for visibility
+        font = self.game.large_font
+
+        # Fade out in the last 500ms
+        alpha = min(255, int(self.game.save_feedback_timer * 255 / 500))
+
+        text_surf = font.render(self.game.save_feedback_message, True, (100, 255, 100))
+        if alpha < 255:
+            text_surf.set_alpha(alpha)
+
+        # Position: top-left of map area with padding (below top panel)
+        pad_x = int(20 * scale)
+        pad_y = int(75 * scale)  # Below top panel
+        tw, th = text_surf.get_size()
+
+        # Dark background pill for readability
+        bg_pad = int(12 * scale)
+        bg_rect = pygame.Rect(pad_x - bg_pad, pad_y - bg_pad // 2,
+                              tw + bg_pad * 2, th + bg_pad)
+        bg_surf = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+        bg_surf.fill((0, 0, 0, min(180, int(alpha * 0.7))))
+        self.game.screen.blit(bg_surf, bg_rect.topleft)
+
+        self.game.screen.blit(text_surf, (pad_x, pad_y))
 
     def draw_options_menu(self):
         """

@@ -72,6 +72,10 @@ XP_VICTORY_BONUS = 50
 XP_MULTIPLAYER_VICTORY_BONUS = 100   # Replaces 50 when enemy has >= as many humans
 XP_CAMPAIGN_FIRST_WIN = 100
 
+# Anti-win-farming: if all enemies were eliminated via disconnect and had less than
+# this XP from gameplay actions, the game "doesn't count" (no XP awarded at all)
+DISCONNECT_FARMING_XP_THRESHOLD = 50
+
 
 # --- Cumulative XP cache ---
 # Maps level -> total cumulative XP needed to reach that level (computed lazily)
@@ -266,6 +270,12 @@ class PlayerLevelManager:
                 logger.info("No enemy players found — no XP earned")
                 return no_xp_result
 
+        # Anti-win-farming: if all enemies eliminated via disconnect with <50 XP, no XP at all
+        if not is_campaign and is_multiplayer:
+            if self._is_disconnect_farming(gs, human_index):
+                logger.info("Victory triggered by low-XP disconnect elimination — no XP awarded")
+                return no_xp_result
+
         # Read action XP accumulated during gameplay (via _track_stat hooks)
         action_xp = gs.player_stats.get(human_index, {}).get('xp_earned', 0)
 
@@ -321,6 +331,41 @@ class PlayerLevelManager:
             if not gs.player_is_ai[i]:
                 return i
         return None
+
+    def _is_disconnect_farming(self, gs, human_index):
+        """
+        Check if victory was caused by disconnect elimination of low-XP enemies.
+
+        Returns True (game "doesn't count") only if ALL enemies were eliminated
+        via disconnect AND all had < DISCONNECT_FARMING_XP_THRESHOLD XP from actions.
+        If any enemy was defeated normally or had meaningful gameplay, returns False.
+        """
+        disconnect_elims = getattr(gs, 'disconnect_eliminations', set())
+        if not disconnect_elims:
+            return False  # No disconnect eliminations occurred
+
+        my_team = gs.player_teams[human_index]
+        # Check if all enemy players were disconnect-eliminated
+        for p in range(gs.num_players):
+            if p == human_index:
+                continue
+            if gs.player_teams[p] == my_team:
+                continue  # Ally, skip
+            # This is an enemy — was it eliminated by disconnect?
+            if p not in disconnect_elims:
+                return False  # At least one enemy was NOT disconnect-eliminated
+
+        # All enemies were disconnect-eliminated. Check if any had meaningful gameplay
+        for p in disconnect_elims:
+            if gs.player_teams[p] == my_team:
+                continue  # Skip allied disconnects
+            xp = gs.player_stats.get(p, {}).get('xp_earned', 0)
+            if xp >= DISCONNECT_FARMING_XP_THRESHOLD:
+                return False  # Enemy had meaningful gameplay
+
+        # All disconnected enemies had < threshold XP — this is farming
+        logger.info(f"Disconnect farming detected: all enemies disconnect-eliminated with <{DISCONNECT_FARMING_XP_THRESHOLD} XP")
+        return True
 
     def _has_enemy_player(self, gs, human_index):
         """Check if at least 1 enemy player (different team) exists"""

@@ -313,11 +313,17 @@ def resolve_battle(self, battle):
 | Total Conquest | All 57 territories | Team counts aggregated |
 
 **Methods in `game_state/victory.py`:**
-- `check_victory()` - Main entry point, routes to specific check
-- `_check_domination_victory()` - Aggregates team territory counts
-- `_check_capital_assault_victory()` - Checks last team standing
-- `_check_total_conquest_victory()` - Aggregates team territory counts
+- `check_victory()` - Main entry point; universal last-team-standing check runs first, then routes to specific condition
+- `_check_last_team_standing()` - Universal check: if only 1 team has territories, that team wins (all modes)
+- `_check_domination_victory()` - Aggregates team territory counts (45+ threshold)
+- `_check_capital_assault_victory()` - Checks last team standing (Capital Assault specific)
+- `_check_total_conquest_victory()` - Aggregates team territory counts (all territories)
 - `eliminate_player()` - Called when capital captured (neutralizes territories)
+- `eliminate_player_disconnect()` - Called on disconnect timeout (distributes territories to allies or neutralizes)
+
+**`check_victory()` also marks players with 0 territories as eliminated** (adds to `game_state.eliminated_players`). Eliminated players are skipped in turn order (`_advance_to_next_player`).
+
+**When adding new territory ownership change paths**, always call `check_victory()` afterwards. See audit table in plan file for all existing paths.
 
 **Team-based logic:**
 ```python
@@ -586,6 +592,16 @@ self._resolved_battle_info = {
     'surviving_units': surviving_units
 }
 ```
+
+#### ✅ Modify "Resolve Remaining Battles" Button
+
+**What it does:** Auto-resolves all pending battles for the local player without battle reports.
+
+- **Button rendering:** `rendering/ui_renderer.py` → `_draw_resolve_all_battles_button()` (below top panel, uses GMenuButton.png)
+- **Click handling:** `input/mouse_handler.py` (Priority 5.5) → `main.py` `_handle_resolve_all_battles_click()`
+- **Core resolution:** `main.py` `_resolve_all_pending_battles()` — loops resolving battles, handles multiplayer sync, alliance markers, Capital Assault elimination, turn/round advancement
+- **Hover/tooltip:** `main.py` `handle_hover()` — suppresses territory/army hover, tracks button hover for tooltip
+- **Visibility:** Only during battle phase, when local player has resolvable battles, no battle UI open, not tutorial
 
 #### ✅ Add Visual Effect
 
@@ -2290,3 +2306,24 @@ The player level system tracks persistent XP across games. XP is accumulated dur
 - Replay files: gzip-compressed JSON in `Replays/` folder
 - Viewer is standalone (own rendering, no MapRenderer/UIRenderer dependency)
 - Zero FPS impact: snapshot runs once per turn boundary via `_advance_to_next_player()` hook
+
+## Campaign Save System
+
+**Files:** `save_manager.py` (serialize/deserialize/IO), `save_browser.py` (browser UI)
+**Integration:** `rendering/ui_renderer.py` (Save button + dialog), `main.py` (click handling + load flow), `campaign_screen.py` (Saved Games button), `campaign_mission_2-7.py` (get_save_state/restore_save_state)
+
+**When to modify:**
+- Add new game state fields → update `save_manager.py` `serialize_game_state()` AND `deserialize_game_state()` (must handle both directions + type conversions)
+- Add new campaign mission → add `get_save_state()` / `restore_save_state()` methods, add entry to `_SAVE_MISSION_REGISTRY` in main.py and `_MISSION_TEXTS` in save_manager.py
+- Change mission-specific state → update the mission's `get_save_state()` / `restore_save_state()` methods
+- Change save browser UI → modify `save_browser.py` `_render_*()` methods
+- Change save file format → increment `SAVE_VERSION` in save_manager.py
+
+**Architecture notes:**
+- Serialization pattern mirrors `replay_recorder._serialize_state()` plus config/eliminated players
+- Each mission class owns its own state via `get_save_state()` / `restore_save_state()`
+- Load flow: LoadingScreen initializes fresh GameState → `deserialize_game_state()` overwrites → mission constructor → `restore_save_state()`
+- Tutorial (Mission 1) save is disabled (too complex to serialize step machine)
+- Save disabled during: AI turns, intro sequences, victory/defeat sequences
+- Save files: gzip-compressed JSON in `Saves/` folder
+- Atomic writes via tempfile + os.replace()

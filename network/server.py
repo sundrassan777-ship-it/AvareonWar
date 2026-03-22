@@ -743,7 +743,7 @@ class NetworkServer:
         self._broadcast_raw(reconnect_msg, exclude=original_player_index)
 
     def _cleanup_expired_reconnects(self):
-        """Remove expired reconnection entries."""
+        """Remove expired reconnection entries and trigger disconnect elimination."""
         current_time = time.monotonic()
         expired = []
 
@@ -753,8 +753,21 @@ class NetworkServer:
                     expired.append(idx)
 
             for idx in expired:
-                logger.warning(f"Reconnection timeout for Player {idx + 1}")
+                logger.warning(f"Reconnection timeout for Player {idx + 1} — triggering disconnect elimination")
                 del self.disconnected_players[idx]
+
+        # Broadcast DISCONNECT_ELIMINATION for each expired player (outside lock)
+        # Both clients and host game loop process this to eliminate the player
+        for idx in expired:
+            elim_msg = self.protocol.encode_message(MessageType.DISCONNECT_ELIMINATION, {
+                'player_index': idx
+            })
+            self._broadcast_raw(elim_msg)
+            # Also notify host game loop via message queue
+            self.message_queue.receive_message({
+                'type': MessageType.DISCONNECT_ELIMINATION,
+                'data': {'player_index': idx}
+            })
 
     def _send_heartbeat(self):
         """Send heartbeat PING to all clients"""
@@ -799,6 +812,9 @@ class NetworkServer:
         # Note: _disconnect_client will only set self.disconnected when ALL clients are gone
         for player_index in timed_out:
             self._disconnect_client(player_index, f"Player {player_index + 1} timeout")
+
+        # Check for expired reconnection entries (triggers DISCONNECT_ELIMINATION)
+        self._cleanup_expired_reconnects()
 
         # R10: Periodically prune stale rate limit entries to prevent memory leak
         if current_time - self._last_rate_limit_cleanup > 60.0:

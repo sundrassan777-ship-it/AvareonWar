@@ -794,6 +794,9 @@ class HeroMixin:
         # Player Level: award XP for using active hero ability (targeted)
         self._track_stat(owner, 'xp_earned', 2)
 
+        # Check victory after territory capture (e.g. last enemy territory taken)
+        self.check_victory()
+
         return (True, None)
 
     def execute_levy(self, target_territory, owner):
@@ -1314,6 +1317,12 @@ class HeroMixin:
             self.hero_ownership[territory_owner].discard(hero_found)
             self.add_message(f"Player {owner + 1}: Regicide killed {hero_found} in {target_territory}!")
             self.add_message(f"Player {territory_owner + 1}: {hero_found} has died!")
+            # Notify campaign mission so it can show a transmission for hero death
+            if self.tutorial_mission:
+                self.tutorial_mission.notify_event(
+                    'hero_killed', hero_name=hero_found,
+                    territory=target_territory, owner=territory_owner,
+                    killer=owner, cause='regicide')
         else:
             # No hero found - ability is wasted
             self.add_message(f"Player {owner + 1}: Regicide targeted {target_territory}, but no hero was found!")
