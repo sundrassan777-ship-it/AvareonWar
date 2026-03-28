@@ -66,6 +66,23 @@ setup_logging()  # console=INFO, file=DEBUG, rotation=5MB x 3
 - **Change default levels:** Edit `DEFAULT_CONSOLE_LEVEL` / `DEFAULT_FILE_LEVEL` in `utils/logger.py`
 - **Suppress noisy library:** Add `logging.getLogger('library').setLevel(logging.WARNING)` in `setup_logging()`
 
+### Sync Logger (`sync_logger.py`)
+
+**What it does:** Multiplayer-only per-participant logging for state sync verification and desync diagnosis.
+**Output:** `Logs/sync/{game_id}_P{idx}_{host|client}_{date}.json`
+
+**Records:**
+- All gameplay actions (orders, battles, turn ends) with timestamps and source (local/remote)
+- Comprehensive state snapshots at every turn boundary
+- Checksum comparisons between host and clients
+- Field-level desync diffs (computed by host, sent to client via DESYNC_DIFF message)
+
+**When to modify:**
+- **Add new action type to log:** Add to `LOGGED_ACTION_TYPES` frozenset in `sync_logger.py`
+- **Add new state field to snapshots:** Update `build_state_detail()` in `sync_logger.py` AND `calculate_state_checksum()` in `game_state/__init__.py`
+- **Change desync detection flow:** `main.py` STATE_CHECKSUM handler → STATE_DETAIL_REQUEST/RESPONSE/DESYNC_DIFF handlers
+- **Change log output format:** `finalize_and_save()` in `sync_logger.py`
+
 ---
 
 ## game_state package
@@ -613,9 +630,10 @@ self._resolved_battle_info = {
 - Battle bar combat (particles) → `ui/effects/battle_interface.py` (BattleBarParticleEffect) — 600 circle particles
 - Sparkle particles → `ui/effects/sparkle_effect.py`
 - Turn announcements → `ui/effects/turn_announcement_sparkle.py`
-- Hero ability bursts (explode/implode) → `ui/effects/ability_burst_effect.py` — configurable particles + phase durations
-- Hero ability arcs (territory-to-territory) → `ui/effects/ability_arc_effect.py` — 80 particles along bezier curve
-- Hero ability polygon bubbles (territory fill) → `ui/effects/ability_polygon_burst_effect.py` — rising circles in polygon
+- Hero ability bursts (explode/implode) → `ui/effects/ability_burst_effect.py` — configurable particles, phase durations, particle_size, flash_ring, delay
+- Hero ability arcs (territory-to-territory) → `ui/effects/ability_arc_effect.py` — configurable particle_size, arc_height
+- Hero ability polygon bubbles (territory fill) → `ui/effects/ability_polygon_burst_effect.py` — rising circles, bubble_scale, border_flash
+- Vow of Silence wave (full-screen sweep) → `ui/effects/ability_silence_wave_effect.py` — 400 crimson particles sweeping left→right
 
 **Key techniques used across effects:**
 - `pygame.draw.circle` for particle rendering (1-4px sizes)
@@ -938,7 +956,10 @@ send_to_player(idx, msg)              # Send to specific player
 kick_player(idx, reason)              # Kick player from lobby
 reserve_slot(idx)                     # Reserve slot for AI
 set_game_started(started)             # Enable reconnection mode
+_relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ player)
 ```
+
+**Message Relay (3+ player support):** The server relays gameplay messages from one client to all other clients via `_RELAY_MESSAGE_TYPES` set. This enables real-time sync in 3+ player games (orders, battles, chat, hero abilities, turn ends). Raw bytes are relayed for zero overhead; the sender is excluded to prevent echoes.
 
 #### When to Modify
 
@@ -947,7 +968,8 @@ set_game_started(started)             # Enable reconnection mode
 2. Add handler in `_handle_received_message()` if server needs to process it
 3. Update `NetworkClient` to send/receive
 4. Add handler in `main.py _handle_network_message()`
-5. Test with host and multiple clients
+5. If the message is a gameplay event other clients need to see, add it to `_RELAY_MESSAGE_TYPES` in `server.py`
+6. Test with host and multiple clients
 
 ✅ **Sync a new game action in sequential multiplayer:**
 Every action that modifies game state must send a network message. Pattern:
@@ -1635,6 +1657,7 @@ All screens must distinguish Alt+F4 (exit app) from Escape (go back). Callers mu
 
 **Sound Categories:**
 - `general` - UI clicks, event notifications (BattleSound, CastleCompleted, DefaultMouseClick, ResearchCompleted)
+- `denial` - Programmatically generated denial tone for action failures (no asset file)
 - `armycomp` - Army composition sounds (7 random files)
 - `seledra` - Hero Seledra voice lines (SeledraRecruit + SeledraSpeech1-5)
 
@@ -1646,6 +1669,18 @@ All screens must distinguish Alt+F4 (exit app) from Escape (go back). Callers mu
 - Player-specific sounds (only local player hears their actions)
 
 ### When to Modify
+
+#### ✅ Action Failure Feedback Pattern
+
+When a player action fails (e.g., not enough gold, command limit), the game shows a floating notification + plays a denial sound. The pattern:
+
+1. **Game state method** (e.g., `start_training()`) sets `self.last_action_error = "gold"` before `return False`
+2. **main.py call site** calls `self._show_action_failure_feedback()` in the `else` branch
+3. The helper reads `last_action_error`, maps it to a user-facing message, plays `play_action_denied()`, and calls `chat_notification_effect.add_system_notification(msg)`
+
+**Error codes:** `"gold"`, `"command_limit"`, `"army_limit"`, `"queue_full"`, `"hero_limit"`
+
+**To add a new failure type:** Set `self.last_action_error = "new_code"` in the game state method, add the code→message mapping in `Game._ACTION_ERROR_MESSAGES`.
 
 #### ⚠️ Adding Files to `general` Category
 Adding/removing files from `assets/sounds/general/` shifts alphabetical indices used by `play_ui_click()`, `play_castle_complete_sound()`, `play_research_complete_sound()`, and `play_battle_sound()`. Update ALL index references in `global_sound.py` and `sound_manager.py`.

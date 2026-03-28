@@ -35,6 +35,7 @@ from ui.effects.production_glow_effect import ProductionGlowEffect
 from ui.effects.ability_burst_effect import AbilityBurstEffect
 from ui.effects.ability_arc_effect import AbilityArcEffect
 from ui.effects.ability_polygon_burst_effect import AbilityPolygonBurstEffect
+from ui.effects.ability_silence_wave_effect import AbilitySilenceWaveEffect
 
 logger = get_logger(__name__)
 
@@ -76,6 +77,7 @@ class MapRenderer:
         # Embargo persistent effects: {territory_name: AbilityPolygonBurstEffect}
         # Synced each frame with game_state.embargo_blocked_players
         self.embargo_effects = {}
+        self._embargo_shared_surface = None  # Shared SRCALPHA surface for batched embargo rendering
 
         # Image caching system to avoid expensive transformations every frame
         # FPS OPT: Static glow circles replace old rotating ring system
@@ -2076,29 +2078,50 @@ class MapRenderer:
 
     # Color palettes for each targeted hero ability (5 shades each)
     ABILITY_PALETTES = {
-        # Decisive Strike: blue shades (explosion only, no swirl)
+        # Decisive Strike: blue shades (explosion shockwave)
         'Decisive Strike': [
             (30, 60, 150), (50, 100, 200), (80, 140, 255), (120, 170, 255), (170, 200, 255)
+        ],
+        # Decisive Strike secondary: lighter blue for delayed double-flash
+        'Decisive Strike Secondary': [
+            (80, 140, 255), (120, 180, 255), (160, 210, 255), (200, 230, 255), (230, 245, 255)
         ],
         # Regicide: dark purple shades (inward implosion, ominous)
         'Regicide': [
             (80, 0, 120), (120, 0, 180), (40, 0, 60), (150, 0, 200), (60, 0, 90)
         ],
-        # Levy: gold shades (same as CastleUpgradeEffect, 5 random polygon explosions)
+        # Regicide aftermath: dark/black lingering particles
+        'Regicide Aftermath': [
+            (20, 0, 30), (30, 0, 45), (15, 0, 20), (40, 0, 55), (25, 0, 35)
+        ],
+        # Levy: gold shades (gold shimmer bursts)
         'Levy': [
             (184, 134, 11), (218, 165, 32), (255, 215, 0), (255, 223, 77), (255, 236, 139)
         ],
         # Relentless Charge: dust/brown shades (cavalry dust cloud)
         'Relentless Charge': [
-            (160, 120, 60), (200, 170, 100), (140, 100, 40), (180, 150, 80), (120, 90, 30)
+            (160, 120, 60), (200, 170, 100), (140, 100, 40), (180, 150, 80), (220, 190, 140)
         ],
-        # Royal Charisma: blue arc (units stolen from target to Narn's Keep)
+        # Royal Charisma: white/gold arc (units stolen from target to Narn's Keep)
         'Royal Charisma': [
-            (30, 60, 150), (50, 100, 200), (80, 140, 255), (120, 170, 255), (170, 200, 255)
+            (255, 230, 150), (255, 215, 0), (255, 245, 220), (255, 255, 200), (255, 255, 255)
         ],
         # Valorous Charge: light blue/white arc (troops from Keep to target)
         'Valorous Charge': [
             (200, 220, 255), (150, 180, 220), (255, 255, 255), (170, 200, 240), (220, 235, 255)
+        ],
+        # Reinforce: silver/steel (brightened)
+        'Reinforce': [
+            (160, 170, 180), (192, 192, 192), (220, 220, 230),
+            (200, 205, 210), (240, 245, 255)
+        ],
+        # Master Negotiator: green/emerald (activation burst)
+        'Master Negotiator': [
+            (0, 120, 0), (30, 180, 30), (60, 220, 60), (100, 255, 100), (180, 255, 180)
+        ],
+        # Aggressive Diplomacy: fire orange (center burst)
+        'Aggressive Diplomacy': [
+            (200, 80, 0), (255, 120, 30), (255, 160, 60), (255, 180, 80), (255, 210, 130)
         ],
     }
 
@@ -2108,25 +2131,16 @@ class MapRenderer:
     # Embargo bubble color (dark red, polygon-filling bubble burst on enemy territories)
     EMBARGO_COLOR = (160, 20, 20)
 
+    # Master Negotiator bubble color (green, polygon-filling on owned territories)
+    MASTER_NEGOTIATOR_COLOR = (30, 180, 30)
+
     def trigger_ability_effect(self, ability_name, target_territory,
                                player_index, source_territory=None):
         """
-        Trigger a visual effect for a hero ability activation.
+        Trigger enhanced visual effects for hero ability activations.
 
-        Effect types per ability:
-        Targeted abilities (target_territory required):
-        - Aggressive Diplomacy: polygon-filling rising bubbles (like Defiance aura, one-shot ~1s)
-        - Decisive Strike: blue explosion only (burst + quick fade)
-        - Regicide: dark purple inward implosion
-        - Levy: 5 small gold explosions at random polygon points (explosion only, no swirl)
-        - Relentless Charge: dust/brown outward explosion
-        - Royal Charisma: blue particle arc from target to Narn's Keep
-        - Valorous Charge: blue/white particle arc from Keep to target
-
-        Immediate abilities (target_territory=None, looks up locations from game_state):
-        - Reinforce: silver/steel explosion at hero's Keep territory
-        - Extort Populace: gold explosion at each Keep/Castle building plot
-        - Embargo: dark red polygon-filling bubbles on all enemy territories
+        All abilities have prominent, multi-layered effects with larger particles,
+        flash rings, and combo effects for maximum visibility.
 
         Args:
             ability_name: Name of the ability
@@ -2134,67 +2148,87 @@ class MapRenderer:
             player_index: Player who activated the ability
             source_territory: Source territory for arc effects (Royal Charisma, Valorous Charge)
         """
-        # --- Reinforce: silver/steel explosion at hero's Keep territory ---
+        # --- Vow of Silence: full-screen crimson wave sweeping left to right ---
+        if ability_name == 'Vow of Silence':
+            screen_w = self.game.screen.get_width()
+            screen_h = self.game.screen.get_height()
+            effect = AbilitySilenceWaveEffect(screen_w, screen_h, num_particles=400)
+            self.ability_effects.append(effect)
+            return
+
+        # --- Reinforce: enhanced silver burst with flash ring at Keep ---
         if ability_name == 'Reinforce':
             gs = self.game.game_state
             if gs and player_index in gs.heroes:
-                # Find Brennhen or Aevencourne (campaign clone)
                 for hero_name in ('Darius Brennhen', 'Regnus Aevencourne'):
                     if hero_name in gs.heroes[player_index]:
                         keep_terr = gs.heroes[player_index][hero_name].get('keep_territory')
                         if keep_terr and keep_terr in self.game.scaled_centers:
-                            # Silver/steel burst at Keep location
-                            palette = [
-                                (160, 170, 180), (192, 192, 192), (220, 220, 230),
-                                (200, 205, 210), (240, 240, 245)
-                            ]
+                            palette = self.ABILITY_PALETTES['Reinforce']
                             effect = AbilityBurstEffect(
                                 center_pos=self.game.scaled_centers[keep_terr],
                                 color_palette=palette,
-                                num_particles=120,
+                                num_particles=180,
                                 behavior='explode',
                                 world_coords=True,
                                 swirl_duration=0,
-                                float_duration=0.5
+                                float_duration=0.8,
+                                particle_size=2,
+                                flash_ring=True
                             )
                             self.ability_effects.append(effect)
                         break
             return
 
-        # --- Extort Populace: gold explosion at each Keep/Castle plot ---
+        # --- Extort Populace: gold bursts at plots + gold polygon shimmer per territory ---
         if ability_name == 'Extort Populace':
             gs = self.game.game_state
             if not gs:
                 return
-            palette = self.ABILITY_PALETTES['Levy']  # Reuse gold palette
+            palette = self.ABILITY_PALETTES['Levy']
+            # Track which territories have Keeps/Castles for polygon shimmer
+            territories_with_keeps = set()
             for territory, buildings in gs.buildings.items():
                 if gs.territory_owners.get(territory, -1) != player_index:
                     continue
                 for plot_index, building_type in buildings.items():
                     if building_type in ('Keep', 'Castle'):
-                        # Get building plot position in world coords
+                        territories_with_keeps.add(territory)
                         if (territory in self.game.scaled_plots
                                 and plot_index < len(self.game.scaled_plots[territory])):
                             plot_pos = self.game.scaled_plots[territory][plot_index]
+                            # Enhanced: 40 particles, 2px, flash ring
                             effect = AbilityBurstEffect(
                                 center_pos=plot_pos,
                                 color_palette=palette,
-                                num_particles=28,
+                                num_particles=40,
                                 behavior='explode',
                                 world_coords=True,
                                 swirl_duration=0,
-                                float_duration=0.5
+                                float_duration=0.5,
+                                particle_size=2,
+                                flash_ring=True
                             )
                             self.ability_effects.append(effect)
+            # Add gold polygon shimmer for each territory with Keeps/Castles
+            for territory in territories_with_keeps:
+                polygon = self.game.scaled_polygons.get(territory)
+                if polygon:
+                    shimmer = AbilityPolygonBurstEffect(
+                        polygon=polygon,
+                        color=(255, 215, 0),  # Gold
+                        num_bubbles=40,
+                        world_coords=True
+                    )
+                    self.ability_effects.append(shimmer)
             return
 
-        # --- Embargo: persistent dark red bubbles on all enemy territories ---
-        # Creates continuous effects tracked in self.embargo_effects,
-        # synced each frame by sync_embargo_effects() until embargo expires
+        # --- Embargo: persistent dark red bubbles on enemy territories + limited activation bursts ---
         if ability_name == 'Embargo':
             gs = self.game.game_state
             if not gs:
                 return
+            # Persistent bubble effects on enemy territories (standard size for FPS)
             for territory, owner in gs.territory_owners.items():
                 if owner >= 0 and owner != player_index:
                     if territory not in self.embargo_effects:
@@ -2208,100 +2242,324 @@ class MapRenderer:
                                 continuous=True
                             )
                             self.embargo_effects[territory] = effect
+            # One-shot activation burst: dark red implosion at up to 3 enemy Keeps (FPS guard)
+            import random as _rand
+            enemy_keep_positions = []
+            for territory, buildings in gs.buildings.items():
+                owner = gs.territory_owners.get(territory, -1)
+                if owner >= 0 and owner != player_index:
+                    for plot_index, building_type in buildings.items():
+                        if building_type in ('Keep', 'Castle'):
+                            if (territory in self.game.scaled_plots
+                                    and plot_index < len(self.game.scaled_plots[territory])):
+                                enemy_keep_positions.append(
+                                    self.game.scaled_plots[territory][plot_index])
+            # Limit to 3 bursts max to avoid FPS drop
+            if len(enemy_keep_positions) > 3:
+                enemy_keep_positions = _rand.sample(enemy_keep_positions, 3)
+            for plot_pos in enemy_keep_positions:
+                burst = AbilityBurstEffect(
+                    center_pos=plot_pos,
+                    color_palette=[(140, 10, 10), (160, 20, 20),
+                                   (180, 30, 30), (200, 40, 40), (220, 50, 50)],
+                    num_particles=50,
+                    behavior='implode',
+                    world_coords=True,
+                    swirl_duration=0,
+                    float_duration=0.5,
+                    particle_size=2
+                )
+                self.ability_effects.append(burst)
             return
 
-        # --- Aggressive Diplomacy: polygon-filling bubble burst ---
+        # --- Master Negotiator: green burst at Keep + green bubbles on owned territories ---
+        if ability_name == 'Master Negotiator':
+            gs = self.game.game_state
+            if not gs:
+                return
+            palette = self.ABILITY_PALETTES['Master Negotiator']
+            # Green burst at hero's Keep
+            if player_index in gs.heroes:
+                for hero_name in ('Evain Nithieln',):
+                    if hero_name in gs.heroes[player_index]:
+                        keep_terr = gs.heroes[player_index][hero_name].get('keep_territory')
+                        if keep_terr and keep_terr in self.game.scaled_centers:
+                            effect = AbilityBurstEffect(
+                                center_pos=self.game.scaled_centers[keep_terr],
+                                color_palette=palette,
+                                num_particles=150,
+                                behavior='explode',
+                                world_coords=True,
+                                swirl_duration=0,
+                                float_duration=0.8,
+                                particle_size=2,
+                                flash_ring=True
+                            )
+                            self.ability_effects.append(effect)
+                        break
+            # Green polygon bubbles on up to 5 random owned territories
+            owned_territories = [t for t, o in gs.territory_owners.items()
+                                 if o == player_index]
+            import random as _rand
+            sample_count = min(5, len(owned_territories))
+            if sample_count > 0:
+                sampled = _rand.sample(owned_territories, sample_count)
+                for territory in sampled:
+                    polygon = self.game.scaled_polygons.get(territory)
+                    if polygon:
+                        shimmer = AbilityPolygonBurstEffect(
+                            polygon=polygon,
+                            color=self.MASTER_NEGOTIATOR_COLOR,
+                            num_bubbles=40,
+                            world_coords=True
+                        )
+                        self.ability_effects.append(shimmer)
+            return
+
+        # --- Aggressive Diplomacy: staggered dark orange bursts (Levy-style) + border flash ---
         if ability_name == 'Aggressive Diplomacy':
             polygon = self.game.scaled_polygons.get(target_territory)
             if not polygon:
                 return
+            # Dark orange polygon shimmer overlay with border flash
             effect = AbilityPolygonBurstEffect(
                 polygon=polygon,
-                color=self.AGGRESSIVE_DIPLOMACY_COLOR,
-                num_bubbles=60,
-                world_coords=True
+                color=(200, 90, 10),  # Darker orange
+                num_bubbles=50,
+                world_coords=True,
+                border_flash=True
             )
             self.ability_effects.append(effect)
+            # Darker orange palette for staggered bursts
+            dark_orange_palette = [
+                (150, 60, 0), (180, 70, 0), (200, 90, 10),
+                (220, 110, 20), (240, 140, 40)
+            ]
+            # 8 staggered burst points across the territory (same as Levy)
+            points = self._random_points_in_polygon(polygon, count=8)
+            for i, point in enumerate(points):
+                burst = AbilityBurstEffect(
+                    center_pos=point,
+                    color_palette=dark_orange_palette,
+                    num_particles=40,
+                    behavior='explode',
+                    world_coords=True,
+                    swirl_duration=0,
+                    float_duration=0.5,
+                    particle_size=2,
+                    flash_ring=True,
+                    delay=i * 0.1
+                )
+                self.ability_effects.append(burst)
             return
 
-        # --- Levy: 5 small gold explosions at random points within polygon ---
+        # --- Levy: 8 gold bursts with flash rings + gold polygon overlay ---
         if ability_name == 'Levy':
             palette = self.ABILITY_PALETTES['Levy']
             polygon = self.game.scaled_polygons.get(target_territory)
             if not polygon:
                 return
-            # Pick 5 random points inside the territory polygon
-            points = self._random_points_in_polygon(polygon, count=5)
-            for point in points:
-                # Small explosion at each point: burst only, quick fade, no swirl
+            # Gold polygon shimmer overlay
+            shimmer = AbilityPolygonBurstEffect(
+                polygon=polygon,
+                color=(255, 215, 0),  # Gold
+                num_bubbles=50,
+                world_coords=True
+            )
+            self.ability_effects.append(shimmer)
+            # 8 staggered burst points across the territory
+            points = self._random_points_in_polygon(polygon, count=8)
+            for i, point in enumerate(points):
                 effect = AbilityBurstEffect(
                     center_pos=point,
                     color_palette=palette,
-                    num_particles=28,
+                    num_particles=40,
                     behavior='explode',
                     world_coords=True,
-                    swirl_duration=0,       # No swirl phase
-                    float_duration=0.5      # Quick fade after explosion
+                    swirl_duration=0,
+                    float_duration=0.5,
+                    particle_size=2,
+                    flash_ring=True,
+                    delay=i * 0.1  # Stagger bursts 0.1s apart
                 )
                 self.ability_effects.append(effect)
             return
 
-        # --- Arc abilities: Royal Charisma and Valorous Charge ---
-        if ability_name in ('Royal Charisma', 'Valorous Charge') and source_territory:
-            palette = self.ABILITY_PALETTES.get(ability_name)
-            if not palette:
-                return
+        # --- Royal Charisma: enhanced white/gold arc + source implosion burst ---
+        if ability_name == 'Royal Charisma' and source_territory:
+            palette = self.ABILITY_PALETTES['Royal Charisma']
             if source_territory not in self.game.scaled_centers:
                 return
             if target_territory not in self.game.scaled_centers:
                 return
             source_pos = self.game.scaled_centers[source_territory]
             target_pos = self.game.scaled_centers[target_territory]
-            effect = AbilityArcEffect(
+            # Enhanced arc: more particles, larger, taller arc
+            arc = AbilityArcEffect(
                 source_pos=source_pos,
                 dest_pos=target_pos,
                 color_palette=palette,
-                num_particles=80,
-                world_coords=True
+                num_particles=120,
+                world_coords=True,
+                particle_size=2,
+                arc_height=0.45  # Taller arc for drama
             )
-            self.ability_effects.append(effect)
+            self.ability_effects.append(arc)
+            # Source implosion burst (units being "pulled away")
+            burst = AbilityBurstEffect(
+                center_pos=source_pos,
+                color_palette=palette,
+                num_particles=60,
+                behavior='implode',
+                world_coords=True,
+                swirl_duration=0,
+                float_duration=0.5,
+                particle_size=2
+            )
+            self.ability_effects.append(burst)
             return
 
-        # --- Decisive Strike: blue explosion only (burst + quick fade, no swirl) ---
+        # --- Valorous Charge: enhanced arc + departure burst at Keep ---
+        if ability_name == 'Valorous Charge' and source_territory:
+            palette = self.ABILITY_PALETTES['Valorous Charge']
+            if source_territory not in self.game.scaled_centers:
+                return
+            if target_territory not in self.game.scaled_centers:
+                return
+            source_pos = self.game.scaled_centers[source_territory]
+            target_pos = self.game.scaled_centers[target_territory]
+            # Enhanced arc: more particles, larger
+            arc = AbilityArcEffect(
+                source_pos=source_pos,
+                dest_pos=target_pos,
+                color_palette=palette,
+                num_particles=120,
+                world_coords=True,
+                particle_size=2
+            )
+            self.ability_effects.append(arc)
+            # Departure burst at source (troops leaving)
+            burst = AbilityBurstEffect(
+                center_pos=source_pos,
+                color_palette=palette,
+                num_particles=60,
+                behavior='explode',
+                world_coords=True,
+                swirl_duration=0,
+                float_duration=0.5,
+                particle_size=2,
+                flash_ring=True
+            )
+            self.ability_effects.append(burst)
+            return
+
+        # --- Decisive Strike: blue shockwave + delayed secondary burst ---
         if ability_name == 'Decisive Strike':
             palette = self.ABILITY_PALETTES['Decisive Strike']
             if target_territory not in self.game.scaled_centers:
                 return
             target_pos = self.game.scaled_centers[target_territory]
+            # Primary shockwave burst with flash ring
             effect = AbilityBurstEffect(
                 center_pos=target_pos,
                 color_palette=palette,
-                num_particles=140,
+                num_particles=180,
                 behavior='explode',
                 world_coords=True,
-                swirl_duration=0,       # No swirl, explosion only
-                float_duration=0.5      # Quick fade after explosion
+                swirl_duration=0,
+                float_duration=0.8,
+                particle_size=2,
+                flash_ring=True
             )
             self.ability_effects.append(effect)
+            # Delayed secondary burst in lighter blue for double-flash impact
+            secondary_palette = self.ABILITY_PALETTES['Decisive Strike Secondary']
+            secondary = AbilityBurstEffect(
+                center_pos=target_pos,
+                color_palette=secondary_palette,
+                num_particles=60,
+                behavior='explode',
+                world_coords=True,
+                swirl_duration=0,
+                float_duration=0.5,
+                particle_size=2,
+                delay=0.2
+            )
+            self.ability_effects.append(secondary)
             return
 
-        # --- Default burst abilities: Regicide (implode), Relentless Charge (explode) ---
-        palette = self.ABILITY_PALETTES.get(ability_name)
-        if not palette:
+        # --- Regicide: enhanced implosion with flash ring + dark aftermath ---
+        if ability_name == 'Regicide':
+            palette = self.ABILITY_PALETTES['Regicide']
+            if target_territory not in self.game.scaled_centers:
+                return
+            target_pos = self.game.scaled_centers[target_territory]
+            # Main implosion with contracting flash ring
+            effect = AbilityBurstEffect(
+                center_pos=target_pos,
+                color_palette=palette,
+                num_particles=160,
+                behavior='implode',
+                world_coords=True,
+                float_duration=1.5,
+                particle_size=2,
+                flash_ring=True
+            )
+            self.ability_effects.append(effect)
+            # Dark aftermath: lingering black/purple particles
+            aftermath_palette = self.ABILITY_PALETTES['Regicide Aftermath']
+            aftermath = AbilityBurstEffect(
+                center_pos=target_pos,
+                color_palette=aftermath_palette,
+                num_particles=30,
+                behavior='implode',
+                world_coords=True,
+                swirl_duration=1.0,
+                float_duration=1.5,
+                particle_size=2,
+                delay=0.3
+            )
+            self.ability_effects.append(aftermath)
             return
-        if target_territory not in self.game.scaled_centers:
+
+        # --- Relentless Charge: enhanced dust burst + 4 satellite bursts ---
+        if ability_name == 'Relentless Charge':
+            palette = self.ABILITY_PALETTES['Relentless Charge']
+            if target_territory not in self.game.scaled_centers:
+                return
+            target_pos = self.game.scaled_centers[target_territory]
+            # Main dust burst with flash ring
+            effect = AbilityBurstEffect(
+                center_pos=target_pos,
+                color_palette=palette,
+                num_particles=160,
+                behavior='explode',
+                world_coords=True,
+                particle_size=2,
+                flash_ring=True
+            )
+            self.ability_effects.append(effect)
+            # 4 satellite bursts around center (simulating 4 cavalry arriving)
+            import random as _rand
+            cx, cy = target_pos
+            for i in range(4):
+                angle = (math.pi / 2) * i + _rand.uniform(-0.3, 0.3)
+                offset = _rand.uniform(20, 40)
+                sat_pos = (cx + offset * math.cos(angle),
+                           cy + offset * math.sin(angle))
+                sat = AbilityBurstEffect(
+                    center_pos=sat_pos,
+                    color_palette=palette,
+                    num_particles=30,
+                    behavior='explode',
+                    world_coords=True,
+                    swirl_duration=0,
+                    float_duration=0.5,
+                    particle_size=2,
+                    delay=0.15 * (i + 1)  # Stagger satellite bursts
+                )
+                self.ability_effects.append(sat)
             return
-        target_pos = self.game.scaled_centers[target_territory]
-        # Regicide uses 'implode', everything else defaults to 'explode'
-        behavior = 'implode' if ability_name == 'Regicide' else 'explode'
-        effect = AbilityBurstEffect(
-            center_pos=target_pos,
-            color_palette=palette,
-            num_particles=120,
-            behavior=behavior,
-            world_coords=True
-        )
-        self.ability_effects.append(effect)
 
     @staticmethod
     def _point_in_polygon(x, y, polygon):
@@ -2396,10 +2654,68 @@ class MapRenderer:
                 del self.embargo_effects[territory]
 
     def render_embargo_effects(self):
-        """Render all active embargo persistent effects."""
+        """
+        Render all active embargo persistent effects using a single shared surface.
+
+        FPS OPT: Instead of each territory effect allocating its own full-screen
+        SRCALPHA surface (20+ surfaces = 100+ MB SRCALPHA clears per frame),
+        we batch all embargo bubbles onto one shared surface for a single blit.
+        """
+        if not self.embargo_effects:
+            return
+
+        screen = self.game.screen
+        screen_size = (screen.get_width(), screen.get_height())
+
+        # Reuse a single shared SRCALPHA surface for all embargo bubbles
+        if (self._embargo_shared_surface is None
+                or self._embargo_shared_surface.get_size() != screen_size):
+            self._embargo_shared_surface = pygame.Surface(screen_size, pygame.SRCALPHA)
+        else:
+            self._embargo_shared_surface.fill((0, 0, 0, 0))
+
+        world_to_screen = self.game.world_to_screen
+
+        # Draw all embargo bubbles from all territories onto the shared surface
         for effect in self.embargo_effects.values():
-            effect.render(self.game.screen,
-                          world_to_screen_func=self.game.world_to_screen)
+            if effect.is_complete or not effect.bubbles:
+                continue
+
+            r, g, b = effect.color
+            border_r = max(0, r - 40)
+            border_g = max(0, g - 40)
+            border_b = max(0, b - 40)
+
+            for bubble in effect.bubbles:
+                if bubble['alpha'] <= 0:
+                    continue
+
+                world_x = bubble['world_x']
+                world_y = bubble['world_y'] + bubble['offset_y']
+
+                if effect.world_coords and world_to_screen:
+                    sx, sy = world_to_screen((world_x, world_y))
+                else:
+                    sx, sy = world_x, world_y
+
+                x = int(sx)
+                y = int(sy)
+
+                if (x < -10 or x > screen.get_width() + 10
+                        or y < -10 or y > screen.get_height() + 10):
+                    continue
+
+                alpha = bubble['alpha']
+                radius = max(1, int(bubble['radius']))
+
+                pygame.draw.circle(self._embargo_shared_surface,
+                                   (r, g, b, alpha), (x, y), radius)
+                border_alpha = min(255, alpha + 50)
+                pygame.draw.circle(self._embargo_shared_surface,
+                                   (border_r, border_g, border_b, border_alpha),
+                                   (x, y), radius, 1)
+
+        screen.blit(self._embargo_shared_surface, (0, 0))
 
     def sync_production_glow_effects(self):
         """
@@ -3597,10 +3913,13 @@ class MapRenderer:
                 num_units = len(unit_types)
                 
                 # Get current gold and check conditions
-                current_gold = self.game.game_state.player_gold[self.game.game_state.current_player]
+                gs = self.game.game_state
+                current_gold = gs.player_gold[gs.current_player]
                 # IMPORTANT: Use total armies (all garrisons) for army limit check
-                current_armies = self.game.game_state.get_territory_total_armies(territory)
-                at_army_limit = current_armies >= self.game.game_state.MAX_ARMIES_PER_TERRITORY
+                current_armies = gs.get_territory_total_armies(territory)
+                at_army_limit = current_armies >= gs.MAX_ARMIES_PER_TERRITORY
+                # Command limit: show red hue when player's total army count >= limit
+                at_command_limit = gs.get_player_army_count(gs.current_player) >= gs.player_command_limit[gs.current_player]
                 
                 # Get current queue
                 queue_count = 0
@@ -3638,7 +3957,7 @@ class MapRenderer:
 
                     # Check if player can afford and can train
                     can_afford = current_gold >= cost
-                    can_train = can_afford and can_queue and not at_army_limit and not _tutorial_locked
+                    can_train = can_afford and can_queue and not at_army_limit and not at_command_limit and not _tutorial_locked
 
                     # Check for hover
                     is_hovering = (distance_to_mouse_sq < scaled_icon_click_radius ** 2)

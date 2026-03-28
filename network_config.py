@@ -12,7 +12,8 @@ import enum
 # History: 1.0.0 = initial release (2-player + 4-player lobby, sequential + simultaneous)
 # History: 1.1.0 = sequential mode sync fix (research/hero training orders, FULL_STATE_SYNC)
 # History: 1.2.0 = disconnect elimination (DISCONNECT_ELIMINATION message, universal last-team-standing)
-NETWORK_VERSION = "1.2.0"
+# History: 1.3.0 = sync logger (STATE_DETAIL_REQUEST/RESPONSE/DESYNC_DIFF for desync diagnosis)
+NETWORK_VERSION = "1.3.0"
 
 # Connection Settings
 DEFAULT_PORT = 7777
@@ -127,6 +128,11 @@ class MessageType(str, enum.Enum):
     STATE_CHECKSUM = "STATE_CHECKSUM"
     FULL_STATE_SYNC = "FULL_STATE_SYNC"
     ERROR = "ERROR"
+
+    # Sync Logger - Desync diagnosis (v1.3.0)
+    STATE_DETAIL_REQUEST = "STATE_DETAIL_REQUEST"    # Host -> client: send full state for diff
+    STATE_DETAIL_RESPONSE = "STATE_DETAIL_RESPONSE"  # Client -> host: full state detail payload
+    DESYNC_DIFF = "DESYNC_DIFF"                      # Host -> client: computed field-level diff
 
     @classmethod
     def from_string(cls, value: str) -> "MessageType":

@@ -158,7 +158,8 @@ class CampaignScreen:
         self.icon_border = None
         try:
             border = pygame.image.load('assets/mapicons/IconBorder.png').convert_alpha()
-            self.icon_border = pygame.transform.smoothscale(border, (save_btn_size, save_btn_size))
+            # 2px larger than button (1px per side) to fully contain icon edges
+            self.icon_border = pygame.transform.smoothscale(border, (save_btn_size + 2, save_btn_size + 2))
         except Exception as e:
             logger.warning(f"Could not load IconBorder.png: {e}")
 
@@ -432,9 +433,9 @@ class CampaignScreen:
 
         self.screen.blit(btn_surf, rect.topleft)
 
-        # Draw border frame on top
+        # Draw border frame on top (offset -1 to center enlarged border)
         if self.icon_border:
-            self.screen.blit(self.icon_border, rect.topleft)
+            self.screen.blit(self.icon_border, (rect.x - 1, rect.y - 1))
 
         # Tooltip on hover (matching main menu tooltip style)
         if is_hovered:

@@ -483,11 +483,11 @@ class AchievementPanel:
                 scaled_icon = self._cached_scaled_icons[icon_cache_key]
             screen.blit(scaled_icon, (icon_x, icon_y))
 
-        # Icon border
+        # Icon border (2px larger than icon = 1px per side to fully contain icon edges)
         if self.icon_border:
             # FPS OPTIMIZATION 5A: Cache scaled icon border (same size for all items)
             if self._cached_icon_border is None or self._cached_icon_border_size != icon_size:
-                self._cached_icon_border = pygame.transform.smoothscale(self.icon_border, (icon_size, icon_size))
+                self._cached_icon_border = pygame.transform.smoothscale(self.icon_border, (icon_size + 2, icon_size + 2))
                 self._cached_icon_border_size = icon_size
             # MP5 fix: Only copy() when we need to modify (darken unearned borders)
             if not is_earned:
@@ -495,7 +495,7 @@ class AchievementPanel:
                 border.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
             else:
                 border = self._cached_icon_border
-            screen.blit(border, (icon_x, icon_y))
+            screen.blit(border, (icon_x - 1, icon_y - 1))
 
         # Text area (to the right of icon)
         text_x = icon_x + icon_size + int(15 * self.ui_scale)

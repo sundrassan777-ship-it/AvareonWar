@@ -45,6 +45,32 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Message types that should be relayed from one client to OTHER clients.
+# Enables 3+ player multiplayer where clients need to see each other's actions.
+# Host still receives these via message_queue as before.
+# NOT relayed: connection/lobby/reconnect, host-originated broadcasts
+# (FULL_STATE_SYNC, SIM_ALL_READY, SIM_ROUND_COMPLETE, SIM_TIMER_UPDATE),
+# STATE_CHECKSUM, SIM_PLAYER_READY (host manages ready state).
+_RELAY_MESSAGE_TYPES = frozenset({
+    # Sequential mode gameplay
+    MessageType.MOVEMENT_ORDER,
+    MessageType.BUILDING_ORDER,
+    MessageType.TRAINING_ORDER,
+    MessageType.ORDER_REMOVE,
+    MessageType.RESEARCH_ORDER,
+    MessageType.HERO_TRAINING_ORDER,
+    MessageType.EXECUTE_ORDERS,
+    MessageType.BATTLE_RESOLVE,
+    MessageType.TURN_END,
+    MessageType.UNIT_COMPLETE,
+    MessageType.BUILDING_COMPLETE,
+    # Both modes
+    MessageType.CHAT_MESSAGE,
+    MessageType.SIM_HERO_ABILITY,
+    # Simultaneous mode
+    MessageType.SIM_ALLIANCE_CHOICE,
+})
+
 
 @dataclass
 class ClientConnection:
@@ -412,7 +438,7 @@ class NetworkServer:
                 # Decode message
                 message = self.protocol.decode_message(message_bytes)
                 if message:
-                    self._handle_received_message(message, player_index)
+                    self._handle_received_message(message, player_index, message_bytes)
 
         except BlockingIOError:
             # No data available
@@ -453,6 +479,26 @@ class NetworkServer:
         # Clean up disconnected clients
         self._cleanup_disconnected()
 
+    def _relay_to_other_clients(self, raw_bytes: bytes, from_player_index: int):
+        """Relay raw message bytes to all clients except the sender.
+
+        Used for 3+ player games so client actions are visible to other clients.
+        The host receives the message separately via message_queue.
+        """
+        with self._clients_lock:
+            for player_index, client in list(self.clients.items()):
+                if player_index == from_player_index:
+                    continue  # Don't echo back to sender
+                if not client.connected:
+                    continue
+                try:
+                    client.socket.sendall(raw_bytes)
+                except Exception as e:
+                    logger.error(f"Relay error to Player {player_index + 1}: {e}")
+                    client.connected = False
+
+        self._cleanup_disconnected()
+
     def _cleanup_disconnected(self):
         """Remove disconnected clients from the dict"""
         with self._clients_lock:
@@ -470,13 +516,15 @@ class NetworkServer:
             if not self.clients:
                 self.message_queue.set_connected(False)
 
-    def _handle_received_message(self, message: dict, from_player_index: int):
+    def _handle_received_message(self, message: dict, from_player_index: int,
+                                 raw_bytes: bytes = None):
         """
         Handle a received message from a client.
 
         Args:
             message: Decoded message dict
             from_player_index: Player index who sent the message
+            raw_bytes: Original encoded message bytes for relay to other clients
         """
         # Phase 6A: Validate message schema before processing
         # Ensures message has required fields (type, seq, data) and known type
@@ -505,6 +553,12 @@ class NetworkServer:
             self._client_last_seq[from_player_index] = msg_seq
 
         msg_type = message.get('type')
+
+        # 3+ player relay: forward gameplay messages to other clients so they
+        # can see each other's actions in real-time. The host still receives
+        # the message via message_queue below. The sender is excluded.
+        if raw_bytes is not None and msg_type in _RELAY_MESSAGE_TYPES:
+            self._relay_to_other_clients(raw_bytes, from_player_index)
 
         # Handle connection messages
         if msg_type == MessageType.CONNECT_REQUEST:

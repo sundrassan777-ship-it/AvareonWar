@@ -502,9 +502,26 @@ class SimultaneousGameState:
             # Restore original current_player
             self.gs.current_player = original_player
 
-        # Decrement cooldowns
+        # Decrement cooldowns and silence for ALL non-eliminated players
+        # (In sequential mode this is called per-player at turn start, but in sim mode
+        # all players share a single round, so we must iterate all players here)
         if hasattr(self.gs, '_decrement_hero_cooldowns_and_silence'):
-            self.gs._decrement_hero_cooldowns_and_silence()
+            saved_player = self.gs.current_player
+            for player_id in range(self.gs.num_players):
+                if player_id not in self.eliminated_players:
+                    self.gs.current_player = player_id
+                    self.gs._decrement_hero_cooldowns_and_silence()
+            self.gs.current_player = saved_player
+
+        # Clear Master Negotiator effect for all players at end of round
+        # (In sequential mode this is cleared in _advance_to_next_player, but sim mode
+        # doesn't call that method, so we clear it here for all players)
+        for player_id in range(self.gs.num_players):
+            if self.gs.player_master_negotiator_active[player_id]:
+                self.gs.player_master_negotiator_active[player_id] = False
+                if self.gs.master_negotiator_active_player == player_id:
+                    self.gs.master_negotiator_activation_time = None
+                    self.gs.master_negotiator_active_player = None
 
         # Handle overflow territories
         self._process_overflow_territories()
@@ -523,6 +540,10 @@ class SimultaneousGameState:
         # Game logger: record round snapshot for the completed round
         if self.gs.game_logger:
             self.gs.game_logger.record_round_snapshot(self.round_number)
+
+        # Sync logger: record turn snapshot at sim round boundary
+        if self.gs.sync_logger:
+            self.gs.sync_logger.record_turn_snapshot(self.round_number)
 
         # Replay recorder: snapshot at end of each simultaneous round
         if self.gs.replay_recorder:

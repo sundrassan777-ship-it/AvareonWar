@@ -1403,8 +1403,14 @@ class Game:
             logger.error("[NETWORK] ERROR: local_player_index not initialized, cannot process message")
             return
 
-        # Import message types
-
+        # Sync logger: record incoming action from remote player
+        sync_logger = getattr(self.game_state, 'sync_logger', None)
+        if sync_logger:
+            remote_player = data.get('player_index', message.get('from_player_index', -1))
+            sync_logger.record_action(
+                msg_type, remote_player,
+                self.game_state.turn_number, data, source='remote'
+            )
 
         if msg_type == MessageType.MOVEMENT_ORDER:
             # Remote player issued a movement order
@@ -1577,6 +1583,11 @@ class Game:
                 # Regular turn end during planning phase
                 self.game_state.next_player()
 
+            # 3+ player fix: host sends authoritative state sync to all clients
+            # after a client's turn ends, so other clients stay in sync
+            if self.local_player_index == 0:
+                self._send_full_state_sync()
+
             # Check if any units completed training (will be in last_completed_units)
             if hasattr(self.game_state, 'last_completed_units') and self.game_state.last_completed_units:
                 # Remote player's units are now visible - no need to send back
@@ -1708,6 +1719,14 @@ class Game:
                 # Calculate our own checksum
                 host_checksum = self.game_state.calculate_state_checksum()
 
+                # Sync logger: record checksum comparison on host
+                if sync_logger:
+                    sync_logger.record_checksum(
+                        turn_number, host_checksum,
+                        remote_checksum=client_checksum,
+                        match=(client_checksum == host_checksum)
+                    )
+
                 if client_checksum != host_checksum:
                     # DESYNC DETECTED!
                     logger.warning(f"[NETWORK] DESYNC DETECTED at turn {turn_number}!")
@@ -1717,11 +1736,66 @@ class Game:
                     # Show warning message
                     self.game_state.add_message("WARNING: Game state desync detected! Resyncing...")
 
+                    # Sync logger: request state detail from client(s) for diff diagnosis
+                    if sync_logger:
+                        # Store host's state detail for comparison when response arrives
+                        self._desync_host_detail = sync_logger.build_state_detail()
+                        self._desync_turn_number = turn_number
+                        self._send_action_to_remote(MessageType.STATE_DETAIL_REQUEST,
+                                                    {'turn_number': turn_number})
+                        logger.info(f"[HOST] Sent STATE_DETAIL_REQUEST for desync at turn {turn_number}")
+
                     # Sync fix: send corrective FULL_STATE_SYNC on checksum mismatch
                     self._send_full_state_sync()
                     logger.info(f"[HOST] Sent corrective FULL_STATE_SYNC after desync at turn {turn_number}")
                 else:
                     logger.info(f"[NETWORK] State checksum validated for turn {turn_number}")
+
+        elif msg_type == MessageType.STATE_DETAIL_REQUEST:
+            # Host is requesting full state detail for desync diagnosis (client only)
+            if self.local_player_index != 0 and sync_logger:
+                turn_number = data.get('turn_number', 0)
+                client_detail = sync_logger.build_state_detail()
+                self._send_action_to_remote(MessageType.STATE_DETAIL_RESPONSE, {
+                    'turn_number': turn_number,
+                    'state_detail': client_detail,
+                })
+                logger.info(f"[CLIENT] Sent STATE_DETAIL_RESPONSE for turn {turn_number}")
+
+        elif msg_type == MessageType.STATE_DETAIL_RESPONSE:
+            # Client sent full state detail for desync diff (host only)
+            if self.local_player_index == 0 and sync_logger:
+                turn_number = data.get('turn_number', 0)
+                client_detail = data.get('state_detail', {})
+                host_detail = getattr(self, '_desync_host_detail', {})
+
+                # Compute field-level diff
+                from sync_logger import SyncLogger
+                diff = SyncLogger.compute_state_diff(host_detail, client_detail)
+
+                if diff:
+                    # Record desync on host
+                    sync_logger.record_desync(turn_number, diff)
+                    logger.warning(f"[HOST] Desync diff at turn {turn_number}: "
+                                   f"{len(diff)} divergent fields")
+
+                    # Send diff to client so both participants have it
+                    self._send_action_to_remote(MessageType.DESYNC_DIFF, {
+                        'turn_number': turn_number,
+                        'diff': diff,
+                    })
+                else:
+                    logger.info(f"[HOST] No diff found at turn {turn_number} "
+                                "(states matched at detail level)")
+
+        elif msg_type == MessageType.DESYNC_DIFF:
+            # Host sent desync diff (client only) — log it locally
+            if self.local_player_index != 0 and sync_logger:
+                turn_number = data.get('turn_number', 0)
+                diff = data.get('diff', {})
+                sync_logger.record_desync(turn_number, diff)
+                logger.warning(f"[CLIENT] Received desync diff at turn {turn_number}: "
+                               f"{len(diff)} divergent fields")
 
         elif msg_type == MessageType.DISCONNECT:
             # Remote player disconnected (legacy 1v1 message)
@@ -1961,10 +2035,10 @@ class Game:
                             else:
                                 logger.error(f"[NETWORK] Reinforce failed for player {player_id}: {error_msg}")
                         elif ability_name == 'Vow of Silence':
-                            # Silence all enemy players
+                            # Silence all enemy players (counter=2: lasts until end of caster's next turn)
                             for enemy_id in range(self.game_state.num_players):
                                 if enemy_id != player_id:
-                                    self.game_state.hero_silence_status[enemy_id] = self.game_state.num_players
+                                    self.game_state.hero_silence_status[enemy_id] = 2
                             self.game_state.add_message(f"Player {player_id + 1}: {hero_name} casts Vow of Silence!")
                             self.game_state.add_message("All enemy heroes are silenced until next turn!")
                             logger.info(f"[NETWORK] Executed Vow of Silence for player {player_id}")
@@ -2808,6 +2882,11 @@ class Game:
 
         self._send_action_to_remote(MessageType.FULL_STATE_SYNC, state_data)
 
+        # Sync logger: record turn snapshot at this authoritative sync point (host)
+        host_sync_logger = getattr(self.game_state, 'sync_logger', None)
+        if host_sync_logger:
+            host_sync_logger.record_turn_snapshot(self.game_state.turn_number)
+
     def _send_action_to_remote(self, action_type: str, data: dict):
         """
         Send an action to the remote player.
@@ -2818,6 +2897,14 @@ class Game:
         """
         if not self.network_connection:
             return
+
+        # Sync logger: record outgoing action before sending
+        sync_logger = getattr(self.game_state, 'sync_logger', None)
+        if sync_logger:
+            sync_logger.record_action(
+                action_type, self.local_player_index,
+                self.game_state.turn_number, data, source='local'
+            )
 
         # Use the network connection's protocol so the sequence number is continuous
         # across lobby and game phases. Creating a new instance resets seq to 0,
@@ -3053,6 +3140,10 @@ class Game:
         build_orders = []
         train_orders = []
         research_orders = []
+        demolish_orders = []
+        upgrade_castle_orders = []
+        train_hero_orders = []
+        hero_ability_orders = []
 
         for order in orders:
             order_type = order.get('type')
@@ -3064,45 +3155,97 @@ class Game:
                 train_orders.append(order)
             elif order_type == 'research':
                 research_orders.append(order)
+            elif order_type == 'demolish':
+                demolish_orders.append(order)
+            elif order_type == 'upgrade_castle':
+                upgrade_castle_orders.append(order)
+            elif order_type == 'train_hero':
+                train_hero_orders.append(order)
+            elif order_type == 'hero_ability':
+                hero_ability_orders.append(order)
 
         # Get local player index for skip check
         # Local player orders were already executed when clicked (for visual feedback)
         local_player = self.local_player_index
 
-        # Apply build orders (skip local player's - already executed)
-        for order in build_orders:
-            player_id = order.get('player_id')
-            if local_player is not None and player_id == local_player:
-                continue  # Already executed locally
-            self.game_state.current_player = player_id
-            territory = order.get('territory')
-            plot_index = order.get('plot_index')
-            building_type = order.get('building_type')
-            self.game_state.start_construction(territory, plot_index, building_type)
+        # Apply non-movement orders with try/finally to guarantee current_player restore
+        try:
+            # Apply demolish orders first (frees up plots for builds, skip local player's)
+            for order in demolish_orders:
+                player_id = order.get('player_id')
+                if local_player is not None and player_id == local_player:
+                    continue
+                self.game_state.current_player = player_id
+                territory = order.get('territory')
+                plot_index = order.get('plot_index')
+                if territory and plot_index is not None:
+                    self.game_state.demolish_building(territory, plot_index)
 
-        # Apply train orders (skip local player's - already executed)
-        for order in train_orders:
-            player_id = order.get('player_id')
-            if local_player is not None and player_id == local_player:
-                continue  # Already executed locally
-            self.game_state.current_player = player_id
-            territory = order.get('territory')
-            barracks_plot = order.get('barracks_plot')
-            unit_type = order.get('unit_type')
-            self.game_state.start_training(territory, barracks_plot, unit_type)
+            # Apply build orders (skip local player's - already executed)
+            for order in build_orders:
+                player_id = order.get('player_id')
+                if local_player is not None and player_id == local_player:
+                    continue  # Already executed locally
+                self.game_state.current_player = player_id
+                territory = order.get('territory')
+                plot_index = order.get('plot_index')
+                building_type = order.get('building_type')
+                self.game_state.start_construction(territory, plot_index, building_type)
 
-        # Apply research orders (skip local player's - already executed)
-        for order in research_orders:
-            player_id = order.get('player_id')
-            if local_player is not None and player_id == local_player:
-                continue  # Already executed locally
-            self.game_state.current_player = player_id
-            tech_id = order.get('tech_id')
-            if hasattr(self.game_state, 'start_research'):
-                self.game_state.start_research(tech_id)
+            # Apply upgrade castle orders (skip local player's - already executed)
+            for order in upgrade_castle_orders:
+                player_id = order.get('player_id')
+                if local_player is not None and player_id == local_player:
+                    continue
+                self.game_state.current_player = player_id
+                territory = order.get('territory')
+                plot_index = order.get('plot_index')
+                if territory and plot_index is not None:
+                    self.game_state.start_castle_upgrade(territory, plot_index)
 
-        # Restore original current_player
-        self.game_state.current_player = original_current_player
+            # Apply train orders (skip local player's - already executed)
+            for order in train_orders:
+                player_id = order.get('player_id')
+                if local_player is not None and player_id == local_player:
+                    continue  # Already executed locally
+                self.game_state.current_player = player_id
+                territory = order.get('territory')
+                barracks_plot = order.get('barracks_plot')
+                unit_type = order.get('unit_type')
+                self.game_state.start_training(territory, barracks_plot, unit_type)
+
+            # Apply research orders (skip local player's - already executed)
+            for order in research_orders:
+                player_id = order.get('player_id')
+                if local_player is not None and player_id == local_player:
+                    continue  # Already executed locally
+                self.game_state.current_player = player_id
+                tech_id = order.get('tech_id')
+                if hasattr(self.game_state, 'start_research'):
+                    self.game_state.start_research(tech_id)
+
+            # Apply hero ability orders (AI-only path; human players use SIM_HERO_ABILITY messages)
+            for order in hero_ability_orders:
+                player_id = order.get('player_id')
+                if local_player is not None and player_id == local_player:
+                    continue
+                if self.sim_state and self.sim_state.phase_manager:
+                    self.sim_state.phase_manager._apply_hero_ability_order(order)
+
+            # Apply train hero orders (skip local player's - already executed)
+            for order in train_hero_orders:
+                player_id = order.get('player_id')
+                if local_player is not None and player_id == local_player:
+                    continue
+                self.game_state.current_player = player_id
+                territory = order.get('territory')
+                keep_plot = order.get('keep_plot')
+                hero_type = order.get('hero_type')
+                if territory and hero_type is not None:
+                    self.game_state.start_hero_training(territory, keep_plot, hero_type)
+        finally:
+            # Restore original current_player
+            self.game_state.current_player = original_current_player
 
         # Use phase_manager's _execute_movement_orders for proper arrival tracking
         # This populates _sim_pending_arrivals so on_animations_complete works correctly
@@ -4645,6 +4788,36 @@ class Game:
         return (self._is_tutorial_active()
                 and not self.tutorial_mission.is_action_allowed(action))
 
+    # Error code → user-facing floating notification message
+    _ACTION_ERROR_MESSAGES = {
+        'gold': "Not enough resources.",
+        'command_limit': "Cannot train more units \u2014 Command Limit reached.",
+        'army_limit': "Army limit reached in this territory.",
+        'queue_full': "Training queue is full.",
+        'hero_limit': "Hero limit reached.",
+    }
+
+    def _show_action_failure_feedback(self):
+        """Show visual + audio feedback when a player action fails.
+
+        Reads game_state.last_action_error (set by start_training, start_construction, etc.),
+        plays a denial sound, and shows a floating notification in the top-left corner.
+        """
+        error = self.game_state.last_action_error
+        if error is None:
+            return
+        self.game_state.last_action_error = None  # Clear after reading
+
+        msg = self._ACTION_ERROR_MESSAGES.get(error, "Action failed.")
+
+        # Audio feedback (non-stacking)
+        from global_sound import play_action_denied
+        play_action_denied()
+
+        # Visual feedback — floating notification in chat area
+        if self.chat_notification_effect:
+            self.chat_notification_effect.add_system_notification(msg)
+
     def _get_cached_text(self, text, font, color):
         """
         Get or create a cached rendered text surface.
@@ -5151,12 +5324,14 @@ class Game:
                                     self.selected_plot = None
                                     self.selected_territory_info = None
                                     self.clear_button_tooltip()
+                                else:
+                                    self._show_action_failure_feedback()
                             else:
                                 # SEQUENTIAL MODE: Execute immediately and sync
                                 if self.game_state.start_construction(territory, plot_index, building_name):
                                     # MULTIPLAYER: Send building start notification
                                     if self.multiplayer_mode:
-                                
+
                                         self._send_action_to_remote(MessageType.BUILDING_ORDER, {
                                             'territory': territory,
                                             'plot_index': plot_index,
@@ -5166,6 +5341,8 @@ class Game:
                                     self.selected_plot = None
                                     self.selected_territory_info = None
                                     self.clear_button_tooltip()
+                                else:
+                                    self._show_action_failure_feedback()
                             return
         
         # PRIORITY 2: Check if clicking on a quick-access training icon (around Barracks)
@@ -5222,11 +5399,15 @@ class Game:
                                 self.sim_state.add_order(local_player, train_order)
                                 logger.debug(f"[SIM] Queued train order: {unit_type} in {territory}")
                                 self.clear_button_tooltip()
+                            else:
+                                self._show_action_failure_feedback()
                         else:
                             # SEQUENTIAL MODE: Execute immediately
                             if self.game_state.start_training(territory, barracks_plot_index, unit_type):
                                 # Training started successfully
                                 self.clear_button_tooltip()
+                            else:
+                                self._show_action_failure_feedback()
                         # Stay on Barracks (don't deselect)
                         return
 
@@ -8288,6 +8469,8 @@ class Game:
         
         # Check army limit (reuse current_armies from above)
         at_army_limit = current_armies >= self.game_state.MAX_ARMIES_PER_TERRITORY
+        # Command limit: show red hue when player's total army count >= limit
+        at_command_limit = self.game_state.get_player_army_count(self.game_state.current_player) >= self.game_state.player_command_limit[self.game_state.current_player]
 
         # Reuse queue_count from above
         can_queue = queue_count < 4
@@ -8306,7 +8489,7 @@ class Game:
             can_afford = current_gold >= unit_cost
             if can_afford:
                 any_affordable = True  # Bug 4 fix: track across all unit types
-            is_available = can_afford and can_queue and not at_army_limit
+            is_available = can_afford and can_queue and not at_army_limit and not at_command_limit
 
             # Tutorial hook: override training button availability
             if self._is_tutorial_active():
@@ -8372,8 +8555,9 @@ class Game:
                 self.screen.blit(display_icon, icon_rect)
 
                 # PERFORMANCE OPTIMIZATION: Cache border scaling too
+                # Border is 2px larger than icon (1px per side) to fully contain icon edges
                 if self.icon_border:
-                    cached_border = self._get_cached_ui_icon(self.icon_border, 'icon_border', icon_size)
+                    cached_border = self._get_cached_ui_icon(self.icon_border, 'icon_border', icon_size + 2)
                     border_rect = cached_border.get_rect(center=train_button_rect.center)
                     self.screen.blit(cached_border, border_rect)
             else:
@@ -8677,10 +8861,11 @@ class Game:
                 self.screen.blit(hero_image_scaled, (button_x, button_y))
 
                 # C2 fix: Use cached border scaling
+                # Border is 2px larger than icon (1px per side) to fully contain icon edges
                 if self.icon_border:
                     scaled_border = self._get_cached_scaled_surface(
-                        self.icon_border, 'icon_border', button_width, button_height)
-                    self.screen.blit(scaled_border, (button_x, button_y))
+                        self.icon_border, 'icon_border', button_width + 2, button_height + 2)
+                    self.screen.blit(scaled_border, (button_x - 1, button_y - 1))
             else:
                 # Fallback to letter button
                 self.draw_letter_button(train_button_rect, hero_letter, button_color,
@@ -8760,10 +8945,11 @@ class Game:
                 self.screen.blit(scaled_icon, (castle_button_x, castle_button_y))
 
                 # C2 fix: Use cached border scaling
+                # Border is 2px larger than icon (1px per side) to fully contain icon edges
                 if self.icon_border:
                     scaled_border = self._get_cached_scaled_surface(
-                        self.icon_border, 'icon_border', icon_width, icon_height)
-                    self.screen.blit(scaled_border, (castle_button_x, castle_button_y))
+                        self.icon_border, 'icon_border', icon_width + 2, icon_height + 2)
+                    self.screen.blit(scaled_border, (castle_button_x - 1, castle_button_y - 1))
             else:
                 # Fallback to text if icon not loaded
                 button_color = (200, 200, 100)  # Yellow for upgrading
@@ -8865,10 +9051,11 @@ class Game:
                 self.screen.blit(scaled_icon, (castle_button_x, castle_button_y))
 
                 # Draw icon border frame overlay if available
+                # Border is 2px larger than icon (1px per side) to fully contain icon edges
                 if self.icon_border:
                     scaled_border = self._get_cached_scaled_surface(
-                        self.icon_border, 'icon_border', icon_width, icon_height)
-                    self.screen.blit(scaled_border, (castle_button_x, castle_button_y))
+                        self.icon_border, 'icon_border', icon_width + 2, icon_height + 2)
+                    self.screen.blit(scaled_border, (castle_button_x - 1, castle_button_y - 1))
             else:
                 # Fallback to old text button
                 if button_enabled:
@@ -9230,9 +9417,10 @@ class Game:
                 self.screen.blit(scaled_icon, icon_rect)
 
                 # C2 fix: Use cached border scaling
+                # Border is 2px larger than icon (1px per side) to fully contain icon edges
                 if self.icon_border:
                     scaled_border = self._get_cached_scaled_surface(
-                        self.icon_border, 'icon_border', icon_size, icon_size)
+                        self.icon_border, 'icon_border', icon_size + 2, icon_size + 2)
                     border_rect = scaled_border.get_rect(center=button_rect.center)
                     self.screen.blit(scaled_border, border_rect)
 
@@ -9766,8 +9954,10 @@ class Game:
                             should_play = True
 
                 if should_play:
-                    from global_sound import play_battle_sound
+                    from global_sound import play_battle_sound, play_spell_sound
                     play_battle_sound()
+                    # Layer Reinforce sound alongside battle sound for richer audio
+                    play_spell_sound('Reinforce')
                     self._battle_sound_played = True
 
             # Reset battle sound flag when not in battle phase
@@ -11290,13 +11480,18 @@ class Game:
                             self._send_action_to_remote(MessageType.TURN_END, {})
                             self._send_full_state_sync()  # Sync fix: authoritative state at turn boundary
 
-                            # Send state checksum for desync detection (client to host)
-                            if self.local_player_index == 1:  # Client only
+                            # Send state checksum for desync detection (any client to host)
+                            if self.local_player_index != 0:
                                 checksum = self.game_state.calculate_state_checksum()
                                 self._send_action_to_remote(MessageType.STATE_CHECKSUM, {
                                     'checksum': checksum,
                                     'turn_number': self.game_state.turn_number
                                 })
+                                # Sync logger: record snapshot + checksum on client
+                                _cl = getattr(self.game_state, 'sync_logger', None)
+                                if _cl:
+                                    _cl.record_turn_snapshot(self.game_state.turn_number)
+                                    _cl.record_checksum(self.game_state.turn_number, checksum)
 
                     return True
 
@@ -11318,13 +11513,18 @@ class Game:
                     self._send_action_to_remote(MessageType.TURN_END, {})
                     self._send_full_state_sync()  # Sync fix: authoritative state at turn boundary
 
-                    # Send state checksum for desync detection (client to host)
-                    if self.local_player_index == 1:  # Client only
+                    # Send state checksum for desync detection (any client to host)
+                    if self.local_player_index != 0:
                         checksum = self.game_state.calculate_state_checksum()
                         self._send_action_to_remote(MessageType.STATE_CHECKSUM, {
                             'checksum': checksum,
                             'turn_number': self.game_state.turn_number
                         })
+                        # Sync logger: record snapshot + checksum on client
+                        _cl = getattr(self.game_state, 'sync_logger', None)
+                        if _cl:
+                            _cl.record_turn_snapshot(self.game_state.turn_number)
+                            _cl.record_checksum(self.game_state.turn_number, checksum)
 
             return True
 
@@ -11469,13 +11669,18 @@ class Game:
                 self._send_action_to_remote(MessageType.TURN_END, {})
                 self._send_full_state_sync()  # Sync fix: authoritative state at turn boundary
 
-                # Send state checksum for desync detection (client to host)
-                if self.local_player_index == 1:  # Client only
+                # Send state checksum for desync detection (any client to host)
+                if self.local_player_index != 0:
                     checksum = self.game_state.calculate_state_checksum()
                     self._send_action_to_remote(MessageType.STATE_CHECKSUM, {
                         'checksum': checksum,
                         'turn_number': self.game_state.turn_number
                     })
+                    # Sync logger: record snapshot + checksum on client
+                    _cl = getattr(self.game_state, 'sync_logger', None)
+                    if _cl:
+                        _cl.record_turn_snapshot(self.game_state.turn_number)
+                        _cl.record_checksum(self.game_state.turn_number, checksum)
 
     def handle_keyboard_input(self, event):
         """
@@ -11715,6 +11920,8 @@ class Game:
                                 'player_index': self.game_state.current_player
                             })
                         self.clear_button_tooltip()
+                    else:
+                        self._show_action_failure_feedback()
                     return True
 
         # Queue cancel buttons (only when Barracks is actually selected)
@@ -11818,6 +12025,8 @@ class Game:
                         self.sim_state.add_order(local_player, upgrade_order)
                         logger.debug(f"[SIM] Queued castle upgrade order in {territory}")
                         self.clear_button_tooltip()
+                    else:
+                        self._show_action_failure_feedback()
                 else:
                     # SEQUENTIAL MODE: Execute immediately
                     if self.game_state.start_castle_upgrade(territory, keep_plot_index):
@@ -11830,6 +12039,8 @@ class Game:
                                 'player_index': self.game_state.current_player
                             })
                         self.clear_button_tooltip()
+                    else:
+                        self._show_action_failure_feedback()
                 return True
 
         # Castle upgrade cancel button (only when Keep is actually selected)
@@ -11924,6 +12135,8 @@ class Game:
                             self.sim_state.add_order(local_player, train_hero_order)
                             logger.debug(f"[SIM] Queued hero training order: {hero_type} in {territory}")
                             self.clear_button_tooltip()
+                        else:
+                            self._show_action_failure_feedback()
                     else:
                         # SEQUENTIAL MODE: Execute immediately
                         if self.game_state.start_hero_training(territory, keep_plot_index, hero_type):
@@ -11936,6 +12149,8 @@ class Game:
                                     'player_index': self.game_state.current_player
                                 })
                             self.clear_button_tooltip()
+                        else:
+                            self._show_action_failure_feedback()
                     return True
 
         # Demolish Keep button (only when Keep is actually selected)
@@ -12094,7 +12309,7 @@ class Game:
                                 if self.game_state.start_construction(territory, plot_index, building_name):
                                     # MULTIPLAYER: Send building start notification
                                     if self.multiplayer_mode:
-                                
+
                                         self._send_action_to_remote(MessageType.BUILDING_ORDER, {
                                             'territory': territory,
                                             'plot_index': plot_index,
@@ -12103,6 +12318,8 @@ class Game:
                                         })
                                     self.selected_plot = None
                                     self.clear_button_tooltip()
+                                else:
+                                    self._show_action_failure_feedback()
                                 return True
                 except Exception as e:
                     logger.error(f"Error in building buttons: {e}")
@@ -12541,12 +12758,18 @@ class Game:
                     if self.multiplayer_mode:
                         self._send_action_to_remote(MessageType.TURN_END, {})
                         self._send_full_state_sync()
-                        if self.local_player_index == 1:
+                        # Send state checksum for desync detection (any client to host)
+                        if self.local_player_index != 0:
                             checksum = self.game_state.calculate_state_checksum()
                             self._send_action_to_remote(MessageType.STATE_CHECKSUM, {
                                 'checksum': checksum,
                                 'turn_number': self.game_state.turn_number
                             })
+                            # Sync logger: record snapshot + checksum on client
+                            _cl = getattr(self.game_state, 'sync_logger', None)
+                            if _cl:
+                                _cl.record_turn_snapshot(self.game_state.turn_number)
+                                _cl.record_checksum(self.game_state.turn_number, checksum)
 
         # Clear the button rect (button disappears after click)
         self.resolve_all_battles_button = None
@@ -13067,6 +13290,8 @@ class Game:
                                 local_player = self.get_local_player()
                                 self.sim_state.add_order(local_player, research_order)
                                 logger.debug(f"[SIM] Queued research order: {tech_id}")
+                            else:
+                                self._show_action_failure_feedback()
                         else:
                             # SEQUENTIAL MODE: Execute immediately
                             if self.game_state.start_research(tech_id):
@@ -13076,6 +13301,8 @@ class Game:
                                         'tech_id': tech_id,
                                         'player_index': current_player
                                     })
+                            else:
+                                self._show_action_failure_feedback()
                         return True
                     elif is_researched:
                         # Already researched - just feedback
@@ -14105,6 +14332,10 @@ if __name__ == "__main__":
         if hasattr(game.game_state, 'game_logger') and game.game_state.game_logger:
             game.game_state.game_logger.finalize_and_save()
 
+        # Sync logger: finalize and save multiplayer state sync log
+        if hasattr(game.game_state, 'sync_logger') and game.game_state.sync_logger:
+            game.game_state.sync_logger.finalize_and_save()
+
         # Player Level: record XP earned first so level achievements can detect new level
         from player_level import player_level_manager
         xp_result = player_level_manager.record_game_xp(game)
@@ -14721,6 +14952,15 @@ if __name__ == "__main__":
             if hasattr(game, 'game_state') and game.game_state:
                 game.game_state.game_logger = GameLogger(game.game_state)
 
+            # Attach sync logger for multiplayer games (desync diagnosis)
+            if hasattr(game, 'game_state') and game.game_state and game.multiplayer_mode:
+                from sync_logger import SyncLogger
+                game_id = game.game_state.game_logger.game_id if game.game_state.game_logger else None
+                game.game_state.sync_logger = SyncLogger(
+                    game.game_state, game.local_player_index,
+                    is_host=(game.local_player_index == 0), game_id=game_id
+                )
+
             # Attach replay recorder for custom games (not campaign)
             from replay_recorder import ReplayRecorder
             if hasattr(game, 'game_state') and game.game_state:
@@ -14859,6 +15099,15 @@ if __name__ == "__main__":
             if hasattr(game, 'game_state') and game.game_state:
                 game.game_state.game_logger = GameLogger(game.game_state)
 
+            # Attach sync logger for multiplayer (Steam invite client, always multiplayer)
+            if hasattr(game, 'game_state') and game.game_state:
+                from sync_logger import SyncLogger
+                game_id = game.game_state.game_logger.game_id if game.game_state.game_logger else None
+                game.game_state.sync_logger = SyncLogger(
+                    game.game_state, game.local_player_index,
+                    is_host=False, game_id=game_id
+                )
+
             from replay_recorder import ReplayRecorder
             if hasattr(game, 'game_state') and game.game_state:
                 game.game_state.replay_recorder = ReplayRecorder(game.game_state)
@@ -14937,6 +15186,15 @@ if __name__ == "__main__":
             from game_logger import GameLogger
             if hasattr(game, 'game_state') and game.game_state:
                 game.game_state.game_logger = GameLogger(game.game_state)
+
+            # Attach sync logger for multiplayer games (desync diagnosis)
+            if hasattr(game, 'game_state') and game.game_state:
+                from sync_logger import SyncLogger
+                game_id = game.game_state.game_logger.game_id if game.game_state.game_logger else None
+                game.game_state.sync_logger = SyncLogger(
+                    game.game_state, game.local_player_index,
+                    is_host=(game.local_player_index == 0), game_id=game_id
+                )
 
             # Attach replay recorder for multiplayer games
             from replay_recorder import ReplayRecorder

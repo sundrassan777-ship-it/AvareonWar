@@ -422,6 +422,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Records full state snapshots at turn boundaries for replay playback
         self.replay_recorder = None
 
+        # Sync logger reference (set by main.py for multiplayer games)
+        # Records actions, state snapshots, and desync diffs for diagnosis
+        self.sync_logger = None
+
         # Hero limit per player (can be modified by Technology research)
         # Default: 3 heroes max (active + training)
         self.player_hero_limit = [3] * num_players
@@ -523,6 +527,11 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Message log for combat and actions
         self.messages = []
         # No message limit - keep entire game history for scrolling
+
+        # Last action error category — set by start_training/start_construction/etc. on failure,
+        # read and cleared by main.py to show user-facing feedback (sound + floating notification).
+        # Values: None, "gold", "command_limit", "army_limit", "queue_full", "hero_limit"
+        self.last_action_error = None
         
         # Winner tracking
         self.winner = -1  # -1 = no winner, 0-3 = player index
@@ -983,6 +992,54 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             'training_queue': {t: {str(p): q for p, q in sorted(plots.items())} for t, plots in sorted(self.training_queue.items()) if plots},
             'castle_upgrades': {t: dict(sorted(plots.items())) for t, plots in sorted(self.castle_upgrades.items()) if plots},
             'castle_upgrades_in_progress': {t: dict(sorted(plots.items())) for t, plots in sorted(self.castle_upgrades_in_progress.items()) if plots},
+            # Sync logger enhancement: include garrison system (authoritative army data)
+            # Strip 'order' field from unit dicts — not JSON-serializable (MovementOrder objects)
+            'territory_garrisons': {
+                territory: {
+                    str(pid): {
+                        **gdata,
+                        'units': [
+                            {k: (None if k == 'order' else v) for k, v in u.items()}
+                            for u in gdata.get('units', [])
+                        ]
+                    } if 'units' in gdata else dict(gdata)
+                    for pid, gdata in sorted(pgarrisons.items(), key=lambda x: str(x[0]))
+                }
+                for territory, pgarrisons in sorted(self.territory_garrisons.items())
+            },
+            # Sync logger enhancement: hero state (training, cooldowns, ownership)
+            'hero_training_queue': {
+                t: {str(p): list(e) for p, e in sorted(plots.items())}
+                for t, plots in sorted(self.hero_training_queue.items()) if plots
+            },
+            'hero_ability_cooldowns': {
+                str(pid): dict(cds) for pid, cds in sorted(self.hero_ability_cooldowns.items()) if cds
+            },
+            'hero_silence_status': {
+                str(pid): status for pid, status in sorted(self.hero_silence_status.items()) if status
+            },
+            'hero_ownership': {
+                str(pid): sorted(list(owned)) for pid, owned in sorted(self.hero_ownership.items()) if owned
+            },
+            # Sync logger enhancement: elimination tracking
+            'eliminated_players': sorted(list(self.eliminated_players)),
+            'disconnect_eliminations': sorted(list(self.disconnect_eliminations)),
+            # Sync logger enhancement: transient hero ability state
+            'embargo_blocked_players': list(self.embargo_blocked_players),
+            'player_master_negotiator_active': list(self.player_master_negotiator_active),
+            # Sync logger enhancement: tech effect arrays (derived from researched techs)
+            'tech_effects': {
+                'royal_decree_discount': list(self.player_royal_decree_discount),
+                'training_cost_discount': list(self.player_training_cost_discount),
+                'cavalry_cost_discount': list(self.player_cavalry_cost_discount),
+                'captain_cost_discount': list(self.player_captain_cost_discount),
+                'archer_keep_strength_bonus': list(self.player_archer_keep_strength_bonus),
+                'farm_destruction_gold_bonus': list(self.player_farm_destruction_gold_bonus),
+                'cavalry_strength_bonus': list(self.player_cavalry_strength_bonus),
+                'divide_conquer_bonus': list(self.player_divide_conquer_bonus),
+                'barracks_cost_discount': list(self.player_barracks_cost_discount),
+                'barracks_full_refund': list(self.player_barracks_full_refund),
+            },
             # Note: We don't include chat, messages, or UI state
         }
 

@@ -5,11 +5,13 @@ Reusable one-shot particle burst for hero ability activations.
 Configurable behaviors: explode (outward), implode (inward collapse).
 
 Visual design:
-- 1px particles in 5-shade color palettes
+- Configurable particle size (default 1px) in 5-shade color palettes
 - Three animation phases with configurable durations:
   Burst (0.5s) -> Swirl (configurable, default 1.5s) -> Float+Fade (configurable, default 1.0s)
 - Set swirl_duration=0 for explosion-only mode (Levy: burst + quick fade, no swirl)
 - Set swirl_duration=2.0 to match CastleUpgradeEffect timing (Decisive Strike)
+- Optional flash_ring: expanding/contracting ring outline during burst phase
+- Optional delay: seconds to wait before starting animation (for staggered multi-bursts)
 - World-coordinate support with camera tracking
 - Cached SRCALPHA surface for performance
 
@@ -50,6 +52,11 @@ DECEL_FACTOR = 3.0         # Exponential deceleration constant
 IMPLODE_RADIUS_MIN = 50    # Min starting distance from center (px)
 IMPLODE_RADIUS_MAX = 120   # Max starting distance from center (px)
 
+# Flash ring constants (optional expanding/contracting ring during burst phase)
+FLASH_RING_MAX_RADIUS = 80       # Max ring radius at end of burst phase (px)
+FLASH_RING_LINE_WIDTH_START = 3  # Ring line width at start
+FLASH_RING_LINE_WIDTH_END = 1    # Ring line width at end (thins out)
+
 # ========================================
 # ABILITY BURST EFFECT CLASS
 # ========================================
@@ -70,7 +77,8 @@ class AbilityBurstEffect:
 
     def __init__(self, center_pos, color_palette, num_particles=120,
                  behavior='explode', world_coords=True,
-                 swirl_duration=None, float_duration=None):
+                 swirl_duration=None, float_duration=None,
+                 particle_size=1, flash_ring=False, delay=0):
         """
         Args:
             center_pos: (x, y) tuple for effect center
@@ -81,9 +89,17 @@ class AbilityBurstEffect:
             swirl_duration: Override swirl phase duration (default: SWIRL_DURATION=1.5s).
                             Set to 0 for explosion-only mode.
             float_duration: Override float phase duration (default: FLOAT_DURATION=1.0s)
+            particle_size: Radius of each particle circle (default 1px)
+            flash_ring: If True, draw expanding/contracting ring outline during burst phase
+            delay: Seconds to wait before starting animation (for staggered multi-bursts)
         """
         self.world_coords = world_coords
         self.behavior = behavior
+        self.particle_size = particle_size
+        self.flash_ring = flash_ring
+        self.delay = delay
+        # Store color palette for flash ring color (use brightest shade)
+        self.flash_ring_color = color_palette[-1] if color_palette else (255, 255, 255)
 
         # Configurable phase durations (allows matching CastleUpgradeEffect or explosion-only)
         self.burst_duration = BURST_DURATION
@@ -178,20 +194,28 @@ class AbilityBurstEffect:
 
         self.elapsed += delta_time
 
-        if self.elapsed >= self.total_duration:
+        # Delay support: wait before starting animation
+        if self.elapsed < self.delay:
+            return
+
+        # Effective elapsed time (subtracting delay)
+        eff = self.elapsed - self.delay
+
+        if eff >= self.total_duration:
             self.is_complete = True
             return
 
-        if self.elapsed < self.burst_duration:
+        if eff < self.burst_duration:
             self._update_burst(delta_time)
-        elif self.elapsed < self.burst_duration + self.swirl_duration:
+        elif eff < self.burst_duration + self.swirl_duration:
             self._update_swirl(delta_time)
         else:
             self._update_float(delta_time)
 
     def _update_burst(self, delta_time):
         """Phase 1: Particles move according to behavior mode with deceleration."""
-        progress = self.elapsed / self.burst_duration
+        eff = self.elapsed - self.delay
+        progress = eff / self.burst_duration
         decel = math.exp(-DECEL_FACTOR * progress)
 
         for particle in self.particles:
@@ -250,8 +274,13 @@ class AbilityBurstEffect:
             particle['float_offset_y'] -= particle['float_speed'] * delta_time
 
     def render(self, screen, world_to_screen_func=None):
-        """Render all particles at current animation state."""
+        """Render all particles and optional flash ring at current animation state."""
         if self.is_complete:
+            return
+
+        # Don't render during delay period
+        eff = self.elapsed - self.delay
+        if eff < 0:
             return
 
         # Update screen center from world coordinates
@@ -269,13 +298,32 @@ class AbilityBurstEffect:
             self._cached_surface.fill((0, 0, 0, 0))
         temp_surface = self._cached_surface
 
-        # Calculate opacity based on phase
-        if self.elapsed < self.burst_duration + self.swirl_duration:
+        # Calculate opacity based on phase (using effective elapsed time)
+        if eff < self.burst_duration + self.swirl_duration:
             opacity = 1.0
         else:
-            phase_elapsed = self.elapsed - (self.burst_duration + self.swirl_duration)
+            phase_elapsed = eff - (self.burst_duration + self.swirl_duration)
             fade_duration = max(0.01, self.float_duration)  # Avoid division by zero
             opacity = 1.0 - (phase_elapsed / fade_duration)
+
+        # Draw flash ring during burst phase (expanding for explode, contracting for implode)
+        if self.flash_ring and eff < self.burst_duration:
+            ring_progress = eff / self.burst_duration
+            if self.behavior == 'implode':
+                # Ring contracts inward for implosion effects
+                ring_radius = int(FLASH_RING_MAX_RADIUS * (1.0 - ring_progress))
+            else:
+                # Ring expands outward for explosion effects
+                ring_radius = int(FLASH_RING_MAX_RADIUS * ring_progress)
+            ring_alpha = int(255 * (1.0 - ring_progress))  # Fade out over burst phase
+            ring_width = max(1, int(FLASH_RING_LINE_WIDTH_START
+                                    - (FLASH_RING_LINE_WIDTH_START - FLASH_RING_LINE_WIDTH_END)
+                                    * ring_progress))
+            if ring_radius > 0:
+                fr, fg, fb = self.flash_ring_color
+                cx, cy = int(self.center_x), int(self.center_y)
+                pygame.draw.circle(temp_surface, (fr, fg, fb, ring_alpha),
+                                   (cx, cy), ring_radius, ring_width)
 
         # Draw particles
         for particle in self.particles:
@@ -301,7 +349,7 @@ class AbilityBurstEffect:
             r, g, b = particle['color']
             alpha = int(255 * max(0.0, opacity))
             pygame.draw.circle(temp_surface, (r, g, b, alpha), (x, y),
-                               particle['size'])
+                               self.particle_size)
 
         screen.blit(temp_surface, (0, 0))
 

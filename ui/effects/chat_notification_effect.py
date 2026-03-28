@@ -24,6 +24,7 @@ BG_COLOR = (20, 20, 20)
 BG_ALPHA = 170
 MSG_COLOR = (255, 255, 255)
 TEAM_TAG_COLOR = (100, 200, 255)
+ERROR_MSG_COLOR = (255, 100, 100)  # Red-ish for system error notifications
 
 
 class ChatNotificationEffect:
@@ -113,15 +114,16 @@ class ChatNotificationEffect:
                 screen.blit(surf, (text_x, text_y))
                 text_x += notif['team_width'] + 4
 
-            # Player name
-            name_surf = notif['name_surface']
-            if alpha < 255:
-                name_surf = name_surf.copy()
-                name_surf.set_alpha(alpha)
-            screen.blit(name_surf, (text_x, text_y))
-            text_x += notif['name_width']
+            # Player name (None for system notifications)
+            if notif.get('name_surface'):
+                name_surf = notif['name_surface']
+                if alpha < 255:
+                    name_surf = name_surf.copy()
+                    name_surf.set_alpha(alpha)
+                screen.blit(name_surf, (text_x, text_y))
+                text_x += notif['name_width']
 
-            # Colon + message
+            # Colon + message (or plain message for system notifications)
             msg_surf = notif['msg_surface']
             if alpha < 255:
                 msg_surf = msg_surf.copy()
@@ -200,6 +202,52 @@ class ChatNotificationEffect:
             'bg_surface': bg_surface,
             'height': bg_height,
         }
+
+    def add_system_notification(self, text, color=None):
+        """Add a system notification (no player name). Used for action failure feedback.
+
+        Args:
+            text: Message text to display
+            color: RGB tuple for text color (defaults to ERROR_MSG_COLOR red)
+        """
+        if color is None:
+            color = ERROR_MSG_COLOR
+
+        msg_surface = self.font_bold.render(text, True, color)
+
+        # Truncate if message exceeds max width
+        if msg_surface.get_width() > self._max_text_width:
+            truncated = text
+            while len(truncated) > 4:
+                truncated = truncated[:-1]
+                test_surface = self.font_bold.render(truncated + "...", True, color)
+                if test_surface.get_width() <= self._max_text_width:
+                    msg_surface = test_surface
+                    break
+
+        # Build notification with same structure as chat notifications
+        content_width = msg_surface.get_width()
+        text_height = msg_surface.get_height()
+        bg_width = content_width + PADDING_X * 2
+        bg_height = text_height + PADDING_Y * 2
+
+        bg_surface = pygame.Surface((bg_width, bg_height), pygame.SRCALPHA)
+        bg_surface.fill((*BG_COLOR, BG_ALPHA))
+
+        self._notifications.append({
+            'elapsed': 0.0,
+            'team_surface': None,
+            'team_width': 0,
+            'name_surface': None,   # No player name for system messages
+            'name_width': 0,
+            'msg_surface': msg_surface,
+            'bg_surface': bg_surface,
+            'height': bg_height,
+        })
+
+        # Enforce max visible
+        while len(self._notifications) > MAX_VISIBLE:
+            self._notifications.pop(0)
 
     def on_resolution_change(self, top_panel_height, font, font_bold):
         """Update layout after resolution change. Clears active notifications."""

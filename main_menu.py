@@ -458,13 +458,13 @@ class MainMenu:
             else:
                 self.hero_icons_button_scaled.append(None)
 
-        # Pre-scale icon borders
+        # Pre-scale icon borders (2px larger than icon = 1px per side to fully contain icon edges)
         if self.icon_border:
             self.icon_border_panel_scaled = pygame.transform.smoothscale(
-                self.icon_border, (icon_size_panel, icon_size_panel)
+                self.icon_border, (icon_size_panel + 2, icon_size_panel + 2)
             )
             self.icon_border_button_scaled = pygame.transform.smoothscale(
-                self.icon_border, (profile_button_size, profile_button_size)
+                self.icon_border, (profile_button_size + 2, profile_button_size + 2)
             )
         else:
             self.icon_border_panel_scaled = None
@@ -1723,9 +1723,9 @@ class MainMenu:
         # Draw the icon
         self.screen.blit(icon_surface, rect)
 
-        # Draw border frame overlay using pre-scaled version
+        # Draw border frame overlay using pre-scaled version (offset -1 to center enlarged border)
         if self.icon_border_button_scaled:
-            self.screen.blit(self.icon_border_button_scaled, rect)
+            self.screen.blit(self.icon_border_button_scaled, (rect.x - 1, rect.y - 1))
 
     def _draw_achievement_button(self):
         """Draw achievement button in top left corner with icon and border"""
@@ -1759,9 +1759,9 @@ class MainMenu:
 
         self.screen.blit(icon_surface, rect)
 
-        # Draw border frame overlay
+        # Draw border frame overlay (offset -1 to center enlarged border)
         if self.icon_border_button_scaled:
-            self.screen.blit(self.icon_border_button_scaled, rect)
+            self.screen.blit(self.icon_border_button_scaled, (rect.x - 1, rect.y - 1))
 
     def _draw_replays_button(self):
         """Draw replays button in bottom-left corner with icon and border"""
@@ -1795,9 +1795,9 @@ class MainMenu:
 
         self.screen.blit(icon_surface, rect)
 
-        # Draw border frame overlay
+        # Draw border frame overlay (offset -1 to center enlarged border)
         if self.icon_border_button_scaled:
-            self.screen.blit(self.icon_border_button_scaled, rect)
+            self.screen.blit(self.icon_border_button_scaled, (rect.x - 1, rect.y - 1))
 
     def _draw_achievement_panel(self):
         """Draw the sliding achievement panel"""
@@ -2127,14 +2127,14 @@ class MainMenu:
 
             self.screen.blit(icon_surface, icon_rect)
 
-            # Border
+            # Border (2px larger than icon, offset -1 to center)
             if self.icon_border_panel_scaled:
                 border_scaled = pygame.transform.smoothscale(
-                    self.icon_border_panel_scaled, (icon_size, icon_size))
+                    self.icon_border_panel_scaled, (icon_size + 2, icon_size + 2))
                 if i >= num_hero_icons and is_locked:
                     border_scaled = border_scaled.copy()
                     border_scaled.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
-                self.screen.blit(border_scaled, icon_rect)
+                self.screen.blit(border_scaled, (icon_rect.x - 1, icon_rect.y - 1))
 
             # Selection indicator
             if is_selected:

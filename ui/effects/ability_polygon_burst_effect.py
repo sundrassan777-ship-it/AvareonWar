@@ -16,6 +16,8 @@ Visual design:
 - Bubbles spawn at random positions inside the territory polygon
 - Each bubble: rises upward, expands 30%, fades from alpha 150 to 0
 - Filled circles with 1px border (same as existing aura bubbles)
+- Optional bubble_scale multiplier for larger/smaller bubbles
+- Optional border_flash: draws fading polygon outline during first 0.8s
 
 Integration:
     - Triggered from MapRenderer.trigger_ability_effect()
@@ -40,8 +42,13 @@ EXPAND_FACTOR = 0.3        # Bubbles grow 30% over their lifetime
 MAX_SPAWN_ATTEMPTS = 15    # Rejection sampling attempts per bubble
 
 # Continuous mode constants
-CONTINUOUS_SPAWN_INTERVAL = 0.2   # Spawn new bubbles every 200ms
-CONTINUOUS_BUBBLES_PER_SPAWN = 3  # Bubbles per spawn cycle (low density for FPS)
+CONTINUOUS_SPAWN_INTERVAL = 0.4   # Spawn new bubbles every 400ms (reduced for FPS with many territories)
+CONTINUOUS_BUBBLES_PER_SPAWN = 2  # Bubbles per spawn cycle (reduced for FPS with many territories)
+
+# Border flash constants (optional fading polygon outline on activation)
+BORDER_FLASH_DURATION = 0.8       # Duration of border flash (seconds)
+BORDER_FLASH_ALPHA_START = 200    # Starting alpha for border outline
+BORDER_FLASH_LINE_WIDTH = 2       # Line width for border outline
 
 # ========================================
 # ABILITY POLYGON BURST EFFECT CLASS
@@ -63,7 +70,7 @@ class AbilityPolygonBurstEffect:
     """
 
     def __init__(self, polygon, color, num_bubbles=60, world_coords=True,
-                 continuous=False):
+                 continuous=False, bubble_scale=1.0, border_flash=False):
         """
         Args:
             polygon: List of (x, y) tuples defining territory polygon (world coords)
@@ -71,11 +78,15 @@ class AbilityPolygonBurstEffect:
             num_bubbles: Number of bubbles for one-shot mode (ignored in continuous)
             world_coords: If True, polygon is in world coordinates
             continuous: If True, spawn bubbles continuously until stop() is called
+            bubble_scale: Multiplier for bubble radii (default 1.0)
+            border_flash: If True, draw fading polygon outline during first 0.8s
         """
         self.polygon = polygon
         self.color = color
         self.world_coords = world_coords
         self.continuous = continuous
+        self.bubble_scale = bubble_scale
+        self.border_flash = border_flash
         self.elapsed = 0.0
         self.is_complete = False
         self._cached_surface = None
@@ -103,7 +114,8 @@ class AbilityPolygonBurstEffect:
                         'world_x': pos[0],
                         'world_y': pos[1],
                         'initial_radius': random.uniform(INITIAL_RADIUS_MIN,
-                                                         INITIAL_RADIUS_MAX),
+                                                         INITIAL_RADIUS_MAX)
+                                         * self.bubble_scale,
                         'radius': 0.0,
                         'alpha': 0,
                         'offset_y': 0.0,
@@ -118,7 +130,8 @@ class AbilityPolygonBurstEffect:
                 'world_x': pos[0],
                 'world_y': pos[1],
                 'initial_radius': random.uniform(INITIAL_RADIUS_MIN,
-                                                 INITIAL_RADIUS_MAX),
+                                                 INITIAL_RADIUS_MAX)
+                                 * self.bubble_scale,
                 'radius': 0.0,
                 'alpha': 0,
                 'offset_y': 0.0,
@@ -241,6 +254,24 @@ class AbilityPolygonBurstEffect:
         border_r = max(0, r - 40)
         border_g = max(0, g - 40)
         border_b = max(0, b - 40)
+
+        # Draw border flash: fading polygon outline during first BORDER_FLASH_DURATION seconds
+        if self.border_flash and self.elapsed < BORDER_FLASH_DURATION:
+            flash_progress = self.elapsed / BORDER_FLASH_DURATION
+            flash_alpha = int(BORDER_FLASH_ALPHA_START * (1.0 - flash_progress))
+            if flash_alpha > 0 and len(self.polygon) >= 3:
+                # Convert polygon to screen coords
+                if self.world_coords and world_to_screen_func:
+                    screen_poly = [world_to_screen_func(p) for p in self.polygon]
+                else:
+                    screen_poly = list(self.polygon)
+                int_poly = [(int(p[0]), int(p[1])) for p in screen_poly]
+                # Brighter color for flash outline
+                flash_r = min(255, r + 60)
+                flash_g = min(255, g + 60)
+                flash_b = min(255, b + 60)
+                pygame.draw.polygon(temp_surface, (flash_r, flash_g, flash_b, flash_alpha),
+                                    int_poly, BORDER_FLASH_LINE_WIDTH)
 
         for bubble in self.bubbles:
             if bubble['alpha'] <= 0:

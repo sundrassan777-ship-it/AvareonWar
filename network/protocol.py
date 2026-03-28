@@ -469,6 +469,28 @@ class NetworkProtocol:
             "round_number": round_number
         })
 
+    # Sync logger: desync diagnosis messages (v1.3.0)
+
+    def create_state_detail_request(self, turn_number: int) -> bytes:
+        """Create a state detail request (host -> client on checksum mismatch)."""
+        return self.encode_message(MessageType.STATE_DETAIL_REQUEST, {
+            "turn_number": turn_number
+        })
+
+    def create_state_detail_response(self, turn_number: int, state_detail: Dict[str, Any]) -> bytes:
+        """Create a state detail response (client -> host with full state for diff)."""
+        return self.encode_message(MessageType.STATE_DETAIL_RESPONSE, {
+            "turn_number": turn_number,
+            "state_detail": state_detail
+        })
+
+    def create_desync_diff(self, turn_number: int, diff: Dict[str, Any]) -> bytes:
+        """Create a desync diff message (host -> client with field-level diff)."""
+        return self.encode_message(MessageType.DESYNC_DIFF, {
+            "turn_number": turn_number,
+            "diff": diff
+        })
+
     def validate_message(self, message: Dict[str, Any]) -> bool:
         """
         Validate message structure and required fields.
@@ -631,6 +653,14 @@ class NetworkProtocol:
                 owner = data.get('new_owner')
                 if owner is not None and not _valid_player_index(owner):
                     logger.warning(f"Invalid new_owner {owner}")
+                    return False
+
+            elif msg_type in (MessageType.STATE_DETAIL_REQUEST, MessageType.STATE_DETAIL_RESPONSE,
+                              MessageType.DESYNC_DIFF):
+                # Sync logger messages: validate turn_number is a non-negative int
+                tn = data.get('turn_number')
+                if tn is not None and not (isinstance(tn, int) and tn >= 0):
+                    logger.warning(f"Invalid turn_number {tn} in {msg_type}")
                     return False
 
         except Exception as e:

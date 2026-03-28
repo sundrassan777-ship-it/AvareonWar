@@ -5,8 +5,9 @@ Particle stream that travels along a bezier curve between two territory centers.
 Used for abilities that move things between territories (Royal Charisma, Valorous Charge).
 
 Visual design:
-- 1px particles launched in staggered waves along a quadratic bezier curve
+- Configurable particle size (default 1px) launched in staggered waves along a quadratic bezier curve
 - Two phases: Travel (1.5s, staggered launch over first 0.8s) -> Arrival burst + fade (1.0s) = 2.5s total
+- Configurable arc height for taller/shorter arcs
 - World-coordinate support with camera tracking
 - Cached SRCALPHA surface for performance
 
@@ -61,7 +62,7 @@ class AbilityArcEffect:
     """
 
     def __init__(self, source_pos, dest_pos, color_palette, num_particles=80,
-                 world_coords=True):
+                 world_coords=True, particle_size=1, arc_height=None):
         """
         Args:
             source_pos: (x, y) tuple for arc start point
@@ -69,8 +70,11 @@ class AbilityArcEffect:
             color_palette: List of 5 RGB tuples (dark to light shades)
             num_particles: Number of particles (default 80)
             world_coords: If True, positions are in world coordinates
+            particle_size: Radius of each particle circle (default 1px)
+            arc_height: Override arc height factor (default ARC_HEIGHT_FACTOR=0.35)
         """
         self.world_coords = world_coords
+        self.particle_size = particle_size
 
         if world_coords:
             self.world_source_x, self.world_source_y = source_pos
@@ -91,9 +95,10 @@ class AbilityArcEffect:
         dy = self.world_dest_y - self.world_source_y
         distance = math.sqrt(dx * dx + dy * dy)
         # Control point is above the midpoint (negative Y = up in screen coords)
-        arc_height = distance * ARC_HEIGHT_FACTOR
+        height_factor = arc_height if arc_height is not None else ARC_HEIGHT_FACTOR
+        arc_peak = distance * height_factor
         self.ctrl_x = mid_x
-        self.ctrl_y = mid_y - arc_height
+        self.ctrl_y = mid_y - arc_peak
 
         # Initialize particles with staggered launch times
         self.particles = []
@@ -274,7 +279,7 @@ class AbilityArcEffect:
             r, g, b = particle['color']
             alpha = int(255 * max(0.0, opacity))
             pygame.draw.circle(temp_surface, (r, g, b, alpha), (x, y),
-                               particle['size'])
+                               self.particle_size)
 
         screen.blit(temp_surface, (0, 0))
 

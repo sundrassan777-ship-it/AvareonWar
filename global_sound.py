@@ -49,8 +49,49 @@ def initialize_menu_sounds():
         sounds[2].set_volume(sound_manager.volume * 2.5)  # DefaultMouseClick - loud
         sounds[3].set_volume(sound_manager.volume * 2.0)  # ResearchCompleted - very loud
 
+    # Generate a short denial tone programmatically (no asset file needed)
+    # Used for action failure feedback (e.g., not enough gold, command limit)
+    try:
+        _denial = _generate_denial_sound()
+        if _denial:
+            sound_manager.sound_categories['denial'] = [_denial]
+    except Exception:
+        pass  # Graceful fallback: no denial sound if generation fails
+
     logger.info(f"Loaded {num_general} menu sounds (general category)")
     return sound_manager
+
+
+def _generate_denial_sound():
+    """Generate a short low-pitched denial tone programmatically.
+
+    Creates a ~120ms sine wave tone that matches the current mixer format.
+    Returns a pygame.mixer.Sound or None if mixer is not initialized.
+    """
+    import array
+    import math
+
+    mixer_info = pygame.mixer.get_init()
+    if not mixer_info:
+        return None
+
+    sample_rate, _bits, channels = mixer_info
+    duration = 0.12  # 120ms
+    freq = 220  # Hz (low A)
+    n_samples = int(sample_rate * duration)
+
+    buf = array.array('h')  # 16-bit signed samples
+    for i in range(n_samples):
+        # Sine wave with quick fade-out envelope for a clean "denied" blip
+        envelope = 1.0 - (i / n_samples)
+        val = int(32767 * 0.3 * envelope * math.sin(2 * math.pi * freq * i / sample_rate))
+        # Write sample for each channel (mono → duplicate for stereo)
+        for _ch in range(max(1, abs(channels))):
+            buf.append(val)
+
+    snd = pygame.mixer.Sound(buffer=buf)
+    snd.set_volume(sound_manager.volume * 2.0)
+    return snd
 
 
 def _make_sound_loader(category, folder, volume_mult):
@@ -264,6 +305,17 @@ def play_hero_recruit_sound(hero_name, use_queue=False):
         else:
             return sound_manager.play_specific('silvyr', 0)
     return False
+
+def play_action_denied():
+    """Play the action denied sound (e.g., not enough gold, command limit reached).
+
+    Uses allow_overlap=False so rapid clicks don't stack the sound.
+
+    Returns:
+        bool: True if sound played successfully
+    """
+    return sound_manager.play_specific('denial', 0, allow_overlap=False)
+
 
 def play_battle_sound():
     """

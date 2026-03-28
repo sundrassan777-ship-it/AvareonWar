@@ -2401,9 +2401,10 @@ class UIRenderer:
 
                         # PERFORMANCE OPTIMIZATION: Cache tech border scaling (21 buttons = 21× smoothscale without cache)
                         # This was causing ~30% FPS drop when technology panel open
+                        # Border is 2px larger than icon (1px per side) to fully contain icon edges
                         if self.game.icon_border:
-                            cached_border = self.game._get_cached_tech_border(self.game.icon_border, button_width, button_height)
-                            self.game.screen.blit(cached_border, (button_x, button_y))
+                            cached_border = self.game._get_cached_tech_border(self.game.icon_border, button_width + 2, button_height + 2)
+                            self.game.screen.blit(cached_border, (button_x - 1, button_y - 1))
                     except Exception as e:
                         logger.warning(f"Failed to load tech icon {icon_path}: {e}")
 

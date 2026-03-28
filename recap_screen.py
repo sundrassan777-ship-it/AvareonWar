@@ -648,10 +648,10 @@ class RecapScreen:
         if icon:
             scaled_icon = pygame.transform.smoothscale(icon, (icon_size, icon_size))
             preview.blit(scaled_icon, (icon_margin, icon_y_offset))
-        # Icon border overlay
+        # Icon border overlay (2px larger than icon = 1px per side to fully contain icon edges)
         if self.achievement_icon_border:
-            border = pygame.transform.smoothscale(self.achievement_icon_border, (icon_size, icon_size))
-            preview.blit(border, (icon_margin, icon_y_offset))
+            border = pygame.transform.smoothscale(self.achievement_icon_border, (icon_size + 2, icon_size + 2))
+            preview.blit(border, (icon_margin - 1, icon_y_offset - 1))
 
         # Text area to the right of icon
         text_x = icon_margin + icon_size + int(15 * self.ui_scale)

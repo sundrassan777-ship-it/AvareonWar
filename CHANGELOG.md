@@ -2,6 +2,79 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-28 - Action Failure Feedback + Campaign Mission 7 Fix
+
+- **Feature:** Denied actions (not enough gold, command limit, etc.) now show a floating notification in the top-left map area and play a denial sound
+  - "Not enough resources." for gold failures (training, building, research, hero, castle upgrade)
+  - "Cannot train more units — Command Limit reached." for command limit
+  - Additional messages for army limit, queue full, hero limit
+- **Feature:** `ChatNotificationEffect.add_system_notification()` for non-chat floating messages
+- **Feature:** Programmatically generated denial tone in `global_sound.py` (no asset file needed)
+- **Fix:** Training icons (both map quick-access and bottom bar) now show red hue when command limit is reached, consistent with how army limit and affordability are shown
+- **Fix:** Campaign Mission 7: pre-research rows 0-1 for human player (was row 0 only), fixing training being blocked from turn 1 because ~90 starting units exceeded the 75 default command limit
+- **Infrastructure:** `game_state.last_action_error` attribute for categorized failure feedback between game_state methods and UI layer
+- **Modified:** game_state/__init__.py, game_state/buildings.py, game_state/heroes.py, global_sound.py, ui/effects/chat_notification_effect.py, rendering/map_renderer.py, main.py, campaign_mission_7.py
+
+## 2026-03-27 - Enhanced Hero Ability Visual Effects + Battle Sound
+
+- **Enhancement:** All 12 active hero abilities now have more prominent, dramatic visual effects
+  - Larger particles (2px), flash rings, multi-layer combo effects across the board
+  - **Vow of Silence:** NEW full-screen crimson particle wave sweeping left to right (~2.5s)
+  - **Reinforce:** 180 particles, flash ring, longer float
+  - **Extort Populace:** 40 particles/plot + gold polygon shimmer per territory
+  - **Embargo:** Implosion bursts at enemy Keeps on activation + larger persistent bubbles (1.5x scale)
+  - **Master Negotiator:** NEW green burst at Keep + green polygon bubbles on owned territories
+  - **Aggressive Diplomacy:** 90 bubbles with border flash + center burst in orange
+  - **Levy:** 8 staggered burst points + gold polygon overlay
+  - **Royal Charisma:** 120 particles, white/gold palette, taller arc, source implosion burst
+  - **Regicide:** 160 particles, contracting flash ring, dark aftermath particles
+  - **Decisive Strike:** 180 particles, flash ring shockwave + delayed secondary burst
+  - **Valorous Charge:** 120 particles, departure burst at Keep
+  - **Relentless Charge:** 160 particles, flash ring + 4 staggered satellite bursts
+- **Enhancement:** Battle sound now layers ReinforceSound.mp3 alongside BattleSound.mp3 for richer audio
+- **New file:** `ui/effects/ability_silence_wave_effect.py` — screen-space crimson wave effect
+- **Enhanced:** `AbilityBurstEffect` — new params: particle_size, flash_ring, delay
+- **Enhanced:** `AbilityArcEffect` — new params: particle_size, arc_height
+- **Enhanced:** `AbilityPolygonBurstEffect` — new params: bubble_scale, border_flash
+- **Modified:** ability_burst_effect.py, ability_arc_effect.py, ability_polygon_burst_effect.py, map_renderer.py, main.py
+
+## 2026-03-24 - Multiplayer State Sync Verification Logging
+
+- **Feature:** New `sync_logger.py` — per-participant sync logs for multiplayer games
+  - Records all gameplay actions (orders, battles, turn ends) with timestamps
+  - Captures comprehensive state snapshots at every turn boundary
+  - Logs checksum comparisons between host and clients
+  - On desync: host requests client's full state, computes field-level diff, sends back to client
+  - Both host and client log the diff for post-game diagnosis
+  - Output: `Logs/sync/{game_id}_P{idx}_{host|client}_{date}.json`
+- **Enhancement:** `calculate_state_checksum()` now covers ~15 previously missing fields
+  - Added: territory_garrisons, hero_training_queue, hero_ability_cooldowns, hero_silence_status
+  - Added: hero_ownership, eliminated_players, disconnect_eliminations
+  - Added: embargo_blocked_players, player_master_negotiator_active, all 10 tech effect arrays
+  - Desyncs in these fields are now detected and corrected instead of silently diverging
+- **Network:** 3 new message types for desync diagnosis (v1.3.0)
+  - STATE_DETAIL_REQUEST (host→client), STATE_DETAIL_RESPONSE (client→host), DESYNC_DIFF (host→client)
+  - Network version bumped to 1.3.0
+- **Modified:** sync_logger.py (new), game_state/__init__.py, network_config.py, network/protocol.py, main.py, simultaneous/sim_state.py
+
+## 2026-03-24 - Fix 3+ Player Multiplayer Real-Time Sync
+
+- **Bug Fix:** Server-side message relay for 3+ player games
+  - Client messages were only forwarded to host, not relayed to other clients
+  - Added `_relay_to_other_clients()` in server with `_RELAY_MESSAGE_TYPES` set
+  - All gameplay messages (orders, battles, chat, hero abilities, turn ends) now relayed
+  - Raw byte relay for zero re-encoding overhead; sender excluded to prevent echoes
+- **Bug Fix:** Host now sends FULL_STATE_SYNC after receiving client TURN_END
+  - Previously only sent when the host ended its own turn
+  - Ensures all clients have authoritative state at every turn boundary
+- **Bug Fix:** STATE_CHECKSUM no longer hardcoded to player 1
+  - Changed `local_player_index == 1` to `!= 0` at 4 locations
+  - All non-host players now send checksums for desync detection
+- **Bug Fix:** `_sim_execute_merged_orders` missing order types
+  - Added handling for demolish, upgrade_castle, train_hero, hero_ability orders
+  - Wrapped non-movement order execution in try/finally for current_player safety
+- **Modified:** network/server.py, main.py
+
 ## 2026-03-21 - Resolve Remaining Battles Button
 
 - **Feature:** "Resolve Remaining Battles" button during Battle Phase

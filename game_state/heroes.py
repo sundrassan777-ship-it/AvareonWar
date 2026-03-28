@@ -74,6 +74,7 @@ class HeroMixin:
         hero_limit = self.player_hero_limit[self.current_player]
         if current_hero_count >= hero_limit:
             self.add_message(f"Hero limit reached! ({current_hero_count}/{hero_limit})")
+            self.last_action_error = "hero_limit"
             return False
 
         # 7. Check gold
@@ -86,6 +87,7 @@ class HeroMixin:
 
         if self.player_gold[self.current_player] < hero_cost:
             self.add_message(f"Not enough gold! (Need {hero_cost})")
+            self.last_action_error = "gold"
             return False
 
         # 8. Deduct gold and track spending for recap screen
@@ -410,16 +412,16 @@ class HeroMixin:
         """
         current_player = self.current_player
 
-        # Silence all enemy players
+        # Silence all enemy players until end of caster's next turn
         for player_index in range(self.num_players):
             if player_index != current_player:
-                # Silence lasts until start of caster's next turn
-                # Set to num_players because decrement happens at START of each turn
-                # Example (2 players):
-                #   - Player 1 casts: Player 2 silence = 2
-                #   - Player 2 turn starts: decrement 2->1, effect active during Player 2's turn
-                #   - Player 1 turn starts: decrement 1->0, effect expires
-                self.hero_silence_status[player_index] = self.num_players
+                # Counter = 2 regardless of player count:
+                # Decrement happens at start of each player's own turn (sequential)
+                # or once per round for all players (simultaneous).
+                # 1st decrement: 2->1 (silenced during their turn)
+                # 2nd decrement: 1->0 (silence expires after caster's next turn ends)
+                # Old bug: used num_players, which made silence last num_players-1 rounds
+                self.hero_silence_status[player_index] = 2
 
         # M5 fix: Guard pygame import for headless (test) environments
         try:

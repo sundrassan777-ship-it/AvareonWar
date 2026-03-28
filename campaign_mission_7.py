@@ -553,8 +553,11 @@ class Mission7:
         gs.player_starting_territories[1] = "Nordica"
 
         # --- Pre-researched technologies ---
-        # Human: first row (row 0) in all 3 columns
-        self._pre_research_techs(0, max_row=0)
+        # Human: first 2 rows (rows 0-1) in all 3 columns
+        # Row 1 includes tech_2_1 (Improved Command I: +35 command limit)
+        # Required because human starts with ~90 units across 23 territories,
+        # which exceeds the default 75 command limit and blocks all training
+        self._pre_research_techs(0, max_row=1)
         # Central Alliance: first 5 rows (rows 0-4) in all 3 columns
         self._pre_research_techs(1, max_row=4)
 

@@ -193,6 +193,7 @@ class BuildingMixin:
 
             if self.player_gold[self.current_player] < cost:
                 self.add_message("Not enough Resources!")
+                self.last_action_error = "gold"
                 return False
         except (KeyError, IndexError) as e:
             self.log_error(f"Failed to check building cost for {building_type}", e)
@@ -566,6 +567,7 @@ class BuildingMixin:
         current_armies = self.get_territory_total_armies(territory)
         if current_armies >= self.MAX_ARMIES_PER_TERRITORY:
             self.add_message(f"Army limit reached in {territory}! (Max {self.MAX_ARMIES_PER_TERRITORY} per territory)")
+            self.last_action_error = "army_limit"
             return False
 
         # Check command limit - prevent training if at max
@@ -573,6 +575,7 @@ class BuildingMixin:
         command_limit = self.player_command_limit[self.current_player]
         if current_command >= command_limit:
             self.add_message(f"Command limit reached! ({current_command}/{command_limit})")
+            self.last_action_error = "command_limit"
             return False
 
         # Initialize training queue for this Barracks if needed
@@ -584,6 +587,7 @@ class BuildingMixin:
         # Check queue limit (4 units per Barracks)
         if len(self.training_queue[territory][barracks_plot_index]) >= 4:
             self.add_message("Training queue full! (Max 4 per Barracks)")
+            self.last_action_error = "queue_full"
             return False
 
         # Get unit cost based on type (with error handling)
@@ -592,6 +596,7 @@ class BuildingMixin:
             unit_cost = self.get_effective_cost(unit_type, base_cost, self.current_player)
             if self.player_gold[self.current_player] < unit_cost:
                 self.add_message(f"Not enough gold to train {unit_type}! (Need {unit_cost} gold)")
+                self.last_action_error = "gold"
                 return False
         except (KeyError, IndexError) as e:
             self.log_error(f"Failed to get unit cost for {unit_type}", e)
@@ -870,6 +875,7 @@ class BuildingMixin:
         # 6. Check gold
         if self.player_gold[self.current_player] < UPGRADE_COST:
             self.add_message(f"Not enough gold! (Need {UPGRADE_COST})")
+            self.last_action_error = "gold"
             return False
 
         # 7. Deduct gold and track spending for recap screen
@@ -1046,6 +1052,7 @@ class BuildingMixin:
         if cost > 0:
             if self.player_gold[self.current_player] < cost:
                 self.add_message(f"Not enough gold! (Need {cost})")
+                self.last_action_error = "gold"
                 return False
 
             # Deduct cost and track spending for recap screen
