@@ -162,6 +162,12 @@ class CutsceneTool:
         # Hovered elements
         self.hovered_btn = None
 
+        # Export modal state
+        self._export_modal_active = False
+        self._export_options = {'subtitles': True, 'audio': True}
+        self._export_modal_rects = {}  # Button/checkbox rects for the modal
+        self._export_progress = None   # Float 0.0-1.0 during export, None otherwise
+
         # Load current slide's image if data exists
         self._sync_slide_image()
 
@@ -860,6 +866,367 @@ class CutsceneTool:
             self._set_status(f"Preview error: {e}")
 
     # ========================================================================
+    # MP4 EXPORT
+    # ========================================================================
+
+    def _open_export_modal(self):
+        """Open the export options modal dialog."""
+        self._commit_field_edit()
+        self._export_modal_active = True
+
+    def _draw_export_modal(self):
+        """Draw the export options modal overlay on top of the tool UI."""
+        # Semi-transparent dark overlay behind the modal
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+
+        # Modal box dimensions
+        modal_w = 380
+        modal_h = 300
+        modal_x = (WINDOW_WIDTH - modal_w) // 2
+        modal_y = (WINDOW_HEIGHT - modal_h) // 2
+
+        # Draw modal background with border
+        modal_rect = pygame.Rect(modal_x, modal_y, modal_w, modal_h)
+        pygame.draw.rect(self.screen, PANEL_BG, modal_rect, border_radius=8)
+        pygame.draw.rect(self.screen, BRASS_COLOR, modal_rect, 2, border_radius=8)
+
+        # Title
+        title = self.font_title.render("Export MP4", True, WHITE)
+        self.screen.blit(title, (modal_x + (modal_w - title.get_width()) // 2, modal_y + 16))
+
+        # Resolution info
+        info = self.font_small.render("1920x1080 @ 60 FPS", True, LIGHT_GRAY)
+        self.screen.blit(info, (modal_x + (modal_w - info.get_width()) // 2, modal_y + 46))
+
+        # Checkboxes
+        self._export_modal_rects = {}
+        check_x = modal_x + 40
+        check_y = modal_y + 80
+        check_size = 18
+        check_gap = 36
+
+        # Subtitle checkbox
+        sub_rect = pygame.Rect(check_x, check_y, check_size, check_size)
+        self._export_modal_rects['subtitles'] = sub_rect
+        pygame.draw.rect(self.screen, WHITE, sub_rect, 1, border_radius=3)
+        if self._export_options['subtitles']:
+            # Draw checkmark
+            inner = sub_rect.inflate(-6, -6)
+            pygame.draw.rect(self.screen, GREEN, inner, border_radius=2)
+        sub_label = self.font.render("Include subtitles", True, WHITE)
+        self.screen.blit(sub_label, (check_x + check_size + 10, check_y))
+
+        # Audio checkbox
+        check_y += check_gap
+        aud_rect = pygame.Rect(check_x, check_y, check_size, check_size)
+        self._export_modal_rects['audio'] = aud_rect
+        pygame.draw.rect(self.screen, WHITE, aud_rect, 1, border_radius=3)
+        if self._export_options['audio']:
+            inner = aud_rect.inflate(-6, -6)
+            pygame.draw.rect(self.screen, GREEN, inner, border_radius=2)
+        aud_label = self.font.render("Include audio", True, WHITE)
+        self.screen.blit(aud_label, (check_x + check_size + 10, check_y))
+
+        # Buttons -- 3 in a row: Export Current | Export All | Cancel
+        btn_w = 105
+        btn_h = 34
+        btn_y = modal_y + modal_h - btn_h - 24
+        btn_gap = 10
+        total_btn_w = btn_w * 3 + btn_gap * 2
+        btn_start_x = modal_x + (modal_w - total_btn_w) // 2
+        mouse_pos = pygame.mouse.get_pos()
+
+        # Export Current button
+        export_rect = pygame.Rect(btn_start_x, btn_y, btn_w, btn_h)
+        self._export_modal_rects['export'] = export_rect
+        is_hovered = export_rect.collidepoint(mouse_pos)
+        bg = (60, 120, 60) if is_hovered else (50, 100, 50)
+        pygame.draw.rect(self.screen, bg, export_rect, border_radius=5)
+        pygame.draw.rect(self.screen, GREEN, export_rect, 1, border_radius=5)
+        exp_label = self.font.render("Current", True, WHITE)
+        self.screen.blit(exp_label, (export_rect.x + (btn_w - exp_label.get_width()) // 2,
+                                     export_rect.y + (btn_h - exp_label.get_height()) // 2))
+
+        # Export All button
+        export_all_rect = pygame.Rect(btn_start_x + btn_w + btn_gap, btn_y, btn_w, btn_h)
+        self._export_modal_rects['export_all'] = export_all_rect
+        is_hovered = export_all_rect.collidepoint(mouse_pos)
+        bg = (60, 100, 120) if is_hovered else (45, 80, 100)
+        pygame.draw.rect(self.screen, bg, export_all_rect, border_radius=5)
+        pygame.draw.rect(self.screen, YELLOW, export_all_rect, 1, border_radius=5)
+        all_label = self.font.render("All", True, WHITE)
+        self.screen.blit(all_label, (export_all_rect.x + (btn_w - all_label.get_width()) // 2,
+                                     export_all_rect.y + (btn_h - all_label.get_height()) // 2))
+
+        # Cancel button
+        cancel_rect = pygame.Rect(btn_start_x + (btn_w + btn_gap) * 2, btn_y, btn_w, btn_h)
+        self._export_modal_rects['cancel'] = cancel_rect
+        is_hovered = cancel_rect.collidepoint(mouse_pos)
+        bg = (100, 60, 60) if is_hovered else (80, 50, 50)
+        pygame.draw.rect(self.screen, bg, cancel_rect, border_radius=5)
+        pygame.draw.rect(self.screen, RED, cancel_rect, 1, border_radius=5)
+        can_label = self.font.render("Cancel", True, WHITE)
+        self.screen.blit(can_label, (cancel_rect.x + (btn_w - can_label.get_width()) // 2,
+                                     cancel_rect.y + (btn_h - can_label.get_height()) // 2))
+
+    def _handle_export_modal_click(self, pos):
+        """Handle mouse clicks within the export modal."""
+        # Check checkbox clicks
+        for key in ('subtitles', 'audio'):
+            rect = self._export_modal_rects.get(key)
+            if rect and rect.collidepoint(pos):
+                self._export_options[key] = not self._export_options[key]
+                return
+
+        # Check export current button
+        rect = self._export_modal_rects.get('export')
+        if rect and rect.collidepoint(pos):
+            self._export_modal_active = False
+            self._start_export()
+            return
+
+        # Check export all button
+        rect = self._export_modal_rects.get('export_all')
+        if rect and rect.collidepoint(pos):
+            self._export_modal_active = False
+            self._start_export_all()
+            return
+
+        # Check cancel button
+        rect = self._export_modal_rects.get('cancel')
+        if rect and rect.collidepoint(pos):
+            self._export_modal_active = False
+            return
+
+    def _start_export(self):
+        """Open file save dialog and begin the export process."""
+        import tkinter as tk
+        from tkinter import filedialog
+
+        # Use tkinter file dialog for save path
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        # Default filename based on cutscene ID
+        default_name = f"{self.current_cutscene_id}.mp4"
+
+        output_path = filedialog.asksaveasfilename(
+            title="Export Cutscene as MP4",
+            defaultextension=".mp4",
+            filetypes=[("MP4 Video", "*.mp4")],
+            initialfile=default_name,
+        )
+        root.destroy()
+
+        if not output_path:
+            self._set_status("Export cancelled")
+            return
+
+        # Save cutscene data first (so exporter reads latest)
+        self.save_data()
+
+        # Run the export with progress overlay
+        self._run_export(output_path)
+
+    def _run_export(self, output_path):
+        """Execute the export process with a progress overlay."""
+        try:
+            from cutscene_exporter import CutsceneExporter, _get_ffmpeg_path
+        except ImportError as e:
+            self._set_status(f"Export error: {e}")
+            return
+
+        # Check ffmpeg availability before starting
+        if not _get_ffmpeg_path():
+            self._set_status("ffmpeg not found. Install: pip install imageio-ffmpeg")
+            return
+
+        self._export_progress = 0.0
+        cancelled = False
+
+        def progress_callback(progress):
+            """Called by the exporter to update progress and check for cancellation."""
+            self._export_progress = progress
+            # Redraw the progress overlay
+            self._draw_export_progress()
+            pygame.display.flip()
+
+            # Pump events to check for ESC cancellation
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return False
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    return False
+            return True
+
+        try:
+            exporter = CutsceneExporter(
+                self.current_cutscene_id,
+                include_subtitles=self._export_options['subtitles'],
+                include_audio=self._export_options['audio'],
+            )
+
+            if not exporter.has_cutscene:
+                self._set_status("No cutscene data to export")
+                self._export_progress = None
+                return
+
+            success = exporter.export(output_path, progress_callback=progress_callback)
+
+            if success:
+                # Show file size in status
+                try:
+                    size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                    self._set_status(f"Exported: {os.path.basename(output_path)} ({size_mb:.1f} MB)")
+                except OSError:
+                    self._set_status(f"Exported: {os.path.basename(output_path)}")
+            else:
+                if self._export_progress is not None and self._export_progress < 1.0:
+                    self._set_status("Export cancelled")
+                else:
+                    self._set_status("Export failed -- check console for details")
+
+        except Exception as e:
+            self._set_status(f"Export error: {e}")
+
+        self._export_progress = None
+
+    def _start_export_all(self):
+        """Open file save dialog and export all cutscenes concatenated into one MP4."""
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        output_path = filedialog.asksaveasfilename(
+            title="Export All Cutscenes as MP4",
+            defaultextension=".mp4",
+            filetypes=[("MP4 Video", "*.mp4")],
+            initialfile="all_cutscenes.mp4",
+        )
+        root.destroy()
+
+        if not output_path:
+            self._set_status("Export cancelled")
+            return
+
+        # Save cutscene data first (so exporter reads latest)
+        self.save_data()
+
+        self._run_export_all(output_path)
+
+    def _run_export_all(self, output_path):
+        """Export all cutscenes that have data into a single concatenated MP4."""
+        try:
+            from cutscene_exporter import export_all_cutscenes, _get_ffmpeg_path
+        except ImportError as e:
+            self._set_status(f"Export error: {e}")
+            return
+
+        if not _get_ffmpeg_path():
+            self._set_status("ffmpeg not found. Install: pip install imageio-ffmpeg")
+            return
+
+        self._export_progress = 0.0
+
+        def progress_callback(progress):
+            """Called by the exporter to update progress and check for cancellation."""
+            self._export_progress = progress
+            self._draw_export_progress()
+            pygame.display.flip()
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return False
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    return False
+            return True
+
+        try:
+            # Export all cutscene IDs in order
+            success = export_all_cutscenes(
+                CUTSCENE_IDS,
+                output_path,
+                include_subtitles=self._export_options['subtitles'],
+                include_audio=self._export_options['audio'],
+                progress_callback=progress_callback,
+            )
+
+            if success:
+                try:
+                    size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                    self._set_status(f"Exported all: {os.path.basename(output_path)} ({size_mb:.1f} MB)")
+                except OSError:
+                    self._set_status(f"Exported all: {os.path.basename(output_path)}")
+            else:
+                if self._export_progress is not None and self._export_progress < 1.0:
+                    self._set_status("Export cancelled")
+                else:
+                    self._set_status("Export failed -- check console for details")
+
+        except Exception as e:
+            self._set_status(f"Export error: {e}")
+
+        self._export_progress = None
+
+    def _draw_export_progress(self):
+        """Draw a progress overlay during export. Called each frame by the exporter."""
+        # Redraw the normal tool UI underneath
+        self.screen.fill(BLACK)
+        self.draw_image_preview()
+        self.draw_top_bar()
+        self.draw_right_panel()
+        self.draw_status_bar()
+
+        # Semi-transparent overlay
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        # Progress box
+        box_w = 400
+        box_h = 130
+        box_x = (WINDOW_WIDTH - box_w) // 2
+        box_y = (WINDOW_HEIGHT - box_h) // 2
+
+        pygame.draw.rect(self.screen, PANEL_BG, (box_x, box_y, box_w, box_h), border_radius=8)
+        pygame.draw.rect(self.screen, BRASS_COLOR, (box_x, box_y, box_w, box_h), 2, border_radius=8)
+
+        # Title
+        title = self.font_title.render("Exporting...", True, WHITE)
+        self.screen.blit(title, (box_x + (box_w - title.get_width()) // 2, box_y + 16))
+
+        # Progress bar
+        bar_margin = 30
+        bar_x = box_x + bar_margin
+        bar_y = box_y + 56
+        bar_w = box_w - bar_margin * 2
+        bar_h = 20
+        progress = self._export_progress or 0.0
+
+        # Bar background
+        pygame.draw.rect(self.screen, DARK_GRAY, (bar_x, bar_y, bar_w, bar_h), border_radius=4)
+        # Bar fill
+        fill_w = max(0, int(bar_w * progress))
+        if fill_w > 0:
+            pygame.draw.rect(self.screen, GREEN, (bar_x, bar_y, fill_w, bar_h), border_radius=4)
+        # Bar border
+        pygame.draw.rect(self.screen, MED_GRAY, (bar_x, bar_y, bar_w, bar_h), 1, border_radius=4)
+
+        # Percentage text
+        pct_text = self.font.render(f"{int(progress * 100)}%", True, WHITE)
+        self.screen.blit(pct_text, (box_x + (box_w - pct_text.get_width()) // 2, bar_y + bar_h + 6))
+
+        # Cancel hint
+        hint = self.font_small.render("Press ESC to cancel", True, LIGHT_GRAY)
+        self.screen.blit(hint, (box_x + (box_w - hint.get_width()) // 2, bar_y + bar_h + 28))
+
+    # ========================================================================
     # STATUS BAR
     # ========================================================================
 
@@ -1340,6 +1707,7 @@ class CutsceneTool:
 
         buttons = [
             ('save', 'Save (Ctrl+S)', BRASS_COLOR),
+            ('export', 'Export MP4', GREEN),
             ('preview', 'Preview (P)', YELLOW),
             ('load_music', 'Load Music', BLUE),
             ('load_audio', 'Load Voice', BLUE),
@@ -1408,6 +1776,14 @@ class CutsceneTool:
                     self.save_data()
                     running = False
 
+                # Export modal intercepts all input when active
+                elif self._export_modal_active:
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self._export_modal_active = False
+                    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        self._handle_export_modal_click(event.pos)
+                    continue
+
                 elif event.type == pygame.KEYDOWN:
                     # Text field input takes priority
                     if self._handle_field_keydown(event):
@@ -1465,6 +1841,8 @@ class CutsceneTool:
                                         self._load_audio_dialog()
                                     elif key == 'load_music':
                                         self._load_music_dialog()
+                                    elif key == 'export':
+                                        self._open_export_modal()
                                     elif key == 'preview':
                                         self._preview_cutscene()
                                     elif key == 'save':
@@ -1540,6 +1918,9 @@ class CutsceneTool:
             self.draw_top_bar()
             self.draw_right_panel()
             self.draw_status_bar()
+            # Draw export modal overlay on top of everything when active
+            if self._export_modal_active:
+                self._draw_export_modal()
             pygame.display.flip()
 
         pygame.quit()

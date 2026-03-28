@@ -2,6 +2,19 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-03-28 - Cutscene MP4 Export
+
+- **Feature:** Export cutscenes to MP4 video from the Cutscene Tool
+  - New "Export MP4" button in Cutscene_Tool.py with options modal
+  - Toggle subtitles on/off, toggle audio (voiceover + music) on/off
+  - "Current" exports the selected cutscene; "All" exports every cutscene concatenated into one file (1s black gap between each)
+  - Exports at 1920x1080 @ 60 FPS using H.264 encoding
+  - Two-pass: renders frames offscreen then muxes audio via ffmpeg filter_complex
+  - Progress bar overlay with ESC cancellation support
+- **New file:** `cutscene_exporter.py` — offscreen frame renderer + ffmpeg piping
+- **New dependency:** `imageio-ffmpeg>=0.4.0` (bundles static ffmpeg binary, no manual install)
+- **Modified:** Cutscene_Tool.py, requirements.txt, requirements-dev.txt
+
 ## 2026-03-28 - Action Failure Feedback + Campaign Mission 7 Fix
 
 - **Feature:** Denied actions (not enough gold, command limit, etc.) now show a floating notification in the top-left map area and play a denial sound

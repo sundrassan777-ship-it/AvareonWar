@@ -2127,6 +2127,8 @@ INTRO_SEQUENCE = [
 
 **Player controls:** ESC or left-click to skip (0.5s fade-to-black).
 
+**MP4 Export:** Click "Export MP4" in Cutscene_Tool.py to export the selected cutscene as a video file. Options: include/exclude subtitles, include/exclude audio. Export uses [cutscene_exporter.py](../cutscene_exporter.py) which renders frames offscreen and pipes to ffmpeg (bundled via `imageio-ffmpeg`). Two-pass: silent video first, then audio muxing via ffmpeg `filter_complex`.
+
 #### ✅ Add AI Awakening Trigger
 
 **In `_awaken_faction()` method:**
