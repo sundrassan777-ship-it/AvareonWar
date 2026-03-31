@@ -70,7 +70,8 @@ class AbilityPolygonBurstEffect:
     """
 
     def __init__(self, polygon, color, num_bubbles=60, world_coords=True,
-                 continuous=False, bubble_scale=1.0, border_flash=False):
+                 continuous=False, bubble_scale=1.0, border_flash=False,
+                 particle_image=None):
         """
         Args:
             polygon: List of (x, y) tuples defining territory polygon (world coords)
@@ -80,6 +81,7 @@ class AbilityPolygonBurstEffect:
             continuous: If True, spawn bubbles continuously until stop() is called
             bubble_scale: Multiplier for bubble radii (default 1.0)
             border_flash: If True, draw fading polygon outline during first 0.8s
+            particle_image: Optional white PNG surface for soft-glow particles (tinted to color)
         """
         self.polygon = polygon
         self.color = color
@@ -91,6 +93,19 @@ class AbilityPolygonBurstEffect:
         self.is_complete = False
         self._cached_surface = None
         self._stopping = False  # True after stop() called, lets existing bubbles fade
+
+        # Pre-build PNG particle cache: {(diameter, quantized_alpha): Surface}
+        # 3x multiplier: soft-glow PNG needs larger diameter since visible core is smaller
+        # Covers radii 1-8px -> diameters 6-48 with 3x scale
+        self._png_cache = {}
+        if particle_image is not None:
+            for diameter in range(6, 50, 2):  # Even diameters: 6, 8, ..., 48
+                scaled = pygame.transform.smoothscale(particle_image, (diameter, diameter))
+                scaled.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+                for alpha in range(0, 160, 10):  # 0, 10, 20, ..., 150
+                    alpha_surface = scaled.copy()
+                    alpha_surface.set_alpha(alpha)
+                    self._png_cache[(diameter, alpha)] = alpha_surface
 
         # Pre-compute bounding box for rejection sampling
         xs = [p[0] for p in polygon]
@@ -273,6 +288,9 @@ class AbilityPolygonBurstEffect:
                 pygame.draw.polygon(temp_surface, (flash_r, flash_g, flash_b, flash_alpha),
                                     int_poly, BORDER_FLASH_LINE_WIDTH)
 
+        # Draw bubbles — PNG path blits directly to screen, procedural uses temp surface
+        use_png = bool(self._png_cache)
+
         for bubble in self.bubbles:
             if bubble['alpha'] <= 0:
                 continue
@@ -296,14 +314,22 @@ class AbilityPolygonBurstEffect:
             alpha = bubble['alpha']
             radius = max(1, int(bubble['radius']))
 
-            # Filled circle with alpha (matches existing bubble style)
-            pygame.draw.circle(temp_surface, (r, g, b, alpha), (x, y), radius)
-
-            # 1px border for visibility (slightly more opaque, like _get_bubble_surface)
-            border_alpha = min(255, alpha + 50)
-            pygame.draw.circle(temp_surface,
-                               (border_r, border_g, border_b, border_alpha),
-                               (x, y), radius, 1)
+            if use_png:
+                # PNG particle path: 3x scale, snap to nearest even diameter in cache range
+                diameter = max(6, min(48, round(radius) * 6))
+                diameter = diameter + (diameter % 2)  # Ensure even
+                quantized_alpha = (alpha // 10) * 10
+                surface = self._png_cache.get((diameter, quantized_alpha))
+                if surface is not None:
+                    half = diameter // 2
+                    screen.blit(surface, (x - half, y - half))
+            else:
+                # Fallback: procedural circles on temp SRCALPHA surface
+                pygame.draw.circle(temp_surface, (r, g, b, alpha), (x, y), radius)
+                border_alpha = min(255, alpha + 50)
+                pygame.draw.circle(temp_surface,
+                                   (border_r, border_g, border_b, border_alpha),
+                                   (x, y), radius, 1)
 
         screen.blit(temp_surface, (0, 0))
 

@@ -1317,7 +1317,7 @@ class HeroMixin:
             # Kill the hero
             del self.heroes[territory_owner][hero_found]
             self.hero_ownership[territory_owner].discard(hero_found)
-            self.add_message(f"Player {owner + 1}: Regicide killed {hero_found} in {target_territory}!")
+            self.add_message(f"Player {owner + 1}: Regicide killed {hero_found} ({target_territory})!")
             self.add_message(f"Player {territory_owner + 1}: {hero_found} has died!")
             # Notify campaign mission so it can show a transmission for hero death
             if self.tutorial_mission:
@@ -1327,7 +1327,7 @@ class HeroMixin:
                     killer=owner, cause='regicide')
         else:
             # No hero found - ability is wasted
-            self.add_message(f"Player {owner + 1}: Regicide targeted {target_territory}, but no hero was found!")
+            self.add_message(f"Player {owner + 1}: Regicide failed in {target_territory} - no hero present!")
 
         # Player Level: award XP for using active hero ability (targeted)
         self._track_stat(owner, 'xp_earned', 2)

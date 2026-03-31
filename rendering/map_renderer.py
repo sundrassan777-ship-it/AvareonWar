@@ -2148,6 +2148,9 @@ class MapRenderer:
             player_index: Player who activated the ability
             source_territory: Source territory for arc effects (Royal Charisma, Valorous Charge)
         """
+        # PNG particle image for soft-glow effects (None = fallback to procedural circles)
+        particle_img = getattr(self.game, '_active_particle_base', None)
+
         # --- Vow of Silence: full-screen crimson wave sweeping left to right ---
         if ability_name == 'Vow of Silence':
             screen_w = self.game.screen.get_width()
@@ -2174,7 +2177,8 @@ class MapRenderer:
                                 swirl_duration=0,
                                 float_duration=0.8,
                                 particle_size=2,
-                                flash_ring=True
+                                flash_ring=True,
+                                particle_image=particle_img
                             )
                             self.ability_effects.append(effect)
                         break
@@ -2207,7 +2211,8 @@ class MapRenderer:
                                 swirl_duration=0,
                                 float_duration=0.5,
                                 particle_size=2,
-                                flash_ring=True
+                                flash_ring=True,
+                                particle_image=particle_img
                             )
                             self.ability_effects.append(effect)
             # Add gold polygon shimmer for each territory with Keeps/Castles
@@ -2218,7 +2223,8 @@ class MapRenderer:
                         polygon=polygon,
                         color=(255, 215, 0),  # Gold
                         num_bubbles=40,
-                        world_coords=True
+                        world_coords=True,
+                        particle_image=particle_img
                     )
                     self.ability_effects.append(shimmer)
             return
@@ -2267,7 +2273,8 @@ class MapRenderer:
                     world_coords=True,
                     swirl_duration=0,
                     float_duration=0.5,
-                    particle_size=2
+                    particle_size=2,
+                    particle_image=particle_img
                 )
                 self.ability_effects.append(burst)
             return
@@ -2293,7 +2300,8 @@ class MapRenderer:
                                 swirl_duration=0,
                                 float_duration=0.8,
                                 particle_size=2,
-                                flash_ring=True
+                                flash_ring=True,
+                                particle_image=particle_img
                             )
                             self.ability_effects.append(effect)
                         break
@@ -2311,7 +2319,8 @@ class MapRenderer:
                             polygon=polygon,
                             color=self.MASTER_NEGOTIATOR_COLOR,
                             num_bubbles=40,
-                            world_coords=True
+                            world_coords=True,
+                            particle_image=particle_img
                         )
                         self.ability_effects.append(shimmer)
             return
@@ -2327,7 +2336,8 @@ class MapRenderer:
                 color=(200, 90, 10),  # Darker orange
                 num_bubbles=50,
                 world_coords=True,
-                border_flash=True
+                border_flash=True,
+                particle_image=particle_img
             )
             self.ability_effects.append(effect)
             # Darker orange palette for staggered bursts
@@ -2348,7 +2358,8 @@ class MapRenderer:
                     float_duration=0.5,
                     particle_size=2,
                     flash_ring=True,
-                    delay=i * 0.1
+                    delay=i * 0.1,
+                    particle_image=particle_img
                 )
                 self.ability_effects.append(burst)
             return
@@ -2364,7 +2375,8 @@ class MapRenderer:
                 polygon=polygon,
                 color=(255, 215, 0),  # Gold
                 num_bubbles=50,
-                world_coords=True
+                world_coords=True,
+                particle_image=particle_img
             )
             self.ability_effects.append(shimmer)
             # 8 staggered burst points across the territory
@@ -2380,7 +2392,8 @@ class MapRenderer:
                     float_duration=0.5,
                     particle_size=2,
                     flash_ring=True,
-                    delay=i * 0.1  # Stagger bursts 0.1s apart
+                    delay=i * 0.1,  # Stagger bursts 0.1s apart
+                    particle_image=particle_img
                 )
                 self.ability_effects.append(effect)
             return
@@ -2402,7 +2415,8 @@ class MapRenderer:
                 num_particles=120,
                 world_coords=True,
                 particle_size=2,
-                arc_height=0.45  # Taller arc for drama
+                arc_height=0.45,  # Taller arc for drama
+                particle_image=particle_img
             )
             self.ability_effects.append(arc)
             # Source implosion burst (units being "pulled away")
@@ -2414,7 +2428,8 @@ class MapRenderer:
                 world_coords=True,
                 swirl_duration=0,
                 float_duration=0.5,
-                particle_size=2
+                particle_size=2,
+                particle_image=particle_img
             )
             self.ability_effects.append(burst)
             return
@@ -2435,7 +2450,8 @@ class MapRenderer:
                 color_palette=palette,
                 num_particles=120,
                 world_coords=True,
-                particle_size=2
+                particle_size=2,
+                particle_image=particle_img
             )
             self.ability_effects.append(arc)
             # Departure burst at source (troops leaving)
@@ -2448,7 +2464,8 @@ class MapRenderer:
                 swirl_duration=0,
                 float_duration=0.5,
                 particle_size=2,
-                flash_ring=True
+                flash_ring=True,
+                particle_image=particle_img
             )
             self.ability_effects.append(burst)
             return
@@ -2469,7 +2486,8 @@ class MapRenderer:
                 swirl_duration=0,
                 float_duration=0.8,
                 particle_size=2,
-                flash_ring=True
+                flash_ring=True,
+                particle_image=particle_img
             )
             self.ability_effects.append(effect)
             # Delayed secondary burst in lighter blue for double-flash impact
@@ -2483,7 +2501,8 @@ class MapRenderer:
                 swirl_duration=0,
                 float_duration=0.5,
                 particle_size=2,
-                delay=0.2
+                delay=0.2,
+                particle_image=particle_img
             )
             self.ability_effects.append(secondary)
             return
@@ -2494,7 +2513,7 @@ class MapRenderer:
             if target_territory not in self.game.scaled_centers:
                 return
             target_pos = self.game.scaled_centers[target_territory]
-            # Main implosion with contracting flash ring
+            # Main implosion with contracting flash ring (tighter radius for focused effect)
             effect = AbilityBurstEffect(
                 center_pos=target_pos,
                 color_palette=palette,
@@ -2503,10 +2522,12 @@ class MapRenderer:
                 world_coords=True,
                 float_duration=1.5,
                 particle_size=2,
-                flash_ring=True
+                flash_ring=True,
+                particle_image=particle_img,
+                implode_radius=(25, 60)
             )
             self.ability_effects.append(effect)
-            # Dark aftermath: lingering black/purple particles
+            # Dark aftermath: lingering black/purple particles (tighter radius)
             aftermath_palette = self.ABILITY_PALETTES['Regicide Aftermath']
             aftermath = AbilityBurstEffect(
                 center_pos=target_pos,
@@ -2517,7 +2538,9 @@ class MapRenderer:
                 swirl_duration=1.0,
                 float_duration=1.5,
                 particle_size=2,
-                delay=0.3
+                delay=0.3,
+                particle_image=particle_img,
+                implode_radius=(25, 60)
             )
             self.ability_effects.append(aftermath)
             return
@@ -2536,7 +2559,8 @@ class MapRenderer:
                 behavior='explode',
                 world_coords=True,
                 particle_size=2,
-                flash_ring=True
+                flash_ring=True,
+                particle_image=particle_img
             )
             self.ability_effects.append(effect)
             # 4 satellite bursts around center (simulating 4 cavalry arriving)
@@ -2556,7 +2580,8 @@ class MapRenderer:
                     swirl_duration=0,
                     float_duration=0.5,
                     particle_size=2,
-                    delay=0.15 * (i + 1)  # Stagger satellite bursts
+                    delay=0.15 * (i + 1),  # Stagger satellite bursts
+                    particle_image=particle_img
                 )
                 self.ability_effects.append(sat)
             return
@@ -2655,16 +2680,74 @@ class MapRenderer:
 
     def render_embargo_effects(self):
         """
-        Render all active embargo persistent effects using a single shared surface.
+        Render all active embargo persistent effects.
 
-        FPS OPT: Instead of each territory effect allocating its own full-screen
-        SRCALPHA surface (20+ surfaces = 100+ MB SRCALPHA clears per frame),
-        we batch all embargo bubbles onto one shared surface for a single blit.
+        Uses pre-cached PNG particle surfaces from game._particle_caches['embargo']
+        for soft-glow visuals. Falls back to procedural circles if PNG unavailable.
+
+        FPS OPT: PNG path blits pre-cached surfaces directly to screen (no shared
+        SRCALPHA surface needed). Fallback path uses batched shared surface.
         """
         if not self.embargo_effects:
             return
 
         screen = self.game.screen
+        world_to_screen = self.game.world_to_screen
+
+        # Try PNG particle path first
+        embargo_cache = self.game._particle_caches.get('embargo')
+        if embargo_cache:
+            self._render_embargo_png(screen, world_to_screen, embargo_cache)
+            return
+
+        # Fallback: procedural circle path if PNG cache unavailable
+        self._render_embargo_procedural(screen, world_to_screen)
+
+    def _render_embargo_png(self, screen, world_to_screen, cache):
+        """Render embargo bubbles using pre-cached PNG particle surfaces."""
+        screen_w = screen.get_width()
+        screen_h = screen.get_height()
+        camera_zoom = self.game.camera_zoom
+
+        for effect in self.embargo_effects.values():
+            if effect.is_complete or not effect.bubbles:
+                continue
+
+            for bubble in effect.bubbles:
+                if bubble['alpha'] <= 0:
+                    continue
+
+                world_x = bubble['world_x']
+                world_y = bubble['world_y'] + bubble['offset_y']
+
+                if effect.world_coords and world_to_screen:
+                    sx, sy = world_to_screen((world_x, world_y))
+                else:
+                    sx, sy = world_x, world_y
+
+                x = int(sx)
+                y = int(sy)
+
+                if x < -10 or x > screen_w + 10 or y < -10 or y > screen_h + 10:
+                    continue
+
+                # Scale radius by camera zoom for consistent size with passive auras
+                scaled_radius = max(1, int(bubble['radius'] * camera_zoom))
+
+                # Snap to nearest even diameter within cached range [6, 32] (2x scale for soft-glow)
+                diameter = max(6, min(32, round(scaled_radius) * 4))
+                diameter = diameter + (diameter % 2)  # Ensure even
+                quantized_alpha = (int(bubble['alpha']) // 10) * 10
+
+                surface = cache.get((diameter, quantized_alpha))
+                if surface is None:
+                    continue
+
+                half = diameter // 2
+                screen.blit(surface, (x - half, y - half))
+
+    def _render_embargo_procedural(self, screen, world_to_screen):
+        """Fallback: render embargo bubbles as procedural circles on shared surface."""
         screen_size = (screen.get_width(), screen.get_height())
 
         # Reuse a single shared SRCALPHA surface for all embargo bubbles
@@ -2674,9 +2757,6 @@ class MapRenderer:
         else:
             self._embargo_shared_surface.fill((0, 0, 0, 0))
 
-        world_to_screen = self.game.world_to_screen
-
-        # Draw all embargo bubbles from all territories onto the shared surface
         for effect in self.embargo_effects.values():
             if effect.is_complete or not effect.bubbles:
                 continue

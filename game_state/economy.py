@@ -300,7 +300,7 @@ class EconomyMixin:
             base_income = income - extensive_connections_bonus
             if extensive_connections_bonus > 0:
                 self.add_message(f"Player {player_index + 1} earned {base_income} gold from {territory_count} territories")
-                self.add_message(f"  +{extensive_connections_bonus} gold from Extensive Connections ({territory_count} territories × 4)")
+                self.add_message(f"  +{extensive_connections_bonus} gold from Extensive Connections ({territory_count} territories x 4)")
             else:
                 self.add_message(f"Player {player_index + 1} earned {income} gold from {territory_count} territories")
 

@@ -330,6 +330,20 @@ class Game:
             self.ingame_options_menu_bg = None
             self.main_menu_button_img = None
         
+        # Load PNG particle images for visual effects (white soft-glow, tinted per ability)
+        # Particle_Cropped.png: used for passive auras + embargo (smooth round glow)
+        # Particle2_Cropped.png: used for active ability effects (burst, arc, polygon burst)
+        try:
+            self._haste_particle_base = pygame.image.load("assets/Particle_Cropped.png").convert_alpha()
+        except pygame.error as e:
+            logger.warning(f"Could not load Particle_Cropped.png: {e}")
+            self._haste_particle_base = None
+        try:
+            self._active_particle_base = pygame.image.load("assets/Particle2_Cropped.png").convert_alpha()
+        except pygame.error as e:
+            logger.warning(f"Could not load Particle2_Cropped.png: {e}")
+            self._active_particle_base = None
+
         # Load right sidebar background image
         # Calculate sidebar height (map height between top and bottom panels)
         sidebar_height = WINDOW_HEIGHT - TOP_PANEL_HEIGHT - BOTTOM_UI_HEIGHT
@@ -420,6 +434,9 @@ class Game:
         # Start-game camera animation (zoom to player's starting territory)
         # Created in initialize_game() for Custom Game and Multiplayer modes
         self.start_camera_animation = None
+        # FPS OPT: Flag indicating a zoom animation is active — rendering pipeline
+        # uses this to skip expensive operations (smoothscale, overlay rebuild)
+        self.is_zoom_animating = False
 
         # Phase 4A: Initialize all attributes to defaults so hasattr() guards are unnecessary.
         # These are set properly in initialize_game() or by rendering methods, but need
@@ -891,6 +908,8 @@ class Game:
                 'color': (150, 50, 200),   # Purple
                 'rise_speed': 7.5,
                 'check_polygon': True,     # Full polygon check in update
+                'spawn_interval': 0.07,    # Spawn cycle interval in seconds
+                'spawn_chance': 0.85,      # Probability of spawning per cycle per territory
             },
             'haste': {
                 'heroes': ('Vearen Asford',),
@@ -898,6 +917,8 @@ class Game:
                 'color': (255, 165, 0),    # Orange
                 'rise_speed': 7.5,
                 'check_polygon': True,
+                'spawn_interval': 0.07,
+                'spawn_chance': 0.85,
             },
             'safe_haven': {
                 'heroes': ('Darius Brennhen', 'Regnus Aevencourne'),
@@ -905,6 +926,8 @@ class Game:
                 'color': (135, 206, 250),  # Light blue
                 'rise_speed': 15,
                 'check_polygon': False,    # Only bbox check in update
+                'spawn_interval': 0.07,
+                'spawn_chance': 0.85,
             },
         }
         # Per-effect state: bubbles list and spawn timer
@@ -914,6 +937,11 @@ class Game:
         # Key: (radius, color_tuple) -> Surface
         self._bubble_surface_cache = {}
         self._bubble_surface_cache_max_size = 50  # Limit cache size to prevent memory bloat
+
+        # PERFORMANCE: Pre-built PNG particle caches for all aura effects
+        # Per-effect dict: (diameter, quantized_alpha) -> pre-scaled, pre-tinted, pre-alpha'd Surface
+        self._particle_caches = {}
+        self._build_particle_caches()
 
         # PERFORMANCE: Surface cache for hero UI overlays (avoids per-frame allocations)
         # Key: size (int) -> dict of overlay surfaces
@@ -3909,6 +3937,7 @@ class Game:
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
             self._hero_overlay_cache = {}
+            self._build_particle_caches()  # Rebuild PNG particle caches for new display
             invalidate_cursor_cache()  # Reload custom cursor after display mode change
             pygame.mouse.set_visible(False)  # Re-hide system cursor after display recreation
 
@@ -4563,6 +4592,46 @@ class Game:
             p1x, p1y = p2x, p2y
         return inside
 
+    # Additional particle colors for active ability effects (beyond passive auras)
+    _EXTRA_PARTICLE_COLORS = {
+        'embargo': (160, 20, 20),  # Dark red — matches MapRenderer.EMBARGO_COLOR
+    }
+
+    def _build_particle_caches(self):
+        """
+        Pre-build PNG particle surface caches for all aura and ability effects.
+
+        For each effect, pre-scales the white particle PNG to the effect's color
+        at every needed (diameter, alpha) combination. Eliminates runtime allocations.
+
+        Cache structure: self._particle_caches[effect_key][(diameter, alpha)] -> Surface
+        Per effect: 15 sizes x 16 alpha levels = 240 surfaces (~1MB total per effect).
+        """
+        self._particle_caches = {}
+        if self._haste_particle_base is None:
+            return
+
+        # Collect all colors to cache: passive auras + active ability effects
+        all_colors = {key: config['color'] for key, config in self._bubble_configs.items()}
+        all_colors.update(self._EXTRA_PARTICLE_COLORS)
+
+        for effect_key, color in all_colors.items():
+            cache = {}
+
+            # Screen diameters: world radii 1.5-3.9 * zoom 1.65-4.0 * 2x PNG scale = ~6 to ~32
+            for diameter in range(6, 34, 2):  # Even diameters: 6, 8, ..., 32
+                # Scale base PNG to target diameter, then tint to ability color
+                scaled = pygame.transform.smoothscale(self._haste_particle_base, (diameter, diameter))
+                scaled.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+
+                # Pre-generate a surface for each quantized alpha level
+                for alpha in range(0, 160, 10):  # 0, 10, 20, ..., 150
+                    alpha_surface = scaled.copy()
+                    alpha_surface.set_alpha(alpha)
+                    cache[(diameter, alpha)] = alpha_surface
+
+            self._particle_caches[effect_key] = cache
+
     def _get_bubble_surface(self, radius, base_color, alpha):
         """
         Get or create a cached bubble surface for the given parameters.
@@ -4876,6 +4945,8 @@ class Game:
 
         rise_speed = config['rise_speed']
         check_polygon = config['check_polygon']
+        spawn_interval = config.get('spawn_interval', 0.1)
+        spawn_chance = config.get('spawn_chance', 0.7)
         bubbles = state['bubbles']
 
         # Update existing bubbles
@@ -4913,9 +4984,9 @@ class Game:
         for bubble in bubbles_to_remove:
             bubbles.remove(bubble)
 
-        # Spawn new bubbles every 100ms
+        # Spawn new bubbles at configurable interval
         state['spawn_timer'] += delta_time
-        if state['spawn_timer'] >= 0.1:
+        if state['spawn_timer'] >= spawn_interval:
             state['spawn_timer'] = 0
 
             for territory in affected_territories:
@@ -4933,7 +5004,7 @@ class Game:
                     y = random.uniform(min_y, max_y)
 
                     if self._point_in_polygon(x, y, territory_polygon):
-                        if random.random() < 0.7:
+                        if random.random() < spawn_chance:
                             initial_radius = random.uniform(1.5, 3)
                             bubbles.append({
                                 'territory': territory,
@@ -4955,6 +5026,13 @@ class Game:
         if not state['bubbles']:
             return
 
+        # PNG particle path for all auras (soft-glow particle instead of hard circles)
+        particle_cache = self._particle_caches.get(effect_key)
+        if particle_cache:
+            self._draw_png_particles(state['bubbles'], particle_cache)
+            return
+
+        # Fallback: procedural circle path if PNG failed to load
         color = self._bubble_configs[effect_key]['color']
 
         for bubble in state['bubbles']:
@@ -4968,6 +5046,35 @@ class Game:
                 bubble_surface = self._get_bubble_surface(scaled_radius, color, bubble['alpha'])
                 self.screen.blit(bubble_surface,
                                (screen_x - scaled_radius, screen_y - scaled_radius))
+
+    def _draw_png_particles(self, bubbles, cache):
+        """
+        Draw aura bubbles using pre-cached PNG particle surfaces.
+
+        Uses soft-glow Particle_Cropped.png pre-scaled and pre-tinted per ability
+        at each (diameter, alpha) combination. Zero runtime allocations.
+        """
+        for bubble in bubbles:
+            screen_x, screen_y = self.world_to_screen((bubble['x'], bubble['y']))
+            if not (0 <= screen_x <= WINDOW_WIDTH and TOP_PANEL_HEIGHT <= screen_y <= BOTTOM_UI_Y):
+                continue
+
+            scaled_radius = int(bubble['radius'] * self.camera_zoom)
+            if scaled_radius < 1:
+                continue
+
+            # Snap to nearest even diameter within cached range [6, 32] (2x scale for soft-glow)
+            diameter = max(6, min(32, round(scaled_radius) * 4))
+            diameter = diameter + (diameter % 2)  # Ensure even
+            quantized_alpha = (int(bubble['alpha']) // 10) * 10
+
+            surface = cache.get((diameter, quantized_alpha))
+            if surface is None:
+                continue
+
+            # Blit centered on bubble position
+            half = diameter // 2
+            self.screen.blit(surface, (screen_x - half, screen_y - half))
 
     def draw_targeting_cursor(self):
         """
@@ -9643,10 +9750,17 @@ class Game:
         scaled_map_width = int(self.map_width * self.camera_zoom)
         scaled_map_height = int(self.map_height * self.camera_zoom)
         if self.cached_zoom_level != self.camera_zoom:
-            self.cached_scaled_map = pygame.transform.smoothscale(
-                self.map_image_original,
-                (scaled_map_width, scaled_map_height)
-            )
+            # FPS OPT: Use fast scale during zoom animation (same as main render loop)
+            if self.is_zoom_animating:
+                self.cached_scaled_map = pygame.transform.scale(
+                    self.map_image_original,
+                    (scaled_map_width, scaled_map_height)
+                )
+            else:
+                self.cached_scaled_map = pygame.transform.smoothscale(
+                    self.map_image_original,
+                    (scaled_map_width, scaled_map_height)
+                )
             self.cached_zoom_level = self.camera_zoom
         map_x = int(-self.camera_offset[0] * self.camera_zoom)
         map_y = int(-self.camera_offset[1] * self.camera_zoom) + TOP_PANEL_HEIGHT
@@ -9861,6 +9975,24 @@ class Game:
                 # Sync camera state after animation updates
                 self.camera_offset = self.camera.offset.copy()
                 self.camera_zoom = self.camera.zoom
+
+            # FPS OPT: Set is_zoom_animating flag for rendering pipeline to use fast paths.
+            # Covers start animation, campaign mission zoom, and mouse-wheel zoom settling.
+            _start_anim_active = (self.start_camera_animation is not None
+                                  and self.start_camera_animation.active)
+            _mission_anim_active = (self.tutorial_mission is not None
+                                    and hasattr(self.tutorial_mission, 'camera_animation')
+                                    and self.tutorial_mission.camera_animation is not None
+                                    and getattr(self.tutorial_mission.camera_animation, 'active', False))
+            # Tick mouse-wheel zoom settle timer
+            self.camera.update_zoom_settle(delta_time)
+            _was_zoom_animating = self.is_zoom_animating
+            self.is_zoom_animating = (_start_anim_active or _mission_anim_active
+                                      or self.camera.is_zoom_settling)
+            # When zoom activity ends, invalidate cached map so next frame uses smoothscale
+            # (animation/settling used fast nearest-neighbor scale for performance)
+            if _was_zoom_animating and not self.is_zoom_animating:
+                self.cached_zoom_level = None
 
             # Check if planning timer has expired (sequential mode only)
             # Skip during mission intro when game is paused
@@ -10551,11 +10683,18 @@ class Game:
             
             # Only rescale if zoom level changed (massive FPS improvement!)
             if self.cached_zoom_level != self.camera_zoom:
-                # Zoom changed - rescale from original high-res image
-                self.cached_scaled_map = pygame.transform.smoothscale(
-                    self.map_image_original, 
-                    (scaled_map_width, scaled_map_height)
-                )
+                # FPS OPT: Use fast nearest-neighbor scale during zoom animation
+                # (3-10x faster than smoothscale, quality difference imperceptible mid-animation)
+                if self.is_zoom_animating:
+                    self.cached_scaled_map = pygame.transform.scale(
+                        self.map_image_original,
+                        (scaled_map_width, scaled_map_height)
+                    )
+                else:
+                    self.cached_scaled_map = pygame.transform.smoothscale(
+                        self.map_image_original,
+                        (scaled_map_width, scaled_map_height)
+                    )
                 self.cached_zoom_level = self.camera_zoom
             
             # Use cached scaled map (no rescaling needed!)

@@ -75,6 +75,10 @@ class CameraHandler:
         # Debug state
         self.debug_edge_scroll = None
         self.debug_keyboard_scroll = None
+
+        # FPS OPT: Zoom settle timer — after mouse-wheel zoom, rendering uses
+        # fast scale instead of smoothscale for a brief period
+        self._zoom_settle_timer = 0.0
     
     def update_map_dimensions(self, map_width, map_height, window_width, window_height, map_height_ui):
         """
@@ -154,23 +158,33 @@ class CameraHandler:
         
         return (screen_x, screen_y)
     
+    @property
+    def is_zoom_settling(self):
+        """True for a brief period after mouse-wheel zoom — rendering uses fast paths."""
+        return self._zoom_settle_timer > 0
+
+    def update_zoom_settle(self, delta_time):
+        """Tick down the zoom settle timer. Call once per frame from main loop."""
+        if self._zoom_settle_timer > 0:
+            self._zoom_settle_timer = max(0, self._zoom_settle_timer - delta_time)
+
     def get_ui_scale_factor(self):
         """
         Get UI element scale factor based on current zoom level.
-        
+
         Makes UI elements (army circles, plots, building icons) scale with zoom
         for better visibility and easier clicking when zoomed in.
-        
+
         Returns:
             float: Scale multiplier for UI element sizes (1.0 to 1.5)
         """
         # Calculate normalized zoom position (0.0 to 1.0)
         zoom_range = self.max_zoom - self.min_zoom
         zoom_position = (self.zoom - self.min_zoom) / zoom_range
-        
+
         # Scale from 1.0 (at min zoom) to 1.5 (at max zoom)
         scale_factor = 1.0 + (0.5 * zoom_position)
-        
+
         return scale_factor
     
     # ========================================
@@ -391,6 +405,8 @@ class CameraHandler:
         if new_zoom != self.zoom:
             # Update zoom
             self.zoom = new_zoom
+            # FPS OPT: Start settle timer so rendering uses fast scale
+            self._zoom_settle_timer = 0.2
             
             # Adjust camera offset to keep world position under cursor
             world_pos_after = self.screen_to_world(mouse_pos, top_panel_height)

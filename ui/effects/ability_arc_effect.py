@@ -62,7 +62,8 @@ class AbilityArcEffect:
     """
 
     def __init__(self, source_pos, dest_pos, color_palette, num_particles=80,
-                 world_coords=True, particle_size=1, arc_height=None):
+                 world_coords=True, particle_size=1, arc_height=None,
+                 particle_image=None):
         """
         Args:
             source_pos: (x, y) tuple for arc start point
@@ -72,6 +73,7 @@ class AbilityArcEffect:
             world_coords: If True, positions are in world coordinates
             particle_size: Radius of each particle circle (default 1px)
             arc_height: Override arc height factor (default ARC_HEIGHT_FACTOR=0.35)
+            particle_image: Optional white PNG surface for soft-glow particles (tinted per color)
         """
         self.world_coords = world_coords
         self.particle_size = particle_size
@@ -86,6 +88,20 @@ class AbilityArcEffect:
         self.elapsed = 0.0
         self.is_complete = False
         self._cached_surface = None
+
+        # Pre-build PNG particle cache: {(color_tuple, quantized_alpha): Surface}
+        # 3x multiplier: soft-glow PNG needs larger diameter since visible core is smaller
+        self._png_cache = {}
+        if particle_image is not None:
+            diameter = max(6, particle_size * 6)
+            scaled = pygame.transform.smoothscale(particle_image, (diameter, diameter))
+            for color in color_palette:
+                tinted = scaled.copy()
+                tinted.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+                for alpha in range(0, 260, 10):  # 0, 10, 20, ..., 250
+                    alpha_surface = tinted.copy()
+                    alpha_surface.set_alpha(alpha)
+                    self._png_cache[(color, alpha)] = alpha_surface
 
         # Calculate bezier control point (midpoint raised upward for arc)
         mid_x = (self.world_source_x + self.world_dest_x) / 2
@@ -252,6 +268,11 @@ class AbilityArcEffect:
             arrival_elapsed = self.elapsed - TRAVEL_DURATION
             opacity = 1.0 - (arrival_elapsed / ARRIVAL_DURATION)
 
+        # Draw particles — PNG path blits directly to screen, procedural uses temp surface
+        use_png = bool(self._png_cache)
+        alpha_val = int(255 * max(0.0, opacity))
+        quantized_alpha = (alpha_val // 10) * 10
+
         for particle in self.particles:
             # Skip particles that haven't launched yet
             if (self.elapsed < TRAVEL_DURATION
@@ -276,10 +297,15 @@ class AbilityArcEffect:
                     or y < -10 or y > screen.get_height() + 10):
                 continue
 
-            r, g, b = particle['color']
-            alpha = int(255 * max(0.0, opacity))
-            pygame.draw.circle(temp_surface, (r, g, b, alpha), (x, y),
-                               self.particle_size)
+            if use_png:
+                surface = self._png_cache.get((particle['color'], quantized_alpha))
+                if surface is not None:
+                    half = surface.get_width() // 2
+                    screen.blit(surface, (x - half, y - half))
+            else:
+                r, g, b = particle['color']
+                pygame.draw.circle(temp_surface, (r, g, b, alpha_val), (x, y),
+                                   self.particle_size)
 
         screen.blit(temp_surface, (0, 0))
 

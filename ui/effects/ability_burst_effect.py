@@ -6,7 +6,7 @@ Configurable behaviors: explode (outward), implode (inward collapse).
 
 Visual design:
 - Configurable particle size (default 1px) in 5-shade color palettes
-- Three animation phases with configurable durations:
+- Three animation phases with smooth blended transitions (0.15s crossfade overlap):
   Burst (0.5s) -> Swirl (configurable, default 1.5s) -> Float+Fade (configurable, default 1.0s)
 - Set swirl_duration=0 for explosion-only mode (Levy: burst + quick fade, no swirl)
 - Set swirl_duration=2.0 to match CastleUpgradeEffect timing (Decisive Strike)
@@ -47,6 +47,7 @@ FLOAT_SPEED_MIN = 15       # Min upward drift in float phase (px/s)
 FLOAT_SPEED_MAX = 30       # Max upward drift in float phase (px/s)
 ROTATION_SPEED_MAX = 1.2   # Max swirl rotation speed (rad/s)
 DECEL_FACTOR = 3.0         # Exponential deceleration constant
+BLEND_OVERLAP = 0.35       # Seconds of crossfade between adjacent phases
 
 # Implode-specific: initial radius ring where particles start
 IMPLODE_RADIUS_MIN = 50    # Min starting distance from center (px)
@@ -56,6 +57,11 @@ IMPLODE_RADIUS_MAX = 120   # Max starting distance from center (px)
 FLASH_RING_MAX_RADIUS = 80       # Max ring radius at end of burst phase (px)
 FLASH_RING_LINE_WIDTH_START = 3  # Ring line width at start
 FLASH_RING_LINE_WIDTH_END = 1    # Ring line width at end (thins out)
+
+def _smoothstep(t):
+    """Hermite interpolation with zero-derivative at 0 and 1."""
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
 
 # ========================================
 # ABILITY BURST EFFECT CLASS
@@ -78,7 +84,8 @@ class AbilityBurstEffect:
     def __init__(self, center_pos, color_palette, num_particles=120,
                  behavior='explode', world_coords=True,
                  swirl_duration=None, float_duration=None,
-                 particle_size=1, flash_ring=False, delay=0):
+                 particle_size=1, flash_ring=False, delay=0,
+                 particle_image=None, implode_radius=None):
         """
         Args:
             center_pos: (x, y) tuple for effect center
@@ -92,12 +99,16 @@ class AbilityBurstEffect:
             particle_size: Radius of each particle circle (default 1px)
             flash_ring: If True, draw expanding/contracting ring outline during burst phase
             delay: Seconds to wait before starting animation (for staggered multi-bursts)
+            particle_image: Optional white PNG surface for soft-glow particles (tinted per color)
         """
         self.world_coords = world_coords
         self.behavior = behavior
         self.particle_size = particle_size
         self.flash_ring = flash_ring
         self.delay = delay
+        # Optional override for implode starting ring radius (default uses global constants)
+        self.implode_radius_min = implode_radius[0] if implode_radius else IMPLODE_RADIUS_MIN
+        self.implode_radius_max = implode_radius[1] if implode_radius else IMPLODE_RADIUS_MAX
         # Store color palette for flash ring color (use brightest shade)
         self.flash_ring_color = color_palette[-1] if color_palette else (255, 255, 255)
 
@@ -119,6 +130,21 @@ class AbilityBurstEffect:
         self.elapsed = 0.0
         self.is_complete = False
         self._cached_surface = None
+
+        # Pre-build PNG particle cache: {(color_tuple, quantized_alpha): Surface}
+        # Tints the white particle image per palette color at the effect's particle diameter
+        # 3x multiplier: soft-glow PNG needs larger diameter since visible core is smaller
+        self._png_cache = {}
+        if particle_image is not None:
+            diameter = max(6, particle_size * 6)
+            scaled = pygame.transform.smoothscale(particle_image, (diameter, diameter))
+            for color in color_palette:
+                tinted = scaled.copy()
+                tinted.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+                for alpha in range(0, 260, 10):  # 0, 10, 20, ..., 250
+                    alpha_surface = tinted.copy()
+                    alpha_surface.set_alpha(alpha)
+                    self._png_cache[(color, alpha)] = alpha_surface
 
         # Initialize particles based on behavior
         self.particles = []
@@ -152,7 +178,7 @@ class AbilityBurstEffect:
 
         elif self.behavior == 'implode':
             # Start in a ring around center, collapse inward
-            radius = random.uniform(IMPLODE_RADIUS_MIN, IMPLODE_RADIUS_MAX)
+            radius = random.uniform(self.implode_radius_min, self.implode_radius_max)
             speed = random.uniform(IMPLODE_SPEED_MIN, IMPLODE_SPEED_MAX)
             return {
                 'angle': angle,
@@ -187,8 +213,76 @@ class AbilityBurstEffect:
                 'float_offset_y': 0.0
             }
 
+    def _compute_blend_weights(self, eff):
+        """Compute smooth blend weights for burst/swirl/float phases.
+
+        Returns (w_burst, w_swirl, w_float) normalized to sum=1.0.
+        Uses smoothstep crossfade over BLEND_OVERLAP seconds at phase boundaries.
+        """
+        # Clamp overlap to 30% of adjacent phase durations to avoid overrun
+        overlap = min(BLEND_OVERLAP, self.burst_duration * 0.3,
+                      self.float_duration * 0.3)
+        if self.swirl_duration > 0:
+            overlap = min(overlap, self.swirl_duration * 0.3)
+
+        burst_end = self.burst_duration
+        swirl_end = self.burst_duration + self.swirl_duration
+
+        # Raw weights via smoothstep crossfades at phase boundaries
+        # Burst: fades out around burst_end
+        if eff < burst_end - overlap:
+            w_burst = 1.0
+        elif eff > burst_end + overlap:
+            w_burst = 0.0
+        else:
+            # Smoothstep fade-out over the overlap window
+            t = (eff - (burst_end - overlap)) / max(0.001, 2.0 * overlap)
+            w_burst = 1.0 - _smoothstep(t)
+
+        # Swirl: fades in around burst_end, fades out around swirl_end
+        if self.swirl_duration <= 0:
+            w_swirl = 0.0
+        else:
+            # Fade in
+            if eff < burst_end - overlap:
+                fade_in = 0.0
+            elif eff > burst_end + overlap:
+                fade_in = 1.0
+            else:
+                t = (eff - (burst_end - overlap)) / max(0.001, 2.0 * overlap)
+                fade_in = _smoothstep(t)
+            # Fade out
+            if eff < swirl_end - overlap:
+                fade_out = 1.0
+            elif eff > swirl_end + overlap:
+                fade_out = 0.0
+            else:
+                t = (eff - (swirl_end - overlap)) / max(0.001, 2.0 * overlap)
+                fade_out = 1.0 - _smoothstep(t)
+            w_swirl = fade_in * fade_out
+
+        # Float: fades in around swirl_end
+        if eff < swirl_end - overlap:
+            w_float = 0.0
+        elif eff > swirl_end + overlap:
+            w_float = 1.0
+        else:
+            t = (eff - (swirl_end - overlap)) / max(0.001, 2.0 * overlap)
+            w_float = _smoothstep(t)
+
+        # Normalize so weights sum to 1.0
+        total = w_burst + w_swirl + w_float
+        if total > 0.001:
+            w_burst /= total
+            w_swirl /= total
+            w_float /= total
+        else:
+            w_float = 1.0
+
+        return w_burst, w_swirl, w_float
+
     def update(self, delta_time):
-        """Update particle positions based on current animation phase."""
+        """Update particle positions using smooth phase blending."""
         if self.is_complete:
             return
 
@@ -205,73 +299,87 @@ class AbilityBurstEffect:
             self.is_complete = True
             return
 
-        if eff < self.burst_duration:
-            self._update_burst(delta_time)
-        elif eff < self.burst_duration + self.swirl_duration:
-            self._update_swirl(delta_time)
-        else:
-            self._update_float(delta_time)
+        # Compute smooth blend weights and update all particles in one pass
+        w_burst, w_swirl, w_float = self._compute_blend_weights(eff)
+        self._update_particles(delta_time, eff, w_burst, w_swirl, w_float)
 
-    def _update_burst(self, delta_time):
-        """Phase 1: Particles move according to behavior mode with deceleration."""
-        eff = self.elapsed - self.delay
-        progress = eff / self.burst_duration
-        decel = math.exp(-DECEL_FACTOR * progress)
+    def _update_particles(self, delta_time, eff, w_burst, w_swirl, w_float):
+        """Unified particle update with weighted phase blending.
+
+        Each phase contributes a position delta scaled by its blend weight.
+        During overlap windows, two phases contribute simultaneously for smooth transitions.
+        """
+        # Pre-compute burst deceleration factor (shared across all particles)
+        burst_decel = 0.0
+        burst_progress = 0.0
+        if w_burst > 0.001:
+            burst_progress = min(eff / self.burst_duration, 1.0)
+            burst_decel = math.exp(-DECEL_FACTOR * burst_progress)
 
         for particle in self.particles:
-            current_speed = particle['speed'] * decel
+            dx, dy = 0.0, 0.0
 
-            if self.behavior == 'explode':
-                # Move outward from center
-                rotation_influence = progress
-                particle['angle'] += particle['rotation_speed'] * delta_time * rotation_influence
-                distance = current_speed * delta_time
-                particle['offset_x'] += distance * math.cos(particle['angle'])
-                particle['offset_y'] += distance * math.sin(particle['angle'])
+            # --- Burst contribution: radial movement with deceleration ---
+            if w_burst > 0.001:
+                current_speed = particle['speed'] * burst_decel
 
-            elif self.behavior == 'implode':
-                # Move inward toward center
+                if self.behavior == 'explode':
+                    # Outward from center with increasing rotation influence
+                    rotation_influence = burst_progress
+                    particle['angle'] += (particle['rotation_speed'] * delta_time
+                                          * rotation_influence * w_burst)
+                    distance = current_speed * delta_time
+                    dx += w_burst * distance * math.cos(particle['angle'])
+                    dy += w_burst * distance * math.sin(particle['angle'])
+
+                elif self.behavior == 'implode':
+                    # Inward toward center with spiral
+                    current_radius = math.sqrt(
+                        particle['offset_x'] ** 2 + particle['offset_y'] ** 2
+                    )
+                    if current_radius > 2.0:
+                        inward_angle = math.atan2(
+                            -particle['offset_y'], -particle['offset_x']
+                        )
+                        spiral_angle = (inward_angle
+                                        + particle['rotation_speed'] * 0.3)
+                        distance = current_speed * delta_time
+                        dx += w_burst * distance * math.cos(spiral_angle)
+                        dy += w_burst * distance * math.sin(spiral_angle)
+
+                else:  # 'rain'
+                    distance = current_speed * delta_time
+                    dy += w_burst * distance
+                    dx += w_burst * math.sin(
+                        self.elapsed * 3 + particle['angle']
+                    ) * delta_time * 8
+
+            # --- Swirl contribution: angular rotation as delta ---
+            if w_swirl > 0.001:
                 current_radius = math.sqrt(
                     particle['offset_x'] ** 2 + particle['offset_y'] ** 2
                 )
-                if current_radius > 2.0:
-                    # Move toward center with some rotation
-                    inward_angle = math.atan2(
-                        -particle['offset_y'], -particle['offset_x']
+                if current_radius > 0.1:
+                    current_angle = math.atan2(
+                        particle['offset_y'], particle['offset_x']
                     )
-                    # Add slight spiral by blending inward angle with rotation
-                    spiral_angle = inward_angle + particle['rotation_speed'] * 0.3
-                    distance = current_speed * delta_time
-                    particle['offset_x'] += distance * math.cos(spiral_angle)
-                    particle['offset_y'] += distance * math.sin(spiral_angle)
+                    new_angle = (current_angle
+                                 + particle['rotation_speed'] * delta_time)
+                    # Compute rotation displacement as a delta, not absolute position
+                    swirl_dx = (current_radius * math.cos(new_angle)
+                                - particle['offset_x'])
+                    swirl_dy = (current_radius * math.sin(new_angle)
+                                - particle['offset_y'])
+                    dx += w_swirl * swirl_dx
+                    dy += w_swirl * swirl_dy
 
-            else:  # 'rain'
-                # Fall downward with slight horizontal drift
-                distance = current_speed * delta_time
-                particle['offset_y'] += distance  # Move down
-                # Gentle horizontal sway
-                particle['offset_x'] += math.sin(
-                    self.elapsed * 3 + particle['angle']
-                ) * delta_time * 8
+            # --- Float contribution: upward drift ---
+            if w_float > 0.001:
+                particle['float_offset_y'] -= (w_float * particle['float_speed']
+                                               * delta_time)
 
-    def _update_swirl(self, delta_time):
-        """Phase 2: Particles swirl around their current positions."""
-        for particle in self.particles:
-            current_radius = math.sqrt(
-                particle['offset_x'] ** 2 + particle['offset_y'] ** 2
-            )
-            if current_radius > 0.1:
-                current_angle = math.atan2(
-                    particle['offset_y'], particle['offset_x']
-                )
-                current_angle += particle['rotation_speed'] * delta_time
-                particle['offset_x'] = current_radius * math.cos(current_angle)
-                particle['offset_y'] = current_radius * math.sin(current_angle)
-
-    def _update_float(self, delta_time):
-        """Phase 3: Particles drift upward and fade."""
-        for particle in self.particles:
-            particle['float_offset_y'] -= particle['float_speed'] * delta_time
+            particle['offset_x'] += dx
+            particle['offset_y'] += dy
 
     def render(self, screen, world_to_screen_func=None):
         """Render all particles and optional flash ring at current animation state."""
@@ -298,13 +406,17 @@ class AbilityBurstEffect:
             self._cached_surface.fill((0, 0, 0, 0))
         temp_surface = self._cached_surface
 
-        # Calculate opacity based on phase (using effective elapsed time)
-        if eff < self.burst_duration + self.swirl_duration:
-            opacity = 1.0
-        else:
-            phase_elapsed = eff - (self.burst_duration + self.swirl_duration)
-            fade_duration = max(0.01, self.float_duration)  # Avoid division by zero
-            opacity = 1.0 - (phase_elapsed / fade_duration)
+        # Calculate opacity: smoothstep fade starting slightly before float phase
+        # Overlap so fade begins during swirl->float transition, not abruptly at float start
+        overlap = min(BLEND_OVERLAP, self.burst_duration * 0.3,
+                      self.float_duration * 0.3)
+        if self.swirl_duration > 0:
+            overlap = min(overlap, self.swirl_duration * 0.3)
+        float_start = self.burst_duration + self.swirl_duration - overlap
+        adjusted_duration = max(0.01, self.float_duration + overlap)
+        fade_t = max(0.0, eff - float_start) / adjusted_duration
+        fade_t = min(1.0, fade_t)
+        opacity = 1.0 - _smoothstep(fade_t)
 
         # Draw flash ring during burst phase (expanding for explode, contracting for implode)
         if self.flash_ring and eff < self.burst_duration:
@@ -325,7 +437,11 @@ class AbilityBurstEffect:
                 pygame.draw.circle(temp_surface, (fr, fg, fb, ring_alpha),
                                    (cx, cy), ring_radius, ring_width)
 
-        # Draw particles
+        # Draw particles — PNG path blits directly to screen, procedural uses temp surface
+        use_png = bool(self._png_cache)
+        alpha_val = int(255 * max(0.0, opacity))
+        quantized_alpha = (alpha_val // 10) * 10
+
         for particle in self.particles:
             world_x = self.world_center_x + particle['offset_x']
             world_y = (self.world_center_y + particle['offset_y']
@@ -346,11 +462,19 @@ class AbilityBurstEffect:
                     or y < -10 or y > screen.get_height() + 10):
                 continue
 
-            r, g, b = particle['color']
-            alpha = int(255 * max(0.0, opacity))
-            pygame.draw.circle(temp_surface, (r, g, b, alpha), (x, y),
-                               self.particle_size)
+            if use_png:
+                # PNG particle path: blit pre-cached tinted surface directly to screen
+                surface = self._png_cache.get((particle['color'], quantized_alpha))
+                if surface is not None:
+                    half = surface.get_width() // 2
+                    screen.blit(surface, (x - half, y - half))
+            else:
+                # Fallback: procedural circle on temp SRCALPHA surface
+                r, g, b = particle['color']
+                pygame.draw.circle(temp_surface, (r, g, b, alpha_val), (x, y),
+                                   self.particle_size)
 
+        # Blit temp surface (flash ring + fallback particles if no PNG)
         screen.blit(temp_surface, (0, 0))
 
     def is_finished(self):

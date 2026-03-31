@@ -275,13 +275,18 @@ class CameraZoomAnimation:
         # Ease-out cubic for smooth deceleration
         eased = 1.0 - pow(1.0 - progress, 3)
 
-        # Interpolate zoom
-        self.camera.zoom = self.start_zoom + (self.target_zoom - self.start_zoom) * eased
+        # Interpolate zoom — quantize to 0.2 steps to reduce cache invalidations
+        # during animation (drops ~90 smoothscale calls to ~12)
+        raw_zoom = self.start_zoom + (self.target_zoom - self.start_zoom) * eased
+        self.camera.zoom = round(raw_zoom * 5) / 5
 
         # Keep target centered
         self._update_camera_position(eased)
 
         if progress >= 1.0:
+            # Snap to exact target on final frame for precision
+            self.camera.zoom = self.target_zoom
+            self._update_camera_position(1.0)
             self.active = False
         return self.active
 

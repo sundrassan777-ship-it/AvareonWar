@@ -727,7 +727,7 @@ class MilitaryMixin:
         )
         
         self.movement_orders.append(order)
-        self.add_message(f"Order created: {army_count} armies {from_territory} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ {to_territory}")
+        self.add_message(f"Order created: {army_count} armies {from_territory} -> {to_territory}")
         
         # Revalidate: if old outgoing was replaced with smaller order, from_territory
         # retains more armies, so incoming orders to from_territory might now overflow
@@ -920,7 +920,7 @@ class MilitaryMixin:
                 unit['status'] = 'ordered'
                 unit['order'] = order
         
-        self.add_message(f"Order created: {len(unit_ids)} armies {from_territory} Ã¢â€ â€™ {to_territory}")
+        self.add_message(f"Order created: {len(unit_ids)} armies {from_territory} -> {to_territory}")
         
         # Tutorial hook: notify that movement order was created
         if self.tutorial_mission:
@@ -953,7 +953,7 @@ class MilitaryMixin:
                         if unit.get('order') == order:
                             unit['status'] = 'ready'
                             unit['order'] = None
-            self.add_message(f"Order cancelled: {order.from_territory} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ {order.to_territory}")
+            self.add_message(f"Order cancelled: {order.from_territory} -> {order.to_territory}")
             self.movement_orders.pop(order_index)
 
             # Revalidate: cancelled outgoing order means from_territory keeps its
