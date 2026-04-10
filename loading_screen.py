@@ -55,7 +55,7 @@ CUSTOM_TIPS = [
     "Demolishing a building refunds 50% of its original cost.",
     "You can only begin constructing one building per territory per turn.",
     # Economy
-    "The map contains 57 territories with base incomes ranging from 10 to 20 gold per turn.",
+    "Each territory has a base income ranging from 10 to 20 gold per turn.",
     "Higher taxation encourages spending \u2014 unspent gold is taxed at the end of each turn.",
     "Cancelling a unit in training refunds the exact gold you originally paid.",
     "Two Squares in one territory multiply income by 2.25x.",

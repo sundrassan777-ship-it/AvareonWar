@@ -1,4 +1,8 @@
 {
+  "Aelatanian Passes": [
+    "South Angarfen Forest",
+    "The Peaks of Ancaquarne"
+  ],
   "Aiven Crossing": [
     "Anderu",
     "Arcessfort",
@@ -114,6 +118,7 @@
     "Aurent"
   ],
   "Eleques": [
+    "The Peaks of Ancaquarne",
     "The Tall Pass"
   ],
   "Emmine": [
@@ -192,6 +197,7 @@
   ],
   "Lantaran Forest": [
     "Astrae",
+    "The Peaks of Ancaquarne",
     "Velene"
   ],
   "Lecce": [
@@ -245,10 +251,16 @@
     "Lanta"
   ],
   "South Angarfen Forest": [
+    "Aelatanian Passes",
     "Alanca",
     "Generax Pastures",
     "Lires",
     "Loira"
+  ],
+  "The Peaks of Ancaquarne": [
+    "Aelatanian Passes",
+    "Eleques",
+    "Lantaran Forest"
   ],
   "The Tall Pass": [
     "Delonve Edges",

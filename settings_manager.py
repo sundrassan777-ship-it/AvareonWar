@@ -68,6 +68,8 @@ SETTING_TYPES = {
     # Player Level system persistence
     'player_xp': (int,),
     'campaign_missions_xp_claimed': (list,),
+    # Setup screen options
+    'show_setup_borders': (bool,),
 }
 
 
@@ -134,6 +136,9 @@ class SettingsManager:
             # Player Level system
             'player_xp': 0,                    # Total accumulated player XP
             'campaign_missions_xp_claimed': [], # Mission IDs that granted first-time 100 XP bonus
+
+            # Setup screen options
+            'show_setup_borders': False,        # Show territory borders in setup screens
         }
 
         # Current settings (loaded from file or defaults)

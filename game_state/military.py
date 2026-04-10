@@ -2335,7 +2335,8 @@ class MilitaryMixin:
             keep_plot_with_hero = None
 
             # Fortress territories get innate +2 defense (like having a Keep built)
-            if map_data.is_fortress_territory(territory) and current_owner != -1:
+            # Applies to both player-owned and neutral territories (Neutral Armies mode)
+            if map_data.is_fortress_territory(territory):
                 has_keep = True
                 keep_bonus = 2
 
@@ -2418,12 +2419,16 @@ class MilitaryMixin:
                     else:
                         self.add_message(f"Keep in {territory} defends alone with {keep_bonus} armies!")
 
-            # Neutral armies defend their territory (no Keep, no allies — just garrison)
+            # Neutral armies defend their territory (no allies — just garrison + fortress bonus)
             elif has_neutral_garrison and potential_battle:
                 neutral_garrison = self.territory_garrisons[territory][-1]
                 neutral_count = neutral_garrison.get('unmoved', 0) + neutral_garrison.get('moved', 0)
                 if neutral_count > 0:
                     player_armies[-1] = neutral_count
+                    # Add fortress defense bonus for neutral territories
+                    if has_keep and keep_bonus > 0:
+                        player_armies[-1] += keep_bonus
+                        self.add_message(f"Fortress {territory} provides +{keep_bonus} defense bonus!")
                     # Add neutral army composition for battle resolution
                     neutral_units = neutral_garrison.get('units', [])
                     if neutral_units:
@@ -2872,11 +2877,17 @@ class MilitaryMixin:
                                     # This ally has a garrison in the territory (defending ally)
                                     battle.allied_defenders.append(player)
 
-                        # Track Keep bonus (if team leader is the original owner)
+                        # Track Keep/Fortress bonus (if team leader is the original owner)
                         if team_leader == current_owner and has_keep:
                             battle.keep_bonus = keep_bonus
                             battle.keep_bonus_player = team_leader
                             battle.original_garrison = current_garrison
+
+                    # Fortress bonus for neutral defenders (neutral has no team leader)
+                    if current_owner == -1 and has_keep and -1 in player_armies:
+                        battle.keep_bonus = keep_bonus
+                        battle.keep_bonus_player = -1
+                        battle.original_garrison = player_armies.get(-1, 0) - keep_bonus
 
                     # Veterancy: Create garrisons for arriving attackers using actual unit dicts
                     # This preserves xp/level so _update_battle_results can find surviving units

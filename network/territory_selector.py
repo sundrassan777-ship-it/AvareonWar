@@ -10,6 +10,7 @@ import pygame
 from typing import Optional, Tuple, Dict, List, Any
 import time
 import map_data
+from settings_manager import settings
 from network.protocol import NetworkProtocol
 from network.lobby import (
     LobbyState, LobbySlot,
@@ -222,6 +223,10 @@ class TerritorySelector:
         for i in range(num_players):
             self.active_slot_dropdown[i] = None
 
+        # Show Borders checkbox (persisted in settings)
+        self.show_borders = settings.get('show_setup_borders', False)
+        self.borders_checkbox_rect = None  # Set each frame in render
+
         # Countdown state (for launch countdown)
         self.countdown_active = False
         self.countdown_seconds = 0
@@ -367,16 +372,24 @@ class TerritorySelector:
         # Hovered territory
         self.hovered_territory = None
 
-        # Set up map selector arrow positions (wide, flat arrows at top/bottom of right panel)
-        arrow_w = 48
-        arrow_h = 12
-        arrow_center_x = self.map_x + self.scaled_map_width // 2
-        # Up arrow near top of screen
-        arrow_top_y = 4
-        self.arrow_up_rect = pygame.Rect(arrow_center_x - arrow_w // 2, arrow_top_y, arrow_w, arrow_h)
-        # Down arrow near bottom of screen
-        arrow_bottom_y = self.height - arrow_h - 4
-        self.arrow_down_rect = pygame.Rect(arrow_center_x - arrow_w // 2, arrow_bottom_y, arrow_w, arrow_h)
+        # Top section: (◄) Name (►) — fixed width based on longest map name
+        arrow_size = 16
+        self._top_arrow_size = arrow_size
+        self._top_row_y = 6
+        gap = 10
+        # Pre-compute fixed layout width using the longest map name
+        longest_name = max((map_data.get_map_display_name(mid) for mid in map_data.get_map_ids()), key=len, default="")
+        self._selector_fixed_width = self.text_font.size(longest_name)[0]
+        total_w = arrow_size + gap + self._selector_fixed_width + gap + arrow_size
+        center_x = self.map_x + self.scaled_map_width // 2
+        self._selector_start_x = center_x - total_w // 2
+        # Compute fixed arrow rects
+        name_h = self.text_font.get_height()
+        left_x = self._selector_start_x
+        right_x = self._selector_start_x + arrow_size + gap + self._selector_fixed_width + gap
+        self.arrow_left_rect = pygame.Rect(left_x - 4, self._top_row_y - 4, arrow_size + 8, name_h + 8)
+        self.arrow_right_rect = pygame.Rect(right_x - 4, self._top_row_y - 4, arrow_size + 8, name_h + 8)
+        self.map_name_click_rect = pygame.Rect(left_x + arrow_size + gap - 4, self._top_row_y - 4, self._selector_fixed_width + 8, name_h + 8)
 
     def change_map(self, direction):
         """Cycle to next/previous map. Only host can call this.
@@ -618,14 +631,25 @@ class TerritorySelector:
             self._handle_overlay_click(pos)
             return
 
-        # Check map selector arrow clicks (host only)
+        # Check map selector arrow/name clicks (host only)
         if self.is_host and len(map_data.get_map_ids()) > 1:
-            if self.arrow_up_rect and self.arrow_up_rect.collidepoint(pos):
+            if self.arrow_left_rect and self.arrow_left_rect.collidepoint(pos):
                 self.change_map(-1)
                 return
-            if self.arrow_down_rect and self.arrow_down_rect.collidepoint(pos):
+            if self.arrow_right_rect and self.arrow_right_rect.collidepoint(pos):
                 self.change_map(1)
                 return
+            if self.map_name_click_rect and self.map_name_click_rect.collidepoint(pos):
+                self.change_map(1)
+                return
+
+        # Check Show Borders checkbox click
+        if self.borders_checkbox_rect and self.borders_checkbox_rect.collidepoint(pos):
+            self.show_borders = not self.show_borders
+            settings.set('show_setup_borders', self.show_borders)
+            settings.save()
+            sound_manager.play_ui_click()
+            return
 
         # Check if host clicked on the IP address to copy to clipboard
         if self.is_host and self._ip_click_rect and self._ip_click_rect.collidepoint(pos):
@@ -1076,10 +1100,12 @@ class TerritorySelector:
         # Track map selector arrow hover (host only)
         self.hovered_arrow = None
         if self.is_host:
-            if self.arrow_up_rect and self.arrow_up_rect.collidepoint(pos):
-                self.hovered_arrow = 'up'
-            elif self.arrow_down_rect and self.arrow_down_rect.collidepoint(pos):
-                self.hovered_arrow = 'down'
+            if self.arrow_left_rect and self.arrow_left_rect.collidepoint(pos):
+                self.hovered_arrow = 'left'
+            elif self.arrow_right_rect and self.arrow_right_rect.collidepoint(pos):
+                self.hovered_arrow = 'right'
+            elif self.map_name_click_rect and self.map_name_click_rect.collidepoint(pos):
+                self.hovered_arrow = 'name'
 
         if pos[0] >= self.left_panel_width:  # In map area
             self.hovered_territory = self.get_territory_at_pos(pos)
@@ -1698,11 +1724,12 @@ class TerritorySelector:
         # Draw map
         self.screen.blit(self.map_image, (self.map_x, self.map_y))
 
-        # Draw borders for all unselected territories so they're visible
-        selected_set = set(s for s in self.player_selections if s)
-        for territory, polygon in self.scaled_polygons.items():
-            if territory not in selected_set:
-                pygame.draw.lines(self.screen, (200, 200, 200), True, polygon, 1)
+        # Draw borders for all unselected territories (toggled via Show Borders checkbox)
+        if self.show_borders:
+            selected_set = set(s for s in self.player_selections if s)
+            for territory, polygon in self.scaled_polygons.items():
+                if territory not in selected_set:
+                    pygame.draw.lines(self.screen, (200, 200, 200), True, polygon, 1)
 
         # Draw bottom bar (positioned below map)
         if self.bottom_bar_image:
@@ -1718,43 +1745,57 @@ class TerritorySelector:
             bottom_bar_y = self.map_y + self.scaled_map_height
             self.screen.blit(scaled_bottom_bar, (bottom_bar_x, bottom_bar_y))
 
+        # Draw "Show Borders" checkbox in top-right of map area
+        cb_label = self.tiny_font.render("Show Borders", True, BRASS_COLOR)
+        cb_size = 14
+        cb_x = self.width - cb_label.get_width() - cb_size - 20
+        cb_y = 8
+        cb_rect = pygame.Rect(cb_x, cb_y, cb_size, cb_size)
+        self.borders_checkbox_rect = pygame.Rect(cb_x - 4, cb_y - 4, cb_label.get_width() + cb_size + 28, cb_size + 8)
+        pygame.draw.rect(self.screen, BRASS_COLOR, cb_rect, 1)
+        if self.show_borders:
+            pygame.draw.line(self.screen, BRASS_COLOR, (cb_rect.left + 2, cb_rect.centery), (cb_rect.centerx, cb_rect.bottom - 2), 2)
+            pygame.draw.line(self.screen, BRASS_COLOR, (cb_rect.centerx, cb_rect.bottom - 2), (cb_rect.right - 2, cb_rect.top + 2), 2)
+        self.screen.blit(cb_label, (cb_x + cb_size + 6, cb_y - 1))
+
         # Draw map selector arrows and map name (only if multiple maps, host only can click)
         if len(map_data.get_map_ids()) > 1:
             self._draw_map_selector_arrows()
 
     def _draw_map_selector_arrows(self):
-        """Draw up/down arrows and map name for map selection."""
-        # Only show interactive arrows for host; clients see name only
+        """Draw (◄) Map Name (►) at top with fixed-width layout."""
+        s = self._top_arrow_size
+        y = self._top_row_y
+        gap = 10
+        start_x = self._selector_start_x
+        name_h = self.text_font.get_height()
+
         if self.is_host:
-            # Up arrow
-            up_color = BRASS_COLOR if self.hovered_arrow != 'up' else (220, 200, 100)
-            up_rect = self.arrow_up_rect
-            if up_rect:
-                up_points = [
-                    (up_rect.centerx, up_rect.top),
-                    (up_rect.left, up_rect.bottom),
-                    (up_rect.right, up_rect.bottom)
-                ]
-                pygame.draw.polygon(self.screen, up_color, up_points)
+            # Left arrow (◄)
+            left_x = start_x
+            left_color = (220, 200, 100) if self.hovered_arrow == 'left' else BRASS_COLOR
+            pygame.draw.polygon(self.screen, left_color, [
+                (left_x, y + name_h // 2),
+                (left_x + s, y + name_h // 2 - s // 2),
+                (left_x + s, y + name_h // 2 + s // 2),
+            ])
 
-            # Down arrow
-            down_color = BRASS_COLOR if self.hovered_arrow != 'down' else (220, 200, 100)
-            down_rect = self.arrow_down_rect
-            if down_rect:
-                down_points = [
-                    (down_rect.left, down_rect.top),
-                    (down_rect.right, down_rect.top),
-                    (down_rect.centerx, down_rect.bottom)
-                ]
-                pygame.draw.polygon(self.screen, down_color, down_points)
+            # Right arrow (►)
+            right_x = start_x + s + gap + self._selector_fixed_width + gap
+            right_color = (220, 200, 100) if self.hovered_arrow == 'right' else BRASS_COLOR
+            pygame.draw.polygon(self.screen, right_color, [
+                (right_x + s, y + name_h // 2),
+                (right_x, y + name_h // 2 - s // 2),
+                (right_x, y + name_h // 2 + s // 2),
+            ])
 
-        # Draw map name centered above the map
+        # Map name (centered within fixed-width area, visible for both host and client)
         display_name = map_data.get_map_display_name(self.selected_map)
-        name_surface = self.text_font.render(display_name, True, BRASS_COLOR)
-        name_x = self.map_x + (self.scaled_map_width - name_surface.get_width()) // 2
-        # Position between up arrow and top bar
-        name_y = self.arrow_up_rect.bottom + 4 if self.arrow_up_rect else self.map_y - 30
-        self.screen.blit(name_surface, (name_x, name_y))
+        name_color = (220, 200, 100) if self.hovered_arrow == 'name' else BRASS_COLOR
+        name_surface = self.text_font.render(display_name, True, name_color)
+        name_area_x = start_x + s + gap
+        name_x = name_area_x + (self._selector_fixed_width - name_surface.get_width()) // 2
+        self.screen.blit(name_surface, (name_x, y))
 
     def _draw_territory_overlays(self):
         """Draw territory selection overlays on the map."""
