@@ -11,6 +11,14 @@ Adjust WINDOW_WIDTH and WINDOW_HEIGHT below to match your main.py settings.
 import pygame
 import json
 import sys
+import os
+
+# Multi-map support: --map <map_id> CLI argument selects which map to edit (default: avareon)
+_tool_map_id = 'avareon'
+for i, arg in enumerate(sys.argv):
+    if arg == '--map' and i + 1 < len(sys.argv):
+        _tool_map_id = sys.argv[i + 1]
+_tool_map_dir = f'maps/{_tool_map_id}'
 
 # Initialize Pygame
 pygame.init()
@@ -32,41 +40,30 @@ BLUE = (0, 0, 255)
 YELLOW = (255, 255, 0)
 CYAN = (0, 255, 255)
 
-# List of all territories (in order) - UTF-8 encoding
-# Updated to 57 territories (2026-01-24) - complete rebuild
-TERRITORIES = [
-    "Aelatania", "Affrancian Uplands", "Ahara", "Ahtep", "Ajuna",
-    "Amennia", "Amorian Shores", "Anodia", "Aunon", "Carnae",
-    "Cinto", "Conda", "Courtieux", "Cualus", "Damlére",
-    "Daomea", "Duchy of Daurels", "Elland", "Elletian Isles", "Espoia",
-    "Fahlaan Dunes", "Free Cities", "Lamacia", "Leimarch", "Lentria",
-    "Leuse Valley", "Liadnon", "Linan", "Lobardia", "Londia",
-    "Lunedale", "March of Auverne", "Mose", "Nefrid", "Nordica",
-    "Northern Heilonia", "Northern Quil'en", "Odatria", "Orhas", "Orlais",
-    "Osana", "Oucine", "Révia", "Riar", "Role",
-    "Sordia", "Southern Quil'en", "Sstep", "The Comet", "The Holy Land",
-    "Valeonia", "Velognia", "Venexia", "Vense", "Vice",
-    "Vianaa", "Zjoal Islands"
-]
+def _load_territory_list(map_dir):
+    """Load territory name list from maps/<map_id>/territories.json.
+    Returns empty list if file not found."""
+    path = os.path.join(map_dir, 'territories.json')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
 
 class PolygonTool:
     def __init__(self):
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Territory Polygon Definition Tool - Camera: Drag/Scroll/Arrows/Wheel")
         self.clock = pygame.time.Clock()
-        
-        # Load the map image - KEEP ORIGINAL HIGH-RES for quality!
-        try:
-            self.map_image_original = pygame.image.load("assets/map.png")
-            # Also keep a reference scaled version
-            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
-                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
-            else:
-                self.map_image = self.map_image_original.copy()
-        except pygame.error as e:
-            print(f"Error loading map: {e}")
-            sys.exit(1)
-        
+
+        # Multi-map state
+        self.current_map_id = _tool_map_id
+        self.current_map_dir = _tool_map_dir
+        self.territories = _load_territory_list(self.current_map_dir)
+
+        # Load the map image
+        self._load_map_image()
+
         # Camera system (same as main game!)
         self.camera_offset = [0.0, 0.0]  # [x, y] in world coordinates
         self.camera_zoom = 1.5            # Start at reasonable zoom
@@ -101,28 +98,73 @@ class PolygonTool:
         self.large_font = pygame.font.Font(None, 36)
         self.small_font = pygame.font.Font(None, 20)
     
+    def _load_map_image(self):
+        """Load (or reload) the map background image for the current map."""
+        map_png = os.path.join(self.current_map_dir, 'map.png')
+        if not os.path.exists(map_png):
+            map_png = "assets/map.png"  # Fallback for avareon
+        try:
+            self.map_image_original = pygame.image.load(map_png)
+            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
+                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
+            else:
+                self.map_image = self.map_image_original.copy()
+        except pygame.error as e:
+            print(f"Error loading map image: {e}")
+            self.map_image_original = pygame.Surface((MAP_WIDTH, MAP_HEIGHT))
+            self.map_image_original.fill((0, 0, 0))
+            self.map_image = self.map_image_original.copy()
+        # Invalidate scaled map cache
+        self.cached_scaled_map = None
+        self.cached_zoom_level = None
+
+    def _switch_map(self):
+        """Cycle to the next map in the manifest and reload all data."""
+        import map_data as _md
+        map_ids = _md.get_map_ids()
+        if len(map_ids) <= 1:
+            return
+        current_idx = map_ids.index(self.current_map_id) if self.current_map_id in map_ids else 0
+        new_idx = (current_idx + 1) % len(map_ids)
+        # Save current work BEFORE switching directories
+        self.save_progress()
+        self.current_map_id = map_ids[new_idx]
+        self.current_map_dir = f'maps/{self.current_map_id}'
+        print(f"Switched to map: {self.current_map_id}")
+        self._load_map_image()
+        self.territories = _load_territory_list(self.current_map_dir)
+        self.current_territory_index = 0
+        self.current_points = []
+        self.last_point_pos = None
+        self.drawing_active = False
+        self.load_progress()
+
     def load_progress(self):
         """Load previously saved polygons if they exist (UTF-8 safe)"""
+        # Clear existing data first (ensures maps don't bleed into each other)
+        self.completed_polygons = {}
+        poly_path = os.path.join(self.current_map_dir, 'territory_polygons.json')
         try:
-            with open('territory_polygons.json', 'r', encoding='utf-8') as f:
+            with open(poly_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.completed_polygons = data
                 print(f"Loaded {len(self.completed_polygons)} existing polygons")
-                
+
                 # Skip to first incomplete territory
-                for i, territory in enumerate(TERRITORIES):
+                for i, territory in enumerate(self.territories):
                     if territory not in self.completed_polygons:
                         self.current_territory_index = i
                         break
                 else:
                     # All complete
-                    self.current_territory_index = len(TERRITORIES) - 1
+                    self.current_territory_index = len(self.territories) - 1
         except FileNotFoundError:
             print("No existing progress found, starting fresh")
     
     def save_progress(self):
         """Save all completed polygons to JSON file (UTF-8 safe)"""
-        with open('territory_polygons.json', 'w', encoding='utf-8') as f:
+        poly_path = os.path.join(self.current_map_dir, 'territory_polygons.json')
+        with open(poly_path, 'w', encoding='utf-8') as f:
             json.dump(self.completed_polygons, f, indent=2, ensure_ascii=False)
         print(f"Saved {len(self.completed_polygons)} polygons")
     
@@ -250,8 +292,8 @@ class PolygonTool:
     
     def get_current_territory(self):
         """Get the name of the current territory being defined"""
-        if self.current_territory_index < len(TERRITORIES):
-            return TERRITORIES[self.current_territory_index]
+        if self.current_territory_index < len(self.territories):
+            return self.territories[self.current_territory_index]
         return None
     
     def load_existing_polygon(self):
@@ -400,8 +442,16 @@ class PolygonTool:
         pygame.draw.line(self.screen, BLACK, (ui_panel_x, 0), (ui_panel_x, WINDOW_HEIGHT), 2)
 
         ui_x = ui_panel_x + 15
-        ui_y = 20
-        
+        ui_y = 10
+
+        # Map selector (M key to cycle)
+        import map_data as _md
+        map_label = self.small_font.render("Map [M]:", True, (100, 100, 100))
+        self.screen.blit(map_label, (ui_x, ui_y))
+        map_name = self.font.render(_md.get_map_display_name(self.current_map_id), True, BLUE)
+        self.screen.blit(map_name, (ui_x + map_label.get_width() + 6, ui_y))
+        ui_y += 28
+
         # Current territory
         territory = self.get_current_territory()
         if territory:
@@ -419,7 +469,7 @@ class PolygonTool:
             
             ui_y += 10
             
-            progress_text = self.font.render(f"Territory {self.current_territory_index + 1} of {len(TERRITORIES)}", True, BLACK)
+            progress_text = self.font.render(f"Territory {self.current_territory_index + 1} of {len(self.territories)}", True, BLACK)
             self.screen.blit(progress_text, (ui_x, ui_y))
             ui_y += 30
             
@@ -497,7 +547,7 @@ class PolygonTool:
             self.screen.blit(text, (ui_x, ui_y + i * 24))
         
         # Completed count at bottom
-        completed_text = self.font.render(f"Completed: {len(self.completed_polygons)}/{len(TERRITORIES)}", True, GREEN)
+        completed_text = self.font.render(f"Completed: {len(self.completed_polygons)}/{len(self.territories)}", True, GREEN)
         self.screen.blit(completed_text, (ui_x, WINDOW_HEIGHT - 80))
     
     def wrap_text(self, text, font, max_width):
@@ -593,7 +643,7 @@ class PolygonTool:
                         self.previous_territory()
                     
                     elif event.key == pygame.K_SPACE:  # Next territory (changed from RIGHT for clarity)
-                        if self.current_territory_index < len(TERRITORIES) - 1:
+                        if self.current_territory_index < len(self.territories) - 1:
                             self.current_territory_index += 1
                             self.current_points = []
                             self.last_point_pos = None
@@ -616,6 +666,9 @@ class PolygonTool:
                         else:
                             print("No polygon to delete for this territory")
                     
+                    elif event.key == pygame.K_m:  # Cycle to next map
+                        self._switch_map()
+
                     elif event.key == pygame.K_ESCAPE:  # Quit
                         self.save_progress()
                         running = False
@@ -666,7 +719,7 @@ class PolygonTool:
         pygame.quit()
         
         print("\n=== Summary ===")
-        print(f"Completed {len(self.completed_polygons)}/{len(TERRITORIES)} territories")
+        print(f"Completed {len(self.completed_polygons)}/{len(self.territories)} territories")
         print("Progress saved to 'territory_polygons.json'")
         print("You can run this tool again to continue where you left off!")
 

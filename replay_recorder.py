@@ -27,6 +27,7 @@ import os
 import random
 import tempfile
 from datetime import datetime
+import map_data
 
 from utils.logger import get_logger
 
@@ -391,6 +392,7 @@ class ReplayRecorder:
                     'winner_name': winner_name,
                     'winner_index': winner_index,
                     'duration_minutes': duration_minutes,
+                    'map_id': map_data.get_current_map_id() or 'avareon',  # Multi-map support
                 },
                 'setup': {
                     'player_starting_territories': {

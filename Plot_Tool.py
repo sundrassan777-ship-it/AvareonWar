@@ -12,7 +12,15 @@ Click within a territory to place plots, then navigate to the next territory.
 import pygame
 import json
 import sys
+import os
 import map_data
+
+# Multi-map support: --map <map_id> CLI argument selects which map to edit (default: avareon)
+_tool_map_id = 'avareon'
+for i, arg in enumerate(sys.argv):
+    if arg == '--map' and i + 1 < len(sys.argv):
+        _tool_map_id = sys.argv[i + 1]
+_tool_map_dir = f'maps/{_tool_map_id}'
 
 # Initialize Pygame
 pygame.init()
@@ -49,23 +57,19 @@ class PlotTool:
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Building Plot Placement Tool")
         self.clock = pygame.time.Clock()
-        
+
+        # Multi-map state
+        self.current_map_id = _tool_map_id
+        self.current_map_dir = _tool_map_dir
+
         # Load polygons
         map_data.load_polygons()
         if not map_data.TERRITORY_POLYGONS:
             print("ERROR: No territory polygons loaded!")
             sys.exit(1)
-        
-        # Load the map image - KEEP ORIGINAL HIGH-RES for quality!
-        try:
-            self.map_image_original = pygame.image.load("assets/map.png")
-            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
-                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
-            else:
-                self.map_image = self.map_image_original.copy()
-        except pygame.error as e:
-            print(f"Error loading map: {e}")
-            sys.exit(1)
+
+        # Load the map image
+        self._load_map_image()
 
         # Camera system (same as Adjacency_Tool and Economic_Tool!)
         self.camera_offset = [0.0, 0.0]  # [x, y] in world coordinates
@@ -228,10 +232,52 @@ class PlotTool:
     # PLOT MANAGEMENT METHODS
     # ========================================
 
+    def _load_map_image(self):
+        """Load (or reload) the map background image for the current map."""
+        map_png = os.path.join(self.current_map_dir, 'map.png')
+        if not os.path.exists(map_png):
+            map_png = "assets/map.png"
+        try:
+            self.map_image_original = pygame.image.load(map_png)
+            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
+                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
+            else:
+                self.map_image = self.map_image_original.copy()
+        except pygame.error as e:
+            print(f"Error loading map image: {e}")
+            self.map_image_original = pygame.Surface((MAP_WIDTH, MAP_HEIGHT))
+            self.map_image_original.fill((0, 0, 0))
+            self.map_image = self.map_image_original.copy()
+        # Invalidate scaled map cache if it exists
+        if hasattr(self, 'cached_scaled_map'):
+            self.cached_scaled_map = None
+            self.cached_zoom_level = None
+
+    def _switch_map(self):
+        """Cycle to the next map in the manifest and reload all data."""
+        import map_data as _md
+        map_ids = _md.get_map_ids()
+        if len(map_ids) <= 1:
+            return
+        current_idx = map_ids.index(self.current_map_id) if self.current_map_id in map_ids else 0
+        new_idx = (current_idx + 1) % len(map_ids)
+        # Save current work BEFORE switching directories
+        self.save_plots()
+        self.current_map_id = map_ids[new_idx]
+        self.current_map_dir = f'maps/{self.current_map_id}'
+        print(f"Switched to map: {self.current_map_id}")
+        self._load_map_image()
+        _md.load_map(self.current_map_id)
+        self.territories = list(map_data.TERRITORY_POLYGONS.keys())
+        self.current_territory_index = 0
+        self.hovered_plot = None
+        self.load_plots()
+
     def load_plots(self):
         """Load previously saved plots if they exist"""
+        self.plots = {}  # Clear existing data first
         try:
-            with open('plots.json', 'r', encoding='utf-8') as f:
+            with open(os.path.join(self.current_map_dir, 'plots.json'), 'r', encoding='utf-8') as f:
                 self.plots = json.load(f)
             print(f"Loaded plots for {len(self.plots)} territories")
         except FileNotFoundError:
@@ -239,7 +285,7 @@ class PlotTool:
     
     def save_plots(self):
         """Save all plots to JSON file"""
-        with open('plots.json', 'w', encoding='utf-8') as f:
+        with open(os.path.join(self.current_map_dir, 'plots.json'), 'w', encoding='utf-8') as f:
             json.dump(self.plots, f, indent=2, ensure_ascii=False)
         print(f"Saved plots for {len(self.plots)} territories")
     
@@ -455,7 +501,15 @@ class PlotTool:
 
         ui_x = ui_panel_x + 15
         ui_y = 20
-        
+
+        # Map selector (M key to cycle)
+        import map_data as _md
+        map_label = self.small_font.render("Map [M]:", True, (100, 100, 100))
+        self.screen.blit(map_label, (ui_x, ui_y))
+        map_name = self.font.render(_md.get_map_display_name(self.current_map_id), True, BLUE)
+        self.screen.blit(map_name, (ui_x + map_label.get_width() + 6, ui_y))
+        ui_y += 28
+
         # Title
         title = self.large_font.render("Plot Placement", True, BLACK)
         self.screen.blit(title, (ui_x, ui_y))
@@ -609,6 +663,9 @@ class PlotTool:
                         self.save_plots()
                         print("Plots saved!")
                     
+                    elif event.key == pygame.K_m:  # Cycle to next map
+                        self._switch_map()
+
                     elif event.key == pygame.K_ESCAPE:  # Quit
                         self.save_plots()
                         running = False
@@ -634,7 +691,7 @@ class PlotTool:
         print("=== Summary ===")
         completed = sum(1 for t in self.territories if t in self.plots and self.plots[t])
         print(f"Plots placed for {completed}/{len(self.territories)} territories")
-        print("Progress saved to 'plots.json'")
+        print(f"Progress saved to '{os.path.join(self.current_map_dir, 'plots.json')}'")
 
 
 

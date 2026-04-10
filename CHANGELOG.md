@@ -2,6 +2,33 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-04-10 - Multi-Map Support + Fortress Territories
+
+- **Feature:** Multi-map support — game now supports 5 maps (Avareon + 4 new placeholders)
+  - Maps stored in `maps/` directory with per-map JSON data (polygons, plots, economy, bonuses, adjacencies, fortress territories)
+  - `maps/manifest.json` registry defines available maps with metadata
+  - Map selection via up/down arrows in both single-player and multiplayer setup screens
+  - Host selects map in multiplayer; clients sync automatically
+  - Maps without background PNGs show dark surface with polygon outlines
+- **Feature:** Fortress territory mechanic — territories with innate +2 defense
+  - Fortress territories cannot build Keeps (defense is innate)
+  - Defense works identically to Keep Phase 2 battle (type-neutral)
+  - Shown in territory hover tooltip and bottom bar info panel
+  - AI aware: skips Keep building, accounts for fortress defense in threat assessment
+- **Refactor:** `map_data.py` — module refactored for multi-map support
+  - New `load_map(map_id)` function loads all data from map directory
+  - Adjacencies now loadable from JSON (previously hardcoded); legacy fallback preserved
+  - New globals: `FORTRESS_TERRITORIES`, `_current_map_id`
+  - New accessors: `get_map_manifest()`, `get_map_ids()`, `get_map_display_name()`, `is_fortress_territory()`
+  - Backward-compatible `load_polygons()` still works for campaigns and tools
+- **Infrastructure:** Save/replay files now store `map_id` for multi-map games
+- **Infrastructure:** Network protocol version bumped to 1.4.0 (map_id in SETUP_CONFIG)
+- **Tools:** All dev tools (Polygon, Plot, Economic, Bonus, Adjacency) support `--map <map_id>` CLI arg
+- **Tools:** Adjacency_Tool now saves to `adjacencies.json` instead of modifying Python source
+- **New maps (placeholder data):** Azincournean Highlands, Naragonthid, Far East, Nordian Mountains
+- **Modified:** map_data.py, main.py, integrated_setup.py, network/territory_selector.py, network/multiplayer_setup.py, network_config.py, game_state/military.py, game_state/buildings.py, ai_economy.py, ai_strategy.py, save_manager.py, replay_recorder.py, replay_viewer.py, all 5 dev tools
+- **New files/dirs:** maps/ directory structure, maps/manifest.json
+
 ## 2026-03-28 - Cutscene MP4 Export
 
 - **Feature:** Export cutscenes to MP4 video from the Cutscene Tool

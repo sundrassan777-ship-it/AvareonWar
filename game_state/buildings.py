@@ -8,6 +8,7 @@ Provides methods for building construction/demolition, unit training,
 castle upgrades, and technology research.
 """
 
+import map_data
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -139,6 +140,11 @@ class BuildingMixin:
         # Check one building per territory per turn limit
         if territory in self.buildings_started_this_turn:
             self.add_message("Only one building per territory per turn!")
+            return False
+
+        # Fortress territories have innate defense — cannot build Keeps
+        if building_type == 'Keep' and map_data.is_fortress_territory(territory):
+            self.add_message("Fortress territories already have innate defense!")
             return False
 
         # Special rule: Only one Keep (Fortress) allowed per territory

@@ -13,7 +13,8 @@ import enum
 # History: 1.1.0 = sequential mode sync fix (research/hero training orders, FULL_STATE_SYNC)
 # History: 1.2.0 = disconnect elimination (DISCONNECT_ELIMINATION message, universal last-team-standing)
 # History: 1.3.0 = sync logger (STATE_DETAIL_REQUEST/RESPONSE/DESYNC_DIFF for desync diagnosis)
-NETWORK_VERSION = "1.3.0"
+# History: 1.4.0 = multi-map support (map_id in SETUP_CONFIG)
+NETWORK_VERSION = "1.4.0"
 
 # Connection Settings
 DEFAULT_PORT = 7777

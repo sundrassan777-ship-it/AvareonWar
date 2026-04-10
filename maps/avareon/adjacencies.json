@@ -1,0 +1,344 @@
+{
+  "Aelatania": [
+    "Courtieux",
+    "Duchy of Daurels",
+    "Londia",
+    "Northern Heilonia"
+  ],
+  "Affrancian Uplands": [
+    "Carnae",
+    "Lunedale",
+    "March of Auverne",
+    "Vense",
+    "Zjoal Islands"
+  ],
+  "Ahara": [
+    "Cinto",
+    "Conda",
+    "Oucine"
+  ],
+  "Ahtep": [
+    "Amennia",
+    "Daomea",
+    "Liadnon"
+  ],
+  "Ajuna": [
+    "Daomea",
+    "Espoia",
+    "Odatria",
+    "Riar"
+  ],
+  "Amennia": [
+    "Ahtep",
+    "Duchy of Daurels",
+    "Leuse Valley",
+    "Liadnon",
+    "Sstep"
+  ],
+  "Amorian Shores": [
+    "Anodia",
+    "Northern Quil'en",
+    "Southern Quil'en"
+  ],
+  "Anodia": [
+    "Amorian Shores",
+    "Fahlaan Dunes",
+    "Liadnon",
+    "Northern Quil'en",
+    "Sordia",
+    "Southern Quil'en"
+  ],
+  "Aunon": [
+    "Fahlaan Dunes",
+    "Lamacia",
+    "Sordia"
+  ],
+  "Carnae": [
+    "Affrancian Uplands",
+    "Leimarch",
+    "March of Auverne",
+    "Orhas",
+    "Orlais",
+    "Vense"
+  ],
+  "Cinto": [
+    "Ahara",
+    "Conda",
+    "Odatria",
+    "Oucine",
+    "Vice"
+  ],
+  "Conda": [
+    "Ahara",
+    "Cinto",
+    "Nefrid",
+    "Odatria"
+  ],
+  "Courtieux": [
+    "Aelatania",
+    "Londia"
+  ],
+  "Cualus": [
+    "Orhas",
+    "Orlais"
+  ],
+  "Damlére": [
+    "Daomea",
+    "Free Cities",
+    "Lunedale",
+    "Mose",
+    "Role"
+  ],
+  "Daomea": [
+    "Ahtep",
+    "Ajuna",
+    "Damlére",
+    "Espoia",
+    "Mose",
+    "Riar"
+  ],
+  "Duchy of Daurels": [
+    "Aelatania",
+    "Amennia",
+    "Leuse Valley",
+    "Northern Heilonia",
+    "Valeonia"
+  ],
+  "Elland": [
+    "Elletian Isles",
+    "Lentria",
+    "The Holy Land"
+  ],
+  "Elletian Isles": [
+    "Elland",
+    "The Holy Land"
+  ],
+  "Espoia": [
+    "Ajuna",
+    "Daomea",
+    "Nefrid",
+    "Odatria"
+  ],
+  "Fahlaan Dunes": [
+    "Anodia",
+    "Aunon",
+    "Linan",
+    "Sordia"
+  ],
+  "Free Cities": [
+    "Damlére",
+    "Lunedale",
+    "Role",
+    "Zjoal Islands"
+  ],
+  "Lamacia": [
+    "Aunon",
+    "Osana",
+    "Vianaa"
+  ],
+  "Leimarch": [
+    "Carnae",
+    "Liadnon"
+  ],
+  "Lentria": [
+    "Elland",
+    "Lobardia",
+    "The Holy Land"
+  ],
+  "Leuse Valley": [
+    "Amennia",
+    "Duchy of Daurels",
+    "Nordica",
+    "Sstep",
+    "Valeonia",
+    "Velognia"
+  ],
+  "Liadnon": [
+    "Ahtep",
+    "Amennia",
+    "Anodia",
+    "Leimarch",
+    "Nordica",
+    "Northern Quil'en",
+    "Sstep"
+  ],
+  "Linan": [
+    "Fahlaan Dunes",
+    "Orhas",
+    "Vianaa"
+  ],
+  "Lobardia": [
+    "Lentria",
+    "The Holy Land",
+    "Valeonia",
+    "Velognia",
+    "Venexia"
+  ],
+  "Londia": [
+    "Aelatania",
+    "Courtieux",
+    "Northern Heilonia"
+  ],
+  "Lunedale": [
+    "Affrancian Uplands",
+    "Damlére",
+    "Free Cities",
+    "Vense"
+  ],
+  "March of Auverne": [
+    "Affrancian Uplands",
+    "Carnae",
+    "Orlais"
+  ],
+  "Mose": [
+    "Damlére",
+    "Daomea",
+    "Riar",
+    "Role",
+    "Vice"
+  ],
+  "Nefrid": [
+    "Conda",
+    "Espoia",
+    "Odatria"
+  ],
+  "Nordica": [
+    "Leuse Valley",
+    "Liadnon",
+    "Northern Quil'en",
+    "Sstep"
+  ],
+  "Northern Heilonia": [
+    "Aelatania",
+    "Duchy of Daurels",
+    "Londia",
+    "Révia",
+    "Valeonia",
+    "Venexia"
+  ],
+  "Northern Quil'en": [
+    "Amorian Shores",
+    "Anodia",
+    "Liadnon",
+    "Nordica"
+  ],
+  "Odatria": [
+    "Ajuna",
+    "Cinto",
+    "Conda",
+    "Espoia",
+    "Nefrid",
+    "Riar",
+    "Vice"
+  ],
+  "Orhas": [
+    "Carnae",
+    "Cualus",
+    "Linan",
+    "Orlais"
+  ],
+  "Orlais": [
+    "Carnae",
+    "Cualus",
+    "March of Auverne",
+    "Orhas"
+  ],
+  "Osana": [
+    "Lamacia",
+    "Vianaa"
+  ],
+  "Oucine": [
+    "Ahara",
+    "Cinto",
+    "Vice"
+  ],
+  "Riar": [
+    "Ajuna",
+    "Daomea",
+    "Mose",
+    "Odatria",
+    "Vice"
+  ],
+  "Role": [
+    "Damlére",
+    "Free Cities",
+    "Mose",
+    "Vice"
+  ],
+  "Révia": [
+    "Northern Heilonia",
+    "Venexia"
+  ],
+  "Sordia": [
+    "Anodia",
+    "Aunon",
+    "Fahlaan Dunes",
+    "Southern Quil'en",
+    "The Comet"
+  ],
+  "Southern Quil'en": [
+    "Amorian Shores",
+    "Anodia",
+    "Sordia",
+    "The Comet"
+  ],
+  "Sstep": [
+    "Amennia",
+    "Leuse Valley",
+    "Liadnon",
+    "Nordica"
+  ],
+  "The Comet": [
+    "Sordia",
+    "Southern Quil'en"
+  ],
+  "The Holy Land": [
+    "Elland",
+    "Elletian Isles",
+    "Lentria",
+    "Lobardia",
+    "Venexia"
+  ],
+  "Valeonia": [
+    "Duchy of Daurels",
+    "Leuse Valley",
+    "Lobardia",
+    "Northern Heilonia",
+    "Velognia",
+    "Venexia"
+  ],
+  "Velognia": [
+    "Leuse Valley",
+    "Lobardia",
+    "Valeonia"
+  ],
+  "Venexia": [
+    "Lobardia",
+    "Northern Heilonia",
+    "Révia",
+    "The Holy Land",
+    "Valeonia"
+  ],
+  "Vense": [
+    "Affrancian Uplands",
+    "Carnae",
+    "Lunedale"
+  ],
+  "Vianaa": [
+    "Lamacia",
+    "Linan",
+    "Osana"
+  ],
+  "Vice": [
+    "Cinto",
+    "Mose",
+    "Odatria",
+    "Oucine",
+    "Riar",
+    "Role"
+  ],
+  "Zjoal Islands": [
+    "Affrancian Uplands",
+    "Free Cities"
+  ]
+}

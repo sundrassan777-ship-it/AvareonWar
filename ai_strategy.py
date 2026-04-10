@@ -143,10 +143,10 @@ class ThreatAnalyzer:
         garrison = cache.territory_armies.get(territory, 0) if cache else game_state.get_territory_total_armies(territory)
         neighbors = map_data.get_neighbors(territory)
 
-        # M15 FIX: Account for keep defense bonus in threat calculation
-        # Territories with a Keep get +10 effective defensive strength, reducing perceived threat
+        # M15 FIX: Account for keep/fortress defense bonus in threat calculation
+        # Territories with a Keep or Fortress designation get +10 effective defensive strength
         effective_garrison = garrison
-        if game_state.has_fortress(territory):
+        if game_state.has_fortress(territory) or map_data.is_fortress_territory(territory):
             effective_garrison += 10
 
         for neighbor in neighbors:

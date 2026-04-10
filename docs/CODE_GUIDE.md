@@ -1484,23 +1484,42 @@ The codebase uses several performance patterns. Follow these when adding new ren
 
 ## map_data.py
 
-**What it does:** Territory definitions, adjacency graph, polygon geometry
-**Size:** ~357 lines
-**Data source:** Loads from JSON files
+**What it does:** Multi-map data loader — territory polygons, adjacency graph, plots, economy, bonuses, fortress territories
+**Data source:** Per-map JSON files in `maps/<map_id>/` directories, manifest in `maps/manifest.json`
+**Key globals:** `TERRITORY_POLYGONS`, `TERRITORY_CENTERS`, `ADJACENCIES`, `FORTRESS_TERRITORIES`, `_current_map_id`
+
+### Multi-Map Architecture
+
+- `maps/manifest.json` — Registry of all available maps (id, display_name, has_background)
+- `maps/<map_id>/` — Per-map data directory containing:
+  - `territory_polygons.json`, `plots.json`, `economic_data.json`
+  - `territory_bonuses.json`, `adjacencies.json`, `fortress_territories.json`
+- `load_map(map_id)` — Primary entry point: loads all data from map directory into globals
+- `load_polygons()` — Legacy backward-compat entry point (loads Avareon from root-level files)
+- Campaign missions always use the Avareon map via `load_polygons()`
 
 ### When to Modify
 
-✅ **Add new territory:**
-1. Add to `ADJACENCY` dict with neighbors
-2. Add polygon to `territory_polygons.json` (use `Polygon_Tool.py`)
-3. Add economic data to `economic_data.json` (use `Economic_Tool.py`)
-4. Add plots to `plots.json` (use `Plot_Tool.py`)
-5. Update territory count (currently 57)
+✅ **Add new map:**
+1. Create directory `maps/<map_id>/` with all 6 JSON files (empty `{}` or `[]` initially)
+2. Add entry to `maps/manifest.json`
+3. Use tools with `--map <map_id>` to define territories
+4. Optionally add `map.png` to the map directory
+
+✅ **Add territory to existing map:**
+1. Use `Polygon_Tool.py --map <map_id>` to draw polygon
+2. Use `Economic_Tool.py --map <map_id>` to set income tier
+3. Use `Plot_Tool.py --map <map_id>` to place building plots
+4. Use `Adjacency_Tool.py --map <map_id>` to set neighbors
+5. Use `Bonus_Tool.py --map <map_id>` to assign bonus
+
+✅ **Mark territory as fortress:**
+- Edit `maps/<map_id>/fortress_territories.json` — add territory name to the list
+- Fortress territories get +2 innate defense and cannot build Keeps
 
 ✅ **Change adjacency:**
-- Modify `ADJACENCY` dict
-- OR use `Adjacency_Tool.py` for visual editing
-- Test pathfinding and movement
+- Use `Adjacency_Tool.py --map <map_id>` — saves to `adjacencies.json`
+- Avareon also has hardcoded fallback adjacencies in `_AVAREON_ADJACENCIES`
 
 ### When NOT to Modify
 
@@ -1511,12 +1530,13 @@ The codebase uses several performance patterns. Follow these when adding new ren
 
 | Tool | Purpose | Usage |
 |------|---------|-------|
-| `Polygon_Tool.py` | Edit territory shapes | `python Polygon_Tool.py` |
-| `Plot_Tool.py` | Edit building plot positions | `python Plot_Tool.py` |
-| `Economic_Tool.py` | Edit territory income | `python Economic_Tool.py` |
-| `Adjacency_Tool.py` | Edit territory connections | `python Adjacency_Tool.py` |
+| `Polygon_Tool.py` | Edit territory shapes | `py Polygon_Tool.py --map <map_id>` |
+| `Plot_Tool.py` | Edit building plot positions | `py Plot_Tool.py --map <map_id>` |
+| `Economic_Tool.py` | Edit territory income | `py Economic_Tool.py --map <map_id>` |
+| `Adjacency_Tool.py` | Edit territory connections | `py Adjacency_Tool.py --map <map_id>` |
+| `Bonus_Tool.py` | Edit territory bonuses | `py Bonus_Tool.py --map <map_id>` |
 
-**Important:** Always use tools, not manual JSON editing. Tools validate data and prevent errors.
+**Important:** Always use tools, not manual JSON editing. Omit `--map` to edit the default Avareon map.
 
 ---
 

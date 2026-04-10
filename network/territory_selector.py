@@ -184,6 +184,14 @@ class TerritorySelector:
             "Simultaneous": "All players plan at once, then orders execute together"
         }
 
+        # Selected map (host can change, synced to clients)
+        self.selected_map = map_data.get_map_ids()[0] if map_data.get_map_ids() else 'avareon'
+
+        # Map selector arrow rects and hover state
+        self.arrow_up_rect = None
+        self.arrow_down_rect = None
+        self.hovered_arrow = None  # 'up' or 'down' or None
+
         # Additional options (host can modify, synced to clients)
         self.neutral_armies = False
         self.randomize_bonuses = False
@@ -289,13 +297,41 @@ class TerritorySelector:
             self.overlay_bg_image = None
 
     def _initialize_map(self):
-        """Load and scale map with left panel layout (35% panel, 65% map)."""
-        # Load map
-        map_image_original = pygame.image.load('assets/map.png').convert()
+        """Load and scale map with left panel layout (35% panel, 65% map).
+        Supports multiple maps via map_data.load_map()."""
+        import os
+        map_id = self.selected_map
+
+        # Load map data for selected map
+        map_data.load_map(map_id)
+
+        # Load map image — try map directory first, then assets/map.png for avareon
+        map_image_original = None
+        map_info = map_data.get_map_info(map_id)
+        if map_info and map_info.get('has_background', False):
+            map_dir = map_data.get_map_directory(map_id)
+            map_png_path = os.path.join(map_dir, 'map.png')
+            try:
+                map_image_original = pygame.image.load(map_png_path).convert()
+            except (FileNotFoundError, pygame.error, OSError):
+                pass
+
+        if map_image_original is None and map_id == 'avareon':
+            try:
+                map_image_original = pygame.image.load('assets/map.png').convert()
+            except (FileNotFoundError, pygame.error, OSError):
+                pass
+
+        if map_image_original is None:
+            # Dark fallback — polygon outlines drawn in _draw_map_panel
+            map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
+            map_image_original.fill((0, 0, 0))
+            self._has_map_background = False
+        else:
+            self._has_map_background = True
 
         # Available space for map (right 65%)
         available_width = self.width - self.left_panel_width
-        available_height = self.height
 
         # Scale to fit using correct constants from config (100% like integrated_setup)
         self.scale_factor = available_width / ORIGINAL_MAP_WIDTH
@@ -312,8 +348,7 @@ class TerritorySelector:
         self.map_x = self.left_panel_width + (available_width - self.scaled_map_width) // 2
         self.map_y = (self.height - self.scaled_map_height) // 2
 
-        # Load polygons and scale them
-        map_data.load_polygons()
+        # Scale polygons and centers
         self.scaled_polygons = {}
         self.scaled_centers = {}
 
@@ -331,6 +366,45 @@ class TerritorySelector:
 
         # Hovered territory
         self.hovered_territory = None
+
+        # Set up map selector arrow positions (wide, flat arrows at top/bottom of right panel)
+        arrow_w = 48
+        arrow_h = 12
+        arrow_center_x = self.map_x + self.scaled_map_width // 2
+        # Up arrow near top of screen
+        arrow_top_y = 4
+        self.arrow_up_rect = pygame.Rect(arrow_center_x - arrow_w // 2, arrow_top_y, arrow_w, arrow_h)
+        # Down arrow near bottom of screen
+        arrow_bottom_y = self.height - arrow_h - 4
+        self.arrow_down_rect = pygame.Rect(arrow_center_x - arrow_w // 2, arrow_bottom_y, arrow_w, arrow_h)
+
+    def change_map(self, direction):
+        """Cycle to next/previous map. Only host can call this.
+        direction: +1 (next) or -1 (previous)."""
+        if not self.is_host:
+            return
+
+        map_ids = map_data.get_map_ids()
+        if len(map_ids) <= 1:
+            return
+
+        current_idx = map_ids.index(self.selected_map) if self.selected_map in map_ids else 0
+        new_idx = (current_idx + direction) % len(map_ids)
+        self.selected_map = map_ids[new_idx]
+
+        # Clear all territory selections (territories differ between maps)
+        for i in range(len(self.player_selections)):
+            self.player_selections[i] = None
+        for slot in self.lobby_state.slots:
+            slot.territory = None
+
+        # Reinitialize map display
+        self._initialize_map()
+
+        # Sync map change to clients
+        self._sync_settings_to_client()
+
+        sound_manager.play_ui_click()
 
     def _calculate_ui_layout(self):
         """Calculate positions for left panel UI elements.
@@ -543,6 +617,15 @@ class TerritorySelector:
         if self.overlay_open:
             self._handle_overlay_click(pos)
             return
+
+        # Check map selector arrow clicks (host only)
+        if self.is_host and len(map_data.get_map_ids()) > 1:
+            if self.arrow_up_rect and self.arrow_up_rect.collidepoint(pos):
+                self.change_map(-1)
+                return
+            if self.arrow_down_rect and self.arrow_down_rect.collidepoint(pos):
+                self.change_map(1)
+                return
 
         # Check if host clicked on the IP address to copy to clipboard
         if self.is_host and self._ip_click_rect and self._ip_click_rect.collidepoint(pos):
@@ -942,6 +1025,9 @@ class TerritorySelector:
         final_slots = [slot.to_dict() for slot in self.lobby_state.slots]
         settings = self.lobby_state.get_settings()
 
+        # Include map_id in launch settings for multi-map support
+        settings['map_id'] = self.selected_map
+
         # Host generates randomized bonus mapping and includes it in launch settings
         if self.randomize_bonuses:
             import map_data
@@ -967,6 +1053,7 @@ class TerritorySelector:
             'host_name': self.player_names[0],  # Include host's name for client display
             'neutral_armies': self.neutral_armies,
             'randomize_bonuses': self.randomize_bonuses,
+            'map_id': self.selected_map,  # Selected map for multi-map support
         })
         self.network_connection.send_message(message)
 
@@ -985,6 +1072,14 @@ class TerritorySelector:
         # Track hover over clickable IP address (host only)
         self._ip_hovered = (self.is_host and self._ip_click_rect is not None
                             and self._ip_click_rect.collidepoint(pos))
+
+        # Track map selector arrow hover (host only)
+        self.hovered_arrow = None
+        if self.is_host:
+            if self.arrow_up_rect and self.arrow_up_rect.collidepoint(pos):
+                self.hovered_arrow = 'up'
+            elif self.arrow_down_rect and self.arrow_down_rect.collidepoint(pos):
+                self.hovered_arrow = 'down'
 
         if pos[0] >= self.left_panel_width:  # In map area
             self.hovered_territory = self.get_territory_at_pos(pos)
@@ -1253,6 +1348,12 @@ class TerritorySelector:
                     # Extract host-generated bonus mapping for randomized bonuses
                     if 'bonus_mapping' in data['settings']:
                         self.bonus_mapping = data['settings']['bonus_mapping']
+                    # Extract map_id for multi-map support
+                    if 'map_id' in data['settings']:
+                        new_map_id = data['settings']['map_id']
+                        if new_map_id != self.selected_map:
+                            self.selected_map = new_map_id
+                            map_data.load_map(new_map_id)
                 self._sync_from_lobby_state()
                 self.ready_to_start = True
                 logger.info("Game launching!")
@@ -1270,6 +1371,17 @@ class TerritorySelector:
                     # Additional options
                     self.neutral_armies = data.get('neutral_armies', False)
                     self.randomize_bonuses = data.get('randomize_bonuses', False)
+                    # Handle map change from host
+                    new_map_id = data.get('map_id', 'avareon')
+                    if new_map_id != self.selected_map:
+                        self.selected_map = new_map_id
+                        # Clear territory selections and reinitialize map
+                        for i in range(len(self.player_selections)):
+                            self.player_selections[i] = None
+                        for slot in self.lobby_state.slots:
+                            slot.territory = None
+                        self._initialize_map()
+                        logger.info(f"Map changed to '{new_map_id}' by host")
                     # Update host's player name if provided
                     if 'host_name' in data:
                         host_slot = self.lobby_state.get_slot(0)
@@ -1586,6 +1698,12 @@ class TerritorySelector:
         # Draw map
         self.screen.blit(self.map_image, (self.map_x, self.map_y))
 
+        # Draw borders for all unselected territories so they're visible
+        selected_set = set(s for s in self.player_selections if s)
+        for territory, polygon in self.scaled_polygons.items():
+            if territory not in selected_set:
+                pygame.draw.lines(self.screen, (200, 200, 200), True, polygon, 1)
+
         # Draw bottom bar (positioned below map)
         if self.bottom_bar_image:
             # Scale bar to match panel width
@@ -1599,6 +1717,44 @@ class TerritorySelector:
             bottom_bar_x = self.left_panel_width
             bottom_bar_y = self.map_y + self.scaled_map_height
             self.screen.blit(scaled_bottom_bar, (bottom_bar_x, bottom_bar_y))
+
+        # Draw map selector arrows and map name (only if multiple maps, host only can click)
+        if len(map_data.get_map_ids()) > 1:
+            self._draw_map_selector_arrows()
+
+    def _draw_map_selector_arrows(self):
+        """Draw up/down arrows and map name for map selection."""
+        # Only show interactive arrows for host; clients see name only
+        if self.is_host:
+            # Up arrow
+            up_color = BRASS_COLOR if self.hovered_arrow != 'up' else (220, 200, 100)
+            up_rect = self.arrow_up_rect
+            if up_rect:
+                up_points = [
+                    (up_rect.centerx, up_rect.top),
+                    (up_rect.left, up_rect.bottom),
+                    (up_rect.right, up_rect.bottom)
+                ]
+                pygame.draw.polygon(self.screen, up_color, up_points)
+
+            # Down arrow
+            down_color = BRASS_COLOR if self.hovered_arrow != 'down' else (220, 200, 100)
+            down_rect = self.arrow_down_rect
+            if down_rect:
+                down_points = [
+                    (down_rect.left, down_rect.top),
+                    (down_rect.right, down_rect.top),
+                    (down_rect.centerx, down_rect.bottom)
+                ]
+                pygame.draw.polygon(self.screen, down_color, down_points)
+
+        # Draw map name centered above the map
+        display_name = map_data.get_map_display_name(self.selected_map)
+        name_surface = self.text_font.render(display_name, True, BRASS_COLOR)
+        name_x = self.map_x + (self.scaled_map_width - name_surface.get_width()) // 2
+        # Position between up arrow and top bar
+        name_y = self.arrow_up_rect.bottom + 4 if self.arrow_up_rect else self.map_y - 30
+        self.screen.blit(name_surface, (name_x, name_y))
 
     def _draw_territory_overlays(self):
         """Draw territory selection overlays on the map."""

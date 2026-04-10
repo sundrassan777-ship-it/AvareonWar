@@ -366,13 +366,15 @@ class MultiplayerSetup:
         # Build config from LobbyState
         config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode,
                                                 neutral_armies, randomize_bonuses, bonus_mapping)
+        # Multi-map support: include selected map_id from selector
+        config['map_id'] = selector.selected_map
 
         # Log configuration
         active_players = lobby_state.get_active_players()
         logger.info(f"Game configured with {len(active_players)} players:")
         for slot in active_players:
             logger.info(f"  Slot {slot.index}: {slot.player_name} -> {slot.territory} (Team {slot.team + 1})")
-        logger.info(f"Settings: Victory={self.victory_options[victory_condition]}, Tax={taxation_level}, Mode={self.turn_mode_options[turn_mode]}")
+        logger.info(f"Settings: Victory={self.victory_options[victory_condition]}, Tax={taxation_level}, Mode={self.turn_mode_options[turn_mode]}, Map={selector.selected_map}")
 
         return ('host', server, config)
 
@@ -455,13 +457,15 @@ class MultiplayerSetup:
         # Build config from LobbyState
         config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode,
                                                 neutral_armies, randomize_bonuses, bonus_mapping)
+        # Multi-map support: include selected map_id from selector
+        config['map_id'] = selector.selected_map
 
         # Log configuration
         active_players = lobby_state.get_active_players()
         logger.info(f"Game configured with {len(active_players)} players:")
         for slot in active_players:
             logger.info(f"  Slot {slot.index}: {slot.player_name} -> {slot.territory} (Team {slot.team + 1})")
-        logger.info(f"Settings from host: Victory={self.victory_options[victory_condition]}, Tax={taxation_level}, Mode={self.turn_mode_options[turn_mode]}")
+        logger.info(f"Settings from host: Victory={self.victory_options[victory_condition]}, Tax={taxation_level}, Mode={self.turn_mode_options[turn_mode]}, Map={selector.selected_map}")
 
         return ('client', client, config)
 

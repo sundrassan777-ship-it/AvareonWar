@@ -14,7 +14,15 @@ Each tier determines how much gold the territory generates per turn:
 import pygame
 import json
 import sys
+import os
 import map_data
+
+# Multi-map support: --map <map_id> CLI argument selects which map to edit (default: avareon)
+_tool_map_id = 'avareon'
+for i, arg in enumerate(sys.argv):
+    if arg == '--map' and i + 1 < len(sys.argv):
+        _tool_map_id = sys.argv[i + 1]
+_tool_map_dir = f'maps/{_tool_map_id}'
 
 # Initialize Pygame
 pygame.init()
@@ -62,25 +70,21 @@ TIER_1_SUGGESTIONS = [
 class EconomicTool:
     def __init__(self):
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("Adjacency Verification Tool")
+        pygame.display.set_caption("Economic Power Assignment Tool")
         self.clock = pygame.time.Clock()
-        
+
+        # Multi-map state
+        self.current_map_id = _tool_map_id
+        self.current_map_dir = _tool_map_dir
+
         # Load polygons and adjacency data
         map_data.load_polygons()
         if not map_data.TERRITORY_POLYGONS:
             print("ERROR: No territory polygons loaded!")
             sys.exit(1)
-        
-        # Load the map image - KEEP ORIGINAL HIGH-RES for quality!
-        try:
-            self.map_image_original = pygame.image.load("assets/map.png")
-            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
-                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
-            else:
-                self.map_image = self.map_image_original.copy()
-        except pygame.error as e:
-            print(f"Error loading map: {e}")
-            sys.exit(1)
+
+        # Load the map image
+        self._load_map_image()
 
         # Camera system (same as Polygon_Tool!)
         self.camera_offset = [0.0, 0.0]  # [x, y] in world coordinates
@@ -241,10 +245,51 @@ class EconomicTool:
             if map_data.point_in_polygon(world_pos, polygon):
                 return territory
     
+    def _load_map_image(self):
+        """Load (or reload) the map background image for the current map."""
+        map_png = os.path.join(self.current_map_dir, 'map.png')
+        if not os.path.exists(map_png):
+            map_png = "assets/map.png"
+        try:
+            self.map_image_original = pygame.image.load(map_png)
+            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
+                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
+            else:
+                self.map_image = self.map_image_original.copy()
+        except pygame.error as e:
+            print(f"Error loading map image: {e}")
+            self.map_image_original = pygame.Surface((MAP_WIDTH, MAP_HEIGHT))
+            self.map_image_original.fill((0, 0, 0))
+            self.map_image = self.map_image_original.copy()
+        # Invalidate scaled map cache if it exists
+        if hasattr(self, 'cached_scaled_map'):
+            self.cached_scaled_map = None
+            self.cached_zoom_level = None
+
+    def _switch_map(self):
+        """Cycle to the next map in the manifest and reload all data."""
+        import map_data as _md
+        map_ids = _md.get_map_ids()
+        if len(map_ids) <= 1:
+            return
+        current_idx = map_ids.index(self.current_map_id) if self.current_map_id in map_ids else 0
+        new_idx = (current_idx + 1) % len(map_ids)
+        # Save current work BEFORE switching directories
+        self.save_economic_data()
+        self.current_map_id = map_ids[new_idx]
+        self.current_map_dir = f'maps/{self.current_map_id}'
+        print(f"Switched to map: {self.current_map_id}")
+        self._load_map_image()
+        _md.load_map(self.current_map_id)
+        self.territories = sorted(list(map_data.TERRITORY_POLYGONS.keys()))
+        self.current_territory_index = 0
+        self.load_economic_data()
+
     def load_economic_data(self):
         """Load previously saved economic tiers if they exist"""
+        self.economic_tiers = {}  # Clear existing data first
         try:
-            with open('economic_data.json', 'r', encoding='utf-8') as f:
+            with open(os.path.join(self.current_map_dir, 'economic_data.json'), 'r', encoding='utf-8') as f:
                 self.economic_tiers = json.load(f)
             print(f"Loaded economic data for {len(self.economic_tiers)} territories")
         except FileNotFoundError:
@@ -255,7 +300,7 @@ class EconomicTool:
     
     def save_economic_data(self):
         """Save all economic tiers to JSON file"""
-        with open('economic_data.json', 'w', encoding='utf-8') as f:
+        with open(os.path.join(self.current_map_dir, 'economic_data.json'), 'w', encoding='utf-8') as f:
             json.dump(self.economic_tiers, f, indent=2, ensure_ascii=False)
         print(f"Saved economic data for {len(self.economic_tiers)} territories")
     
@@ -361,7 +406,15 @@ class EconomicTool:
 
         ui_x = ui_panel_x + 15
         ui_y = 20
-        
+
+        # Map selector (M key to cycle)
+        import map_data as _md
+        map_label = self.small_font.render("Map [M]:", True, (100, 100, 100))
+        self.screen.blit(map_label, (ui_x, ui_y))
+        map_name = self.font.render(_md.get_map_display_name(self.current_map_id), True, BLUE)
+        self.screen.blit(map_name, (ui_x + map_label.get_width() + 6, ui_y))
+        ui_y += 28
+
         # Title
         title = self.large_font.render("Economic Power", True, BLACK)
         self.screen.blit(title, (ui_x, ui_y))
@@ -520,6 +573,8 @@ class EconomicTool:
                     elif event.key == pygame.K_s:
                         self.save_economic_data()
                         print("Saved!")
+                    elif event.key == pygame.K_m:  # Cycle to next map
+                        self._switch_map()
                     elif event.key == pygame.K_ESCAPE:
                         self.save_economic_data()
                         running = False

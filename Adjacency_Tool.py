@@ -12,7 +12,15 @@ Use keyboard to add/remove adjacencies.
 import pygame
 import json
 import sys
+import os
 import map_data
+
+# Multi-map support: --map <map_id> CLI argument selects which map to edit (default: avareon)
+_tool_map_id = 'avareon'
+for i, arg in enumerate(sys.argv):
+    if arg == '--map' and i + 1 < len(sys.argv):
+        _tool_map_id = sys.argv[i + 1]
+_tool_map_dir = f'maps/{_tool_map_id}'
 
 # Initialize Pygame
 pygame.init()
@@ -40,23 +48,19 @@ class AdjacencyTool:
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Adjacency Verification Tool")
         self.clock = pygame.time.Clock()
-        
+
+        # Multi-map state
+        self.current_map_id = _tool_map_id
+        self.current_map_dir = _tool_map_dir
+
         # Load polygons and adjacency data
         map_data.load_polygons()
         if not map_data.TERRITORY_POLYGONS:
             print("ERROR: No territory polygons loaded!")
             sys.exit(1)
-        
-        # Load the map image - KEEP ORIGINAL HIGH-RES for quality!
-        try:
-            self.map_image_original = pygame.image.load("assets/map.png")
-            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
-                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
-            else:
-                self.map_image = self.map_image_original.copy()
-        except pygame.error as e:
-            print(f"Error loading map: {e}")
-            sys.exit(1)
+
+        # Load the map image
+        self._load_map_image()
 
         # Camera system (same as Polygon_Tool!)
         self.camera_offset = [0.0, 0.0]  # [x, y] in world coordinates
@@ -247,54 +251,69 @@ class AdjacencyTool:
         else:
             self.adjacencies[territory2] = [territory1]
     
-    def save_adjacencies(self):
-        """Save the modified adjacency data back to map_data.py"""
+    def _load_map_image(self):
+        """Load (or reload) the map background image for the current map."""
+        map_png = os.path.join(self.current_map_dir, 'map.png')
+        if not os.path.exists(map_png):
+            map_png = "assets/map.png"
         try:
-            # Read the current map_data.py file with UTF-8 encoding
-            with open('map_data.py', 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Find the ADJACENCIES dictionary and replace it
-            import_start = content.find('ADJACENCIES = {')
-            if import_start == -1:
-                print("ERROR: Could not find ADJACENCIES dictionary in map_data.py")
-                return False
-            
-            # Find the end of the dictionary
-            brace_count = 0
-            i = import_start + len('ADJACENCIES = ')
-            start_i = i
-            while i < len(content):
-                if content[i] == '{':
-                    brace_count += 1
-                elif content[i] == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        break
-                i += 1
-            
-            if brace_count != 0:
-                print("ERROR: Could not parse ADJACENCIES dictionary")
-                return False
-            
-            # Build new adjacency string
-            new_adjacencies = "ADJACENCIES = {\n"
+            self.map_image_original = pygame.image.load(map_png)
+            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
+                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
+            else:
+                self.map_image = self.map_image_original.copy()
+        except pygame.error as e:
+            print(f"Error loading map image: {e}")
+            self.map_image_original = pygame.Surface((MAP_WIDTH, MAP_HEIGHT))
+            self.map_image_original.fill((0, 0, 0))
+            self.map_image = self.map_image_original.copy()
+        # Invalidate scaled map cache if it exists
+        if hasattr(self, 'cached_scaled_map'):
+            self.cached_scaled_map = None
+            self.cached_zoom_level = None
+
+    def _switch_map(self):
+        """Cycle to the next map in the manifest and reload all data."""
+        import map_data as _md
+        map_ids = _md.get_map_ids()
+        if len(map_ids) <= 1:
+            return
+        current_idx = map_ids.index(self.current_map_id) if self.current_map_id in map_ids else 0
+        new_idx = (current_idx + 1) % len(map_ids)
+        # Save current work BEFORE switching directories
+        self.save_adjacencies()
+        self.current_map_id = map_ids[new_idx]
+        self.current_map_dir = f'maps/{self.current_map_id}'
+        print(f"Switched to map: {self.current_map_id}")
+        self._load_map_image()
+        _md.load_map(self.current_map_id)
+        self.selected_territory = None
+        self.hovered_territory = None
+        self.mode = 'view'
+        self.pending_addition = None
+        self.load_adjacencies()
+
+    def load_adjacencies(self):
+        """Load adjacencies from map_data (after map_data has been loaded/reloaded)."""
+        self.adjacencies = {}  # Clear existing data first
+        self.adjacencies = map_data.ADJACENCIES.copy()
+        print(f"Loaded adjacencies for {len(self.adjacencies)} territories")
+
+    def save_adjacencies(self):
+        """Save the modified adjacency data to adjacencies.json in the map directory"""
+        try:
+            # Build adjacency dict with sorted keys and neighbors for consistent output
+            adjacency_data = {}
             for territory in sorted(self.adjacencies.keys()):
-                neighbors = sorted(self.adjacencies[territory])
-                neighbors_str = ', '.join(f'"{n}"' for n in neighbors)
-                new_adjacencies += f'    "{territory}": [{neighbors_str}],\n'
-            new_adjacencies += "}"
-            
-            # Replace in content
-            new_content = content[:import_start] + new_adjacencies + content[i+1:]
-            
-            # Write back with UTF-8 encoding
-            with open('map_data.py', 'w', encoding='utf-8') as f:
-                f.write(new_content)
-            
-            print("\n✅ Adjacencies saved to map_data.py!")
+                adjacency_data[territory] = sorted(self.adjacencies[territory])
+
+            output_path = os.path.join(self.current_map_dir, 'adjacencies.json')
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(adjacency_data, f, indent=2, ensure_ascii=False)
+
+            print(f"\n Adjacencies saved to {output_path}!")
             return True
-            
+
         except Exception as e:
             print(f"ERROR saving adjacencies: {e}")
             return False
@@ -380,7 +399,15 @@ class AdjacencyTool:
 
         ui_x = ui_panel_x + 15
         ui_y = 20
-        
+
+        # Map selector (M key to cycle)
+        import map_data as _md
+        map_label = self.small_font.render("Map [M]:", True, (100, 100, 100))
+        self.screen.blit(map_label, (ui_x, ui_y))
+        map_name = self.font.render(_md.get_map_display_name(self.current_map_id), True, BLUE)
+        self.screen.blit(map_name, (ui_x + map_label.get_width() + 6, ui_y))
+        ui_y += 28
+
         # Title
         title = self.large_font.render("Adjacency Tool", True, BLACK)
         self.screen.blit(title, (ui_x, ui_y))
@@ -534,6 +561,9 @@ class AdjacencyTool:
                         else:
                             print("❌ Save failed!")
                     
+                    elif event.key == pygame.K_m:  # Cycle to next map
+                        self._switch_map()
+
                     elif event.key == pygame.K_ESCAPE:  # Quit
                         running = False
 
@@ -562,7 +592,7 @@ if __name__ == "__main__":
     print("\nControls:")
     print("- Click a territory to select it and see its neighbors (green)")
     print("- Press 'A' to enter ADD mode, then click territories to add/remove as neighbors")
-    print("- Press 'S' to save changes to map_data.py")
+    print("- Press 'S' to save changes to adjacencies.json")
     print("\nLoading...")
     
     tool = AdjacencyTool()

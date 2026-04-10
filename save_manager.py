@@ -27,6 +27,7 @@ import re
 import tempfile
 from datetime import datetime
 
+import map_data
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -545,6 +546,7 @@ def save_game(gs, mission_obj, save_name):
                 'starting_gold': gs.starting_gold,
                 'player_names': list(gs.player_names),
                 'player_colors': list(gs.player_colors),
+                'map_id': map_data.get_current_map_id() or 'avareon',  # Multi-map support
             },
             'game_state': serialize_game_state(gs),
             'mission_state': mission_obj.get_save_state(),

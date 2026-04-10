@@ -1,0 +1,272 @@
+{
+  "Aiven Crossing": [
+    "Anderu",
+    "Arcessfort",
+    "Lanta"
+  ],
+  "Alanca": [
+    "Avantgardian Road",
+    "Generax Pastures",
+    "South Angarfen Forest"
+  ],
+  "Anderu": [
+    "Aiven Crossing",
+    "Arcepte",
+    "Beleta",
+    "Lanta",
+    "Plein"
+  ],
+  "Arcburg": [
+    "Hosfan"
+  ],
+  "Arcepte": [
+    "Anderu",
+    "Beleta",
+    "Bolere",
+    "Entaron",
+    "Great South Heilonic Fields",
+    "Plein"
+  ],
+  "Arcessfort": [
+    "Aiven Crossing",
+    "Calastre Valley",
+    "Passes of Finles"
+  ],
+  "Astrae": [
+    "Astraean Coast",
+    "Lantaran Forest",
+    "Nixraec Forest",
+    "Velene"
+  ],
+  "Astraean Coast": [
+    "Astrae",
+    "Leyana",
+    "Nixraec Forest"
+  ],
+  "Atoney": [
+    "Beleton",
+    "Delunce",
+    "Hosfan Fields",
+    "Leyana",
+    "Venira"
+  ],
+  "Aurent": [
+    "Daurels",
+    "Eirance"
+  ],
+  "Avantgardian Road": [
+    "Alanca",
+    "Entaron",
+    "Generax Fields",
+    "Generax Pastures"
+  ],
+  "Beleta": [
+    "Anderu",
+    "Arcepte",
+    "Bolere",
+    "Great South Heilonic Fields",
+    "Lecce"
+  ],
+  "Beleton": [
+    "Atoney",
+    "Delunce",
+    "Hosfan",
+    "Hosfan Fields",
+    "Venira"
+  ],
+  "Bolere": [
+    "Arcepte",
+    "Beleta",
+    "Entaron",
+    "Great South Heilonic Fields"
+  ],
+  "Calastre Valley": [
+    "Arcessfort",
+    "Havage"
+  ],
+  "Cantre": [
+    "Euleira Road",
+    "Havage",
+    "Valley of Lossarne"
+  ],
+  "Climb of Nioraient": [
+    "Generax",
+    "Nioraient"
+  ],
+  "Daurels": [
+    "Aurent",
+    "Emmine",
+    "North Daurels Pass",
+    "Valley of Lossarne"
+  ],
+  "Delonve Edges": [
+    "Enciantan Ravine",
+    "Nioraient",
+    "The Tall Pass"
+  ],
+  "Delunce": [
+    "Atoney",
+    "Beleton",
+    "North Daurels Pass",
+    "Venira"
+  ],
+  "Eirance": [
+    "Aurent"
+  ],
+  "Eleques": [
+    "The Tall Pass"
+  ],
+  "Emmine": [
+    "Daurels",
+    "High Mountain Paths"
+  ],
+  "Enciantan Ravine": [
+    "Delonve Edges",
+    "High Mountain Paths"
+  ],
+  "Entaron": [
+    "Arcepte",
+    "Avantgardian Road",
+    "Bolere",
+    "Generax Fields",
+    "Plein"
+  ],
+  "Euleira": [
+    "Euleira Road"
+  ],
+  "Euleira Road": [
+    "Cantre",
+    "Euleira"
+  ],
+  "Generax": [
+    "Climb of Nioraient",
+    "Generax Fields",
+    "Generax Pastures"
+  ],
+  "Generax Fields": [
+    "Avantgardian Road",
+    "Entaron",
+    "Generax",
+    "Generax Pastures",
+    "Lanta",
+    "Plein"
+  ],
+  "Generax Pastures": [
+    "Alanca",
+    "Avantgardian Road",
+    "Generax",
+    "Generax Fields",
+    "Lires",
+    "South Angarfen Forest"
+  ],
+  "Great South Heilonic Fields": [
+    "Arcepte",
+    "Beleta",
+    "Bolere",
+    "Lecce",
+    "Pardes"
+  ],
+  "Havage": [
+    "Calastre Valley",
+    "Cantre"
+  ],
+  "High Mountain Paths": [
+    "Emmine",
+    "Enciantan Ravine"
+  ],
+  "Hosfan": [
+    "Arcburg",
+    "Beleton",
+    "Hosfan Fields"
+  ],
+  "Hosfan Fields": [
+    "Atoney",
+    "Beleton",
+    "Hosfan"
+  ],
+  "Lanta": [
+    "Aiven Crossing",
+    "Anderu",
+    "Generax Fields",
+    "Plein"
+  ],
+  "Lantaran Forest": [
+    "Astrae",
+    "Velene"
+  ],
+  "Lecce": [
+    "Beleta",
+    "Great South Heilonic Fields",
+    "Pardes"
+  ],
+  "Leyana": [
+    "Astraean Coast",
+    "Atoney",
+    "Nixraec Forest",
+    "Venira"
+  ],
+  "Lires": [
+    "Generax Pastures",
+    "South Angarfen Forest"
+  ],
+  "Loira": [
+    "North Angarfen Forest",
+    "South Angarfen Forest"
+  ],
+  "Nioraient": [
+    "Climb of Nioraient",
+    "Delonve Edges"
+  ],
+  "Nixraec Forest": [
+    "Astrae",
+    "Astraean Coast",
+    "Leyana"
+  ],
+  "North Angarfen Forest": [
+    "Loira"
+  ],
+  "North Daurels Pass": [
+    "Daurels",
+    "Delunce"
+  ],
+  "Pardes": [
+    "Great South Heilonic Fields",
+    "Lecce"
+  ],
+  "Passes of Finles": [
+    "Arcessfort",
+    "Valley of Lossarne"
+  ],
+  "Plein": [
+    "Anderu",
+    "Arcepte",
+    "Entaron",
+    "Generax Fields",
+    "Lanta"
+  ],
+  "South Angarfen Forest": [
+    "Alanca",
+    "Generax Pastures",
+    "Lires",
+    "Loira"
+  ],
+  "The Tall Pass": [
+    "Delonve Edges",
+    "Eleques"
+  ],
+  "Valley of Lossarne": [
+    "Cantre",
+    "Daurels",
+    "Passes of Finles"
+  ],
+  "Velene": [
+    "Astrae",
+    "Lantaran Forest"
+  ],
+  "Venira": [
+    "Atoney",
+    "Beleton",
+    "Delunce",
+    "Leyana"
+  ]
+}

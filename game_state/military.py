@@ -2333,6 +2333,12 @@ class MilitaryMixin:
             keep_bonus = 0
             has_keep = False
             keep_plot_with_hero = None
+
+            # Fortress territories get innate +2 defense (like having a Keep built)
+            if map_data.is_fortress_territory(territory) and current_owner != -1:
+                has_keep = True
+                keep_bonus = 2
+
             if current_owner != -1 and territory in self.buildings:
                 for plot_index, building_type in self.buildings[territory].items():
                     if building_type == 'Keep':

@@ -1,0 +1,40 @@
+{
+  "maps": [
+    {
+      "id": "avareon",
+      "display_name": "Avareon",
+      "directory": "maps/avareon",
+      "has_background": true,
+      "enabled": true
+    },
+    {
+      "id": "azincournean_highlands",
+      "display_name": "Azincournean Highlands",
+      "directory": "maps/azincournean_highlands",
+      "has_background": true,
+      "enabled": true
+    },
+    {
+      "id": "naragonthid",
+      "display_name": "Naragonthid",
+      "directory": "maps/naragonthid",
+      "has_background": false,
+      "enabled": false
+    },
+    {
+      "id": "far_east",
+      "display_name": "Far East",
+      "directory": "maps/far_east",
+      "has_background": false,
+      "enabled": false
+    },
+    {
+      "id": "nordian_mountains",
+      "display_name": "Nordian Mountains",
+      "directory": "maps/nordian_mountains",
+      "has_background": false,
+      "enabled": false
+    }
+  ],
+  "default_map": "avareon"
+}

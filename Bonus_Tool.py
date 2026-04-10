@@ -20,7 +20,15 @@ Each territory provides one global bonus to its owner:
 import pygame
 import json
 import sys
+import os
 import map_data
+
+# Multi-map support: --map <map_id> CLI argument selects which map to edit (default: avareon)
+_tool_map_id = 'avareon'
+for i, arg in enumerate(sys.argv):
+    if arg == '--map' and i + 1 < len(sys.argv):
+        _tool_map_id = sys.argv[i + 1]
+_tool_map_dir = f'maps/{_tool_map_id}'
 
 # Initialize Pygame
 pygame.init()
@@ -64,22 +72,18 @@ class BonusTool:
         pygame.display.set_caption("Territorial Bonus Assignment Tool")
         self.clock = pygame.time.Clock()
 
+        # Multi-map state
+        self.current_map_id = _tool_map_id
+        self.current_map_dir = _tool_map_dir
+
         # Load polygons
         map_data.load_polygons()
         if not map_data.TERRITORY_POLYGONS:
             print("ERROR: No territory polygons loaded!")
             sys.exit(1)
 
-        # Load the map image - KEEP ORIGINAL HIGH-RES for quality!
-        try:
-            self.map_image_original = pygame.image.load("assets/map.png")
-            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
-                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
-            else:
-                self.map_image = self.map_image_original.copy()
-        except pygame.error as e:
-            print(f"Error loading map: {e}")
-            sys.exit(1)
+        # Load the map image
+        self._load_map_image()
 
         # Camera system (same as Adjacency_Tool!)
         self.camera_offset = [0.0, 0.0]  # [x, y] in world coordinates
@@ -241,10 +245,52 @@ class BonusTool:
     # DATA LOADING/SAVING METHODS
     # ========================================
 
+    def _load_map_image(self):
+        """Load (or reload) the map background image for the current map."""
+        map_png = os.path.join(self.current_map_dir, 'map.png')
+        if not os.path.exists(map_png):
+            map_png = "assets/map.png"
+        try:
+            self.map_image_original = pygame.image.load(map_png)
+            if self.map_image_original.get_width() != MAP_WIDTH or self.map_image_original.get_height() != MAP_HEIGHT:
+                self.map_image = pygame.transform.scale(self.map_image_original, (MAP_WIDTH, MAP_HEIGHT))
+            else:
+                self.map_image = self.map_image_original.copy()
+        except pygame.error as e:
+            print(f"Error loading map image: {e}")
+            self.map_image_original = pygame.Surface((MAP_WIDTH, MAP_HEIGHT))
+            self.map_image_original.fill((0, 0, 0))
+            self.map_image = self.map_image_original.copy()
+        # Invalidate scaled map cache if it exists
+        if hasattr(self, 'cached_scaled_map'):
+            self.cached_scaled_map = None
+            self.cached_zoom_level = None
+
+    def _switch_map(self):
+        """Cycle to the next map in the manifest and reload all data."""
+        import map_data as _md
+        map_ids = _md.get_map_ids()
+        if len(map_ids) <= 1:
+            return
+        current_idx = map_ids.index(self.current_map_id) if self.current_map_id in map_ids else 0
+        new_idx = (current_idx + 1) % len(map_ids)
+        # Save current work BEFORE switching directories
+        self.save_bonus_data()
+        self.current_map_id = map_ids[new_idx]
+        self.current_map_dir = f'maps/{self.current_map_id}'
+        print(f"Switched to map: {self.current_map_id}")
+        self._load_map_image()
+        _md.load_map(self.current_map_id)
+        self.territories = sorted(list(map_data.TERRITORY_POLYGONS.keys()))
+        self.current_territory_index = 0
+        self.selected_territory = None
+        self.load_bonus_data()
+
     def load_bonus_data(self):
         """Load previously saved territorial bonuses if they exist"""
+        self.territory_bonuses = {}  # Clear existing data first
         try:
-            with open('territory_bonuses.json', 'r', encoding='utf-8') as f:
+            with open(os.path.join(self.current_map_dir, 'territory_bonuses.json'), 'r', encoding='utf-8') as f:
                 self.territory_bonuses = json.load(f)
             print(f"Loaded bonuses for {len(self.territory_bonuses)} territories")
         except FileNotFoundError:
@@ -260,7 +306,7 @@ class BonusTool:
             print(f"Unassigned: {', '.join(unassigned[:5])}{'...' if len(unassigned) > 5 else ''}")
             return False
 
-        with open('territory_bonuses.json', 'w', encoding='utf-8') as f:
+        with open(os.path.join(self.current_map_dir, 'territory_bonuses.json'), 'w', encoding='utf-8') as f:
             json.dump(self.territory_bonuses, f, indent=2, ensure_ascii=False)
         print(f"✓ Saved bonuses for all {len(self.territory_bonuses)} territories")
         return True
@@ -398,6 +444,14 @@ class BonusTool:
 
         ui_x = ui_panel_x + 15
         ui_y = 20
+
+        # Map selector (M key to cycle)
+        import map_data as _md
+        map_label = self.small_font.render("Map [M]:", True, (100, 100, 100))
+        self.screen.blit(map_label, (ui_x, ui_y))
+        map_name = self.font.render(_md.get_map_display_name(self.current_map_id), True, (0, 0, 255))
+        self.screen.blit(map_name, (ui_x + map_label.get_width() + 6, ui_y))
+        ui_y += 28
 
         # Title
         title = self.large_font.render("Territorial Bonuses", True, BLACK)
@@ -557,6 +611,10 @@ class BonusTool:
                 print("✓ Successfully saved all territorial bonuses!")
             else:
                 print("✗ Cannot save - some territories still unassigned")
+
+        # Cycle to next map with M key
+        elif key == pygame.K_m:
+            self._switch_map()
 
         # Quit with Q key
         elif key == pygame.K_q:

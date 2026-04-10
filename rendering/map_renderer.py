@@ -778,6 +778,10 @@ class MapRenderer:
                     continue
 
                 owner = self.game.game_state.territory_owners.get(territory, -1)
+                screen_polygon = self.get_cached_screen_polygon(territory)
+                if not screen_polygon:
+                    continue
+
                 if owner >= 0:
                     color = self.game.game_state.get_player_color(owner)
 
@@ -794,9 +798,11 @@ class MapRenderer:
                             int(color[2] * 0.7)
                         )
 
-                    screen_polygon = self.get_cached_screen_polygon(territory)
-                    if screen_polygon:
-                        pygame.draw.polygon(self.fullscreen_overlay, (*color, 80), screen_polygon)
+                    pygame.draw.polygon(self.fullscreen_overlay, (*color, 80), screen_polygon)
+                else:
+                    # Unowned territory: fill + stronger border to distinguish from non-territory areas
+                    pygame.draw.polygon(self.fullscreen_overlay, (200, 200, 200, 45), screen_polygon)
+                    pygame.draw.lines(self.fullscreen_overlay, (220, 220, 220, 120), True, screen_polygon, 1)
 
             # Store cache state
             self._overlay_cache_surface = self.fullscreen_overlay.copy()

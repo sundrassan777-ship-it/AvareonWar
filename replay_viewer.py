@@ -211,18 +211,32 @@ class ReplayViewer:
 
     def _load_map_assets(self):
         """Load and scale map image, polygons, centers, and icon assets."""
-        # Ensure map_data polygons/centers/plots are loaded (may not be if no game was played yet)
-        if not map_data.TERRITORY_POLYGONS:
-            map_data.load_polygons()
+        # Load map data for the replay's map (multi-map support)
+        replay_map_id = self.metadata.get('map_id', 'avareon')
+        map_data.load_map(replay_map_id)
 
-        # Load map image
-        try:
-            self.map_image_original = pygame.image.load("assets/map.png").convert()
-        except pygame.error:
-            # Fallback: dark green surface
+        # Load map image from map directory or fallback
+        import os
+        map_dir = map_data.get_map_directory(replay_map_id)
+        map_png = os.path.join(map_dir, 'map.png')
+        map_loaded = False
+        if os.path.exists(map_png):
+            try:
+                self.map_image_original = pygame.image.load(map_png).convert()
+                map_loaded = True
+            except pygame.error:
+                pass
+        if not map_loaded and replay_map_id == 'avareon':
+            try:
+                self.map_image_original = pygame.image.load("assets/map.png").convert()
+                map_loaded = True
+            except pygame.error:
+                pass
+        if not map_loaded:
+            # Fallback: dark surface
             self.map_image_original = pygame.Surface(
                 (ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-            self.map_image_original.fill((50, 80, 50))
+            self.map_image_original.fill((0, 0, 0))
 
         # Calculate scale factor to fit map in map_rect
         width_scale = self.map_rect.width / ORIGINAL_MAP_WIDTH

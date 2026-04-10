@@ -259,19 +259,40 @@ class Game:
         
         # Load and scale the map image
         try:
-            # Use campaign-specific map if provided, otherwise default map
-            map_path = self.campaign_map if self.campaign_map else "assets/map.png"
+            # Use campaign-specific map if provided, otherwise load from map directory
+            if self.campaign_map:
+                map_path = self.campaign_map
+            else:
+                # Multi-map support: load from maps/{map_id}/ directory or default
+                map_id = map_data.get_current_map_id() or 'avareon'
+                map_dir = map_data.get_map_directory(map_id)
+                candidate = os.path.join(map_dir, 'map.png')
+                if os.path.exists(candidate):
+                    map_path = candidate
+                elif map_id == 'avareon':
+                    map_path = "assets/map.png"
+                else:
+                    map_path = None  # No background — use dark fallback
+
             logger.info(f"Loading map: {map_path}")
 
-            # Load original high-resolution image (4096×3072 - updated 2026-01-24)
-            self.map_image_original = pygame.image.load(map_path)
+            if map_path and os.path.exists(map_path):
+                # Load original high-resolution image (4096×3072)
+                self.map_image_original = pygame.image.load(map_path)
+            else:
+                # Fallback: dark surface for maps without background images
+                self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
+                self.map_image_original.fill((0, 0, 0))
 
             # Create scaled version for initial display
             # But keep original for high-quality zooming!
             self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
         except pygame.error as e:
-            logger.error(f"Error loading map: {e}. Make sure '{map_path}' exists!")
-            sys.exit(1)
+            logger.error(f"Error loading map: {e}")
+            # Last-resort fallback
+            self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
+            self.map_image_original.fill((0, 0, 0))
+            self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
         
         # Load bottom panel background image
         try:
@@ -500,6 +521,56 @@ class Game:
         self._ai_indicator_title_font = None
         self._ai_indicator_subtitle_font = None
 
+    def _reload_map_assets(self, map_id):
+        """Reload map image and rescale polygons/centers/plots for a different map.
+        Called from initialize_game() when the selected map differs from the default."""
+        # Reload map image
+        map_dir = map_data.get_map_directory(map_id)
+        candidate = os.path.join(map_dir, 'map.png')
+        if os.path.exists(candidate):
+            map_path = candidate
+        elif map_id == 'avareon':
+            map_path = "assets/map.png"
+        else:
+            map_path = None
+
+        try:
+            if map_path and os.path.exists(map_path):
+                self.map_image_original = pygame.image.load(map_path)
+            else:
+                self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
+                self.map_image_original.fill((0, 0, 0))
+            self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
+        except pygame.error as e:
+            logger.error(f"Error reloading map image for '{map_id}': {e}")
+            self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
+            self.map_image_original.fill((0, 0, 0))
+            self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
+
+        # Rescale polygons from the newly loaded map_data globals
+        self.scaled_polygons = {}
+        self.scaled_centers = {}
+        for territory, polygon in map_data.TERRITORY_POLYGONS.items():
+            self.scaled_polygons[territory] = [
+                (round(x * self.scale_factor), round(y * self.scale_factor))
+                for x, y in polygon
+            ]
+        for territory, center in map_data.TERRITORY_CENTERS.items():
+            self.scaled_centers[territory] = (
+                round(center[0] * self.scale_factor),
+                round(center[1] * self.scale_factor)
+            )
+
+        # Rescale plot positions
+        self.scaled_plots = {}
+        for territory, plots in map_data.TERRITORY_PLOTS.items():
+            self.scaled_plots[territory] = [
+                (round(x * self.scale_factor), round(y * self.scale_factor))
+                for x, y in plots
+            ]
+
+        logger.info(f"Reloaded map assets for '{map_id}': {len(self.scaled_polygons)} territories, {len(self.scaled_plots)} plot sets")
+
     def scale(self, value):
         """
         Scale a UI dimension based on current resolution.
@@ -521,6 +592,15 @@ class Game:
         # Import settings for gameplay config (edge scrolling, tooltips, etc.) used later in this method
         from settings_manager import settings
         self.setup_config = setup_config
+
+        # Load selected map data (multi-map support)
+        map_id = setup_config.get('map_id', 'avareon')
+        map_data.load_map(map_id)
+        logger.info(f"Game using map: {map_id}")
+
+        # Reload map image and rescale polygons/centers/plots for the selected map
+        # (Game.__init__ loaded Avareon by default — override with correct map here)
+        self._reload_map_assets(map_id)
 
         # Game state - use configuration from setup UI with skip_setup_phase=True
         game_mode = setup_config.get('game_mode', 'sequential')
@@ -6330,8 +6410,11 @@ class Game:
         # IMPORTANT: Use get_territory_total_armies to include ALL garrisons (owner + allies)
         armies = self.game_state.get_territory_total_armies(territory)
         
-        # Calculate combat power (armies + Keep bonus)
+        # Calculate combat power (armies + Keep/Fortress bonus)
         keep_bonus = 0
+        # Fortress territories get innate +2 defense
+        if map_data.is_fortress_territory(territory):
+            keep_bonus = 2
         if territory in self.game_state.buildings:
             if any(building == 'Keep' for building in self.game_state.buildings[territory].values()):
                 keep_bonus = 2
@@ -6365,9 +6448,10 @@ class Game:
             owner_name = self.game_state.get_player_name(owner)
             lines.append(("normal", f"Owner: {owner_name}", owner_color))
         
-        # Combat Power
+        # Combat Power — label source of defense bonus (Fortress vs Keep)
         if keep_bonus > 0:
-            lines.append(("normal", f"Combat Power: {armies} + {keep_bonus} (Keep)", (150, 50, 50)))
+            defense_source = "Fortress" if map_data.is_fortress_territory(territory) else "Keep"
+            lines.append(("normal", f"Combat Power: {armies} + {keep_bonus} ({defense_source})", (150, 50, 50)))
         else:
             lines.append(("normal", f"Combat Power: {armies}", BLACK))
         
@@ -7064,6 +7148,12 @@ class Game:
                 bonus_text = self._get_cached_text(line, self.small_font, WHITE)
                 self.screen.blit(bonus_text, (panel_x, panel_y))
                 panel_y += 20  # Line height for wrapped bonus
+
+        # Draw fortress defense indicator (if territory is a fortress)
+        if map_data.is_fortress_territory(territory):
+            fortress_text = self._get_cached_text("Fortress (+2 Defense)", self.small_font, (150, 50, 50))
+            self.screen.blit(fortress_text, (panel_x, panel_y))
+            panel_y += 20
 
         # Draw first vertical dividing line (between basic info and building plots)
         divider_x = panel_x + 220

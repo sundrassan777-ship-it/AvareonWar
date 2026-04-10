@@ -112,6 +112,9 @@ class SetupConfig:
         self.neutral_armies = False
         self.randomize_bonuses = False
 
+        # Selected map (default to first map in manifest)
+        self.selected_map = map_data.get_map_ids()[0] if map_data.get_map_ids() else 'avareon'
+
     @property
     def num_players(self):
         """Get number of active players"""
@@ -279,15 +282,7 @@ class MapPreview:
         self.bounds = bounds
         self.config = config
 
-        # Load map image
-        try:
-            map_image_original = pygame.image.load("assets/map.png")
-        except (FileNotFoundError, pygame.error, OSError):
-            # Fallback if map image not found
-            map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-            map_image_original.fill((50, 80, 50))  # Dark green fallback
-
-        # Load top and bottom bar images
+        # Load top and bottom bar images (shared across all maps)
         try:
             self.top_bar_original = pygame.image.load("assets/TopBar.jpg")
         except (FileNotFoundError, pygame.error, OSError):
@@ -298,27 +293,74 @@ class MapPreview:
         except (FileNotFoundError, pygame.error, OSError):
             self.bottom_bar_original = None
 
-        # Calculate scaling to fill horizontal space (ignore vertical - map is asymmetric)
+        # Map selector arrow button rects (populated in _initialize_map)
+        self.arrow_up_rect = None
+        self.arrow_down_rect = None
+        self.map_name_rect = None
+        self.hovered_arrow = None  # 'up' or 'down' or None
+
+        # Load and initialize the current map
+        self._initialize_map()
+
+        # Territory state
+        self.hovered_territory = None
+        self.click_feedback_territory = None
+        self.click_feedback_timer = 0.0
+
+    def _initialize_map(self):
+        """Load map image, scale polygons, and set up bars for the current map."""
+        map_id = self.config.selected_map
+
+        # Load map data for selected map
+        map_data.load_map(map_id)
+
+        # Load map image from map directory
+        map_info = map_data.get_map_info(map_id)
+        map_image_original = None
+        if map_info and map_info.get('has_background', False):
+            map_dir = map_data.get_map_directory(map_id)
+            import os
+            map_png_path = os.path.join(map_dir, 'map.png')
+            try:
+                map_image_original = pygame.image.load(map_png_path)
+            except (FileNotFoundError, pygame.error, OSError):
+                pass
+
+        # Fallback: try assets/map.png for avareon, else dark surface with polygon outlines
+        if map_image_original is None and map_id == 'avareon':
+            try:
+                map_image_original = pygame.image.load("assets/map.png")
+            except (FileNotFoundError, pygame.error, OSError):
+                pass
+
+        if map_image_original is None:
+            # Create dark fallback surface — polygon outlines will be drawn in render()
+            map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
+            map_image_original.fill((0, 0, 0))
+            self._has_map_background = False
+        else:
+            self._has_map_background = True
+
+        # Calculate scaling to fill horizontal space
+        bounds = self.bounds
         width_scale = bounds.width / ORIGINAL_MAP_WIDTH
-        self.scale_factor = width_scale * 1.0  # 100% to maximize map size
+        self.scale_factor = width_scale * 1.0
 
         # Scale map image
         map_width = int(ORIGINAL_MAP_WIDTH * self.scale_factor)
         map_height = int(ORIGINAL_MAP_HEIGHT * self.scale_factor)
         self.map_image = pygame.transform.smoothscale(map_image_original, (map_width, map_height))
 
-        # Calculate centering offset (center horizontally, vertically center in available space)
+        # Calculate centering offset
         self.offset_x = bounds.x + (bounds.width - map_width) // 2
         self.offset_y = bounds.y + (bounds.height - map_height) // 2
 
-        # Scale and position top/bottom bars (aligned to map edges, not covering map)
+        # Scale and position top/bottom bars
         if self.top_bar_original:
             bar_width = bounds.width
             bar_height = int(self.top_bar_original.get_height() * (bar_width / self.top_bar_original.get_width()))
-            # Flip the top bar 180 degrees
             scaled_bar = pygame.transform.smoothscale(self.top_bar_original, (bar_width, bar_height))
             self.top_bar = pygame.transform.rotate(scaled_bar, 180)
-            # Position bottom of top bar at top edge of map
             self.top_bar_rect = pygame.Rect(bounds.x, self.offset_y - bar_height, bar_width, bar_height)
         else:
             self.top_bar = None
@@ -327,12 +369,11 @@ class MapPreview:
             bar_width = bounds.width
             bar_height = int(self.bottom_bar_original.get_height() * (bar_width / self.bottom_bar_original.get_width()))
             self.bottom_bar = pygame.transform.smoothscale(self.bottom_bar_original, (bar_width, bar_height))
-            # Position top of bottom bar at bottom edge of map
             self.bottom_bar_rect = pygame.Rect(bounds.x, self.offset_y + map_height, bar_width, bar_height)
         else:
             self.bottom_bar = None
 
-        # Scale polygons
+        # Scale polygons for current map
         self.scaled_polygons = {}
         for territory, polygon in map_data.TERRITORY_POLYGONS.items():
             self.scaled_polygons[territory] = [
@@ -341,10 +382,39 @@ class MapPreview:
                 for x, y in polygon
             ]
 
-        # Territory state
-        self.hovered_territory = None
-        self.click_feedback_territory = None
-        self.click_feedback_timer = 0.0
+        # Set up map selector arrow positions (wide, flat arrows centered above/below map)
+        arrow_w = 48
+        arrow_h = 12
+        arrow_center_x = bounds.x + bounds.width // 2
+        # Up arrow near top of right panel
+        arrow_top_y = max(bounds.y + 4, 4)
+        self.arrow_up_rect = pygame.Rect(arrow_center_x - arrow_w // 2, arrow_top_y, arrow_w, arrow_h)
+        # Map name label just below up arrow
+        self.map_name_rect = pygame.Rect(bounds.x, arrow_top_y + arrow_h + 2, bounds.width, 20)
+        # Down arrow near bottom of right panel
+        arrow_bottom_y = bounds.y + bounds.height - arrow_h - 4
+        self.arrow_down_rect = pygame.Rect(arrow_center_x - arrow_w // 2, arrow_bottom_y, arrow_w, arrow_h)
+
+    def change_map(self, direction):
+        """Cycle to next/previous map. direction: +1 (down/next) or -1 (up/previous).
+        Reloads map data, rescales polygons, clears all territory selections."""
+        map_ids = map_data.get_map_ids()
+        if len(map_ids) <= 1:
+            return  # Only one map available
+
+        current_idx = map_ids.index(self.config.selected_map) if self.config.selected_map in map_ids else 0
+        new_idx = (current_idx + direction) % len(map_ids)
+        self.config.selected_map = map_ids[new_idx]
+
+        # Clear all territory selections (territories differ between maps)
+        for slot in self.config.player_slots:
+            slot['territory'] = None
+
+        # Reinitialize map display with new map data
+        self._initialize_map()
+
+        # Play UI click sound
+        sound_manager.play_ui_click()
 
     def update(self, dt):
         """Update animations"""
@@ -363,13 +433,32 @@ class MapPreview:
         return None
 
     def update_hover(self, mouse_pos):
-        """Update hover state"""
+        """Update hover state for territories and map selector arrows"""
+        # Check map selector arrow hover
+        self.hovered_arrow = None
+        if self.arrow_up_rect and self.arrow_up_rect.collidepoint(mouse_pos):
+            self.hovered_arrow = 'up'
+        elif self.arrow_down_rect and self.arrow_down_rect.collidepoint(mouse_pos):
+            self.hovered_arrow = 'down'
+
         if not self.bounds.collidepoint(mouse_pos):
             self.hovered_territory = None
             return
 
         # Find territory at screen position using scaled polygons
         self.hovered_territory = self._get_territory_at_screen_pos(mouse_pos)
+
+    def handle_click(self, pos):
+        """Handle click on map area — arrows or territory selection."""
+        # Check map selector arrow clicks first
+        if self.arrow_up_rect and self.arrow_up_rect.collidepoint(pos):
+            self.change_map(-1)  # Previous map
+            return True
+        if self.arrow_down_rect and self.arrow_down_rect.collidepoint(pos):
+            self.change_map(1)  # Next map
+            return True
+        # Fall through to territory selection
+        return self.handle_territory_click(pos)
 
     def handle_territory_click(self, pos):
         """Handle click on map territory"""
@@ -411,9 +500,15 @@ class MapPreview:
         return False
 
     def render(self):
-        """Render map preview with territory overlays"""
+        """Render map preview with territory overlays, arrows, and map name"""
         # Draw map background
         self.screen.blit(self.map_image, (self.offset_x, self.offset_y))
+
+        # Draw borders for all unselected territories so they're visible
+        selected_territories = {slot['territory'] for slot in self.config.player_slots if slot['active'] and slot['territory']}
+        for territory, polygon in self.scaled_polygons.items():
+            if territory not in selected_territories:
+                pygame.draw.lines(self.screen, (200, 200, 200), True, polygon, 1)
 
         # Draw territory overlays for selected territories (by slot)
         for slot in self.config.player_slots:
@@ -457,6 +552,10 @@ class MapPreview:
         if self.bottom_bar:
             self.screen.blit(self.bottom_bar, self.bottom_bar_rect)
 
+        # Draw map selector arrows and map name (only if multiple maps available)
+        if len(map_data.get_map_ids()) > 1:
+            self._draw_map_selector()
+
     def _draw_territory_overlay(self, polygon, color, alpha=100, outline=False):
         """Draw semi-transparent overlay on territory"""
         # P4 fix: reuse cached SRCALPHA overlay surface instead of creating new one each call
@@ -477,6 +576,36 @@ class MapPreview:
 
         # Blit to screen
         self.screen.blit(overlay, (0, 0))
+
+    def _draw_map_selector(self):
+        """Draw up/down arrows and map name for map selection."""
+        # Draw up arrow (triangle pointing up)
+        up_color = BRASS_COLOR if self.hovered_arrow != 'up' else (220, 200, 100)
+        up_rect = self.arrow_up_rect
+        up_points = [
+            (up_rect.centerx, up_rect.top),
+            (up_rect.left, up_rect.bottom),
+            (up_rect.right, up_rect.bottom)
+        ]
+        pygame.draw.polygon(self.screen, up_color, up_points)
+
+        # Draw down arrow (triangle pointing down)
+        down_color = BRASS_COLOR if self.hovered_arrow != 'down' else (220, 200, 100)
+        down_rect = self.arrow_down_rect
+        down_points = [
+            (down_rect.left, down_rect.top),
+            (down_rect.right, down_rect.top),
+            (down_rect.centerx, down_rect.bottom)
+        ]
+        pygame.draw.polygon(self.screen, down_color, down_points)
+
+        # Draw map name centered between up arrow and map/top bar
+        display_name = map_data.get_map_display_name(self.config.selected_map)
+        font = pygame.font.SysFont(None, 22)
+        name_surface = font.render(display_name, True, BRASS_COLOR)
+        name_x = self.map_name_rect.centerx - name_surface.get_width() // 2
+        name_y = self.map_name_rect.y
+        self.screen.blit(name_surface, (name_x, name_y))
 
 
 # ===========================================
@@ -2090,9 +2219,9 @@ class IntegratedSetup:
                             self.cancelled = True
                         elif result == 'launch':
                             self.setup_complete = True
-                    # Priority 2: Map territory selection
+                    # Priority 2: Map area (arrows + territory selection)
                     else:
-                        self.map_preview.handle_territory_click(mouse_pos)
+                        self.map_preview.handle_click(mouse_pos)
 
     def update(self, dt):
         """Update animations and state"""
@@ -2127,6 +2256,7 @@ class IntegratedSetup:
             'game_mode': 'simultaneous' if self.config.turn_mode == 1 else 'sequential',  # Turn mode
             'neutral_armies': self.config.neutral_armies,  # Additional option: neutral armies on territories
             'randomize_bonuses': self.config.randomize_bonuses,  # Additional option: randomize territory bonuses
+            'map_id': self.config.selected_map,  # Selected map ID
         }
 
         # Add territory keys dynamically (for backwards compatibility)

@@ -393,7 +393,12 @@ class BuildingPlanner:
         """
         Base score for Keep: territory value + threat level.
         Returns 0 if territory already has a Keep or one is under construction.
+        Returns 0 for fortress territories (they have innate defense, no Keep needed).
         """
+        # Fortress territories cannot build Keeps (innate +2 defense)
+        if map_data.is_fortress_territory(territory):
+            return 0.0
+
         # CRITICAL: Only one Keep allowed per territory
         # Check if territory already has a Keep
         if territory in game_state.buildings:
