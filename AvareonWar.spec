@@ -32,7 +32,9 @@ datas = steam_datas + [
     (os.path.join(PROJECT_ROOT, 'assets'), 'assets'),
     # Config folder
     (os.path.join(PROJECT_ROOT, 'config'), 'config'),
-    # JSON data files
+    # Maps folder (multi-map support: manifest + per-map data directories)
+    (os.path.join(PROJECT_ROOT, 'maps'), 'maps'),
+    # JSON data files (root-level — backward compat for campaigns and tools)
     (os.path.join(PROJECT_ROOT, 'economic_data.json'), '.'),
     (os.path.join(PROJECT_ROOT, 'territory_polygons.json'), '.'),
     (os.path.join(PROJECT_ROOT, 'plots.json'), '.'),
@@ -80,6 +82,7 @@ a = Analysis(
         'campaign_mission_4',
         'campaign_mission_5',
         'campaign_mission_6',
+        'campaign_mission_7',
         'cutscene_player',
         'campaign_utils',
     ],
