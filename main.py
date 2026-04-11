@@ -524,28 +524,30 @@ class Game:
     def _reload_map_assets(self, map_id):
         """Reload map image and rescale polygons/centers/plots for a different map.
         Called from initialize_game() when the selected map differs from the default."""
-        # Reload map image
-        map_dir = map_data.get_map_directory(map_id)
-        candidate = os.path.join(map_dir, 'map.png')
-        if os.path.exists(candidate):
-            map_path = candidate
-        elif map_id == 'avareon':
-            map_path = "assets/map.png"
-        else:
-            map_path = None
-
-        try:
-            if map_path and os.path.exists(map_path):
-                self.map_image_original = pygame.image.load(map_path)
+        # Skip map image reload for campaign missions — campaign_map was already loaded
+        # in __init__ and must not be overwritten with the default avareon map image
+        if not self.campaign_map:
+            map_dir = map_data.get_map_directory(map_id)
+            candidate = os.path.join(map_dir, 'map.png')
+            if os.path.exists(candidate):
+                map_path = candidate
+            elif map_id == 'avareon':
+                map_path = "assets/map.png"
             else:
+                map_path = None
+
+            try:
+                if map_path and os.path.exists(map_path):
+                    self.map_image_original = pygame.image.load(map_path)
+                else:
+                    self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
+                    self.map_image_original.fill((0, 0, 0))
+                self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
+            except pygame.error as e:
+                logger.error(f"Error reloading map image for '{map_id}': {e}")
                 self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
                 self.map_image_original.fill((0, 0, 0))
-            self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
-        except pygame.error as e:
-            logger.error(f"Error reloading map image for '{map_id}': {e}")
-            self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-            self.map_image_original.fill((0, 0, 0))
-            self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
+                self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
 
         # Rescale polygons from the newly loaded map_data globals
         self.scaled_polygons = {}
