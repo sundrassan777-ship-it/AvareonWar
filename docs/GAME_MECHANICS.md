@@ -241,6 +241,33 @@ Winner = Higher total strength
 
 ---
 
+## 🤝 Gold Transfer (Ally-to-Ally)
+
+**Overview:** Human players may send gold to allied players during the Planning phase. Enabled via the "Gold Transfer" dropdown in Additional Options at setup.
+
+**Setup Options (Disabled by default):**
+- Disabled
+- Enabled (25%)
+- Enabled (50%)
+- Enabled (75%)
+- Enabled (100%)
+
+**Rules:**
+- **Per-recipient cap:** each send is capped at `floor(pct × sender's current gold)`. The cap is recomputed live against the sender's present gold — earning more next turn raises the cap.
+- **One transfer per ally per turn:** same sender → recipient pair can only transfer once per turn (sequential) or per round (simultaneous).
+- **Humans only:** AI players never send gold. AI remains valid as a recipient (an ally can be AI) but a human must initiate.
+- **Planning phase only:** transfers are blocked during battle/resolution phases and (sequential mode) during other players' turns.
+- **Eliminated & Left:** targets with status `Eliminated` (defeated) or `Left` (disconnected) cannot receive.
+- **Campaigns:** gold transfer is forced Disabled across all campaign missions regardless of setup.
+
+**Interface:** Click the "Players" button (top-left, next to Menu) to open a non-pausing modal listing every player. For each ally row, type an amount (digits only, up to 7) — the value auto-clamps to the live cap as you type — then click Send. A brief "Transfer successful." confirmation appears and that row locks for the rest of the turn.
+
+**Tooltips:** Hovering a disabled field/button reveals the reason (e.g. "Cannot send Gold to enemy players.", "Cannot send Gold to an eliminated player.", "Cannot send Gold to one player more than once every turn.").
+
+**Multiplayer:** The sender's client deducts instantly (optimistic), then broadcasts. Peers mirror the balance change without re-validation.
+
+---
+
 ## 🏆 Territorial Bonus System
 
 **Overview:**

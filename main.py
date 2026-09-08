@@ -105,6 +105,11 @@ pygame.init()
 # Note: Most constants have been moved to config/constants.py
 # Only the dynamic UI layout calculation remains here
 
+# Toggle territory preview image + border + hover hint in bottom UI.
+# Currently disabled — lore text renders in the image region instead.
+# Re-enable by flipping to True; preview/border/hint code is preserved for future use.
+SHOW_TERRITORY_PREVIEW_IMAGE = False
+
 # Initial UI layout (will be updated when resolution changes)
 _ui_layout = UIScaler.calculate_ui_layout(WINDOW_WIDTH, WINDOW_HEIGHT)
 
@@ -404,7 +409,20 @@ class Game:
             logger.warning(f"Could not load Separator1.png: {e}. Using line separator fallback")
             self.separator_image = None
             self.separator_width = 3  # Fallback to line width
-        
+
+        # Load TableBorder.png for territory preview frame in bottom UI
+        try:
+            self._preview_border_original = pygame.image.load("assets/TableBorder.png").convert_alpha()
+        except pygame.error as e:
+            logger.warning(f"Could not load TableBorder.png: {e}. Territory preview border disabled.")
+            self._preview_border_original = None
+
+        # Territory preview caches (invalidated on resolution change)
+        self._territory_preview_cache = {}  # Keyed by (territory, w, h) → surface or None
+        self._scaled_preview_border = None  # Cached scaled TableBorder
+        self._scaled_preview_border_size = None  # (w, h) of cached border
+        self.territory_preview_rect = None  # Hover detection rect for preview image
+
         # Scale polygons and centers to match map scaling
         # Using round() instead of int() for better precision and smoother polygon edges
         self.scaled_polygons = {}
@@ -622,6 +640,11 @@ class Game:
         # Store additional options from setup for future game logic use
         self.neutral_armies = setup_config.get('neutral_armies', False)
         self.randomize_bonuses = setup_config.get('randomize_bonuses', False)
+
+        # Gold transfer setting — 0=Disabled, 1=25%, 2=50%, 3=75%, 4=100%.
+        # Campaign missions never set this key, so campaigns default to Disabled.
+        gold_transfer_idx = setup_config.get('gold_transfer', 0)
+        self.game_state.gold_transfer_pct = [0, 25, 50, 75, 100][max(0, min(gold_transfer_idx, 4))]
 
         # Randomize territory bonuses if enabled (not used in campaign — campaign never sets this flag)
         if self.randomize_bonuses:
@@ -1185,6 +1208,11 @@ class Game:
         self.menu_options_button = None  # Rect for Options button
         self.menu_quit_button = None  # Rect for Quit to Main Menu button
 
+        # Players window — non-pausing modal listing all players (gold transfer UI)
+        self.players_button = None  # Rect for players button in top panel
+        self.players_window_visible = False
+        self.players_window = None  # Lazily constructed PlayersWindow
+
         # Save dialog system (campaign save game)
         self.save_dialog_active = False  # Is save name dialog open?
         self.save_name_input = ""  # Current text in save name field
@@ -1269,8 +1297,13 @@ class Game:
         self.font_bold = self.font_manager.get_bold_font(int(15 * self.ui_scale))
         self.large_font_bold = self.font_manager.get_bold_font(int(24 * self.ui_scale))
 
-        # Italic font (uses Regular)
+        # Italic font — Cinzel has no italic TTF, so synthesize slant via pygame set_italic()
         self.small_font_italic = self.font_manager.get_font(int(12 * self.ui_scale))
+        self.small_font_italic.set_italic(True)
+
+        # Larger italic font for territory lore text in the bottom UI preview region
+        self.lore_font_italic = self.font_manager.get_font(int(16 * self.ui_scale))
+        self.lore_font_italic.set_italic(True)
 
         # Extra small font for 720p overflow prevention (Hero Info, tooltips)
         # At 720p, use even smaller font (8px) to prevent text overflow
@@ -1537,6 +1570,10 @@ class Game:
         elif msg_type == MessageType.ORDER_REMOVE:
             # Remote player cancelled an order (movement, training, castle upgrade, or hero training)
             self._handle_remote_order_remove(data)
+
+        elif msg_type == MessageType.GOLD_TRANSFER:
+            # Remote player sent gold to an ally — mirror the balance change locally.
+            self._handle_remote_gold_transfer(data)
 
         elif msg_type == MessageType.RESEARCH_ORDER:
             # Sync fix: Remote player started research (sequential mode)
@@ -2869,6 +2906,60 @@ class Game:
             # Restore current_player even if cancel methods throw
             self.game_state.current_player = original_player
 
+    def _handle_remote_gold_transfer(self, data: dict):
+        """Apply a gold transfer that happened on a remote peer.
+
+        The sender has already deducted locally and broadcast the actual
+        post-clamp amount, so we mirror the balance change without
+        re-running validation — doing so could reject the transfer for
+        the wrong reason (e.g. our view of "current turn" lags slightly).
+        """
+        sender_idx = data.get('player_index')
+        recipient_idx = data.get('recipient_index')
+        amount = data.get('amount')
+
+        if sender_idx is None or recipient_idx is None or amount is None:
+            logger.warning(f"[NETWORK] REJECTED: GOLD_TRANSFER missing fields: {data}")
+            return
+        if not (0 <= sender_idx < self.game_state.num_players):
+            logger.warning(f"[NETWORK] REJECTED: GOLD_TRANSFER invalid sender {sender_idx}")
+            return
+        if not (0 <= recipient_idx < self.game_state.num_players):
+            logger.warning(f"[NETWORK] REJECTED: GOLD_TRANSFER invalid recipient {recipient_idx}")
+            return
+        try:
+            amount = int(amount)
+        except (TypeError, ValueError):
+            logger.warning(f"[NETWORK] REJECTED: GOLD_TRANSFER non-int amount {amount!r}")
+            return
+        if amount <= 0:
+            return
+
+        self.game_state.player_gold[sender_idx] -= amount
+        self.game_state.player_gold[recipient_idx] += amount
+
+        # Track stats on remote peers too so the recap screen agrees
+        stats = getattr(self.game_state, 'player_stats', None)
+        if isinstance(stats, dict):
+            if sender_idx in stats:
+                stats[sender_idx]['gold_sent'] = stats[sender_idx].get('gold_sent', 0) + amount
+            if recipient_idx in stats:
+                stats[recipient_idx]['gold_received'] = stats[recipient_idx].get('gold_received', 0) + amount
+
+        # Mark the sender→recipient pair as used so peers enforce the once-per-turn rule
+        # against any further transfer attempts from the remote sender this turn/round.
+        tracker = (self.sim_state.gold_transfers_this_round
+                   if self.sim_state is not None
+                   else self.game_state.gold_transfers_this_turn)
+        tracker.add((sender_idx, recipient_idx))
+
+        # Action log parity — remote peers log the transfer too so everyone sees it.
+        sender_name = self.game_state.get_player_name(sender_idx)
+        recipient_name = self.game_state.get_player_name(recipient_idx)
+        self.game_state.add_message(f"{sender_name} sent {amount}g to {recipient_name}.")
+
+        logger.info(f"[NETWORK] Applied remote GOLD_TRANSFER: {sender_idx} -> {recipient_idx} for {amount}g")
+
     def _send_full_state_sync(self):
         """
         Sync fix: Send authoritative game state to all clients (host only, sequential mode).
@@ -4019,6 +4110,11 @@ class Game:
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
             self._hero_overlay_cache = {}
+            # Territory preview caches (border scaled size + preview images)
+            self._territory_preview_cache = {}
+            self._scaled_preview_border = None
+            self._scaled_preview_border_size = None
+            self.territory_preview_rect = None
             self._build_particle_caches()  # Rebuild PNG particle caches for new display
             invalidate_cursor_cache()  # Reload custom cursor after display mode change
             pygame.mouse.set_visible(False)  # Re-hide system cursor after display recreation
@@ -4034,6 +4130,9 @@ class Game:
             self.font_bold = self.font_manager.get_bold_font(int(15 * self.ui_scale))
             self.large_font_bold = self.font_manager.get_bold_font(int(24 * self.ui_scale))
             self.small_font_italic = self.font_manager.get_font(int(12 * self.ui_scale))
+            self.small_font_italic.set_italic(True)  # synthetic italic (no italic TTF available)
+            self.lore_font_italic = self.font_manager.get_font(int(16 * self.ui_scale))
+            self.lore_font_italic.set_italic(True)
             extra_small_size = 8 if actual_height == 720 else int(10 * self.ui_scale)
             self.extra_small_font = self.font_manager.get_font(extra_small_size)
 
@@ -4968,6 +5067,27 @@ class Game:
         # Visual feedback — floating notification in chat area
         if self.chat_notification_effect:
             self.chat_notification_effect.add_system_notification(msg)
+
+    def _get_territory_preview(self, territory, width, height):
+        """Get cached territory preview image, loading from disk on first access.
+        Returns pygame.Surface scaled to (width, height), or None if no image exists."""
+        cache_key = (territory, width, height)
+        if cache_key in self._territory_preview_cache:
+            return self._territory_preview_cache[cache_key]
+
+        # Try to load preview image from the current map's territory_previews directory
+        map_id = map_data.get_current_map_id()
+        map_dir = map_data.get_map_directory(map_id) if map_id else 'maps/avareon'
+        preview_path = os.path.join(map_dir, 'territory_previews', f'{territory}.png')
+        try:
+            img = pygame.image.load(preview_path).convert_alpha()
+            scaled = pygame.transform.smoothscale(img, (width, height))
+            self._territory_preview_cache[cache_key] = scaled
+            return scaled
+        except (pygame.error, FileNotFoundError):
+            # No preview image available — caller will draw black rect
+            self._territory_preview_cache[cache_key] = None
+            return None
 
     def _get_cached_text(self, text, font, color):
         """
@@ -6811,6 +6931,22 @@ class Game:
                 [("small", "provide no battle reports.", white_color)],
             ]
 
+        elif button_type == 'territory_lore':
+            # Territory preview image tooltip — shows lore/description
+            territory_name = button_key
+            display_name = map_data.get_display_name(territory_name)
+            lore_text = map_data.get_territory_lore(territory_name)
+
+            lines = [[("normal_bold", display_name, gold_color)]]
+
+            if lore_text:
+                # Wrap lore text to fit tooltip width
+                lore_lines = self.helpers.wrap_text_smart(lore_text, self.small_font, 300)
+                for line in lore_lines:
+                    lines.append([("small", line, bronze_color)])
+            else:
+                lines.append([("small_italic", "No lore available for this territory.", bronze_color)])
+
         if not lines:
             return
 
@@ -7461,7 +7597,91 @@ class Game:
         else:
             limit_text = self._get_cached_text(f"Army Limit: {armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", self.font, BROWN_TEXT_PRIMARY)
         self.screen.blit(limit_text, (army_info_x, army_info_y))
-        
+
+        # --- Territory Preview Image Section ---
+        # Drawn to the right of the Forces section with a separator
+        divider_x3 = divider_x2 + 315  # Positioned to use available space right of Forces
+        available_preview_width = WINDOW_WIDTH - divider_x3 - 20  # 20px right margin
+
+        # Only draw if enough space (graceful degradation at low resolutions)
+        if available_preview_width >= 150:
+            self.draw_separator(divider_x3, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
+
+            preview_x = divider_x3 + 20
+
+            # Image height from panel, width fills available space (capped by 16:9 ratio)
+            border_padding = 8
+            preview_img_height = int(BOTTOM_UI_HEIGHT * 0.70)
+            # Use available width, but don't exceed 16:9 ratio
+            max_width_from_ratio = int(preview_img_height * 16 / 9)
+            max_width_from_space = available_preview_width - 20 - border_padding * 2
+            preview_img_width = min(max_width_from_ratio, max_width_from_space)
+            border_width = preview_img_width + border_padding * 2
+            border_height = preview_img_height + border_padding * 2
+
+            # Position: left-aligned in available space
+            center_x = preview_x
+            # Vertically center the border + hint text in the panel, shifted down 10px to avoid overlap
+            total_content_height = border_height + 18  # border + gap + hint text
+            preview_y = BOTTOM_UI_Y + (BOTTOM_UI_HEIGHT - total_content_height) // 2 + 10
+
+            img_x = center_x + border_padding
+            img_y = preview_y + border_padding
+
+            if SHOW_TERRITORY_PREVIEW_IMAGE:
+                # Draw border frame (cached by size to avoid per-frame scaling)
+                if self._preview_border_original:
+                    if self._scaled_preview_border_size != (border_width, border_height):
+                        self._scaled_preview_border = pygame.transform.smoothscale(
+                            self._preview_border_original, (border_width, border_height))
+                        self._scaled_preview_border_size = (border_width, border_height)
+                    self.screen.blit(self._scaled_preview_border, (center_x, preview_y))
+
+                # Draw territory preview image or black fallback inside the border
+                preview_surface = self._get_territory_preview(territory, preview_img_width, preview_img_height)
+                if preview_surface:
+                    self.screen.blit(preview_surface, (img_x, img_y))
+                else:
+                    # No preview image available — show black background
+                    pygame.draw.rect(self.screen, (0, 0, 0),
+                                     (img_x, img_y, preview_img_width, preview_img_height))
+
+                # Store rect for hover detection
+                self.territory_preview_rect = pygame.Rect(img_x, img_y, preview_img_width, preview_img_height)
+
+                # Draw low-opacity hint text below the framed image
+                hint_y = preview_y + border_height + 4
+                hint_text = self._get_cached_text(
+                    "Hover over the picture to learn more.",
+                    self.small_font, (150, 140, 120))
+                # Center hint text under the border
+                hint_x = center_x + (border_width - hint_text.get_width()) // 2
+                self.screen.blit(hint_text, (hint_x, hint_y))
+            else:
+                # Preview image hidden — render italic lore text in the same region instead.
+                self.territory_preview_rect = None
+                bronze = (205, 170, 110)  # matches tooltip lore color
+                lore_text = map_data.get_territory_lore(territory)
+                if not lore_text:
+                    lore_text = "No lore available for this territory."
+                lore_font = self.lore_font_italic
+                lore_lines = self.helpers.wrap_text_smart(lore_text, lore_font, preview_img_width)
+                # Extra line spacing (1.35x) so the text breathes within the preview region
+                line_h = int(lore_font.get_linesize() * 1.35)
+                total_h = line_h * len(lore_lines)
+                # Vertically center within the would-be image region
+                ly = img_y + max(0, (preview_img_height - total_h) // 2)
+                max_y = img_y + preview_img_height
+                for ln in lore_lines:
+                    if ly >= max_y:
+                        break  # bounds-check — never render past container
+                    surf = self._get_cached_text(ln, lore_font, bronze)
+                    self.screen.blit(surf, (img_x, ly))
+                    ly += line_h
+        else:
+            # Not enough space for preview section
+            self.territory_preview_rect = None
+
         # Track button hover for plot tooltips (will be drawn with delay in main loop)
         if owner == self.game_state.current_player and self.territory_info_plot_buttons:
             mouse_pos = pygame.mouse.get_pos()
@@ -7502,8 +7722,16 @@ class Game:
 
             # Update hover tracking using helper (Phase 1D)
             self.update_button_hover(current_hover, 'plot')
-    
-    
+
+        # Territory preview image hover detection for lore tooltip
+        if self.territory_preview_rect:
+            mouse_pos = pygame.mouse.get_pos()
+            if self.territory_preview_rect.collidepoint(mouse_pos):
+                self.update_button_hover(('territory_lore', territory), 'territory_lore')
+            elif self.hover_target_button and self.hover_target_button[0] == 'territory_lore':
+                self.update_button_hover(None, 'territory_lore')
+
+
     # ========================================
     # PHASE 5: EXTRACTED BOTTOM UI METHODS
     # ========================================
@@ -10428,6 +10656,17 @@ class Game:
             if self.game_state.current_player != self.previous_player:
                 self.clear_ui_selections()
                 self.previous_player = self.game_state.current_player
+                # Auto-close Players window at each turn advance — per-turn state
+                # (transfer caps, already-sent locks) changes, so the window must refresh
+                # from scratch next time it's opened.
+                if self.players_window_visible and self.players_window is not None:
+                    self.players_window.close()
+
+            # Simultaneous mode: close Players window when leaving planning phase
+            if self.sim_state is not None and self.players_window_visible:
+                if self.sim_state.sim_phase != 'planning':
+                    if self.players_window is not None:
+                        self.players_window.close()
 
             # Update mouse position every frame for hover detection
             self.mouse_pos = pygame.mouse.get_pos()
@@ -10455,6 +10694,28 @@ class Game:
                 # Block all input during victory/defeat cinematic
                 elif self.victory_sequence_active:
                     continue  # No interaction during cinematic animation
+
+                # Players window (non-pausing modal) — consume relevant events while open.
+                # Takes priority over tutorial/AI-turn blocking so it can always be closed.
+                elif self.players_window_visible and self.players_window is not None:
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        self.players_window.handle_click(event.pos)
+                        continue
+                    if event.type == pygame.KEYDOWN:
+                        if self.players_window.handle_key(event):
+                            continue
+                        # Swallow other keydowns so they don't leak to the game.
+                        continue
+                    if event.type == pygame.MOUSEMOTION:
+                        # Let mouse motion through for hover state in the window,
+                        # but don't let it drag the camera or move map selection.
+                        continue
+                    if event.type == pygame.MOUSEBUTTONDOWN:
+                        # Right-click / middle-click consumed — no camera drag while modal open.
+                        continue
+                    if event.type == pygame.MOUSEWHEEL:
+                        continue
+                    # Non-UI events (QUIT already handled above) fall through to default.
 
                 # Tutorial mission: selectively block input based on current step
                 elif (self.tutorial_mission
@@ -10873,6 +11134,11 @@ class Game:
             if self.victory_sequence_active:
                 self._render_victory_sequence()
 
+            # Draw Players window (non-pausing modal) — drawn beneath the game menu
+            # so Menu always takes priority if both are somehow open together.
+            if self.players_window_visible and self.players_window is not None:
+                self.players_window.draw(self.screen)
+
             # Draw game menu (on top of everything, if visible) (Phase 4D: inlined)
             if self.game_menu_visible:
                 self.ui_renderer.draw_game_menu()
@@ -11133,6 +11399,26 @@ class Game:
     def is_game_paused(self):
         """True when game should be paused (single-player menu/options open)."""
         return self.game_paused and not self.multiplayer_mode
+
+    def execute_gold_transfer(self, sender_idx, recipient_idx, amount):
+        """Player-initiated gold transfer entry point.
+
+        Applies locally (optimistic — sender's client shows the deduction
+        immediately) and, if multiplayer, broadcasts a GOLD_TRANSFER message
+        so remote peers mirror the balance change.
+
+        Returns the amount actually sent (0 if rejected / invalid).
+        """
+        sent = self.game_state.transfer_gold(sender_idx, recipient_idx, amount)
+        if sent > 0 and self.multiplayer_mode and self.network_connection is not None:
+            # Broadcast the actual (post-clamp) amount so peers converge on the same value.
+            self._send_action_to_remote(MessageType.GOLD_TRANSFER, {
+                'player_index': sender_idx,
+                'recipient_index': recipient_idx,
+                'amount': sent,
+                'turn_number': self.game_state.turn_number,
+            })
+        return sent
 
     def _pause_game(self):
         """Pause the game (single-player only). Called when game menu opens."""
@@ -11487,7 +11773,17 @@ class Game:
                 self.game_menu_visible = True
                 self._pause_game()
                 return True
-        
+
+        # Players button — opens non-pausing player list / gold transfer window
+        if self.players_button and self.players_button.collidepoint(pos):
+            self.sound_manager.play_ui_click()
+            self.trigger_click_flash('top_button', 'players')
+            if self.players_window is None:
+                from players_window import PlayersWindow
+                self.players_window = PlayersWindow(self)
+            self.players_window_visible = True
+            return True
+
         return False
     
     def handle_victory_screen_click(self, pos):
@@ -13936,6 +14232,11 @@ class Game:
             else:
                 # Regular button tooltip (buildings, training, army units, etc.)
                 self.draw_button_tooltip(self.mouse_pos, self.show_tooltip_button)
+        elif self.show_tooltip_button and self.show_tooltip_button[0] == 'territory_lore':
+            # Territory preview tooltip — drawn even past sidebar_x since the preview
+            # image extends into that region of the bottom panel
+            if self.mouse_pos[1] >= BOTTOM_UI_Y:
+                self.draw_button_tooltip(self.mouse_pos, self.show_tooltip_button)
     
     # ========================================
     # PHASE 2D: CAMERA MOVEMENT METHODS
@@ -15302,7 +15603,7 @@ if __name__ == "__main__":
                 continue
 
             # Unpack result and build config (same as multiplayer flow)
-            lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping = result
+            lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer = result
             final_player_index = selector.local_player_index
             client.player_index = final_player_index
 
@@ -15313,7 +15614,7 @@ if __name__ == "__main__":
             mp_setup_tmp.turn_mode_options = ["Sequential", "Simultaneous"]
             config = mp_setup_tmp._build_config_from_lobby(
                 lobby_state, victory_condition, taxation_level, turn_mode,
-                neutral_armies, randomize_bonuses, bonus_mapping
+                neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer
             )
 
             # Initialize and run game (same as regular multiplayer flow)

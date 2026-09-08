@@ -353,6 +353,14 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         for i in range(num_players):
             self.player_gold[i] = self.starting_gold
 
+        # Gold transfer feature
+        # gold_transfer_pct is set by Game.initialize_game() from setup_config:
+        # 0 = disabled, 25/50/75/100 = per-recipient percentage cap of sender's current gold.
+        self.gold_transfer_pct = 0
+        # Tracks (sender_index, recipient_index) pairs that have already transferred this turn
+        # (sequential mode). One transfer per pair per turn. Cleared in _advance_to_next_player.
+        self.gold_transfers_this_turn = set()
+
         # Eliminated players tracking (universal — players with 0 territories)
         # Updated by check_victory() and eliminate_player_disconnect()
         # Synced via FULL_STATE_SYNC and SIM_ROUND_COMPLETE
@@ -764,6 +772,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
         # Clear building limit tracking for new turn
         self.buildings_started_this_turn.clear()
+
+        # Clear gold transfer tracking — each player gets a fresh set of (sender, recipient)
+        # allowances at the start of their turn.
+        self.gold_transfers_this_turn.clear()
 
         # Clear Master Negotiator effect for the player whose turn is ending
         if self.player_master_negotiator_active[self.current_player]:

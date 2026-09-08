@@ -67,6 +67,7 @@ _RELAY_MESSAGE_TYPES = frozenset({
     # Both modes
     MessageType.CHAT_MESSAGE,
     MessageType.SIM_HERO_ABILITY,
+    MessageType.GOLD_TRANSFER,
     # Simultaneous mode
     MessageType.SIM_ALLIANCE_CHOICE,
 })

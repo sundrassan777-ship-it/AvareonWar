@@ -414,6 +414,32 @@ if hasattr(self, 'player_teams') and self.player_teams:
 - Look for `player_gold` initialization
 - Currently grants starting gold
 
+#### ✅ Modify Gold Transfer (ally-to-ally gold sending)
+
+**What it does:** Humans may send gold to allied players during the Planning phase. Setup picks a per-recipient cap (Disabled / 25% / 50% / 75% / 100% of sender's current gold). One transfer per (sender → recipient) pair per turn/round.
+
+**Files involved:**
+- `integrated_setup.py` — custom game dropdown in Additional Options overlay (`SetupConfig.gold_transfer`, `SetupScreen.overlay_gold_transfer`)
+- `network/territory_selector.py` + `network/lobby.py` + `network/multiplayer_setup.py` — multiplayer lobby dropdown + sync
+- `main.py` — `initialize_game()` sets `game_state.gold_transfer_pct`; `execute_gold_transfer()` applies locally then broadcasts; `_handle_remote_gold_transfer()` mirrors remote transfers
+- `game_state/__init__.py` — `gold_transfer_pct`, `gold_transfers_this_turn` (cleared in `_advance_to_next_player`)
+- `game_state/economy.py` — `can_transfer_gold()`, `get_transfer_cap()`, `transfer_gold()`
+- `simultaneous/sim_state.py` — `gold_transfers_this_round` (cleared in `start_planning_phase`)
+- `players_window.py` — the "Players" modal UI (table, input field, Send button, tooltips)
+- `rendering/ui_renderer.py` — "Players" button in `draw_top_panel`
+- `network_config.py`, `network/protocol.py`, `network/server.py` — `GOLD_TRANSFER` message type + factory + server relay
+- `sync_logger.py` — `GOLD_TRANSFER` in `LOGGED_ACTION_TYPES`
+- `save_manager.py` — serialize `gold_transfer_pct` + `gold_transfers_this_turn`
+
+**Key rules/invariants:**
+- Cap is floored to integer (`(gold * pct) // 100`)
+- Transfer amount clamps to `[1, cap]` per keystroke and again at send time
+- Campaigns force `gold_transfer_pct == 0` (campaign setup_config never sets the key, so the default applies)
+- AI players never send — `can_transfer_gold` rejects AI senders
+- Eliminated (defeated) vs Left (disconnected) get distinct tooltip wording
+- Optimistic UI: sender deducts instantly, then broadcasts. Remote peers mirror without revalidating (since peer's turn view may lag).
+- Transfers are recorded as `gold_transfer` events in replays but not shown as timeline icons — the balance change appears in the state diff.
+
 #### ✅ Modify Territorial Bonuses
 
 **What it does:** Each territory grants one of 9 bonus types to its owner. Bonuses stack globally.

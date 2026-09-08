@@ -74,6 +74,24 @@ Total map income: 795g/turn (~199g/player with 4 players)
 
 ---
 
+## 🤝 Gold Transfer Caps
+
+| Setting | Per-recipient cap | Notes |
+|---------|-------------------|-------|
+| Disabled | — | Feature off (default; always forced in campaigns) |
+| Enabled (25%) | `floor(0.25 × gold)` | 25% of sender's current gold |
+| Enabled (50%) | `floor(0.50 × gold)` | 50% of sender's current gold |
+| Enabled (75%) | `floor(0.75 × gold)` | 75% of sender's current gold |
+| Enabled (100%) | `floor(1.00 × gold)` | All of sender's current gold |
+
+**Rules at a glance:**
+- One transfer per (sender → recipient) pair per turn/round
+- Humans only; Planning phase only; allies only
+- Input field auto-clamps to cap (max 7 digits typed)
+- Configured in setup Additional Options, not changeable mid-game
+
+---
+
 ## 🏆 Territorial Bonus Reference
 
 **57 territories grant bonuses. Each territory has ONE bonus. Bonuses stack globally.**

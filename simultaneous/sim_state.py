@@ -97,6 +97,10 @@ class SimultaneousGameState:
         # Track eliminated players
         self.eliminated_players: List[int] = []
 
+        # Gold transfer tracking for simultaneous mode — keyed by (sender, recipient) pair.
+        # One transfer per pair per round. Cleared in start_planning_phase().
+        self.gold_transfers_this_round = set()
+
         # Store reference to phase manager (set externally)
         self.phase_manager = None
 
@@ -185,6 +189,9 @@ class SimultaneousGameState:
         # Clear previous round's data
         self.crossing_conflicts.clear()
         self.alliance_arrivals.clear()
+
+        # Reset gold transfer allowances for the new round
+        self.gold_transfers_this_round.clear()
 
         # Clear building limit tracking for new turn (allows one building per territory)
         self.gs.buildings_started_this_turn.clear()

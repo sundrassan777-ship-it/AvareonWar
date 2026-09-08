@@ -140,6 +140,7 @@ class LobbyState:
         self.turn_mode: int = 0          # 0=Sequential, 1=Simultaneous
         self.neutral_armies: bool = False  # Additional option: neutral armies on territories
         self.randomize_bonuses: bool = False  # Additional option: randomize territory bonuses
+        self.gold_transfer: int = 0  # Gold transfer setting: 0=Disabled, 1=25%, 2=50%, 3=75%, 4=100%
 
         # Initialize all 4 slots
         for i in range(self.MAX_PLAYERS):
@@ -461,6 +462,7 @@ class LobbyState:
             "turn_mode": self.turn_mode,
             "neutral_armies": self.neutral_armies,
             "randomize_bonuses": self.randomize_bonuses,
+            "gold_transfer": self.gold_transfer,
         }
 
     def set_settings(self, settings: dict) -> None:
@@ -475,6 +477,8 @@ class LobbyState:
             self.neutral_armies = settings["neutral_armies"]
         if "randomize_bonuses" in settings:
             self.randomize_bonuses = settings["randomize_bonuses"]
+        if "gold_transfer" in settings:
+            self.gold_transfer = settings["gold_transfer"]
 
     def serialize(self) -> Dict[str, Any]:
         """Serialize full lobby state for network transmission."""
