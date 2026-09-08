@@ -31,18 +31,23 @@ logs/
 # Backups
 *.zip
 
-# Game save data
+# Per-player data (profile, XP, achievements, settings, campaign saves, replays)
 config.json
+Saves/
 Replays/
 
-# Claude
-.claude/
+# Claude Code: shared project guide, settings and skills are tracked;
+# only the per-machine permission file stays local
+.claude/settings.local.json
 
-# Steamworks SDK (proprietary Valve files — do not commit)
+# Steamworks: steam_api64.dll is Valve's SDK binary (redistribute only inside
+# a build). steamworks/ and SteamworksPy64.dll are the MIT-licensed SteamworksPy
+# wrapper, fetched per steam_integration.py. steam_appid.txt is a dev-only
+# launcher aid Valve says not to ship. All optional at build time (see .spec).
 steam_api64.dll
 SteamworksPy64.dll
 steam_appid.txt
 steamworks/
 
-# Windows reserved device name artifacts
+# Windows reserved device name artifacts (left behind by "> nul" under Git Bash)
 nul
