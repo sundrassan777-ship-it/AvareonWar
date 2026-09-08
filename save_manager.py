@@ -216,6 +216,14 @@ def serialize_game_state(gs):
     # --- Buildings started this turn ---
     state['buildings_started_this_turn'] = sorted(list(gs.buildings_started_this_turn))
 
+    # --- Gold transfer feature state ---
+    # gold_transfer_pct: 0 when disabled (campaigns always 0, custom/MP may be 25/50/75/100)
+    # gold_transfers_this_turn: pairs that have already transferred this turn (sequential)
+    state['gold_transfer_pct'] = getattr(gs, 'gold_transfer_pct', 0)
+    state['gold_transfers_this_turn'] = sorted(
+        [list(pair) for pair in getattr(gs, 'gold_transfers_this_turn', set())]
+    )
+
     # --- Chat & action log ---
     state['chat_messages'] = list(gs.chat_messages)
     state['messages'] = list(gs.messages)
@@ -411,6 +419,14 @@ def deserialize_game_state(gs, data):
 
     # --- Buildings started this turn (list -> set) ---
     gs.buildings_started_this_turn = set(data.get('buildings_started_this_turn', []))
+
+    # --- Gold transfer feature state ---
+    if 'gold_transfer_pct' in data:
+        gs.gold_transfer_pct = int(data['gold_transfer_pct'])
+    # Convert list-of-pairs back to set of tuples (JSON can't serialize tuples)
+    gs.gold_transfers_this_turn = set(
+        tuple(pair) for pair in data.get('gold_transfers_this_turn', [])
+    )
 
     # --- Chat & action log ---
     if 'chat_messages' in data:

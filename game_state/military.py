@@ -1906,7 +1906,14 @@ class MilitaryMixin:
         Phase 6: Extracted from resolve_battle() for maintainability.
         """
         if winner == -1 and surviving_armies == 0:
-            # Perfect tie handled in dice method (all armies destroyed, territory neutral)
+            # Perfect tie / mutual elimination with no surviving armies.
+            # Dice-tie path already clears garrisons before returning (-1, 0), but
+            # Keep-battle mutual elim against a neutral defender also returns (-1, 0)
+            # without any prior clearing — causing phantom flags on the map.
+            # Clear here as the single authoritative cleanup for this case.
+            self.territory_garrisons[territory] = {}
+            if territory in self.army_units:
+                self.army_units[territory] = []
             battle.resolved = True
             battle.winner = -1
             return

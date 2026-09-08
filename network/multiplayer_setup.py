@@ -360,12 +360,12 @@ class MultiplayerSetup:
             server.stop()
             return None
 
-        # Unpack return format: (lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping)
-        lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping = result
+        # Unpack return format: (lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer)
+        lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer = result
 
         # Build config from LobbyState
         config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode,
-                                                neutral_armies, randomize_bonuses, bonus_mapping)
+                                                neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer)
         # Multi-map support: include selected map_id from selector
         config['map_id'] = selector.selected_map
 
@@ -442,8 +442,8 @@ class MultiplayerSetup:
             self._show_error(f"You were kicked from the lobby: {kick_reason}")
             return None
 
-        # Unpack return format: (lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping)
-        lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping = result
+        # Unpack return format: (lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer)
+        lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer = result
 
         # Get the potentially updated local_player_index from selector
         # (may have changed from LOBBY_STATE sync if host reassigned us to a different slot)
@@ -456,7 +456,7 @@ class MultiplayerSetup:
 
         # Build config from LobbyState
         config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode,
-                                                neutral_armies, randomize_bonuses, bonus_mapping)
+                                                neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer)
         # Multi-map support: include selected map_id from selector
         config['map_id'] = selector.selected_map
 
@@ -819,7 +819,7 @@ class MultiplayerSetup:
     def _build_config_from_lobby(self, lobby_state: LobbyState, victory_condition: int,
                                   taxation_level: int, turn_mode: int,
                                   neutral_armies: bool = False, randomize_bonuses: bool = False,
-                                  bonus_mapping: dict = None) -> Dict:
+                                  bonus_mapping: dict = None, gold_transfer: int = 0) -> Dict:
         """
         Build game configuration dict from LobbyState.
 
@@ -893,6 +893,7 @@ class MultiplayerSetup:
             # Additional options
             'neutral_armies': neutral_armies,
             'randomize_bonuses': randomize_bonuses,
+            'gold_transfer': gold_transfer,
             'bonus_mapping': bonus_mapping,  # Host-generated mapping for client sync
             'game_seed': int(time.time() * 1000) % (2**31),  # Deterministic seed for neutral army placement
 

@@ -399,6 +399,23 @@ class NetworkProtocol:
         """Create an execute orders message"""
         return self.encode_message(MessageType.EXECUTE_ORDERS, {})
 
+    def create_gold_transfer(self, sender_index: int, recipient_index: int,
+                             amount: int, turn_number: int = 0) -> bytes:
+        """Create a gold transfer notification (ally-to-ally).
+
+        Args:
+            sender_index: Slot index of the player sending gold.
+            recipient_index: Slot index of the ally receiving gold.
+            amount: Gold amount already deducted locally by the sender.
+            turn_number: Turn/round the transfer happened on (for logs).
+        """
+        return self.encode_message(MessageType.GOLD_TRANSFER, {
+            "player_index": sender_index,
+            "recipient_index": recipient_index,
+            "amount": amount,
+            "turn_number": turn_number,
+        })
+
     def create_battle_resolve(self, battle_index: int, result: Dict[str, Any]) -> bytes:
         """Create a battle resolution message"""
         data = {

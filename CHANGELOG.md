@@ -2,6 +2,27 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-04-18 - Gold Transfer Feature (ally-to-ally gold sending)
+
+- **Feature:** Players can now send gold to their allies during the Planning phase.
+  - **Setup:** New "Gold Transfer" dropdown in Additional Options (custom game + multiplayer lobby). Options: Disabled, Enabled (25%), Enabled (50%), Enabled (75%), Enabled (100%). Default = Disabled.
+  - **Rule:** Per-recipient cap = `floor(pct × sender's current gold)`. One transfer per (sender → recipient) pair per turn/round. Humans only (AI does not transfer gold). Campaigns always force Disabled.
+  - **Players window:** New "Players" button in top-left of the top UI bar (next to Menu). Opens a non-pausing modal listing all players with columns: Name, Controller, Team, Color, Status (Playing/Eliminated/Left), Transfer Gold input, Send button.
+  - **Input field:** Digit-only, capped at 7 digits, auto-clamps to the recipient's current cap on every keystroke.
+  - **Tooltips:** Disabled rows show the reason on hover (enemy, self, eliminated, left, already-sent this turn, not-in-planning-phase, not-your-turn, disabled-feature).
+  - **Feedback:** "Transfer successful." toast after a successful send; field + button lock for the rest of the turn.
+- **Multiplayer:** Sender applies optimistically (instant local deduction) then broadcasts `GOLD_TRANSFER` message. Remote peers mirror the balance change without re-validation. Relayed to 3+ player games via the host.
+- **Persistence:** Transfers are reflected in replay state diffs (with an annotating `gold_transfer` event); `gold_transfer_pct` and `gold_transfers_this_turn` are serialized into campaign saves.
+- **New file:** `players_window.py`
+- **Modified:** `integrated_setup.py`, `main.py`, `game_state/__init__.py`, `game_state/economy.py`, `simultaneous/sim_state.py`, `rendering/ui_renderer.py`, `network_config.py`, `network/protocol.py`, `network/server.py`, `network/lobby.py`, `network/territory_selector.py`, `network/multiplayer_setup.py`, `sync_logger.py`, `save_manager.py`
+
+## 2026-04-18 - Bug Fix: Phantom flags after Fortress mutual elimination
+
+- **Fix:** Attacking a neutral Fortress territory with a mutual-elimination outcome left both attacker's and defender's flags visible on the map.
+  - Root cause: `_update_battle_results` early-returns when `winner == -1 and surviving_armies == 0`, trusting the dice-tie path to have cleared garrisons. The Keep two-phase combat path also reaches this branch (via neutral defender), but does not pre-clear.
+  - Fix: clear `territory_garrisons[territory]` and `army_units[territory]` inside the early-return branch so both callers are covered.
+- **Modified:** game_state/military.py (`_update_battle_results`)
+
 ## 2026-04-10 - Multi-Map Support + Fortress Territories
 
 - **Feature:** Multi-map support — game now supports 5 maps (Avareon + 4 new placeholders)

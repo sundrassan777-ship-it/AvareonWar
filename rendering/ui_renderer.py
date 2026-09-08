@@ -337,6 +337,16 @@ class UIRenderer:
                                   bg_image=self.game.menu_button_img)  # GMenuButton.png as background
         self.game.menu_button = menu_button_rect
 
+        # Players button — sibling of Menu, opens non-pausing modal list of all players
+        players_button_x = menu_button_x + menu_button_width + int(8 * scale)
+        players_button_rect = pygame.Rect(players_button_x, menu_button_y, menu_button_width, menu_button_height)
+        self.game.helpers.draw_feedback_button(players_button_rect, None,
+                                  self.game.mouse_pos, self.game.clicked_element,
+                                  'top_button', 'players',
+                                  text="P l a y e r s", text_color=WHITE, font=self.game.small_font_bold,
+                                  bg_image=self.game.menu_button_img)
+        self.game.players_button = players_button_rect
+
         # Phase indicator (center of top panel)
         if hasattr(self.game.game_state, 'turn_phase') and hasattr(self.game.game_state, 'phase'):
             if self.game.game_state.phase == 'playing':

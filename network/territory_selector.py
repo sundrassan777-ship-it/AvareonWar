@@ -196,12 +196,16 @@ class TerritorySelector:
         # Additional options (host can modify, synced to clients)
         self.neutral_armies = False
         self.randomize_bonuses = False
+        self.gold_transfer = 0  # 0=Disabled, 1=25%, 2=50%, 3=75%, 4=100%
+        self.gold_transfer_options = ["Disabled", "Enabled (25%)", "Enabled (50%)", "Enabled (75%)", "Enabled (100%)"]
         self.bonus_mapping = None  # Host-generated randomized bonus mapping for multiplayer sync
 
         # Additional Options overlay state
         self.overlay_open = False
         self.overlay_neutral_armies = False  # Temp checkbox state while overlay open
         self.overlay_randomize_bonuses = False  # Temp checkbox state while overlay open
+        self.overlay_gold_transfer = 0  # Temp gold transfer while overlay open (0-4)
+        self.overlay_gold_transfer_dd_open = False  # Is gold transfer dropdown open inside overlay
         self.overlay_hovered = None  # Hovered overlay element
         self.overlay_clicked = None  # Clicked overlay element (one-frame flash)
         self.overlay_rects = {}  # Computed rects for overlay elements
@@ -592,9 +596,9 @@ class TerritorySelector:
 
             # Check if ready to start
             if self.ready_to_start:
-                # Return lobby_state, settings, additional options, and bonus mapping
+                # Return lobby_state, settings, additional options, bonus mapping, and gold_transfer
                 return (self.lobby_state, self.victory_condition, self.taxation_level, self.turn_mode,
-                        self.neutral_armies, self.randomize_bonuses, self.bonus_mapping)
+                        self.neutral_armies, self.randomize_bonuses, self.bonus_mapping, self.gold_transfer)
 
             # Tick down "Copied!" feedback timer
             dt = clock.get_time()
@@ -758,6 +762,8 @@ class TerritorySelector:
                 # Copy current values to temp overlay state
                 self.overlay_neutral_armies = self.neutral_armies
                 self.overlay_randomize_bonuses = self.randomize_bonuses
+                self.overlay_gold_transfer = self.gold_transfer
+                self.overlay_gold_transfer_dd_open = False
                 self.overlay_open = True
                 return
 
@@ -1044,6 +1050,7 @@ class TerritorySelector:
         self.lobby_state.turn_mode = self.turn_mode
         self.lobby_state.neutral_armies = self.neutral_armies
         self.lobby_state.randomize_bonuses = self.randomize_bonuses
+        self.lobby_state.gold_transfer = self.gold_transfer
 
         # Send LOBBY_LAUNCH to all clients with final state
         final_slots = [slot.to_dict() for slot in self.lobby_state.slots]
@@ -1077,6 +1084,7 @@ class TerritorySelector:
             'host_name': self.player_names[0],  # Include host's name for client display
             'neutral_armies': self.neutral_armies,
             'randomize_bonuses': self.randomize_bonuses,
+            'gold_transfer': self.gold_transfer,
             'map_id': self.selected_map,  # Selected map for multi-map support
         })
         self.network_connection.send_message(message)
@@ -1241,6 +1249,7 @@ class TerritorySelector:
                     self.turn_mode = self.lobby_state.turn_mode
                     self.neutral_armies = self.lobby_state.neutral_armies
                     self.randomize_bonuses = self.lobby_state.randomize_bonuses
+                    self.gold_transfer = self.lobby_state.gold_transfer
 
                     # Find our slot by name (host may have reassigned us)
                     # Skip slot 0 (host) - client is never the host
@@ -1397,6 +1406,8 @@ class TerritorySelector:
                     # Additional options
                     self.neutral_armies = data.get('neutral_armies', False)
                     self.randomize_bonuses = data.get('randomize_bonuses', False)
+                    self.gold_transfer = data.get('gold_transfer', 0)
+                    self.lobby_state.gold_transfer = self.gold_transfer
                     # Handle map change from host
                     new_map_id = data.get('map_id', 'avareon')
                     if new_map_id != self.selected_map:
@@ -1441,6 +1452,9 @@ class TerritorySelector:
                 if 'randomize_bonuses' in data:
                     self.randomize_bonuses = data.get('randomize_bonuses')
                     self.lobby_state.randomize_bonuses = self.randomize_bonuses
+                if 'gold_transfer' in data:
+                    self.gold_transfer = data.get('gold_transfer')
+                    self.lobby_state.gold_transfer = self.gold_transfer
                 self._sync_from_lobby_state()
                 self.ready_to_start = True
                 logger.info("Setup complete - starting game!")
@@ -1489,6 +1503,8 @@ class TerritorySelector:
         # Draw Additional Options overlay on top of everything (if open)
         if self.overlay_open:
             self._draw_additional_options_overlay()
+            # Gold transfer dropdown items render above the overlay so they aren't clipped
+            self._draw_overlay_gold_transfer_items()
 
         # Draw friend picker modal on top of everything (if open)
         if self._show_friend_picker:
@@ -2364,6 +2380,19 @@ class TerritorySelector:
 
     def _handle_overlay_click(self, pos):
         """Handle clicks within the Additional Options overlay"""
+        # If gold transfer dropdown is open, check item clicks first
+        if self.overlay_gold_transfer_dd_open:
+            for i, _ in enumerate(self.gold_transfer_options):
+                item_key = f'gold_transfer_item_{i}'
+                if item_key in self.overlay_rects and self.overlay_rects[item_key].collidepoint(pos):
+                    sound_manager.play_ui_click()
+                    self.overlay_gold_transfer = i
+                    self.overlay_gold_transfer_dd_open = False
+                    return
+            if 'gold_transfer_dd' in self.overlay_rects and not self.overlay_rects['gold_transfer_dd'].collidepoint(pos):
+                self.overlay_gold_transfer_dd_open = False
+            return
+
         # Check checkbox clicks
         if 'neutral_cb' in self.overlay_rects and self.overlay_rects['neutral_cb'].collidepoint(pos):
             sound_manager.play_ui_click()
@@ -2377,6 +2406,13 @@ class TerritorySelector:
             self.overlay_clicked = 'randomize_cb'
             return
 
+        # Gold transfer dropdown — toggle open
+        if 'gold_transfer_dd' in self.overlay_rects and self.overlay_rects['gold_transfer_dd'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_gold_transfer_dd_open = not self.overlay_gold_transfer_dd_open
+            self.overlay_clicked = 'gold_transfer_dd'
+            return
+
         # Check Confirm button
         if 'confirm_btn' in self.overlay_rects and self.overlay_rects['confirm_btn'].collidepoint(pos):
             sound_manager.play_ui_click()
@@ -2384,6 +2420,7 @@ class TerritorySelector:
             # Apply temp values to actual state
             self.neutral_armies = self.overlay_neutral_armies
             self.randomize_bonuses = self.overlay_randomize_bonuses
+            self.gold_transfer = self.overlay_gold_transfer
             self.overlay_open = False
             # Sync new settings to client
             if self.is_host:
@@ -2417,10 +2454,10 @@ class TerritorySelector:
         dark_overlay.fill((0, 0, 0))
         self.screen.blit(dark_overlay, (0, 0))
 
-        # Overlay panel dimensions (scaled from reference 400x300 at 1600x900)
+        # Overlay panel dimensions (scaled from reference 400x380 at 1600x900 — taller to fit gold transfer row)
         scale = self.ui_scale
         panel_w = int(400 * scale)
-        panel_h = int(300 * scale)
+        panel_h = int(380 * scale)
         panel_x = (screen_w - panel_w) // 2
         panel_y = (screen_h - panel_h) // 2
 
@@ -2488,6 +2525,20 @@ class TerritorySelector:
         self._draw_overlay_checkbox(bonus_cb_rect, self.overlay_randomize_bonuses,
                                      self.overlay_hovered == 'randomize_cb')
 
+        # Row 3: Gold Transfer dropdown
+        row3_y = line2_y + bonus_line2.get_height() + int(20 * scale)
+        gold_label = label_font.render("Gold Transfer:", True, TEXT_COLOR)
+        dd_w = int(150 * scale)
+        dd_h = int(26 * scale)
+        self.screen.blit(gold_label, (row_x, row3_y + (dd_h - gold_label.get_height()) // 2))
+        dd_x = panel_x + panel_w - int(40 * scale) - dd_w
+        dd_rect = pygame.Rect(dd_x, row3_y, dd_w, dd_h)
+        self.overlay_rects['gold_transfer_dd'] = dd_rect
+        self._draw_overlay_dropdown(dd_rect,
+                                     self.gold_transfer_options[self.overlay_gold_transfer],
+                                     self.overlay_hovered == 'gold_transfer_dd' or self.overlay_gold_transfer_dd_open,
+                                     scale)
+
         # Buttons at bottom: Cancel (left) and Confirm (right)
         btn_w = int(130 * scale)
         btn_h = int(45 * scale)
@@ -2546,6 +2597,58 @@ class TerritorySelector:
         text_surface = btn_font.render(text, True, TEXT_COLOR)
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
+
+    def _draw_overlay_dropdown(self, rect, selected_label, hovered, scale):
+        """Draw a small dropdown used inside the Additional Options overlay."""
+        from utils.colors import lighten_color
+        bg_color = lighten_color((40, 40, 50), 0.3) if hovered else lighten_color((40, 40, 50), 0.15)
+        pygame.draw.rect(self.screen, bg_color, rect, border_radius=4)
+        pygame.draw.rect(self.screen, BRASS_COLOR, rect, 1, border_radius=4)
+
+        dd_font_size = max(11, int(16 * scale))
+        try:
+            dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dd_font_size)
+        except (FileNotFoundError, pygame.error, OSError):
+            dd_font = self.small_font
+        text_surface = dd_font.render(selected_label, True, TEXT_COLOR)
+        text_rect = text_surface.get_rect(midleft=(rect.x + int(8 * scale), rect.centery))
+        self.screen.blit(text_surface, text_rect)
+
+        arrow_size = int(4 * scale)
+        arrow_points = [
+            (rect.right - int(12 * scale), rect.centery - arrow_size),
+            (rect.right - int(6 * scale), rect.centery),
+            (rect.right - int(12 * scale), rect.centery + arrow_size),
+        ]
+        pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
+
+    def _draw_overlay_gold_transfer_items(self):
+        """Draw the gold-transfer dropdown expanded list (above overlay panel)."""
+        if not self.overlay_gold_transfer_dd_open:
+            return
+        dd_rect = self.overlay_rects.get('gold_transfer_dd')
+        if not dd_rect:
+            return
+        scale = self.ui_scale
+        item_h = dd_rect.height
+        mouse_pos = pygame.mouse.get_pos()
+        dd_font_size = max(11, int(16 * scale))
+        try:
+            dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dd_font_size)
+        except (FileNotFoundError, pygame.error, OSError):
+            dd_font = self.small_font
+        from utils.colors import lighten_color
+        BUTTON_BLUE = (70, 120, 200)
+        for i, option in enumerate(self.gold_transfer_options):
+            item_rect = pygame.Rect(dd_rect.x, dd_rect.bottom + i * item_h, dd_rect.width, item_h)
+            self.overlay_rects[f'gold_transfer_item_{i}'] = item_rect
+            is_hovered = item_rect.collidepoint(mouse_pos)
+            bg_color = lighten_color(BUTTON_BLUE, 0.3) if is_hovered else PARCHMENT_COLOR
+            pygame.draw.rect(self.screen, bg_color, item_rect, border_radius=3)
+            pygame.draw.rect(self.screen, BRASS_COLOR if is_hovered else GRAY, item_rect, 1, border_radius=3)
+            text_surface = dd_font.render(option, True, TEXT_COLOR)
+            text_rect = text_surface.get_rect(midleft=(item_rect.x + int(8 * scale), item_rect.centery))
+            self.screen.blit(text_surface, text_rect)
 
     # ------------------------------------------------------------------
     # Friend Picker Modal (Steam Invite)

@@ -122,6 +122,9 @@ class MessageType(str, enum.Enum):
     SIM_ROUND_COMPLETE = "SIM_ROUND_COMPLETE"        # Round finished, start new planning phase
     SIM_HERO_ABILITY = "SIM_HERO_ABILITY"            # Hero ability used (sync effect to other players)
 
+    # Gold transfer (ally-to-ally)
+    GOLD_TRANSFER = "GOLD_TRANSFER"
+
     # Chat
     CHAT_MESSAGE = "CHAT_MESSAGE"
 

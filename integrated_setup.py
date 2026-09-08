@@ -112,6 +112,9 @@ class SetupConfig:
         # Additional options (set via Additional Options overlay)
         self.neutral_armies = False
         self.randomize_bonuses = False
+        # Gold transfer: 0=Disabled, 1=25%, 2=50%, 3=75%, 4=100%
+        self.gold_transfer = 0
+        self.gold_transfer_options = ["Disabled", "Enabled (25%)", "Enabled (50%)", "Enabled (75%)", "Enabled (100%)"]
 
         # Selected map (default to first map in manifest)
         self.selected_map = map_data.get_map_ids()[0] if map_data.get_map_ids() else 'avareon'
@@ -736,7 +739,9 @@ class ConfigPanel:
         self.overlay_open = False
         self.overlay_neutral_armies = False  # Temp checkbox state while overlay open
         self.overlay_randomize_bonuses = False  # Temp checkbox state while overlay open
-        self.overlay_hovered = None  # Hovered overlay element: 'neutral_cb', 'randomize_cb', 'confirm_btn', 'cancel_btn'
+        self.overlay_gold_transfer = 0  # Temp gold transfer setting while overlay open (0-4)
+        self.overlay_gold_transfer_dd_open = False  # Is the gold transfer dropdown currently open
+        self.overlay_hovered = None  # Hovered overlay element: 'neutral_cb', 'randomize_cb', 'gold_transfer_dd', 'confirm_btn', 'cancel_btn'
         self.overlay_clicked = None  # Clicked overlay element (one-frame flash)
         self.overlay_rects = {}  # Computed rects for overlay elements
 
@@ -1137,6 +1142,8 @@ class ConfigPanel:
                     # Copy current config values to temp overlay state
                     self.overlay_neutral_armies = self.config.neutral_armies
                     self.overlay_randomize_bonuses = self.config.randomize_bonuses
+                    self.overlay_gold_transfer = self.config.gold_transfer
+                    self.overlay_gold_transfer_dd_open = False
                     self.overlay_open = True
                     return None
 
@@ -1368,6 +1375,8 @@ class ConfigPanel:
         # Draw Additional Options overlay on top of everything (if open)
         if self.overlay_open:
             self._draw_additional_options_overlay()
+            # Gold transfer dropdown items render above the overlay so they aren't clipped
+            self._draw_overlay_gold_transfer_items()
 
     def _draw_table(self):
         """Draw the player configuration table"""
@@ -1831,6 +1840,20 @@ class ConfigPanel:
 
     def _handle_overlay_click(self, pos):
         """Handle clicks within the Additional Options overlay"""
+        # If gold transfer dropdown is open, check item clicks first
+        if self.overlay_gold_transfer_dd_open:
+            for i, _ in enumerate(self.config.gold_transfer_options):
+                item_key = f'gold_transfer_item_{i}'
+                if item_key in self.overlay_rects and self.overlay_rects[item_key].collidepoint(pos):
+                    sound_manager.play_ui_click()
+                    self.overlay_gold_transfer = i
+                    self.overlay_gold_transfer_dd_open = False
+                    return None
+            # Click outside items closes the dropdown
+            if 'gold_transfer_dd' in self.overlay_rects and not self.overlay_rects['gold_transfer_dd'].collidepoint(pos):
+                self.overlay_gold_transfer_dd_open = False
+            return None
+
         # Check checkbox clicks
         if 'neutral_cb' in self.overlay_rects and self.overlay_rects['neutral_cb'].collidepoint(pos):
             sound_manager.play_ui_click()
@@ -1844,6 +1867,13 @@ class ConfigPanel:
             self.overlay_clicked = 'randomize_cb'
             return None
 
+        # Gold transfer dropdown — toggle open
+        if 'gold_transfer_dd' in self.overlay_rects and self.overlay_rects['gold_transfer_dd'].collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.overlay_gold_transfer_dd_open = not self.overlay_gold_transfer_dd_open
+            self.overlay_clicked = 'gold_transfer_dd'
+            return None
+
         # Check Confirm button
         if 'confirm_btn' in self.overlay_rects and self.overlay_rects['confirm_btn'].collidepoint(pos):
             sound_manager.play_ui_click()
@@ -1851,6 +1881,7 @@ class ConfigPanel:
             # Apply temp values to config
             self.config.neutral_armies = self.overlay_neutral_armies
             self.config.randomize_bonuses = self.overlay_randomize_bonuses
+            self.config.gold_transfer = self.overlay_gold_transfer
             self.overlay_open = False
             return None
 
@@ -1884,10 +1915,10 @@ class ConfigPanel:
         dark_overlay.fill((0, 0, 0))
         self.screen.blit(dark_overlay, (0, 0))
 
-        # Overlay panel dimensions (scaled from reference 400x300 at 1600x900)
+        # Overlay panel dimensions (scaled from reference 400x380 at 1600x900 — taller to fit gold transfer row)
         scale = self.ui_scale
         panel_w = int(400 * scale)
-        panel_h = int(300 * scale)
+        panel_h = int(380 * scale)
         panel_x = (screen_w - panel_w) // 2
         panel_y = (screen_h - panel_h) // 2
 
@@ -1949,6 +1980,20 @@ class ConfigPanel:
         self._draw_overlay_checkbox(bonus_cb_rect, self.overlay_randomize_bonuses,
                                      self.overlay_hovered == 'randomize_cb')
 
+        # Row 3: Gold Transfer dropdown
+        row3_y = line2_y + bonus_line2.get_height() + int(20 * scale)
+        gold_label = label_font.render("Gold Transfer:", True, TEXT_COLOR)
+        dd_w = int(150 * scale)
+        dd_h = int(26 * scale)
+        self.screen.blit(gold_label, (row_x, row3_y + (dd_h - gold_label.get_height()) // 2))
+        dd_x = panel_x + panel_w - int(40 * scale) - dd_w
+        dd_rect = pygame.Rect(dd_x, row3_y, dd_w, dd_h)
+        self.overlay_rects['gold_transfer_dd'] = dd_rect
+        self._draw_overlay_dropdown(dd_rect,
+                                     self.config.gold_transfer_options[self.overlay_gold_transfer],
+                                     self.overlay_hovered == 'gold_transfer_dd' or self.overlay_gold_transfer_dd_open,
+                                     scale)
+
         # Buttons at bottom: Cancel (left) and Confirm (right)
         btn_w = int(130 * scale)
         btn_h = int(45 * scale)
@@ -2003,6 +2048,53 @@ class ConfigPanel:
         text_surface = btn_font.render(text, True, TEXT_COLOR)
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
+
+    def _draw_overlay_dropdown(self, rect, selected_label, hovered, scale):
+        """Draw a small dropdown used inside the Additional Options overlay."""
+        bg_color = lighten_color(PANEL_BG, 0.3) if hovered else lighten_color(PANEL_BG, 0.15)
+        pygame.draw.rect(self.screen, bg_color, rect, border_radius=4)
+        pygame.draw.rect(self.screen, BRASS_COLOR, rect, 1, border_radius=4)
+
+        dd_font_size = max(11, int(16 * scale))
+        dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dd_font_size)
+        text_surface = dd_font.render(selected_label, True, TEXT_COLOR)
+        text_rect = text_surface.get_rect(midleft=(rect.x + int(8 * scale), rect.centery))
+        self.screen.blit(text_surface, text_rect)
+
+        # Arrow
+        arrow_size = int(4 * scale)
+        arrow_points = [
+            (rect.right - int(12 * scale), rect.centery - arrow_size),
+            (rect.right - int(6 * scale), rect.centery),
+            (rect.right - int(12 * scale), rect.centery + arrow_size),
+        ]
+        pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
+
+    def _draw_overlay_gold_transfer_items(self):
+        """Draw the dropdown item list for gold transfer (called AFTER main overlay so items overlay everything)."""
+        if not self.overlay_gold_transfer_dd_open:
+            return
+        dd_rect = self.overlay_rects.get('gold_transfer_dd')
+        if not dd_rect:
+            return
+
+        scale = self.ui_scale
+        item_h = dd_rect.height
+        mouse_pos = pygame.mouse.get_pos()
+
+        dd_font_size = max(11, int(16 * scale))
+        dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dd_font_size)
+
+        for i, option in enumerate(self.config.gold_transfer_options):
+            item_rect = pygame.Rect(dd_rect.x, dd_rect.bottom + i * item_h, dd_rect.width, item_h)
+            self.overlay_rects[f'gold_transfer_item_{i}'] = item_rect
+            is_hovered = item_rect.collidepoint(mouse_pos)
+            bg_color = lighten_color(BUTTON_COLOR, 0.3) if is_hovered else PARCHMENT_COLOR
+            pygame.draw.rect(self.screen, bg_color, item_rect, border_radius=3)
+            pygame.draw.rect(self.screen, BRASS_COLOR if is_hovered else GRAY, item_rect, 1, border_radius=3)
+            text_surface = dd_font.render(option, True, TEXT_COLOR)
+            text_rect = text_surface.get_rect(midleft=(item_rect.x + int(8 * scale), item_rect.centery))
+            self.screen.blit(text_surface, text_rect)
 
     def _draw_dropdown_menu(self):
         """Draw the active dropdown menu overlaying content"""
@@ -2317,6 +2409,7 @@ class IntegratedSetup:
             'game_mode': 'simultaneous' if self.config.turn_mode == 1 else 'sequential',  # Turn mode
             'neutral_armies': self.config.neutral_armies,  # Additional option: neutral armies on territories
             'randomize_bonuses': self.config.randomize_bonuses,  # Additional option: randomize territory bonuses
+            'gold_transfer': self.config.gold_transfer,  # Gold transfer setting: 0=Disabled, 1-4=25/50/75/100%
             'map_id': self.config.selected_map,  # Selected map ID
         }
 

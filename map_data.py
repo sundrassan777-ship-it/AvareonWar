@@ -41,6 +41,9 @@ ADJACENCIES = {}
 # Fortress territories - territories with innate +2 defense (cannot build Keeps)
 FORTRESS_TERRITORIES = set()
 
+# Territory lore/descriptions - per-territory flavor text for UI tooltips
+TERRITORY_LORE = {}
+
 # Campaign mission territory filtering - when set, only these territories are active
 # None means all territories are enabled (normal gameplay)
 ENABLED_TERRITORIES = None
@@ -200,6 +203,7 @@ def load_map(map_id):
     _load_territory_bonuses_from_dir(map_dir)
     _load_adjacencies_from_dir(map_dir, map_id)
     _load_fortress_territories_from_dir(map_dir)
+    _load_territory_lore_from_dir(map_dir)
 
     _current_map_id = map_id
     logger.info(f"Loaded map '{map_id}' from {map_dir} ({len(TERRITORY_POLYGONS)} territories)")
@@ -235,6 +239,9 @@ def load_polygons():
 
         # Load fortress territories (empty for Avareon via root-level path)
         _load_fortress_territories_from_dir('maps/avareon')
+
+        # Load territory lore/descriptions
+        _load_territory_lore_from_dir('maps/avareon')
 
         _current_map_id = 'avareon'
 
@@ -342,6 +349,18 @@ def _load_fortress_territories_from_dir(map_dir):
     except FileNotFoundError:
         FORTRESS_TERRITORIES = set()
 
+def _load_territory_lore_from_dir(map_dir):
+    """Load territory lore/descriptions from a map directory's territory_lore.json."""
+    global TERRITORY_LORE
+    lore_path = os.path.join(map_dir, 'territory_lore.json')
+    try:
+        with open(lore_path, 'r', encoding='utf-8') as f:
+            TERRITORY_LORE = json.load(f)
+        if TERRITORY_LORE:
+            logger.info(f"Loaded lore for {len(TERRITORY_LORE)} territories from {lore_path}")
+    except (FileNotFoundError, json.JSONDecodeError):
+        TERRITORY_LORE = {}
+
 # ============================================================================
 # Fortress Territory Accessors
 # ============================================================================
@@ -353,6 +372,14 @@ def is_fortress_territory(territory):
 def get_fortress_territories():
     """Get the set of all fortress territory names on the current map."""
     return set(FORTRESS_TERRITORIES)
+
+# ============================================================================
+# Territory Lore Accessors
+# ============================================================================
+
+def get_territory_lore(territory):
+    """Get lore/description text for a territory. Returns empty string if none available."""
+    return TERRITORY_LORE.get(territory, "")
 
 # ============================================================================
 # Geometry Functions

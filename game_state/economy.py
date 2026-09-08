@@ -449,3 +449,128 @@ class EconomyMixin:
         # Apply formula: (base + bonuses) * multiplier
         territory_income = int((base_income + building_bonus) * multiplier)
         return territory_income
+
+    # ------------------------------------------------------------------
+    # Gold Transfer (ally-to-ally gold sending)
+    # ------------------------------------------------------------------
+
+    def _get_gold_transfer_tracker(self):
+        """Return the active (sender, recipient) transfer set for the current mode."""
+        sim_state = getattr(self, 'game', None)
+        sim_state = getattr(sim_state, 'sim_state', None) if sim_state else None
+        if sim_state is not None:
+            return sim_state.gold_transfers_this_round
+        return self.gold_transfers_this_turn
+
+    def get_transfer_cap(self, sender_index):
+        """Return the max gold the sender may send to a single ally right now.
+
+        Cap = floor(pct * current_gold). Returns 0 if the feature is disabled
+        or the sender index is invalid.
+        """
+        if self.gold_transfer_pct <= 0:
+            return 0
+        if sender_index < 0 or sender_index >= self.num_players:
+            return 0
+        return (self.player_gold[sender_index] * self.gold_transfer_pct) // 100
+
+    def can_transfer_gold(self, sender_index, recipient_index):
+        """Validate a potential gold transfer.
+
+        Returns (ok: bool, reason: str). `reason` is a short tooltip-friendly
+        string when ok=False — empty when ok=True.
+        """
+        if self.gold_transfer_pct <= 0:
+            return False, "Gold transfer is disabled for this game."
+
+        if sender_index < 0 or sender_index >= self.num_players:
+            return False, "Invalid sender."
+        if recipient_index < 0 or recipient_index >= self.num_players:
+            return False, "Invalid recipient."
+        if sender_index == recipient_index:
+            return False, "Cannot send Gold to yourself."
+
+        # Humans-only as the sender (AI players don't use this feature).
+        if self.player_is_ai[sender_index]:
+            return False, "Only human players can send gold."
+
+        if not self.are_allies(sender_index, recipient_index):
+            return False, "Cannot send Gold to enemy players."
+
+        if recipient_index in self.eliminated_players and recipient_index not in self.disconnect_eliminations:
+            return False, "Cannot send Gold to an eliminated player."
+        if recipient_index in self.disconnect_eliminations:
+            return False, "Cannot send Gold to a player who left the game."
+
+        # Phase check: only allowed during Planning phase (both modes).
+        sim_state = getattr(getattr(self, 'game', None), 'sim_state', None)
+        if sim_state is not None:
+            if sim_state.sim_phase != 'planning':
+                return False, "Gold can only be sent during the Planning phase."
+        else:
+            if getattr(self, 'turn_phase', 'planning') != 'planning':
+                return False, "Gold can only be sent during the Planning phase."
+            if self.current_player != sender_index:
+                return False, "Gold can only be sent during your own turn."
+
+        tracker = self._get_gold_transfer_tracker()
+        if (sender_index, recipient_index) in tracker:
+            return False, "Cannot send Gold to one player more than once every turn."
+
+        return True, ""
+
+    def transfer_gold(self, sender_index, recipient_index, amount):
+        """Execute a gold transfer from sender to recipient.
+
+        Clamps `amount` to [1, cap] where cap = floor(pct * sender_gold / 100).
+        Marks the (sender, recipient) pair as used for the current turn/round.
+
+        Returns the amount actually sent (0 if the transfer was rejected).
+        """
+        ok, _reason = self.can_transfer_gold(sender_index, recipient_index)
+        if not ok:
+            return 0
+
+        cap = self.get_transfer_cap(sender_index)
+        if cap <= 0:
+            return 0
+        try:
+            amount = int(amount)
+        except (TypeError, ValueError):
+            return 0
+        if amount <= 0:
+            return 0
+        amount = min(amount, cap)
+
+        self.player_gold[sender_index] -= amount
+        self.player_gold[recipient_index] += amount
+
+        # Track stats for recap screen
+        if sender_index in self.player_stats:
+            self.player_stats[sender_index]['gold_sent'] = self.player_stats[sender_index].get('gold_sent', 0) + amount
+        if recipient_index in self.player_stats:
+            self.player_stats[recipient_index]['gold_received'] = self.player_stats[recipient_index].get('gold_received', 0) + amount
+
+        # Mark the pair as used for this turn/round
+        self._get_gold_transfer_tracker().add((sender_index, recipient_index))
+
+        # Replay: record as a state-diff-adjacent event. No timeline icon —
+        # player_gold is already serialized per snapshot, so the balance change
+        # shows up in the state diff automatically. The event just annotates it.
+        recorder = getattr(self, 'replay_recorder', None)
+        if recorder is not None:
+            recorder.buffer_event(
+                'gold_transfer',
+                sender=sender_index,
+                recipient=recipient_index,
+                amount=amount,
+                turn=getattr(self, 'turn_number', 0),
+            )
+
+        # Action log — visible to everyone in the sidebar so observers see the diplomacy move.
+        sender_name = self.get_player_name(sender_index)
+        recipient_name = self.get_player_name(recipient_index)
+        self.add_message(f"{sender_name} sent {amount}g to {recipient_name}.")
+
+        logger.info(f"[GOLD_TRANSFER] Player {sender_index} sent {amount} gold to player {recipient_index}")
+        return amount
