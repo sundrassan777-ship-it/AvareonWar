@@ -261,6 +261,11 @@ class CameraZoomAnimation:
         self.elapsed = 0.0
         self.active = True
 
+        # Cancel any in-flight smooth wheel zoom: this animation drives
+        # camera.zoom directly, and a pending target would fight it.
+        if hasattr(self.camera, 'cancel_zoom_interpolation'):
+            self.camera.cancel_zoom_interpolation()
+
         # Set starting zoom and position
         self.camera.zoom = start_zoom
         self._update_camera_position(0.0)

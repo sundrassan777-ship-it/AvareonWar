@@ -2,6 +2,33 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Smooth (eased) mouse-wheel zoom
+
+- Mouse-wheel zoom previously jumped a full notch per event. `handle_zoom()` now sets a
+  **target** and `CameraHandler.update_zoom(delta_time)` eases toward it, called once per frame
+  from the main loop. A single notch now spans ~22 frames instead of 1.
+- **Frame-rate independent** smoothing (`1 - exp(-rate * dt)`), so the feel is identical at
+  30/60/165 FPS — measured settle times 0.400s / 0.367s / 0.358s for the same notch.
+- **Zoom-to-cursor holds for the whole interpolation.** The anchor (cursor position at the wheel
+  event) is re-applied every step: the world point under it is sampled before the step and
+  restored after. Measured drift across a full ease: **0.088 world px** (~0.2 screen px) where
+  the camera is free to move. At map edges `clamp_to_bounds()` legitimately moves the camera and
+  the anchor cannot hold — unchanged from the original behaviour.
+- **Rapid notches accumulate**: each compounds from `target_zoom`, not the current eased value,
+  so spinning the wheel does not lose notches.
+- `is_zoom_settling` now covers the interpolation, so the renderer keeps treating the camera as
+  active for its whole duration.
+- **`cancel_zoom_interpolation()`** is called by `CameraAnimation` / `CameraZoomAnimation` and
+  `reset_camera()`. Those drive `camera.zoom` directly, and a pending wheel target would
+  otherwise pull the camera back mid-animation.
+- **Benchmarks updated**: `handle_zoom()` no longer moves the camera by itself, so the wheel-zoom
+  scenarios now call `update_zoom()` too. Without that they would have rendered static frames and
+  reported inflated FPS.
+- New `tests/test_camera_zoom.py` (10 tests) covering easing, accumulation, cursor anchoring,
+  clamping, frame-rate independence, and the animation/reset interactions.
+- Files: `input/camera_handler.py`, `main.py`, `tutorial_mission.py`, `campaign_utils.py`,
+  `tests/test_fps_benchmark.py`, `tests/test_camera_zoom.py` *(new)*
+
 ## 2026-09-20 - Feature: VSync toggle + FPS limit (both options menus)
 
 - **New settings:** `vsync` (bool, default **False** — opt-in so nothing changes for existing

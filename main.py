@@ -10587,7 +10587,12 @@ class Game:
                                     and hasattr(self.tutorial_mission, 'camera_animation')
                                     and self.tutorial_mission.camera_animation is not None
                                     and getattr(self.tutorial_mission.camera_animation, 'active', False))
-            # Tick mouse-wheel zoom settle timer
+            # Advance smooth mouse-wheel zoom, then tick the settle timer.
+            # update_zoom() is a no-op unless a wheel zoom is in flight, so it never
+            # fights the campaign/start camera animations, which drive zoom directly.
+            if self.camera.update_zoom(delta_time):
+                self.camera_zoom = self.camera.zoom
+                self.camera_offset = list(self.camera.offset)
             self.camera.update_zoom_settle(delta_time)
             self.is_zoom_animating = (_start_anim_active or _mission_anim_active
                                       or self.camera.is_zoom_settling)

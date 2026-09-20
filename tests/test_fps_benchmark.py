@@ -496,11 +496,15 @@ class TestZoomPerformance:
 
         def before(i):
             # Bounce between min and max zoom so we keep crossing zoom levels
-            if zoom_game.camera.zoom >= zoom_game.camera.max_zoom - 1e-6:
+            if zoom_game.camera.target_zoom >= zoom_game.camera.max_zoom - 1e-6:
                 direction[0] = -1
-            elif zoom_game.camera.zoom <= zoom_game.camera.min_zoom + 1e-6:
+            elif zoom_game.camera.target_zoom <= zoom_game.camera.min_zoom + 1e-6:
                 direction[0] = 1
             zoom_game.camera.handle_zoom(direction[0], centre, 0.078, top_panel)
+            # handle_zoom() now only sets a TARGET; update_zoom() eases toward it.
+            # Without this the benchmark would render a static frame and report
+            # inflated FPS.
+            zoom_game.camera.update_zoom(1.0 / 60.0)
             sync_camera(zoom_game)
 
         fps = FPSMeasurement(sample_count=60)
@@ -584,11 +588,12 @@ class TestProductionGlowPerformance:
         direction = [1]
 
         def before(i):
-            if glow_game.camera.zoom >= glow_game.camera.max_zoom - 1e-6:
+            if glow_game.camera.target_zoom >= glow_game.camera.max_zoom - 1e-6:
                 direction[0] = -1
-            elif glow_game.camera.zoom <= glow_game.camera.min_zoom + 1e-6:
+            elif glow_game.camera.target_zoom <= glow_game.camera.min_zoom + 1e-6:
                 direction[0] = 1
             glow_game.camera.handle_zoom(direction[0], centre, 0.078, top_panel)
+            glow_game.camera.update_zoom(1.0 / 60.0)
             sync_camera(glow_game)
             glow_game.map_renderer.update_production_glow_effects(1.0 / 60.0)
 
