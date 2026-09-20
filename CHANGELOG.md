@@ -2,6 +2,33 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Campaign intro zoom is now continuous instead of stepped
+
+- **Removed the 0.2-step zoom quantization** from both camera animation classes:
+  `CameraAnimation.update()` (`tutorial_mission.py`, mission 1) and
+  `CameraZoomAnimation.update()` (`campaign_utils.py`, missions 2-7).
+- That `round(raw_zoom * 5) / 5` existed purely to limit how often the map rescale and the
+  production-glow sprite cache were invalidated — it was a **performance workaround that made
+  the intro visibly step rather than glide**. Both underlying costs are now gone (viewport-only
+  map rescale, shared/quantized glow frames), so the workaround is no longer needed.
+- Measured: the 1.5s intro sweep now produces **88 distinct zoom values across 90 frames**
+  (previously ~12).
+- **Verified no Z-SCALE regression.** `map_renderer` pre-scales polygons at 7 discrete
+  `ZOOM_LEVELS` and corrects with `zoom_ratio = actual_zoom / nearest_zoom`; continuous zoom
+  leans on that correction far more heavily. Compared the cached projection against a direct
+  `world_to_screen()` projection at ten zoom values chosen to fall *between* the pre-computed
+  levels (e.g. 2.61, nearest 2.80, ratio 0.932): **maximum error 0.000 px at every value.**
+  Territory polygons track continuous zoom exactly.
+- **Honest trade-off:** the zoom-sweep benchmark drops from 126.7 to 49.0 FPS (≈ the original
+  50.0 FPS baseline), because the sweep now rescales on every frame rather than every ~8th.
+  The animation is genuinely smooth where it was previously both stepped *and* 50 FPS, so this
+  buys smoothness at no cost relative to the original. The remaining per-frame cost is camera-delta
+  cache invalidation (`_overlay_cache_surface` + screen-polygon rebuild), measurable as the gap
+  between a static frame (218.5 FPS / 6.4ms) and a panning frame (70.8 FPS / 15.6ms) — addressed
+  by the culling/overlay-cache work that follows.
+
+- Files: `tutorial_mission.py`, `campaign_utils.py`
+
 ## 2026-09-20 - Performance: viewport-only map rescale (replaces full-map scaling)
 
 - **The whole map was rescaled on every zoom change** (`main.py`), building a surface of

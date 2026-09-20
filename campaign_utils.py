@@ -275,10 +275,13 @@ class CameraZoomAnimation:
         # Ease-out cubic for smooth deceleration
         eased = 1.0 - pow(1.0 - progress, 3)
 
-        # Interpolate zoom — quantize to 0.2 steps to reduce cache invalidations
-        # during animation (drops ~90 smoothscale calls to ~12)
-        raw_zoom = self.start_zoom + (self.target_zoom - self.start_zoom) * eased
-        self.camera.zoom = round(raw_zoom * 5) / 5
+        # Interpolate zoom continuously.
+        # This used to be quantized to 0.2 steps (`round(raw_zoom * 5) / 5`) purely to
+        # limit how often the map rescale and the production-glow sprite cache were
+        # invalidated — which made the intro visibly STEP rather than glide. Both of
+        # those costs are gone: the map now rescales only the visible slice (~2.5ms
+        # instead of up to 53ms) and glow frames are shared and quantized internally.
+        self.camera.zoom = self.start_zoom + (self.target_zoom - self.start_zoom) * eased
 
         # Keep target centered
         self._update_camera_position(eased)
