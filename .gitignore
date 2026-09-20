@@ -52,3 +52,5 @@ steamworks/
 
 # Windows reserved device name artifacts (left behind by "> nul" under Git Bash)
 nul
+
+benchmark_results.json

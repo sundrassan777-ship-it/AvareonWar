@@ -1,0 +1,112 @@
+{
+  "timestamp": "2026-09-20T17:56:20",
+  "label": "baseline-before-optimization",
+  "results": {
+    "static_max_zoom": {
+      "avg_fps": 66.128,
+      "min_fps": 62.024,
+      "max_fps": 69.803,
+      "avg_frame_ms": 15.122,
+      "worst_frame_ms": 16.123,
+      "stddev_ms": 0.441,
+      "percentile_99": 16.123
+    },
+    "pan_zoom3": {
+      "avg_fps": 39.947,
+      "min_fps": 36.845,
+      "max_fps": 43.134,
+      "avg_frame_ms": 25.033,
+      "worst_frame_ms": 27.141,
+      "stddev_ms": 0.73,
+      "percentile_99": 27.141
+    },
+    "mouse_wheel_zoom": {
+      "avg_fps": 16.87,
+      "min_fps": 13.254,
+      "max_fps": 20.743,
+      "avg_frame_ms": 59.277,
+      "worst_frame_ms": 75.45,
+      "stddev_ms": 6.786,
+      "percentile_99": 75.45
+    },
+    "zoom_sweep": {
+      "avg_fps": 49.982,
+      "min_fps": 17.626,
+      "max_fps": 66.495,
+      "avg_frame_ms": 20.007,
+      "worst_frame_ms": 56.733,
+      "stddev_ms": 8.629,
+      "percentile_99": 56.733
+    },
+    "glow_static": {
+      "avg_fps": 61.482,
+      "min_fps": 51.638,
+      "max_fps": 66.655,
+      "avg_frame_ms": 16.265,
+      "worst_frame_ms": 19.366,
+      "stddev_ms": 0.746,
+      "percentile_99": 19.366,
+      "glow_effects": 99
+    },
+    "glow_zoom": {
+      "avg_fps": 6.644,
+      "min_fps": 4.674,
+      "max_fps": 8.278,
+      "avg_frame_ms": 150.508,
+      "worst_frame_ms": 213.939,
+      "stddev_ms": 19.267,
+      "percentile_99": 213.939,
+      "glow_effects": 99
+    },
+    "density_buildings_0": {
+      "avg_fps": 64.369,
+      "min_fps": 58.05,
+      "max_fps": 70.555,
+      "avg_frame_ms": 15.535,
+      "worst_frame_ms": 17.227,
+      "stddev_ms": 0.593,
+      "percentile_99": 17.227,
+      "buildings": 0
+    },
+    "density_buildings_2": {
+      "avg_fps": 63.696,
+      "min_fps": 58.884,
+      "max_fps": 68.137,
+      "avg_frame_ms": 15.7,
+      "worst_frame_ms": 16.983,
+      "stddev_ms": 0.513,
+      "percentile_99": 16.983,
+      "buildings": 99
+    },
+    "density_buildings_4": {
+      "avg_fps": 64.321,
+      "min_fps": 58.252,
+      "max_fps": 70.336,
+      "avg_frame_ms": 15.547,
+      "worst_frame_ms": 17.167,
+      "stddev_ms": 0.578,
+      "percentile_99": 17.167,
+      "buildings": 107
+    },
+    "density_banners_1": {
+      "avg_fps": 61.161,
+      "min_fps": 35.547,
+      "max_fps": 70.007,
+      "avg_frame_ms": 16.35,
+      "worst_frame_ms": 28.132,
+      "stddev_ms": 2.415,
+      "percentile_99": 28.132,
+      "banners": 57
+    },
+    "density_banners_3": {
+      "avg_fps": 59.36,
+      "min_fps": 50.271,
+      "max_fps": 64.321,
+      "avg_frame_ms": 16.846,
+      "worst_frame_ms": 19.892,
+      "stddev_ms": 0.746,
+      "percentile_99": 19.892,
+      "banners": 171
+    }
+  }
+}
