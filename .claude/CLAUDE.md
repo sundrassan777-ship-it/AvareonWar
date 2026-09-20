@@ -128,7 +128,9 @@ AvareonWar/
 - [tools/gif_to_spritesheet.py](tools/gif_to_spritesheet.py) - GIF to spritesheet converter
 
 **Performance Tests:**
-- [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `python -m pytest tests/test_fps_benchmark.py -v -s`)
+- [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
+- [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
+- [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -204,6 +206,7 @@ AvareonWar/
 - [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) - Fast lookups, stat tables, common methods
 - [docs/USER_STORIES_PROGRESS.md](docs/USER_STORIES_PROGRESS.md) - Feature tracking and project status
 - [docs/TESTING_PLAN_MULTIPLAYER_FIXES.md](docs/TESTING_PLAN_MULTIPLAYER_FIXES.md) - Multiplayer testing plan
+- [docs/PERFORMANCE_ROADMAP.md](docs/PERFORMANCE_ROADMAP.md) - Deferred performance work, with measurements and rationale. **Read before starting any optimization** — several obvious-looking wins are now worthless.
 
 **Project History:**
 - [CHANGELOG.md](CHANGELOG.md) - Version history, refactoring phases, major changes
