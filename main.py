@@ -577,8 +577,12 @@ class Game:
         # Start-game camera animation (zoom to player's starting territory)
         # Created in initialize_game() for Custom Game and Multiplayer modes
         self.start_camera_animation = None
-        # FPS OPT: Flag indicating a zoom animation is active — rendering pipeline
-        # uses this to skip expensive operations (smoothscale, overlay rebuild)
+        # Flag indicating a zoom animation (start/campaign animation, or mouse-wheel
+        # settle) is active. NOTE: the old comment here claimed the rendering pipeline
+        # used this to "skip expensive operations (smoothscale, overlay rebuild)" —
+        # that was never true of the overlay (map_renderer.py has never read this
+        # flag), and the smoothscale downgrade is gone now that the map rescale is
+        # viewport-sized. Kept as camera state for animation-aware logic.
         self.is_zoom_animating = False
 
         # Phase 4A: Initialize all attributes to defaults so hasattr() guards are unnecessary.
@@ -667,6 +671,13 @@ class Game:
                 logger.error(f"Error reloading map image for '{map_id}': {e}")
                 self.map_image_original = _load_map_background(None)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
+
+            # Drop the viewport map cache so the new background is picked up even if
+            # the camera happens to be in exactly the same position.
+            self.cached_scaled_map = None
+            self.cached_zoom_level = None
+            self._map_view_key = None
+            self._map_view_surface = None
 
         # Rescale polygons from the newly loaded map_data globals
         self.scaled_polygons = {}
@@ -1503,9 +1514,17 @@ class Game:
         self.panel_renderer = PanelRenderer(self)
         
         # Map scaling cache (optimization: avoid rescaling every frame)
-        self.cached_scaled_map = None     # Cached scaled map image
+        self.cached_scaled_map = None     # Legacy full-map cache (kept for compatibility)
         self.cached_zoom_level = None     # Zoom level of cached map
-        
+        # Viewport map cache — see _blit_map_background(). Holds a viewport-sized
+        # slice plus a margin, in scaled-map space, as
+        # (source id, zoom, region_x0, region_y0, region_x1, region_y1).
+        # Panning within the margin re-blits at a new screen offset (no rescale);
+        # a rebuild happens only when the view leaves the margin or zoom changes.
+        self._map_view_key = None
+        self._map_view_surface = None
+        self._map_view_offset = (0, 0)
+
         # Camera debug state
         self.debug_edge_scroll = None
         self.debug_keyboard_scroll = None
@@ -4216,6 +4235,10 @@ class Game:
             # Clear caches (H11 fix: also clear icon/text caches to prevent stale entries)
             self.cached_scaled_map = None
             self.cached_zoom_level = None
+            # Viewport map cache: the destination surface was created in the OLD
+            # display format and the layout globals have changed, so drop both.
+            self._map_view_key = None
+            self._map_view_surface = None
             self._ui_icon_cache = {}
             self._tech_border_cache = {}
             self._text_cache = {}
@@ -10173,29 +10196,130 @@ class Game:
 
         self.main_menu_button = menu_button_rect
     
+    # Pixels of map over-rendered beyond the viewport on each side, so that panning
+    # re-blits a cached surface at a new offset instead of rescaling every frame.
+    # Larger = fewer rebuilds while panning, but more pixels scaled per rebuild.
+    _MAP_VIEW_MARGIN = 192
+
+    def _blit_map_background(self):
+        """
+        Scale and blit ONLY the visible slice of the map background.
+
+        PERFORMANCE — this replaces scaling the ENTIRE map on every zoom change.
+        The old path built a surface of (map_width * zoom, map_height * zoom) from
+        the 4096x3072 source, so its cost grew as zoom squared even though at most
+        a viewport-sized slice is ever visible. At 1600x900 that is 1.53M pixels at
+        zoom 1.65 but 8.98M pixels (36MB) at zoom 4.0. Measured:
+
+            full-map   scale -> 3732x2800 : 16.1 ms      (nearest-neighbour)
+            full-map   smoothscale        : 53.1 ms      <- a 53ms hitch, ~19 FPS
+            viewport   scale  -> 1920x700 :  0.31 ms
+            viewport   smoothscale        :  2.50 ms
+
+        Because the viewport smoothscale is affordable every frame, quality no
+        longer has to be traded away while moving: the old code fell back to
+        nearest-neighbour during zoom animations and then paid one full-map
+        smoothscale when the zoom settled (a guaranteed hitch). We now smoothscale
+        always, and cache the result so a stationary camera costs nothing.
+
+        Map-agnostic by design: the source rect is derived from the ACTUAL source
+        surface size, not the ORIGINAL_MAP_* constants, so maps whose background
+        differs in size (and the black fallback surface) work unchanged.
+        """
+        zoom = self.camera_zoom
+        src = self.map_image_original
+        src_w, src_h = src.get_size()
+
+        scaled_map_width = int(self.map_width * zoom)
+        scaled_map_height = int(self.map_height * zoom)
+        if scaled_map_width <= 0 or scaled_map_height <= 0 or src_w <= 0 or src_h <= 0:
+            return
+
+        # Where the whole map would sit on screen (negative: camera moves opposite)
+        map_x = int(-self.camera_offset[0] * zoom)
+        map_y = int(-self.camera_offset[1] * zoom) + TOP_PANEL_HEIGHT
+
+        # Intersect the map rect with the visible map area. Clipping at BOTTOM_UI_Y
+        # also avoids scaling the strip that the bottom panel draws over anyway.
+        view_bottom = BOTTOM_UI_Y if BOTTOM_UI_Y else (TOP_PANEL_HEIGHT + MAP_HEIGHT)
+        vis_left = max(map_x, 0)
+        vis_top = max(map_y, TOP_PANEL_HEIGHT)
+        vis_right = min(map_x + scaled_map_width, self.screen.get_width())
+        vis_bottom = min(map_y + scaled_map_height, view_bottom)
+
+        dest_w = int(vis_right - vis_left)
+        dest_h = int(vis_bottom - vis_top)
+        if dest_w <= 0 or dest_h <= 0:
+            return  # Map entirely off-screen; screen.fill() already painted the gap
+
+        # Work in "scaled-map space": offsets relative to the map's top-left corner.
+        # These are stable while the camera pans (only map_x/map_y shift), which is
+        # what lets a cached region survive panning.
+        want_x0 = vis_left - map_x
+        want_y0 = vis_top - map_y
+        want_x1 = vis_right - map_x
+        want_y1 = vis_bottom - map_y
+
+        # Over-render by a margin so small pans re-blit the cached surface at a new
+        # offset instead of rescaling. Without this, panning rescaled EVERY frame —
+        # measured as a regression from 69.8 to 49.9 FPS, because the previous
+        # full-map cache happened to make panning free (only the blit position moved).
+        # A rebuild is now needed only when the view leaves the margin or zoom changes.
+        cached = self._map_view_key
+        reusable = (
+            cached is not None
+            and self._map_view_surface is not None
+            and cached[0] == id(src)
+            and cached[1] == zoom
+            and cached[2] <= want_x0 and cached[3] <= want_y0
+            and cached[4] >= want_x1 and cached[5] >= want_y1
+        )
+
+        if not reusable:
+            # Only pay for the margin when it can actually be reused. While the zoom
+            # is changing every frame the cache is invalidated regardless, so the
+            # extra pixels are pure waste (measured: ~25% off continuous-zoom FPS).
+            # Panning at a fixed zoom is where the margin earns its keep.
+            zoom_unchanged = cached is not None and cached[1] == zoom
+            margin = self._MAP_VIEW_MARGIN if zoom_unchanged else 0
+            reg_x0 = int(max(0, want_x0 - margin))
+            reg_y0 = int(max(0, want_y0 - margin))
+            reg_x1 = int(min(scaled_map_width, want_x1 + margin))
+            reg_y1 = int(min(scaled_map_height, want_y1 + margin))
+            region_w = max(1, reg_x1 - reg_x0)
+            region_h = max(1, reg_y1 - reg_y0)
+
+            x_ratio = src_w / scaled_map_width
+            y_ratio = src_h / scaled_map_height
+
+            src_x = max(0, min(src_w - 1, int(reg_x0 * x_ratio)))
+            src_y = max(0, min(src_h - 1, int(reg_y0 * y_ratio)))
+            # ceil the span so we never sample fewer source pixels than we cover
+            src_w_slice = max(1, min(src_w - src_x, int(math.ceil(region_w * x_ratio))))
+            src_h_slice = max(1, min(src_h - src_y, int(math.ceil(region_h * y_ratio))))
+
+            # Reuse the destination surface while its size is unchanged, so repeated
+            # rebuilds (e.g. continuous zooming) do not allocate every frame.
+            if (self._map_view_surface is None
+                    or self._map_view_surface.get_size() != (region_w, region_h)):
+                self._map_view_surface = pygame.Surface((region_w, region_h)).convert()
+
+            sub = src.subsurface(pygame.Rect(src_x, src_y, src_w_slice, src_h_slice))
+            pygame.transform.smoothscale(sub, (region_w, region_h), self._map_view_surface)
+            self._map_view_key = (id(src), zoom, reg_x0, reg_y0, reg_x0 + region_w, reg_y0 + region_h)
+            self._map_view_offset = (reg_x0, reg_y0)
+
+        # Blit at the cached region's CURRENT screen position. Overdraw beyond the
+        # map area is harmless — the top/bottom panels are drawn after the map.
+        off_x, off_y = self._map_view_offset
+        self.screen.blit(self._map_view_surface, (map_x + off_x, map_y + off_y))
+
     def draw(self):
         """Render a single frame (core rendering pipeline extracted from run() for benchmarking)."""
         self.screen.fill(WHITE)
 
-        # Draw map with camera transform
-        scaled_map_width = int(self.map_width * self.camera_zoom)
-        scaled_map_height = int(self.map_height * self.camera_zoom)
-        if self.cached_zoom_level != self.camera_zoom:
-            # FPS OPT: Use fast scale during zoom animation (same as main render loop)
-            if self.is_zoom_animating:
-                self.cached_scaled_map = pygame.transform.scale(
-                    self.map_image_original,
-                    (scaled_map_width, scaled_map_height)
-                )
-            else:
-                self.cached_scaled_map = pygame.transform.smoothscale(
-                    self.map_image_original,
-                    (scaled_map_width, scaled_map_height)
-                )
-            self.cached_zoom_level = self.camera_zoom
-        map_x = int(-self.camera_offset[0] * self.camera_zoom)
-        map_y = int(-self.camera_offset[1] * self.camera_zoom) + TOP_PANEL_HEIGHT
-        self.screen.blit(self.cached_scaled_map, (map_x, map_y))
+        # Draw map with camera transform (viewport-only rescale)
+        self._blit_map_background()
 
         # Draw map elements (Phase 4D: inlined from delegate methods)
         self.map_renderer.draw_territories()
@@ -10417,13 +10541,14 @@ class Game:
                                     and getattr(self.tutorial_mission.camera_animation, 'active', False))
             # Tick mouse-wheel zoom settle timer
             self.camera.update_zoom_settle(delta_time)
-            _was_zoom_animating = self.is_zoom_animating
             self.is_zoom_animating = (_start_anim_active or _mission_anim_active
                                       or self.camera.is_zoom_settling)
-            # When zoom activity ends, invalidate cached map so next frame uses smoothscale
-            # (animation/settling used fast nearest-neighbor scale for performance)
-            if _was_zoom_animating and not self.is_zoom_animating:
-                self.cached_zoom_level = None
+            # NOTE: the map no longer needs re-invalidating when zoom activity ends.
+            # That existed to undo the nearest-neighbour downgrade used during zoom,
+            # which forced one full-map smoothscale on the settle frame (a ~53ms
+            # hitch). _blit_map_background() now smoothscales only the visible slice
+            # (~2.5ms), so it uses full quality on every frame and never needs a
+            # catch-up rescale.
 
             # Check if planning timer has expired (sequential mode only)
             # Skip during mission intro when game is paused
@@ -11140,37 +11265,10 @@ class Game:
             self.screen.fill(WHITE)
 
             # Draw map (Phase 2D: transform with camera!)
-            # Optimization: Cache scaled map to avoid rescaling every frame (FPS improvement!)
-            # Calculate target size based on camera zoom
-            scaled_map_width = int(self.map_width * self.camera_zoom)
-            scaled_map_height = int(self.map_height * self.camera_zoom)
-            
-            # Only rescale if zoom level changed (massive FPS improvement!)
-            if self.cached_zoom_level != self.camera_zoom:
-                # FPS OPT: Use fast nearest-neighbor scale during zoom animation
-                # (3-10x faster than smoothscale, quality difference imperceptible mid-animation)
-                if self.is_zoom_animating:
-                    self.cached_scaled_map = pygame.transform.scale(
-                        self.map_image_original,
-                        (scaled_map_width, scaled_map_height)
-                    )
-                else:
-                    self.cached_scaled_map = pygame.transform.smoothscale(
-                        self.map_image_original,
-                        (scaled_map_width, scaled_map_height)
-                    )
-                self.cached_zoom_level = self.camera_zoom
-            
-            # Use cached scaled map (no rescaling needed!)
-            scaled_map = self.cached_scaled_map
-            
-            # Position based on camera offset (negative because camera moves opposite to map)
-            map_x = int(-self.camera_offset[0] * self.camera_zoom)
-            map_y = int(-self.camera_offset[1] * self.camera_zoom) + TOP_PANEL_HEIGHT  # Offset for top panel
-            
-            # Draw scaled and positioned map
-            self.screen.blit(scaled_map, (map_x, map_y))
-            
+            # Viewport-only rescale — see _blit_map_background() for why this is not
+            # a full-map scale (it was 16-53ms per zoom change; now ~0.3-2.5ms).
+            self._blit_map_background()
+
             # Draw territories (Phase 4D: inlined from delegate methods)
             self.map_renderer.draw_territories()
 

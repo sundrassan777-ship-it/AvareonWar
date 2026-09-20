@@ -1449,6 +1449,18 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `.convert()` bakes in the *current display's* pixel format — **re-convert after any
   `set_mode()`** (resolution, fullscreen, or flag change), as `apply_display_settings()` does.
 
+**Scale only what is visible (never the whole map):**
+- `Game._blit_map_background()` (main.py) scales just the visible slice of the map background.
+  Scaling the FULL map cost `zoom²` — 8.98M pixels (36MB) at zoom 4.0, i.e. 16.1ms nearest /
+  **53.1ms smoothscale** — versus 0.31ms / 2.50ms for a viewport-sized slice.
+- It over-renders a 192px margin **only when zoom is unchanged**, so panning re-blits the
+  cached surface at a new offset rather than rescaling. Skipping the margin while zooming
+  matters: the cache is invalidated every frame then, so the extra pixels are pure waste.
+- Both render paths (`draw()` and the live loop in `run()`) call this one method — they
+  previously held duplicated scaling logic, so a fix had to be applied twice.
+- Derive source rects from `surface.get_size()`, **not** the `ORIGINAL_MAP_*` constants, so
+  alternate map backgrounds and the black fallback keep working.
+
 **Never key a cache on a raw continuous float (quantize it):**
 - Keying on an un-quantized zoom/scale/alpha float means the cache **never hits** while that
   value animates. `ProductionGlowEffect` keyed its sprite cache on the raw zoom and so rebuilt

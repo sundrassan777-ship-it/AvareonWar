@@ -2,6 +2,45 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Performance: viewport-only map rescale (replaces full-map scaling)
+
+- **The whole map was rescaled on every zoom change** (`main.py`), building a surface of
+  `(map_width * zoom, map_height * zoom)` from the 4096x3072 source — so the cost grew as
+  **zoom squared** even though at most a viewport-sized slice is ever visible. At 1600x900
+  that is 1.53M pixels at zoom 1.65 but **8.98M pixels (36MB) at zoom 4.0**. Measured:
+  full-map `scale` 16.1ms, full-map `smoothscale` **53.1ms**, versus viewport `scale` 0.31ms
+  and viewport `smoothscale` 2.50ms.
+- **New `Game._blit_map_background()`** scales only the visible slice, used by both render
+  paths (`draw()` and the live loop in `run()` — previously duplicated logic).
+  - Source rect is derived from the **actual source surface size**, not the `ORIGINAL_MAP_*`
+    constants, so it works for any map background and the black fallback surface.
+  - Clips to `BOTTOM_UI_Y`, so the strip the bottom panel covers is never scaled.
+- **Adaptive margin:** the cached slice is over-rendered by 192px per side *only when the zoom
+  is unchanged*. Panning then re-blits the cached surface at a new offset instead of rescaling
+  (a naive viewport rescale regressed panning from 69.8 to 49.9 FPS, because the old full-map
+  cache happened to make panning free). While zoom changes every frame the margin is skipped,
+  since the cache is invalidated regardless — that recovered ~25% on continuous-zoom FPS.
+- **Quality improved, not traded:** because a viewport `smoothscale` is affordable every frame,
+  the nearest-neighbour downgrade used during zoom animations is gone, along with the
+  `cached_zoom_level = None` settle-invalidate that forced one full-map `smoothscale` (a
+  guaranteed ~53ms hitch) whenever a zoom ended. The map is now full quality on every frame.
+- Corrected a stale comment claiming `is_zoom_animating` made the pipeline skip "smoothscale,
+  overlay rebuild" — `map_renderer.py` has never read that flag.
+
+**Cumulative measured results (1600x900, original baseline → now):**
+
+| Scenario | Baseline | Now | Gain |
+|---|---|---|---|
+| Zooming with 99 production glows | 6.6 FPS (213.9ms worst) | **37.2 FPS** (33.1ms) | +460% |
+| Static @ max zoom | 66.1 FPS | **207.7 FPS** | +214% |
+| Campaign-intro zoom sweep | 50.0 FPS | **126.7 FPS** | +153% |
+| Mouse-wheel zoom | 16.9 FPS (75.5ms worst) | **39.7 FPS** (33.3ms) | +135% |
+| Panning @ zoom 3.0 | 39.9 FPS | **70.7 FPS** | +77% |
+| 107 buildings | 64.3 FPS | **161.0 FPS** | +150% |
+| 171 banners | 59.4 FPS | **135.0 FPS** | +127% |
+
+- Files: `main.py`
+
 ## 2026-09-20 - Performance: map background .convert() + shared production-glow sprite cache
 
 Two fixes with large, measured FPS impact. Benchmarks: `py -m pytest tests/test_fps_benchmark.py -v -s`
