@@ -1095,31 +1095,13 @@ class MapRenderer:
                 garrison_army_counts[player_index] = count
                 total_armies += count
 
-            # Count only non-empty garrisons for positioning
-            num_garrisons = sum(1 for count in garrison_army_counts.values() if count > 0)
-
-            # IMPORTANT: Check if there are incoming animations to this territory (O(1) lookup now)
-            # If so, use the FUTURE garrison count (after arrivals) for flag positioning
-            # This prevents flags from "jumping" when animations complete
-            incoming_players = incoming_animations_by_territory.get(territory, set())
-
-            if incoming_players:
-                # Calculate future garrison count (current + incoming)
-                future_garrisons = set()
-                for player_index, count in garrison_army_counts.items():
-                    if count > 0:
-                        future_garrisons.add(player_index)
-                future_garrisons.update(incoming_players)
-                num_garrisons = len(future_garrisons)
-
-                # IMPORTANT: For allied territories with incoming reinforcements,
-                # use at least 2 positions even if only 1 garrison will exist
-                # (to match animation destination positioning)
-                if owner >= 0 and num_garrisons == 1:
-                    # Check if the single garrison is not the owner
-                    single_garrison_player = list(future_garrisons)[0]
-                    if single_garrison_player != owner:
-                        num_garrisons = 2  # Use 2-position layout for allied reinforcement
+            # Count flag slots via the shared helper, so the drawn layout and the
+            # click/hover hit boxes can never disagree. Passes the per-frame
+            # animation index to keep the O(1) lookup.
+            num_garrisons = self.game.get_effective_garrison_count(
+                territory, garrisons,
+                incoming_animations_by_territory.get(territory, set())
+            )
 
             # Skip drawing army indicator if territory has 0 armies
             if total_armies == 0:
@@ -1250,6 +1232,18 @@ class MapRenderer:
             # Base color
             army_color = color
             
+            # Resolve which player actually holds this territory's single garrison
+            # (not necessarily the territory owner). HOISTED above the hover test
+            # because the banner hit test needs it; reuses garrison_army_counts
+            # instead of re-reading the garrison dicts.
+            garrison_player = None
+            for player_index, count in garrison_army_counts.items():
+                if count > 0:
+                    garrison_player = player_index
+                    break
+            if garrison_player is None:
+                garrison_player = owner
+
             # Check for hover (using screen position)
             # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
             is_hovering = False
@@ -1257,6 +1251,14 @@ class MapRenderer:
             distance_sq = (x - mouse_screen_x) ** 2 + (y - mouse_screen_y) ** 2
             if distance_sq <= scaled_army_radius ** 2:
                 is_hovering = True
+            elif num_garrisons <= 1:
+                # Banner is a hover target too, so the ring brightens anywhere the
+                # banner is clickable. Only runs when the circle test missed; costs
+                # a dict lookup plus two Surface attribute reads.
+                is_hovering = self.game.point_in_army_banner(
+                    mouse_screen_x, mouse_screen_y, x, y,
+                    garrison_player, total_armies, space='screen'
+                )
             
             # Check for click flash
             is_clicking = (self.game.clicked_element and 
@@ -1303,12 +1305,25 @@ class MapRenderer:
                     # Draw rotating ring for this garrison at flag position
                     garrison_color = self.game.game_state.get_player_color(player_index)
 
+                    # Determine flag tier based on this garrison's army count.
+                    # HOISTED above the hover test because the banner hit test needs it.
+                    flag_tier = self.game.get_army_flag_tier(garrison_armies)
+
                     # Check for hover/click on this specific garrison
                     # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
                     garrison_is_hovering = False
                     distance_to_flag_sq = (flag_screen_x - mouse_screen_x) ** 2 + (flag_screen_y - mouse_screen_y) ** 2
                     if distance_to_flag_sq <= scaled_army_radius ** 2:
                         garrison_is_hovering = True
+                    else:
+                        # This garrison's banner is a hover target too. Each garrison in
+                        # an allied-reinforced territory gets its own banner, so the
+                        # highlight follows whichever banner the cursor is actually over.
+                        garrison_is_hovering = self.game.point_in_army_banner(
+                            mouse_screen_x, mouse_screen_y,
+                            flag_screen_x, flag_screen_y,
+                            player_index, garrison_armies, space='screen'
+                        )
 
                     # Check if this garrison is selected (for army composition UI)
                     # Use army_composition_player to determine which garrison is selected, not current_player
@@ -1327,39 +1342,29 @@ class MapRenderer:
                                            garrison_color, scaled_army_radius,
                                            garrison_is_hovering, garrison_is_clicking)
 
-                    # Determine flag tier based on this garrison's army count
-                    flag_tier = self.game.get_army_flag_tier(garrison_armies)
-
                     # Get the appropriate flag icon for this player and tier
                     if player_index in self.game.army_flag_icons and flag_tier in self.game.army_flag_icons[player_index]:
                         flag_icon = self.game.army_flag_icons[player_index][flag_tier]
 
                         if flag_icon:
-                            # Scale the flag - 33% larger than before (2.5 * 1.33 ≈ 3.3)
-                            flag_height = int(scaled_army_radius * 3.3)
-                            flag_width = int(flag_icon.get_width() * (flag_height / flag_icon.get_height()))
+                            # Geometry from the SHARED helper - identical rectangle to the
+                            # one the click and hover passes test against.
+                            banner = self.game.get_army_banner_rect(
+                                flag_screen_x, flag_screen_y,
+                                player_index, garrison_armies, space='screen'
+                            )
+                            banner_left, banner_top, flag_width, flag_height = banner
 
                             # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
-                            scaled_flag = self.get_cached_scaled_flag(player_index, flag_tier, flag_icon, flag_width, flag_height)
-
-                            # Position flag with pole centered on garrison position, flag extends upward
-                            flag_rect = scaled_flag.get_rect(center=(int(flag_screen_x), int(flag_screen_y)))
-                            flag_rect.y -= flag_height // 2  # Shift up by half height
-                            self.game.screen.blit(scaled_flag, flag_rect)
+                            scaled_flag = self.get_cached_scaled_flag(
+                                player_index, flag_tier, flag_icon,
+                                int(flag_width), int(flag_height)
+                            )
+                            self.game.screen.blit(scaled_flag, (int(banner_left), int(banner_top)))
 
             else:
                 # SINGLE GARRISON: Draw one flag at territory center
-                # Find which player actually has the garrison (not necessarily the territory owner)
-                garrison_player = None
-                for player_index in garrisons.keys():
-                    garrison = garrisons[player_index]
-                    if garrison.get('unmoved', 0) + garrison.get('moved', 0) > 0:
-                        garrison_player = player_index
-                        break
-
-                # If no garrison found, fall back to territory owner (shouldn't happen)
-                if garrison_player is None:
-                    garrison_player = owner
+                # (garrison_player was resolved above, before the hover test)
 
                 # Determine which flag tier to use based on army count
                 flag_tier = self.game.get_army_flag_tier(total_armies)
@@ -1369,18 +1374,20 @@ class MapRenderer:
                     flag_icon = self.game.army_flag_icons[garrison_player][flag_tier]
 
                     if flag_icon:
-                        # Scale the flag - 33% larger than before (2.5 * 1.33 ≈ 3.3)
-                        flag_height = int(scaled_army_radius * 3.3)
-                        flag_width = int(flag_icon.get_width() * (flag_height / flag_icon.get_height()))
+                        # Geometry comes from the SHARED helper so the drawn banner and
+                        # the click/hover hit box are the same rectangle by construction.
+                        # Pole base sits on the circle anchor; banner extends upward.
+                        banner = self.game.get_army_banner_rect(
+                            x, y, garrison_player, total_armies, space='screen'
+                        )
+                        banner_left, banner_top, flag_width, flag_height = banner
 
                         # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
-                        scaled_flag = self.get_cached_scaled_flag(garrison_player, flag_tier, flag_icon, flag_width, flag_height)
-
-                        # Position flag with pole centered on circle, flag extends upward
-                        # Move flag up by half its height so the pole (bottom) is at circle center
-                        flag_rect = scaled_flag.get_rect(center=(int(x), int(y)))
-                        flag_rect.y -= flag_height // 2  # Shift up by half height
-                        self.game.screen.blit(scaled_flag, flag_rect)
+                        scaled_flag = self.get_cached_scaled_flag(
+                            garrison_player, flag_tier, flag_icon,
+                            int(flag_width), int(flag_height)
+                        )
+                        self.game.screen.blit(scaled_flag, (int(banner_left), int(banner_top)))
                     else:
                         # Fallback to number if flag icon failed to load
                         # For single garrison, just show total
@@ -1519,8 +1526,8 @@ class MapRenderer:
                     flag_icon = self.game.army_flag_icons[player][flag_tier]
 
                     if flag_icon:
-                        # Scale the flag - 33% larger than before (2.5 * 1.33 ≈ 3.3)
-                        flag_height = int(scaled_army_radius * 3.3)
+                        # Scale the flag (in-transit armies are not selectable)
+                        flag_height = int(scaled_army_radius * ARMY_FLAG_HEIGHT_RATIO)
                         flag_width = int(flag_icon.get_width() * (flag_height / flag_icon.get_height()))
 
                         # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)

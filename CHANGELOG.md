@@ -2,6 +2,43 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Army banners are fully selectable
+
+- **Problem:** players expect to click the banner (flag), not just the small circle under
+  it. The banner was only *half* clickable and never hoverable, so it read as decoration.
+- **Cause:** the render, click and hover passes each computed the banner's geometry
+  independently and disagreed:
+  - render drew it spanning `anchor_y - flag_height` .. `anchor_y`
+  - click tested only `anchor_y - flag_height/2` .. `anchor_y` - **the bottom half**, i.e.
+    the thin pole, while the flag cloth was dead
+  - hover (both the `hovered_army` state and the renderer's ring-brightening) ignored the
+    banner entirely, so nothing ever hinted it was clickable
+- **Fix:** one shared source of truth. New `Game.get_army_banner_rect()` /
+  `point_in_army_banner()` / `get_effective_garrison_count()` / `get_garrison_anchor()`,
+  used by all three passes. Hit area is now the **full** drawn banner, with width derived
+  from the flag art's real aspect ratio instead of a fixed `2 x radius`.
+- **Click priority is now circle > plot > banner** (`handle_map_area_click` PRIORITY 3 /
+  4 / 4.5). The taller banner box overlaps building plots - including through the flag
+  art's transparent margins - so banners resolve *after* plots and plot clicking is
+  unchanged. `handle_mouse_motion` mirrors the same ordering.
+- Circles are tested across **all** territories before any banner: at min zoom a banner is
+  ~30 world units tall against a radius-25 sibling ring, so banners routinely overlap a
+  neighbour's circle.
+- **Two bugs fixed along the way:**
+  1. The click path lacked the allied-reinforcement slot rule that render and hover both
+     had, so mid-animation the flag was drawn ~25 world units off-centre while the click
+     test still probed the territory centre - the garrison was briefly unclickable.
+  2. Hovering a circle that overlapped a plot killed the army highlight even though
+     clicking there *did* select the army.
+- Magic number `3.3` (4 sites) hoisted to `ARMY_FLAG_HEIGHT_RATIO`, plus
+  `DEFAULT_ARMY_FLAG_ASPECT`, in `config/constants.py`.
+- **Cost:** 0.036 ms/frame worst case (banner test for all 57 territories, circle missing
+  every time) = 0.2% of a 60 FPS budget. All 19 FPS benchmarks pass.
+- Multi-garrison territories keep one banner per garrison; hover highlights any of them,
+  clicking still only selects your own.
+- Tests: `tests/test_army_banner_selection.py` (29 tests)
+- Files: `main.py`, `rendering/map_renderer.py`, `config/constants.py`
+
 ## 2026-09-20 - Fixed: "display Surface quit" crash after toggling VSync
 
 - **Bug:** enabling VSync and then opening the Campaign screen crashed with

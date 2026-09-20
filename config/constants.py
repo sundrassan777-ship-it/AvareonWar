@@ -153,6 +153,15 @@ ICON_CLICK_RADIUS = 18  # Click/display radius per icon (reduced for 6 buildings
 ARMY_CIRCLE_RADIUS = 15
 BADGE_RADIUS = 16
 
+# Army banner (flag) geometry.
+# The banner hangs UPWARD from the army circle: its pole base sits exactly on the
+# circle anchor, so it spans (anchor_y - height) .. anchor_y.
+# CRITICAL: rendering AND hit-testing both derive their geometry from this ratio via
+# Game.get_army_banner_rect(). If the two ever use different values, the clickable
+# area drifts away from the drawn banner. Never inline this number again.
+ARMY_FLAG_HEIGHT_RATIO = 3.3  # banner height = ARMY_CIRCLE_RADIUS * ui_scale * this
+DEFAULT_ARMY_FLAG_ASPECT = 0.66  # width/height fallback if flag art has no usable size
+
 # Button Sizes
 BUTTON_SIZE_SQUARE = 60  # Size for training and building buttons
 BUTTON_SPACING = 10

@@ -3821,122 +3821,84 @@ class Game:
                 return territory
         return None
     
-    def get_army_at_pos(self, pos):
+    def get_army_at_pos(self, pos, mode='both'):
         """
-        Check if clicking on an army circle or flag icon.
+        Check if a point lands on an army circle or its banner.
 
-        Now supports multi-garrison territories - checks if current player has a garrison
-        in the territory, not just if they own it. For multi-garrison territories, each
-        garrison has its own flag position and click area.
+        Supports multi-garrison territories (allied reinforcement): each garrison
+        has its own flag position, circle and banner.
 
         Args:
             pos: (x, y) tuple in WORLD coordinates (not screen coordinates!)
                  Caller should convert screen to world before calling this.
+            mode: Which shapes to test -
+                  'circle' -> army circles only
+                  'banner' -> banner rects only
+                  'both'   -> circles across ALL territories first, then banners
 
         Returns:
-            (territory, player_index) tuple if click is on a garrison, None otherwise
-            For backward compatibility when unpacking fails, returns just territory name
+            (territory, player_index) tuple if the point hits one of the current
+            player's garrisons, None otherwise.
 
-        Note:
-            Phase 2D: Now expects world coordinates. Callers must use
-            screen_to_world() before calling this method.
+        Selection semantics are unchanged: only the CURRENT player's garrison is
+        ever returned. Other players' banners are hoverable but not clickable.
 
-            For single garrison: Click area includes circle + flag above center
-            For multi-garrison: Each garrison has its own flag position and click area
+        Why circles are tested before banners ('both'):
+            At minimum zoom a banner is ~30 world units tall while sibling flags
+            sit on a radius-25 ring, so a banner routinely overlaps a NEIGHBOURING
+            territory's circle. Testing every circle before any banner keeps
+            "click the ring you can actually see" working.
         """
         x, y = pos
 
-        # Calculate click dimensions in world space that match visual size
+        # Click radius in world space that matches the drawn circle size
         ui_scale = self.get_ui_scale_factor()
         click_radius_world = (ARMY_CIRCLE_RADIUS * ui_scale) / self.camera_zoom
+        click_radius_sq = click_radius_world * click_radius_world
 
-        # Flag extends upward - calculate flag height in world space
-        flag_height_world = (ARMY_CIRCLE_RADIUS * 3.3 * ui_scale) / self.camera_zoom
+        current_player = self.game_state.current_player
 
-        # Check all territory centers (scaled_centers are in world coordinates)
+        # PERFORMANCE: index inbound animations once instead of rescanning the
+        # full animation list inside the per-territory loop (was O(T*A)).
+        incoming_by_territory = {}
+        for anim in self.game_state.active_animations:
+            if anim.to_territory not in incoming_by_territory:
+                incoming_by_territory[anim.to_territory] = set()
+            incoming_by_territory[anim.to_territory].add(anim.player)
+
+        banner_hit = None
+
+        # Single traversal, but circles resolve immediately while banners are
+        # deferred until the loop ends - that makes it a true global two-pass.
         for territory, (cx, cy) in self.scaled_centers.items():
-            # Check if current player has a garrison here (not just ownership)
             garrisons = self.game_state.territory_garrisons.get(territory, {})
-            if self.game_state.current_player not in garrisons:
+            if current_player not in garrisons:
                 continue
 
-            player_garrison = garrisons[self.game_state.current_player]
-            garrison_armies = player_garrison.get('unmoved', 0) + player_garrison.get('moved', 0)
-            if garrison_armies <= 0:
+            num_garrisons = self.get_effective_garrison_count(
+                territory, garrisons, incoming_by_territory.get(territory, set())
+            )
+
+            anchor = self.get_garrison_anchor(territory, cx, cy, current_player,
+                                              num_garrisons)
+            if anchor is None:
                 continue
+            anchor_x, anchor_y, army_count = anchor
 
-            # Check if this is a multi-garrison territory
-            # Count only non-empty garrisons for positioning
-            num_garrisons = sum(1 for g in garrisons.values() if g.get('unmoved', 0) + g.get('moved', 0) > 0)
+            if mode in ('circle', 'both'):
+                distance_sq = (x - anchor_x) ** 2 + (y - anchor_y) ** 2
+                if distance_sq <= click_radius_sq:
+                    return (territory, current_player)
 
-            # IMPORTANT: Check if there are incoming animations to this territory
-            # If so, use the FUTURE garrison count (after arrivals) for click detection
-            # This keeps click positions synchronized with visual flag positions
-            incoming_players = set()
-            for anim in self.game_state.active_animations:
-                if anim.to_territory == territory:
-                    incoming_players.add(anim.player)
+            if mode in ('banner', 'both'):
+                if self.point_in_army_banner(x, y, anchor_x, anchor_y,
+                                             current_player, army_count):
+                    # Keep the LAST match, not the first: the renderer iterates
+                    # scaled_centers in this same order, so a later territory is
+                    # drawn on top - last match is the topmost banner.
+                    banner_hit = (territory, current_player)
 
-            if incoming_players:
-                # Calculate future garrison count (current + incoming)
-                future_garrisons = set()
-                for player_index, garrison in garrisons.items():
-                    if garrison.get('unmoved', 0) + garrison.get('moved', 0) > 0:
-                        future_garrisons.add(player_index)
-                future_garrisons.update(incoming_players)
-                num_garrisons = len(future_garrisons)
-
-            if num_garrisons > 1:
-                # Multi-garrison: Check flag positions for current player's garrison
-                flag_positions = self.game_state.get_flag_positions_for_territory(
-                    territory, cx, cy, num_garrisons
-                )
-
-                # Assign positions to existing garrisons first
-                for player_index in sorted(garrisons.keys()):
-                    g = garrisons[player_index]
-                    if g.get('unmoved', 0) + g.get('moved', 0) > 0:
-                        self.game_state.assign_garrison_position(territory, player_index, num_garrisons)
-
-                # Get assigned position index for current player's garrison
-                garrison_index = self.game_state.assign_garrison_position(territory, self.game_state.current_player, num_garrisons)
-
-                # Get flag position for current player's garrison (world coords)
-                if garrison_index < len(flag_positions):
-                    flag_cx, flag_cy = flag_positions[garrison_index]
-
-                    # Check circular area around this garrison's flag position
-                    distance = ((x - flag_cx) ** 2 + (y - flag_cy) ** 2) ** 0.5
-                    if distance <= click_radius_world:
-                        return (territory, self.game_state.current_player)
-
-                    # Check rectangular flag area for this garrison
-                    flag_width_world = click_radius_world * 2
-                    flag_left = flag_cx - flag_width_world / 2
-                    flag_right = flag_cx + flag_width_world / 2
-                    flag_top = flag_cy - flag_height_world / 2
-                    flag_bottom = flag_cy
-
-                    if flag_left <= x <= flag_right and flag_top <= y <= flag_bottom:
-                        return (territory, self.game_state.current_player)
-            else:
-                # Single garrison: Check main territory center
-                # Check 1: Circular area (the circle itself)
-                distance = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
-                if distance <= click_radius_world:
-                    return (territory, self.game_state.current_player)
-
-                # Check 2: Rectangular area for flag (extends upward from circle)
-                flag_width_world = click_radius_world * 2
-                flag_left = cx - flag_width_world / 2
-                flag_right = cx + flag_width_world / 2
-                flag_top = cy - flag_height_world / 2
-                flag_bottom = cy
-
-                if flag_left <= x <= flag_right and flag_top <= y <= flag_bottom:
-                    return (territory, self.game_state.current_player)
-
-        return None
+        return banner_hit
     
     def get_plot_at_pos(self, pos):
         """
@@ -4046,6 +4008,217 @@ class Game:
             return 2
         else:
             return 3
+
+    # ============================================================
+    # ARMY BANNER GEOMETRY - SINGLE SOURCE OF TRUTH
+    # ============================================================
+    # The banner (flag) drawn above an army circle is a first-class click/hover
+    # target, not just decoration. Three separate passes need its geometry:
+    #   - click  : get_army_at_pos()            (world space)
+    #   - hover  : handle_mouse_motion()        (world space)
+    #   - render : MapRenderer.draw_territories() (screen space)
+    # These used to each recompute it independently and DISAGREED - the click box
+    # was only half the banner's height, so the flag cloth was unclickable, and
+    # hover ignored the banner entirely. Everything now routes through the helpers
+    # below so the three passes cannot drift apart again.
+
+    def get_army_flag_aspect(self, player_index, army_count):
+        """
+        Get width/height ratio of the SOURCE flag art for a garrison.
+
+        Args:
+            player_index: Garrison owner (-1 for neutral)
+            army_count: Garrison size (selects flag tier 1/2/3 - tiers have
+                        different aspect ratios, so this matters)
+
+        Returns:
+            float aspect ratio, or None if this garrison has no flag art.
+
+        None is meaningful: the renderer falls back to drawing a plain army-count
+        number instead of a banner (different footprint), so callers must NOT
+        hit-test a banner in that case.
+
+        NOT memoised on purpose - campaign missions hot-swap army_flag_icons
+        entries at runtime (see campaign_mission_2.py), and two Surface attribute
+        reads are cheaper than a correct cache-invalidation scheme.
+        """
+        tier = self.get_army_flag_tier(army_count)
+        icon = self.army_flag_icons.get(player_index, {}).get(tier)
+        if icon is None:
+            return None
+        height = icon.get_height()
+        if height <= 0:
+            return DEFAULT_ARMY_FLAG_ASPECT
+        return icon.get_width() / height
+
+    def get_army_banner_rect(self, center_x, center_y, player_index, army_count,
+                             space='world'):
+        """
+        Get the geometry of the army banner drawn above an army circle.
+
+        The banner is blitted with its pole base at (center_x, center_y) and
+        extends UPWARD by its full height. Width comes from the source art's
+        aspect ratio, NOT from the circle radius.
+
+        Args:
+            center_x, center_y: Garrison anchor in `space` coordinates. This is the
+                territory center for a single garrison, or flag_positions[idx] for
+                one of several garrisons in an allied-reinforced territory.
+            player_index: Garrison owner (-1 for neutral) - selects the art
+            army_count: Garrison size - selects the flag tier
+            space: 'world' for hit-testing (scaled_centers / flag_positions are in
+                   world coords), 'screen' for rendering (world_to_screen output).
+                   world_to_screen is a uniform scale+offset, so an axis-aligned
+                   world rect maps exactly to an axis-aligned screen rect - one
+                   primitive serves both spaces via a single division.
+
+        Returns:
+            (left, top, width, height) as floats, or None if no flag art exists.
+            top == center_y - height, bottom == center_y.
+
+        Returns a plain tuple rather than a pygame.Rect because Rect coerces its
+        values to int, and world coordinates are fractional.
+        """
+        aspect = self.get_army_flag_aspect(player_index, army_count)
+        if aspect is None:
+            return None
+
+        height = ARMY_CIRCLE_RADIUS * self.get_ui_scale_factor() * ARMY_FLAG_HEIGHT_RATIO
+        width = height * aspect
+
+        if space == 'world':
+            # Convert screen-pixel size back into world units so the hit box
+            # tracks the drawn banner at every zoom level.
+            inv_zoom = 1.0 / self.camera_zoom
+            height *= inv_zoom
+            width *= inv_zoom
+
+        return (center_x - width / 2.0, center_y - height, width, height)
+
+    def point_in_army_banner(self, px, py, center_x, center_y, player_index,
+                             army_count, space='world'):
+        """
+        Check whether a point falls inside a garrison's banner.
+
+        The point and the anchor must be expressed in the SAME space.
+        Returns False when the garrison has no banner art (nothing was drawn).
+        """
+        rect = self.get_army_banner_rect(center_x, center_y, player_index,
+                                         army_count, space)
+        if rect is None:
+            return False
+        left, top, width, height = rect
+        return left <= px <= left + width and top <= py <= top + height
+
+    def get_effective_garrison_count(self, territory, garrisons=None,
+                                     incoming_players=None):
+        """
+        Get the number of flag SLOTS a territory uses for its garrison layout.
+
+        MUST match the renderer exactly, or hit boxes land where no flag is drawn.
+        This logic used to be copy-pasted into the click path, the hover path and
+        the renderer - and the click copy was missing the allied-reinforcement
+        rule, which made a garrison briefly unclickable mid-animation.
+
+        Rules, in order:
+          1. Count garrisons that actually have armies.
+          2. Widen the count to include in-flight arrivals, so flags don't "jump"
+             when a movement animation lands.
+          3. Allied-reinforcement rule: an OWNED territory whose only future
+             garrison is not the owner uses the 2-slot layout, to match where the
+             animation is flying to.
+
+        Args:
+            territory: Territory name
+            garrisons: Optional pre-fetched garrison dict (avoids a re-lookup)
+            incoming_players: Optional pre-built set of inbound players, for
+                callers that already indexed active_animations by destination
+                (the renderer does this once per frame).
+        """
+        if garrisons is None:
+            garrisons = self.game_state.territory_garrisons.get(territory, {})
+
+        present = {p for p, g in garrisons.items()
+                   if g.get('unmoved', 0) + g.get('moved', 0) > 0}
+        num_garrisons = len(present)
+
+        if incoming_players is None:
+            incoming_players = {anim.player for anim in self.game_state.active_animations
+                                if anim.to_territory == territory}
+
+        if incoming_players:
+            future_garrisons = present | incoming_players
+            num_garrisons = len(future_garrisons)
+
+            # Allied reinforcement: use the 2-position layout so the static flag
+            # sits where the incoming animation is headed.
+            owner = self.game_state.territory_owners.get(territory, -1)
+            if owner >= 0 and num_garrisons == 1:
+                if next(iter(future_garrisons)) != owner:
+                    num_garrisons = 2
+
+        return num_garrisons
+
+    def get_garrison_anchor(self, territory, center_x, center_y, player_index,
+                            num_garrisons=None):
+        """
+        Get the world-space anchor (flag-pole base / circle center) for ONE
+        player's garrison in a territory.
+
+        Collapses the single-garrison and multi-garrison branches that the click,
+        hover and render paths each used to open-code.
+
+        Args:
+            territory: Territory name
+            center_x, center_y: Territory center in world coords (scaled_centers)
+            player_index: Which garrison to locate
+            num_garrisons: Optional pre-computed slot count from
+                get_effective_garrison_count() (avoids recomputing per garrison)
+
+        Returns:
+            (x, y, army_count) in world coords, or None if this player has no
+            armies in this territory.
+
+        NOTE: calls assign_garrison_position(), which mutates
+        game_state.garrison_positions. That is pre-existing behaviour of both
+        hit-test paths and is preserved deliberately - slot assignment must be
+        identical across click, hover and render or the flags shuffle.
+        """
+        garrisons = self.game_state.territory_garrisons.get(territory, {})
+        garrison = garrisons.get(player_index)
+        if not garrison:
+            return None
+
+        army_count = garrison.get('unmoved', 0) + garrison.get('moved', 0)
+        if army_count <= 0:
+            return None
+
+        if num_garrisons is None:
+            num_garrisons = self.get_effective_garrison_count(territory, garrisons)
+
+        if num_garrisons <= 1:
+            return (center_x, center_y, army_count)
+
+        flag_positions = self.game_state.get_flag_positions_for_territory(
+            territory, center_x, center_y, num_garrisons
+        )
+
+        # Assign slots for EVERY live garrison before reading one index, so the
+        # indices are stable and match the renderer's assignment order.
+        for other_player in sorted(garrisons.keys()):
+            other = garrisons[other_player]
+            if other.get('unmoved', 0) + other.get('moved', 0) > 0:
+                self.game_state.assign_garrison_position(territory, other_player,
+                                                         num_garrisons)
+
+        garrison_index = self.game_state.assign_garrison_position(
+            territory, player_index, num_garrisons
+        )
+        if garrison_index >= len(flag_positions):
+            return (center_x, center_y, army_count)
+
+        flag_x, flag_y = flag_positions[garrison_index]
+        return (flag_x, flag_y, army_count)
 
     def trigger_click_flash(self, element_type, identifier):
         """
@@ -5567,6 +5740,55 @@ class Game:
     # PHASE 4: EXTRACTED PLOT RENDERING METHODS
     # ========================================
     
+    def _select_army_garrison(self, army_result):
+        """
+        Open the army composition UI for a garrison that was just clicked.
+
+        Extracted so the circle hit-test (PRIORITY 3) and the banner hit-test
+        (PRIORITY 4.5) share one body instead of duplicating it.
+
+        Args:
+            army_result: (territory, player_index) from get_army_at_pos(), or a
+                         bare territory name for backward compatibility.
+        """
+        # Unpack territory and player from result
+        if isinstance(army_result, tuple):
+            army_territory, army_player = army_result
+        else:
+            # Backward compatibility - shouldn't happen with new code
+            army_territory = army_result
+            army_player = self.game_state.current_player
+
+        # Clear any stale plot/barracks selections that might interfere
+        # (This fixes the bug where after battles, clicking armies doesn't work until you click a plot)
+        self.selected_plot = None
+        self.selected_barracks = None
+        self.selected_keep = None
+        self.selected_territory_info = None
+
+        # Trigger click flash for visual feedback
+        self.trigger_click_flash('army', army_territory)
+
+        # Open army composition UI
+        self.show_army_composition = True
+        self.army_composition_territory = army_territory
+        self.army_composition_player = army_player  # Track which player's garrison
+        # Auto-select all ready units when opening composition UI
+        player = army_player if army_player is not None else self.game_state.current_player
+        garrison = self.game_state.territory_garrisons.get(army_territory, {}).get(player)
+        if garrison:
+            units = garrison.get('units', [])
+            self.selected_army_units = [u['id'] for u in units if u['status'] == 'ready']
+        else:
+            self.selected_army_units = []
+
+        # Play random army composition sound when opening the UI
+        self.sound_manager.play_random('armycomp')
+
+        # Deselect other UI elements
+        self.game_state.deselect_army()
+        self.selected_hero = None  # Deselect hero
+
     def handle_map_area_click(self, pos):
         """
         Handle mouse click on map area (Phase 2A extraction, Phase 2D camera update).
@@ -5895,48 +6117,15 @@ class Game:
 
         # PRIORITY 2B: Hero training icons removed - use Keep UI only
 
-        # PRIORITY 3: Check if clicking on an army number circle (opens composition UI)
+        # PRIORITY 3: Check if clicking on an army CIRCLE (opens composition UI)
         # NOTE: Army check comes AFTER icon checks so icons take precedence when overlapping
+        # Circles only here - banners are checked at PRIORITY 4.5, AFTER plots, because
+        # the banner's full-height hit box overlaps building plots (including through the
+        # flag art's transparent margins) and would otherwise steal plot clicks.
         if self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning':
-            army_result = self.get_army_at_pos(world_pos)
+            army_result = self.get_army_at_pos(world_pos, mode='circle')
             if army_result:
-                # Unpack territory and player from result
-                if isinstance(army_result, tuple):
-                    army_territory, army_player = army_result
-                else:
-                    # Backward compatibility - shouldn't happen with new code
-                    army_territory = army_result
-                    army_player = self.game_state.current_player
-
-                # Clear any stale plot/barracks selections that might interfere
-                # (This fixes the bug where after battles, clicking armies doesn't work until you click a plot)
-                self.selected_plot = None
-                self.selected_barracks = None
-                self.selected_keep = None
-                self.selected_territory_info = None
-
-                # Trigger click flash for visual feedback
-                self.trigger_click_flash('army', army_territory)
-
-                # Open army composition UI
-                self.show_army_composition = True
-                self.army_composition_territory = army_territory
-                self.army_composition_player = army_player  # NEW: Track which player's garrison
-                # Auto-select all ready units when opening composition UI
-                player = army_player if army_player is not None else self.game_state.current_player
-                garrison = self.game_state.territory_garrisons.get(army_territory, {}).get(player)
-                if garrison:
-                    units = garrison.get('units', [])
-                    self.selected_army_units = [u['id'] for u in units if u['status'] == 'ready']
-                else:
-                    self.selected_army_units = []
-
-                # Play random army composition sound when opening the UI
-                self.sound_manager.play_random('armycomp')
-
-                # Deselect other UI elements
-                self.game_state.deselect_army()
-                self.selected_hero = None  # Deselect hero
+                self._select_army_garrison(army_result)
                 return  # Don't process other click handling
         
         # PRIORITY 4: Check if clicking on a plot
@@ -6014,6 +6203,15 @@ class Game:
                         play_structure_sound('Construction')
                 return
         
+        # PRIORITY 4.5: Check if clicking on an army BANNER (opens composition UI)
+        # Runs after plots so plot clicking keeps its existing behaviour exactly,
+        # while the banner remains clickable everywhere a plot is not.
+        if self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning':
+            army_result = self.get_army_at_pos(world_pos, mode='banner')
+            if army_result:
+                self._select_army_garrison(army_result)
+                return  # Don't process other click handling
+
         # Not clicking on a plot - handle territory click
         territory = self.get_territory_at_pos(world_pos)
         # Tutorial hook: filter out non-interactive territories
@@ -14211,70 +14409,69 @@ class Game:
         if in_map_area:
             # Check if hovering over an army first (takes priority over territory)
             # NOTE: scaled_centers are in WORLD coordinates, so compare with world_pos!
-            army_at_pos = None
+            # Two-pass, mirroring get_army_at_pos(): a visible circle always beats a
+            # banner from a neighbouring territory that happens to overlap it.
+            # Unlike clicking, hover considers EVERY garrison regardless of owner,
+            # so allied/enemy stacks highlight too (existing behaviour, preserved).
+            hover_radius_sq = army_hover_radius_world * army_hover_radius_world
+
+            # PERFORMANCE: index inbound animations once instead of rescanning the
+            # animation list per territory (was O(T*A)).
+            incoming_by_territory = {}
+            for anim in self.game_state.active_animations:
+                if anim.to_territory not in incoming_by_territory:
+                    incoming_by_territory[anim.to_territory] = set()
+                incoming_by_territory[anim.to_territory].add(anim.player)
+
+            army_circle_hit = None
+            army_banner_hit = None
             for territory, (cx, cy) in self.scaled_centers.items():
-                total_armies = self.game_state.get_territory_total_armies(territory)
-                if total_armies <= 0:
+                if self.game_state.get_territory_total_armies(territory) <= 0:
                     continue
 
-                # Check for multi-garrison territories - need to check flag positions
                 garrisons = self.game_state.territory_garrisons.get(territory, {})
-                num_garrisons = sum(1 for g in garrisons.values() if g.get('unmoved', 0) + g.get('moved', 0) > 0)
+                num_garrisons = self.get_effective_garrison_count(
+                    territory, garrisons, incoming_by_territory.get(territory, set())
+                )
 
-                # Check for incoming animations (adjust garrison count)
-                incoming_players = set()
-                for anim in self.game_state.active_animations:
-                    if anim.to_territory == territory:
-                        incoming_players.add(anim.player)
+                # Multi-garrison (allied reinforcement): every garrison gets its own
+                # circle + banner, so test them all.
+                for player_index in sorted(garrisons.keys()):
+                    anchor = self.get_garrison_anchor(territory, cx, cy, player_index,
+                                                      num_garrisons)
+                    if anchor is None:
+                        continue
+                    anchor_x, anchor_y, army_count = anchor
 
-                if incoming_players:
-                    future_garrisons = set()
-                    for player_index, garrison in garrisons.items():
-                        if garrison.get('unmoved', 0) + garrison.get('moved', 0) > 0:
-                            future_garrisons.add(player_index)
-                    future_garrisons.update(incoming_players)
-                    num_garrisons = len(future_garrisons)
-
-                    # For allied territories with incoming reinforcements
-                    owner = self.game_state.territory_owners.get(territory, -1)
-                    if owner >= 0 and num_garrisons == 1:
-                        single_garrison_player = list(future_garrisons)[0]
-                        if single_garrison_player != owner:
-                            num_garrisons = 2
-
-                if num_garrisons > 1:
-                    # Multi-garrison: Check each garrison's flag position
-                    flag_positions = self.game_state.get_flag_positions_for_territory(territory, cx, cy, num_garrisons)
-
-                    # Assign positions to all garrisons
-                    for player_index in sorted(garrisons.keys()):
-                        g = garrisons[player_index]
-                        if g.get('unmoved', 0) + g.get('moved', 0) > 0:
-                            self.game_state.assign_garrison_position(territory, player_index, num_garrisons)
-
-                    # Check hover over any garrison's flag position
-                    for player_index in sorted(garrisons.keys()):
-                        g = garrisons[player_index]
-                        if g.get('unmoved', 0) + g.get('moved', 0) <= 0:
-                            continue
-
-                        garrison_index = self.game_state.assign_garrison_position(territory, player_index, num_garrisons)
-                        if garrison_index < len(flag_positions):
-                            flag_cx, flag_cy = flag_positions[garrison_index]
-                            distance = ((world_pos[0] - flag_cx) ** 2 + (world_pos[1] - flag_cy) ** 2) ** 0.5
-                            if distance <= army_hover_radius_world:
-                                army_at_pos = territory
-                                break
-
-                    if army_at_pos:
+                    distance_sq = ((world_pos[0] - anchor_x) ** 2 +
+                                   (world_pos[1] - anchor_y) ** 2)
+                    if distance_sq <= hover_radius_sq:
+                        army_circle_hit = territory
                         break
-                else:
-                    # Single garrison: Check territory center
-                    distance = ((world_pos[0] - cx) ** 2 + (world_pos[1] - cy) ** 2) ** 0.5
-                    if distance <= army_hover_radius_world:
-                        army_at_pos = territory
-                        break
-            
+
+                    if self.point_in_army_banner(world_pos[0], world_pos[1],
+                                                 anchor_x, anchor_y,
+                                                 player_index, army_count):
+                        # Keep the LAST match: later = drawn on top = topmost banner
+                        army_banner_hit = territory
+
+                if army_circle_hit:
+                    break
+
+            # Check if hovering over a plot (takes priority over territory for tooltips)
+            # HOISTED above the army resolution so hover mirrors the click priority
+            # exactly: circle > plot > banner. get_plot_at_pos only scans the current
+            # player's territories while playing, so this is cheap and side-effect free.
+            plot_at_pos = self.get_plot_at_pos(world_pos)
+
+            # Resolve which army (if any) the cursor is on, using the click precedence
+            if army_circle_hit:
+                army_at_pos = army_circle_hit   # a visible circle beats a plot
+            elif plot_at_pos:
+                army_at_pos = None              # a plot beats a banner
+            else:
+                army_at_pos = army_banner_hit
+
             # Get territory at current position (if not over army)
             # get_territory_at_pos also needs to work with camera - we'll update it separately
             territory_at_pos = None
@@ -14286,9 +14483,6 @@ class Game:
                         and not self.tutorial_mission.is_territory_interactive(territory_at_pos)):
                     territory_at_pos = None
 
-            # Check if hovering over a plot (takes priority over territory for tooltips)
-            plot_at_pos = self.get_plot_at_pos(world_pos)
-            
             # Check if hovering over map button (building or training icon)
             hovering_map_button = (self.hover_target_button and
                                   self.hover_target_button[0] in ['map_building', 'map_training'])
@@ -14299,9 +14493,12 @@ class Game:
             # INSTANT HIGHLIGHTS (no delay)
             # Suppress territory glow when hovering over map buttons OR plots OR alliance popup is open
             alliance_popup_open = getattr(self, 'alliance_choice_popup_visible', False)
-            if not hovering_map_button and not hovering_resolve_btn and not plot_at_pos and not alliance_popup_open:
+            if not hovering_map_button and not hovering_resolve_btn and not alliance_popup_open:
+                # Army-vs-plot precedence is already resolved above (circle > plot >
+                # banner), so do NOT re-suppress the army highlight on plot_at_pos here.
+                # That used to kill the highlight even where a click WOULD select the army.
                 self.hovered_army = army_at_pos
-                if not self.hovered_army:
+                if not self.hovered_army and not plot_at_pos:
                     self.hovered_territory = territory_at_pos
                 else:
                     self.hovered_territory = None

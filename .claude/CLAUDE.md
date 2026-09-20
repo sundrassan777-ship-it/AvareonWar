@@ -398,6 +398,7 @@ After making code changes, ask yourself:
 - Add visual effect → `ui/effects/` directory
 - Change floating chat notifications → `ui/effects/chat_notification_effect.py`
 - Modify camera/zoom → `input/camera_handler.py`
+- Modify army/banner selection or hover → `main.py` `get_army_banner_rect()` / `get_army_at_pos()` / `handle_mouse_motion()` + `rendering/map_renderer.py` (all three must share the helpers)
 - Add territory → Use `Polygon_Tool.py`, `Economic_Tool.py`, `Plot_Tool.py` (use `--map <map_id>` for non-default maps)
 - Add/modify map → `maps/manifest.json` (registry), `maps/<map_id>/` (data files), `map_data.py` (loader)
 - Fortress territories → `maps/<map_id>/fortress_territories.json`, `map_data.is_fortress_territory()`, `game_state/military.py` (defense), `game_state/buildings.py` (Keep restriction)

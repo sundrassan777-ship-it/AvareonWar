@@ -721,6 +721,58 @@ WINDOW_HEIGHT = 1080
 | `draw_map()` | Delegates to MapRenderer | Search |
 | `draw_ui()` | Delegates to UIRenderer | Search |
 | `update()` | Update animations, effects | Search |
+| `get_army_banner_rect()` | **Banner geometry - single source of truth** | Search |
+| `get_effective_garrison_count()` | Flag slot count (must match renderer) | Search |
+| `get_garrison_anchor()` | One garrison's circle/banner anchor | Search |
+| `get_army_at_pos()` | Army hit-test (`mode='circle'/'banner'/'both'`) | Search |
+
+### Army selection: circles AND banners
+
+**The banner (flag) above an army circle is a first-class click/hover target, not
+decoration.** Three passes need its geometry and they must agree:
+
+| Pass | Where |
+|------|-------|
+| Click | `Game.get_army_at_pos()` (world space) |
+| Hover state | `Game.handle_mouse_motion()` (world space) |
+| Render + ring brightening | `MapRenderer.draw_territories()` (screen space) |
+
+**All three MUST go through the shared helpers** - `get_army_banner_rect()`,
+`get_effective_garrison_count()`, `get_garrison_anchor()`. They used to open-code the
+geometry separately and drifted: the click box was only half the banner's height (so the
+flag cloth was unclickable), hover ignored the banner entirely, and the click path was
+missing the allied-reinforcement slot rule the other two had.
+
+**Banner geometry:** height = `ARMY_CIRCLE_RADIUS * ui_scale * ARMY_FLAG_HEIGHT_RATIO`
+(both in `config/constants.py`), width from the source PNG's aspect ratio. The pole base
+sits ON the circle anchor and the banner hangs UPWARD: `top = anchor_y - height`,
+`bottom = anchor_y`. Never inline the ratio again.
+
+**Click priority is circle > plot > banner**, split across `handle_map_area_click()`:
+
+- PRIORITY 3 - `get_army_at_pos(world_pos, mode='circle')`
+- PRIORITY 4 - `get_plot_at_pos()`
+- PRIORITY 4.5 - `get_army_at_pos(world_pos, mode='banner')`
+
+The banner's full-height box overlaps building plots, including through the flag art's
+large transparent margins, so testing banners before plots would silently steal plot
+clicks. `handle_mouse_motion()` mirrors this ordering exactly, so anywhere the ring
+brightens, a click selects.
+
+Within `mode='both'`, **every** circle is tested before **any** banner: at minimum zoom a
+banner is ~30 world units tall while sibling flags sit on a radius-25 ring, so a banner
+routinely covers a neighbouring territory's circle. The banner pass keeps the **last**
+match, because the renderer iterates `scaled_centers` in the same order - last = drawn on
+top.
+
+**Multi-garrison (allied reinforcement):** each garrison gets its own circle AND banner at
+its own `get_flag_positions_for_territory()` slot. Hover highlights any garrison's banner;
+clicking still only ever selects the current player's garrison.
+
+**When adding a hit target near armies:** derive its rect from a shared helper and add it
+to all three passes, or it will drift the same way.
+
+Tests: `tests/test_army_banner_selection.py`
 
 ---
 
