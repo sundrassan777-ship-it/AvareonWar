@@ -31,6 +31,7 @@ import math
 
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
+from display_utils import menu_frame_cap
 logger = get_logger(__name__)
 
 
@@ -295,7 +296,7 @@ class CutscenePlayer:
         self._global_elapsed = 0.0
 
         while not self._done:
-            dt = self.clock.tick(60) / 1000.0  # Delta time in seconds
+            dt = self.clock.tick(menu_frame_cap()) / 1000.0  # Delta time in seconds
             # Cap delta time to prevent large jumps (e.g. window drag on Windows)
             dt = min(dt, 0.1)
 

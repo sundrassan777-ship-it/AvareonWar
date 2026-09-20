@@ -16,7 +16,7 @@ The main menu is the entry point for the game, showing buttons for:
 
 import pygame
 import sys
-from config.constants import WHITE, BLACK, GRAY, DARK_GRAY, GAME_VERSION
+from config.constants import WHITE, BLACK, GRAY, DARK_GRAY, GAME_VERSION, FPS_LIMIT_OPTIONS
 from utils.colors import lighten_color, brighten_color
 from settings_manager import settings
 from global_sound import sound_manager  # Global sound manager for UI clicks
@@ -25,6 +25,7 @@ from achievement_panel import AchievementPanel
 from steam_integration import steam_manager
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
+from display_utils import menu_frame_cap
 
 logger = get_logger(__name__)
 
@@ -116,6 +117,8 @@ class MainMenu:
         # Temporary settings (not saved until Apply is clicked)
         self.temp_resolution = settings.get_resolution()
         self.temp_fullscreen = settings.is_fullscreen()
+        self.temp_vsync = settings.get('vsync', False)
+        self.temp_fps_limit = settings.get('fps_limit', 0)
         self.temp_edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
         self.temp_tooltips_enabled = settings.get('tooltips_enabled', True)
         self.temp_show_fps = settings.get('show_fps', False)
@@ -515,7 +518,7 @@ class MainMenu:
     def run(self):
         """Main menu loop - returns action to take"""
         while self.result is None:
-            dt = self.clock.tick(60) / 1000.0
+            dt = self.clock.tick(menu_frame_cap()) / 1000.0
 
             # Animate options panel
             self._update_options_animation(dt)
@@ -846,6 +849,22 @@ class MainMenu:
                 self.temp_fullscreen = not self.temp_fullscreen
                 return
 
+            # VSync checkbox
+            if 'vsync_checkbox' in self.options_ui_elements and self.options_ui_elements['vsync_checkbox']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                self.temp_vsync = not self.temp_vsync
+                return
+
+            # FPS limit (click-to-cycle through FPS_LIMIT_OPTIONS)
+            if 'fps_limit_dropdown' in self.options_ui_elements and self.options_ui_elements['fps_limit_dropdown']['rect'].collidepoint(pos):
+                sound_manager.play_ui_click()
+                try:
+                    idx = FPS_LIMIT_OPTIONS.index(self.temp_fps_limit)
+                except ValueError:
+                    idx = 0
+                self.temp_fps_limit = FPS_LIMIT_OPTIONS[(idx + 1) % len(FPS_LIMIT_OPTIONS)]
+                return
+
             # Edge scrolling checkbox
             if 'edge_scrolling_checkbox' in self.options_ui_elements and self.options_ui_elements['edge_scrolling_checkbox']['rect'].collidepoint(pos):
                 sound_manager.play_ui_click()
@@ -1010,6 +1029,8 @@ class MainMenu:
         # Reset temporary settings to current settings
         self.temp_resolution = settings.get_resolution()
         self.temp_fullscreen = settings.is_fullscreen()
+        self.temp_vsync = settings.get('vsync', False)
+        self.temp_fps_limit = settings.get('fps_limit', 0)
         self.temp_edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
         self.temp_tooltips_enabled = settings.get('tooltips_enabled', True)
         self.temp_show_fps = settings.get('show_fps', False)
@@ -1092,9 +1113,12 @@ class MainMenu:
         # Check if display settings changed
         old_resolution = settings.get_resolution()
         old_fullscreen = settings.is_fullscreen()
+        old_vsync = settings.get('vsync', False)
 
         settings.set_resolution(self.temp_resolution[0], self.temp_resolution[1])
         settings.set_fullscreen(self.temp_fullscreen)
+        settings.set('vsync', self.temp_vsync)
+        settings.set('fps_limit', self.temp_fps_limit)
         settings.set('edge_scrolling_enabled', self.temp_edge_scrolling_enabled)
         settings.set('tooltips_enabled', self.temp_tooltips_enabled)
         settings.set('show_fps', self.temp_show_fps)
@@ -1116,7 +1140,10 @@ class MainMenu:
         logger.info("Settings applied and saved")
 
         # If display settings changed, trigger window recreation
-        if old_resolution != self.temp_resolution or old_fullscreen != self.temp_fullscreen:
+        # VSync is included: it requires pygame.SCALED and a fresh display, so it
+        # cannot be toggled on the existing surface.
+        if (old_resolution != self.temp_resolution or old_fullscreen != self.temp_fullscreen
+                or old_vsync != self.temp_vsync):
             logger.info("Display settings changed - recreating window...")
             self.result = 'recreate_window'
 
@@ -1128,6 +1155,8 @@ class MainMenu:
         # Reset all temp settings to defaults
         self.temp_resolution = default_resolution
         self.temp_fullscreen = True
+        self.temp_vsync = False   # opt-in, matches settings defaults
+        self.temp_fps_limit = 0   # no manual cap
         self.temp_edge_scrolling_enabled = True
         self.temp_tooltips_enabled = True
         self.temp_show_fps = False
@@ -1367,6 +1396,44 @@ class MainMenu:
                            (checkbox_rect.centerx, checkbox_rect.bottom - 8),
                            (checkbox_rect.right - 6, checkbox_rect.top + 6), 3)
         self.options_ui_elements['fullscreen_checkbox'] = {'rect': checkbox_rect}
+        y += int(40 * self.ui_scale)
+
+        # VSync checkbox
+        label_text = label_font.render("VSync:", True, WHITE)
+        self.screen.blit(label_text, (content_x + label_x_offset, y))
+        vsync_rect = pygame.Rect(checkbox_x, y - 5, checkbox_size, checkbox_size)
+        is_hovered = (self.hovered_option_element == 'vsync_checkbox')
+        bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
+        pygame.draw.rect(self.screen, bg_color, vsync_rect, border_radius=5)
+        pygame.draw.rect(self.screen, (100, 100, 100), vsync_rect, 2, border_radius=5)
+        if self.temp_vsync:
+            pygame.draw.line(self.screen, WHITE,
+                           (vsync_rect.left + 6, vsync_rect.centery),
+                           (vsync_rect.centerx, vsync_rect.bottom - 8), 3)
+            pygame.draw.line(self.screen, WHITE,
+                           (vsync_rect.centerx, vsync_rect.bottom - 8),
+                           (vsync_rect.right - 6, vsync_rect.top + 6), 3)
+        self.options_ui_elements['vsync_checkbox'] = {'rect': vsync_rect}
+        y += int(40 * self.ui_scale)
+
+        # FPS limit cycle button. Shown as "VSync" when VSync is on, since the
+        # monitor paces frames then and the manual cap does not apply.
+        label_text = label_font.render("FPS Limit:", True, WHITE)
+        self.screen.blit(label_text, (content_x + label_x_offset, y))
+        fps_rect = pygame.Rect(dropdown_x, y - 5, dropdown_width, dropdown_height)
+        is_hovered = (self.hovered_option_element == 'fps_limit_dropdown')
+        bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
+        pygame.draw.rect(self.screen, bg_color, fps_rect, border_radius=5)
+        pygame.draw.rect(self.screen, (100, 100, 100), fps_rect, 2, border_radius=5)
+        if self.temp_vsync:
+            fps_value = "VSync"
+        elif self.temp_fps_limit and self.temp_fps_limit > 0:
+            fps_value = str(self.temp_fps_limit)
+        else:
+            fps_value = "Unlimited"
+        fps_surf = label_font.render(fps_value, True, WHITE)
+        self.screen.blit(fps_surf, fps_surf.get_rect(center=fps_rect.center))
+        self.options_ui_elements['fps_limit_dropdown'] = {'rect': fps_rect}
         y += int(40 * self.ui_scale)
 
         # === GAMEPLAY SECTION === (horizontal separator line)

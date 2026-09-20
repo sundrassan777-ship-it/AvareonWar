@@ -72,6 +72,7 @@ from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
 from config.font_manager import FontManager
 from steam_integration import steam_manager
+from display_utils import set_display_mode, resolve_frame_cap
 # Import sparkle version of turn announcement (can switch back to turn_announcement_effect if needed)
 from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
 from ui.effects.chat_notification_effect import ChatNotificationEffect
@@ -278,6 +279,15 @@ class Game:
         initial_width = initial_resolution[0]
         initial_height = initial_resolution[1]
 
+        # Frame pacing settings. vsync_active records what the display ACTUALLY
+        # achieved — it cannot be read back from the surface, because get_flags()
+        # does not report the SCALED bit (see display_utils).
+        self.vsync = settings.get('vsync', False)
+        self.fps_limit = settings.get('fps_limit', 0)
+        self.vsync_active = False
+        # Float frame clock for delta_time (Clock.get_time() is integer ms)
+        self._last_frame_time = time.perf_counter()
+
         # Use existing screen if provided (for seamless transitions)
         if existing_screen is not None:
             logger.info("Reusing existing screen for seamless transition")
@@ -288,21 +298,22 @@ class Game:
             current_flags = self.screen.get_flags()
             current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
 
-            # Only recreate if settings changed
+            # Only recreate if settings changed. NOTE: vsync state is deliberately
+            # not compared here — it is unreadable from the surface, and the menu
+            # that handed us this screen already created it with the right mode.
             if current_size != (initial_width, initial_height) or current_is_fullscreen != initial_fullscreen:
                 logger.info(f"Adjusting screen from {current_size} to {initial_width}x{initial_height}")
-                if initial_fullscreen:
-                    self.screen = pygame.display.set_mode((initial_width, initial_height), pygame.FULLSCREEN)
-                else:
-                    self.screen = pygame.display.set_mode((initial_width, initial_height))
+                self.screen, self.vsync_active = set_display_mode(
+                    (initial_width, initial_height), initial_fullscreen, self.vsync)
+            else:
+                # Inherited an already-correct surface; trust the saved setting.
+                self.vsync_active = self.vsync
         else:
             # Create new screen
-            if initial_fullscreen:
-                logger.info(f"Starting game in FULLSCREEN at {initial_width}x{initial_height}")
-                self.screen = pygame.display.set_mode((initial_width, initial_height), pygame.FULLSCREEN)
-            else:
-                logger.info(f"Starting game in WINDOWED at {initial_width}x{initial_height}")
-                self.screen = pygame.display.set_mode((initial_width, initial_height))
+            logger.info(f"Starting game in {'FULLSCREEN' if initial_fullscreen else 'WINDOWED'} "
+                        f"at {initial_width}x{initial_height}")
+            self.screen, self.vsync_active = set_display_mode(
+                (initial_width, initial_height), initial_fullscreen, self.vsync)
         pygame.display.set_caption("War of Avareon")
         _set_app_icon()  # Re-apply icon after display recreation
         pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
@@ -1370,6 +1381,8 @@ class Game:
         # Temporary settings (for Options menu - applied on Apply button)
         self.temp_resolution = self.current_resolution
         self.temp_fullscreen = self.is_fullscreen
+        self.temp_vsync = self.vsync
+        self.temp_fps_limit = self.fps_limit
         
         # Army Composition UI (Phase 3)
         self.show_army_composition = False  # Is composition UI visible?
@@ -4056,10 +4069,21 @@ class Game:
         self.clicked_element = (element_type, identifier)
         self.click_flash_timer = self.click_flash_duration
     
-    def apply_display_settings(self, width, height, fullscreen=False):
+    @staticmethod
+    def _cycle_fps_limit(current):
+        """Advance to the next FPS-limit option, wrapping around."""
+        try:
+            idx = FPS_LIMIT_OPTIONS.index(current)
+        except ValueError:
+            idx = 0  # Unknown/legacy value — restart from "Unlimited"
+        return FPS_LIMIT_OPTIONS[(idx + 1) % len(FPS_LIMIT_OPTIONS)]
+
+    def apply_display_settings(self, width, height, fullscreen=False, vsync=None):
         """
-        Apply new display settings (resolution and fullscreen mode).
-        
+        Apply new display settings (resolution, fullscreen mode and VSync).
+
+        `vsync=None` keeps the current setting; pass True/False to change it.
+
         IMPORTANT: In fullscreen mode, always uses native monitor resolution to prevent
         scaling/letterboxing issues. Custom resolutions only work in windowed mode.
         
@@ -4113,9 +4137,17 @@ class Game:
             # Update UIConstants with new sidebar height
             UIConstants.update_sidebar_height(new_layout['sidebar_height'])
             
-            # Recreate display surface
-            flags = pygame.FULLSCREEN if fullscreen else 0
-            self.screen = pygame.display.set_mode((actual_width, actual_height), flags)
+            # Recreate display surface.
+            # CRITICAL: route through set_display_mode so VSync survives. VSync is
+            # silently lost by ANY later set_mode() call, even one passing vsync=1
+            # again — only a display quit()/init() restores it. Since this method IS
+            # the resolution path, a plain set_mode() here would mean VSync died the
+            # first time a player changed resolution and never came back.
+            want_vsync = self.vsync if vsync is None else vsync
+            self.screen, self.vsync_active = set_display_mode(
+                (actual_width, actual_height), fullscreen, want_vsync,
+                force_reinit=(self.vsync_active and not want_vsync))
+            self.vsync = want_vsync
             _set_app_icon()  # Re-apply icon after display recreation
 
             # CRITICAL FIX: Check if pygame created a different size (happens with Windows display scaling)
@@ -4150,7 +4182,8 @@ class Game:
                     # CRITICAL: Reapply fullscreen mode to prevent dropping to windowed
                     # This ensures fullscreen persists even after display scaling adjustments
                     logger.info(f"[FIX] Reapplying fullscreen mode after scaling adjustment...")
-                    self.screen = pygame.display.set_mode((actual_width, actual_height), pygame.FULLSCREEN)
+                    self.screen, self.vsync_active = set_display_mode(
+                        (actual_width, actual_height), True, want_vsync)
                     _set_app_icon()  # Re-apply icon after fullscreen reapply
 
                     # Verify it's actually fullscreen
@@ -10421,10 +10454,19 @@ class Game:
         # Call tick() twice so get_time() has valid previous tick reference
         self.clock.tick()
         self.clock.tick()
+        # Seed the float frame clock used for delta_time (see below)
+        self._last_frame_time = time.perf_counter()
 
         while running:
             # Calculate delta time for animations
-            delta_time = self.clock.get_time() / 1000.0  # Convert milliseconds to seconds
+            # Use a float clock rather than Clock.get_time(), which returns INTEGER
+            # milliseconds. At high frame rates that quantization is severe: measured
+            # in an uncapped loop, 100% of frames reported delta_time == 0.0 and the
+            # summed delta ran at 250% of real time. Even at 1-2ms frames the error
+            # is up to 50% per frame, which visibly changes animation speed.
+            _now = time.perf_counter()
+            delta_time = _now - self._last_frame_time
+            self._last_frame_time = _now
             # Cap delta_time to prevent animation jumps on first frame or frame drops
             delta_time = min(delta_time, 0.1)  # Max 100ms per frame
 
@@ -11015,6 +11057,8 @@ class Game:
                             # Reset temp settings
                             self.temp_resolution = self.current_resolution
                             self.temp_fullscreen = self.is_fullscreen
+                            self.temp_vsync = self.vsync
+                            self.temp_fps_limit = self.fps_limit
                         elif self.game_menu_visible:
                             # Close game menu
                             self.game_menu_visible = False
@@ -11223,19 +11267,16 @@ class Game:
                 logger.info(f"   Actual:   {'FULLSCREEN' if current_is_fullscreen else 'WINDOWED'}")
                 logger.info(f"   Attempting to restore expected mode...")
 
-                # Attempt to restore the expected mode
+                # Attempt to restore the expected mode.
+                # Routed through set_display_mode so VSync is re-applied: a bare
+                # set_mode() here would silently and permanently drop SCALED/vsync
+                # mid-game, with nothing in the UI reflecting that it had gone.
                 try:
                     current_size = self.screen.get_size()
-                    if self.is_fullscreen:
-                        # Should be fullscreen but isn't - restore it
-                        self.screen = pygame.display.set_mode(current_size, pygame.FULLSCREEN)
-                        _set_app_icon()
-                        logger.info(f"[OK] Restored fullscreen mode")
-                    else:
-                        # Should be windowed but isn't - restore it
-                        self.screen = pygame.display.set_mode(current_size, 0)
-                        _set_app_icon()
-                        logger.info(f"[OK] Restored windowed mode")
+                    self.screen, self.vsync_active = set_display_mode(
+                        current_size, self.is_fullscreen, self.vsync)
+                    _set_app_icon()
+                    logger.info(f"[OK] Restored {'fullscreen' if self.is_fullscreen else 'windowed'} mode")
                 except Exception as e:
                     logger.error(f"[ERROR] Failed to restore display mode: {e}")
                     logger.info(f"   Updating internal state to match actual mode")
@@ -11430,8 +11471,12 @@ class Game:
 
             # Update display
             pygame.display.flip()
-            # Throttle FPS when window is unfocused (Steam: don't burn CPU in background)
-            self.clock.tick(FPS if self._window_focused else UNFOCUSED_FPS)
+            # Frame pacing: manual cap > vsync (safety-capped) > FPS constant,
+            # and always throttled hard when unfocused (Steam: don't burn CPU in
+            # the background). Never an uncapped tick() — see resolve_frame_cap.
+            self.clock.tick(resolve_frame_cap(
+                self.fps_limit, self.vsync_active, self._window_focused,
+                FPS, UNFOCUSED_FPS))
 
         # Clean up resources (network, replay, logger) before exiting
         self._cleanup()
@@ -11522,6 +11567,8 @@ class Game:
                 # Reset temp settings to current settings
                 self.temp_resolution = self.current_resolution
                 self.temp_fullscreen = self.is_fullscreen
+                self.temp_vsync = self.vsync
+                self.temp_fps_limit = self.fps_limit
                 # Reset temp gameplay settings
                 self.temp_edge_scrolling_enabled = self.edge_scrolling_enabled
                 self.temp_edge_scrolling_mode = self.edge_scrolling_mode
@@ -11715,7 +11762,23 @@ class Game:
                 if self.temp_fullscreen:
                     self.temp_resolution = self.native_resolution
                 return (True, False)
-        
+
+        # VSync checkbox
+        if getattr(self, 'display_vsync_checkbox', None):
+            if self.display_vsync_checkbox.collidepoint(pos):
+                self.sound_manager.play_ui_click()
+                self.trigger_click_flash('options_control', 'vsync_checkbox')
+                self.temp_vsync = not self.temp_vsync
+                return (True, False)
+
+        # FPS limit cycle button
+        if getattr(self, 'display_fps_limit_dropdown', None):
+            if self.display_fps_limit_dropdown.collidepoint(pos):
+                self.sound_manager.play_ui_click()
+                self.trigger_click_flash('options_control', 'fps_limit')
+                self.temp_fps_limit = self._cycle_fps_limit(self.temp_fps_limit)
+                return (True, False)
+
         # ===== GAMEPLAY CONTROLS =====
         
         # Edge Scrolling checkbox
@@ -11861,10 +11924,14 @@ class Game:
             if self.options_apply_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('options_button', 'apply')
-                # Apply display settings
+                # Apply display settings. VSync is passed through so the display is
+                # rebuilt with (or without) SCALED — it cannot be toggled on a live
+                # surface, and a later set_mode() would silently drop it.
                 width, height = self.temp_resolution
-                success = self.apply_display_settings(width, height, self.temp_fullscreen)
-                
+                success = self.apply_display_settings(
+                    width, height, self.temp_fullscreen, vsync=self.temp_vsync)
+                self.fps_limit = self.temp_fps_limit
+
                 # Apply gameplay settings
                 self.edge_scrolling_enabled = self.temp_edge_scrolling_enabled
                 self.edge_scrolling_mode = self.temp_edge_scrolling_mode
@@ -11922,6 +11989,8 @@ class Game:
                 # Reset temp settings
                 self.temp_resolution = self.current_resolution
                 self.temp_fullscreen = self.is_fullscreen
+                self.temp_vsync = self.vsync
+                self.temp_fps_limit = self.fps_limit
                 # Reset temp gameplay settings
                 self.temp_edge_scrolling_enabled = self.edge_scrolling_enabled
                 self.temp_edge_scrolling_mode = self.edge_scrolling_mode
@@ -14669,6 +14738,8 @@ class Game:
                 if "fullscreen" in display:
                     self.is_fullscreen = bool(display["fullscreen"])
                     self.temp_fullscreen = self.is_fullscreen
+                    self.temp_vsync = self.vsync
+                    self.temp_fps_limit = self.fps_limit
             
             # Load gameplay settings
             if "gameplay" in config:
@@ -14754,6 +14825,8 @@ class Game:
         # This ensures we use a supported resolution even if native is scaled
         self.temp_resolution = self.default_resolution
         self.temp_fullscreen = True
+        self.temp_vsync = False   # opt-in, matches settings defaults
+        self.temp_fps_limit = 0   # no manual cap
 
         # Gameplay settings
         self.temp_edge_scrolling_enabled = True
@@ -15197,10 +15270,9 @@ if __name__ == "__main__":
     initial_resolution = settings.get_resolution()
     initial_fullscreen = settings.is_fullscreen()
 
-    if initial_fullscreen:
-        screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-    else:
-        screen = pygame.display.set_mode(initial_resolution)
+    # Centralized so VSync is applied here too (see display_utils)
+    screen, _ = set_display_mode(
+        initial_resolution, initial_fullscreen, settings.get('vsync', False))
 
     pygame.display.set_caption("War of Avareon")
     _set_app_icon()  # Re-apply icon after display creation
@@ -15383,10 +15455,9 @@ if __name__ == "__main__":
             initial_resolution = settings.get_resolution()
             initial_fullscreen = settings.is_fullscreen()
 
-            if initial_fullscreen:
-                screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-            else:
-                screen = pygame.display.set_mode(initial_resolution)
+            # Centralized so VSync is applied here too (see display_utils)
+            screen, _ = set_display_mode(
+                initial_resolution, initial_fullscreen, settings.get('vsync', False))
 
             pygame.display.set_caption("War of Avareon")
             _set_app_icon()  # Re-apply icon after window recreation
@@ -15705,10 +15776,9 @@ if __name__ == "__main__":
 
                 # Only recreate if settings changed
                 if current_size != initial_resolution or current_is_fullscreen != initial_fullscreen:
-                    if initial_fullscreen:
-                        screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-                    else:
-                        screen = pygame.display.set_mode(initial_resolution)
+                    # Centralized so VSync is applied here too (see display_utils)
+                    screen, _ = set_display_mode(
+                        initial_resolution, initial_fullscreen, settings.get('vsync', False))
                     _set_app_icon()  # Re-apply icon after display recreation
                     pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
 
@@ -15835,10 +15905,9 @@ if __name__ == "__main__":
                 settings.load()
                 initial_resolution = settings.get_resolution()
                 initial_fullscreen = settings.is_fullscreen()
-                if initial_fullscreen:
-                    screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-                else:
-                    screen = pygame.display.set_mode(initial_resolution)
+                # Centralized so VSync is applied here too (see display_utils)
+                screen, _ = set_display_mode(
+                    initial_resolution, initial_fullscreen, settings.get('vsync', False))
                 _set_app_icon()
                 pygame.mouse.set_visible(False)
                 continue
@@ -15945,10 +16014,9 @@ if __name__ == "__main__":
                 current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
 
                 if current_size != initial_resolution or current_is_fullscreen != initial_fullscreen:
-                    if initial_fullscreen:
-                        screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-                    else:
-                        screen = pygame.display.set_mode(initial_resolution)
+                    # Centralized so VSync is applied here too (see display_utils)
+                    screen, _ = set_display_mode(
+                        initial_resolution, initial_fullscreen, settings.get('vsync', False))
                     _set_app_icon()  # Re-apply icon after display recreation
                     pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
 

@@ -133,6 +133,7 @@ AvareonWar/
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
 - [settings_manager.py](settings_manager.py) - Game settings persistence
+- [display_utils.py](display_utils.py) - Centralized display-mode creation (resolution, fullscreen, VSync) + frame-cap resolution. All `set_mode()` calls must go through this.
 
 ### Key Subsystems
 
@@ -416,6 +417,8 @@ After making code changes, ask yourself:
 - Change background music → `music_manager.py`
 - Change volume settings → `settings_manager.py` + `music_manager.py`
 - Change volume slider UI → `rendering/ui_renderer.py` (in-game) + `main_menu.py` (main menu)
+- Change VSync / FPS limit → `display_utils.py` (`set_display_mode`, `resolve_frame_cap`, `menu_frame_cap`) + `settings_manager.py` keys + both options menus
+- Create/recreate the display window → **always** `display_utils.set_display_mode()`, never `pygame.display.set_mode()` directly (VSync needs `SCALED` + a fresh display, and is silently lost otherwise)
 - Shared campaign utilities → `campaign_utils.py`
 - Modify gold transfer feature → `game_state/economy.py` (`can_transfer_gold`, `get_transfer_cap`, `transfer_gold`) + `players_window.py` (UI) + `network/protocol.py` (`GOLD_TRANSFER` msg)
 - Change gold transfer cap options → `integrated_setup.py` `gold_transfer_options` + `network/territory_selector.py` `gold_transfer_options`

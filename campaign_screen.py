@@ -22,6 +22,7 @@ from global_sound import sound_manager
 from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.cursor import draw_custom_cursor
 from utils.logger import get_logger
+from display_utils import menu_frame_cap
 
 logger = get_logger(__name__)
 
@@ -181,7 +182,7 @@ class CampaignScreen:
             self.render()
             draw_custom_cursor(self.screen)
             pygame.display.flip()
-            self.clock.tick(60)
+            self.clock.tick(menu_frame_cap())
 
         return self.selected_mission
 
@@ -606,7 +607,7 @@ class MissionScreen:
             self.render()
             draw_custom_cursor(self.screen)
             pygame.display.flip()
-            self.clock.tick(60)
+            self.clock.tick(menu_frame_cap())
 
         return self.result
 

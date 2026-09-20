@@ -29,6 +29,7 @@ from settings_manager import settings
 from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
+from display_utils import menu_frame_cap
 
 logger = get_logger(__name__)
 
@@ -2320,7 +2321,7 @@ class IntegratedSetup:
     def run(self):
         """Main setup loop - returns config dict or None if cancelled"""
         while not self.setup_complete and not self.cancelled:
-            dt = self.clock.tick(60) / 1000.0  # Delta time in seconds
+            dt = self.clock.tick(menu_frame_cap()) / 1000.0  # Delta time in seconds
 
             self.handle_events()
             self.update(dt)

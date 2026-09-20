@@ -39,6 +39,10 @@ WINDOW_HEIGHT = 850  # Adjust this to your screen height
 
 # Frame rate - PERFORMANCE OPTIMIZATION: Raised from 60 to 80 FPS target
 FPS = 80
+# Selectable FPS caps in the options menus. 0 = no manual cap (VSync or FPS above
+# paces frames). Note there is deliberately no "truly uncapped" option: frame
+# timing is derived per frame and an unbounded loop makes it meaningless.
+FPS_LIMIT_OPTIONS = [0, 60, 80, 120, 144, 165, 240]
 # Reduced frame rate when window is unfocused/minimized (Steam requirement: don't burn CPU in background)
 UNFOCUSED_FPS = 10
 

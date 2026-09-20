@@ -22,6 +22,7 @@ from global_sound import sound_manager
 from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.surface_utils import crop_to_opaque
 from utils.cursor import draw_custom_cursor
+from display_utils import menu_frame_cap
 
 # Brass gold color for headers (matching campaign_screen)
 BRASS_COLOR = (181, 166, 66)
@@ -264,7 +265,7 @@ class RecapScreen:
     def run(self):
         """Main loop - blocks until user clicks Main Menu."""
         while not self.done:
-            dt = self.clock.tick(60) / 1000.0
+            dt = self.clock.tick(menu_frame_cap()) / 1000.0
             self._update_achievement_preview(dt)
             self._update_xp_bar(dt)
             self.handle_events()

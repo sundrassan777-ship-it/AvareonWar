@@ -21,6 +21,7 @@ from global_sound import sound_manager  # Global sound manager for UI clicks
 from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
+from display_utils import menu_frame_cap
 
 logger = get_logger(__name__)
 
@@ -202,7 +203,7 @@ class MultiplayerSetup:
             self.render()
             draw_custom_cursor(self.screen)
             pygame.display.flip()
-            clock.tick(60)
+            clock.tick(menu_frame_cap())
 
         return None
 
@@ -777,7 +778,7 @@ class MultiplayerSetup:
 
             draw_custom_cursor(self.screen)
             pygame.display.flip()
-            clock.tick(60)
+            clock.tick(menu_frame_cap())
 
         return None
 
@@ -936,4 +937,4 @@ class MultiplayerSetup:
 
             draw_custom_cursor(self.screen)
             pygame.display.flip()
-            clock.tick(60)
+            clock.tick(menu_frame_cap())

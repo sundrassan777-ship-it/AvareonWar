@@ -2,6 +2,46 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Feature: VSync toggle + FPS limit (both options menus)
+
+- **New settings:** `vsync` (bool, default **False** — opt-in so nothing changes for existing
+  players on upgrade) and `fps_limit` (int, `0` = no manual cap). Added to both `SETTING_TYPES`
+  and `defaults` in `settings_manager.py`; a key missing from `defaults` is deleted from
+  config.json on every load, so both are required.
+- **New `display_utils.py`** centralizes display creation. Every `pygame.display.set_mode()`
+  call in `main.py` (17 sites) now routes through `set_display_mode()`. Three measured pygame
+  behaviours make this necessary:
+  1. `vsync=1` **without `pygame.SCALED` is silently ignored** — accepted, no error, frames
+     unsynchronized (~1.3-1.9ms flips). Real VSync needs `SCALED`.
+  2. **VSync is lost by any later `set_mode()`**, even one passing `vsync=1` and `SCALED` again
+     (5.99ms → 0.95ms → 1.26ms). Only `display.quit()` + `display.init()` restores it. Since
+     `apply_display_settings()` *is* the resolution path, without this VSync would have died the
+     first time a player changed resolution and never returned.
+  3. **The achieved state cannot be read back** — `get_flags()` does not report the SCALED bit.
+     Tracked explicitly as `game.vsync_active`.
+- **Graceful fallback:** if a driver refuses `SCALED`/`vsync=1`, `set_display_mode()` falls back
+  to the previous flags so the game always launches; the achieved state is reported back.
+- **Frame limiter** (`resolve_frame_cap`): manual cap > VSync (safety-capped at 240) > `FPS`
+  constant, with `UNFOCUSED_FPS` when the window loses focus. Deliberately **never uncapped** —
+  see the `delta_time` fix below.
+- **`delta_time` now uses `time.perf_counter()`** instead of `Clock.get_time()`, which returns
+  **integer milliseconds**. Measured in an uncapped loop: **100% of frames reported
+  `delta_time == 0.0`**, with summed delta running at 250% of real time. Even at 1-2ms frames
+  the quantization error reaches 50% per frame, visibly changing animation speed.
+- **The per-frame defensive display guard** now routes through the helper — a bare `set_mode()`
+  there would have silently and permanently dropped VSync mid-game.
+- **UI:** VSync checkbox + FPS Limit cycle button in *both* options menus, each following its
+  file's existing idiom. The FPS control displays "VSync" while VSync is on, since the monitor
+  paces frames then. Options: `Unlimited, 60, 80, 120, 144, 165, 240` (`FPS_LIMIT_OPTIONS`).
+- **Other screens** (menu, setup, cutscene, recap, loading, replay/save browsers, MP setup —
+  14 call sites) now honour `fps_limit` via `menu_frame_cap()` instead of a hard-coded 60.
+  VSync needs no handling there, being a property of the display surface.
+- Verified end-to-end through the real `Game` path: vsync OFF 1.87ms (534Hz) → ON 6.27ms
+  (160Hz) → **still synced after a resolution change** (8.92ms) → back to 6.06ms (165Hz) →
+  OFF again 1.56ms. Settings round-trip through config.json and survive validation.
+- Files: `display_utils.py` *(new)*, `main.py`, `main_menu.py`, `settings_manager.py`,
+  `rendering/ui_renderer.py`, `config/constants.py`, + 11 screen modules
+
 ## 2026-09-20 - Fixed: renderer caches went stale after an in-game resolution change
 
 - **Bug:** `MapRenderer.territory_bounding_boxes` and `multi_zoom_cache` are built once in
