@@ -4239,6 +4239,12 @@ class Game:
             # display format and the layout globals have changed, so drop both.
             self._map_view_key = None
             self._map_view_surface = None
+            # The map scale_factor just changed, so the renderer's pre-computed
+            # bounding boxes and multi-zoom polygons are stale (they were built from
+            # the polygons at the OLD scale). Without this, territory polygons
+            # misalign with the map and hit-testing goes wrong after a resolution change.
+            if hasattr(self, 'map_renderer') and self.map_renderer is not None:
+                self.map_renderer.rebuild_scale_caches()
             self._ui_icon_cache = {}
             self._tech_border_cache = {}
             self._text_cache = {}

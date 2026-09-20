@@ -109,6 +109,12 @@ class MapRenderer:
         self._hover_blit_pos = (0, 0)  # Screen position to blit hover surface
         self._last_hover_territory = None  # Track for cache invalidation
         self._last_hover_camera_state = None  # Track for cache invalidation
+        # FPS OPT: cache for draw_territory_overlay(), which previously allocated a
+        # fresh surface and re-filled the polygon on every call — including every
+        # frame of a campaign/tutorial highlight's alpha pulse.
+        # Keyed by (territory, camera_state, color, quantized_alpha, outline).
+        self._territory_overlay_cache = {}
+        self._TERRITORY_OVERLAY_CACHE_MAX = 64
         # Pools of reusable surfaces by size for overlays, glows, and effects
         self.surface_pool = {}  # key = (width, height), value = list of surfaces
         self.max_pool_size = 50  # Limit pool size to prevent memory bloat
@@ -202,6 +208,39 @@ class MapRenderer:
     def _get_nearest_zoom_level(self, zoom):
         """Get the nearest pre-computed zoom level."""
         return min(self.ZOOM_LEVELS, key=lambda z: abs(z - zoom))
+
+    def rebuild_scale_caches(self):
+        """
+        Rebuild the caches derived from game.scaled_polygons after the map scale changes.
+
+        BUG FIX: `territory_bounding_boxes` and `multi_zoom_cache` are built once in
+        __init__ from the polygons as scaled at that moment. `apply_display_settings()`
+        re-derives `scale_factor` and re-rounds every polygon on a resolution change,
+        but never rebuilt these — so afterwards they still held the OLD scale
+        (0.163 at 1280x720 vs 0.211 at 1600x900 vs 0.256 at 1920x1080, a 57% swing).
+        That left territory polygons misaligned with the map background, and stale
+        bounding boxes made culling and AABB hit-testing wrong.
+
+        Map switching was never affected: MapRenderer is constructed inside
+        initialize_game(), which calls _reload_map_assets() first.
+
+        Call this from any path that changes `game.scaled_polygons` after construction.
+        """
+        self.territory_bounding_boxes = {}
+        self._precompute_territory_bounding_boxes()
+        self.multi_zoom_cache = {}
+        self._precompute_multi_zoom_polygons()
+
+        # Anything derived from the old screen projection is now invalid
+        self.cached_screen_polygons = {}
+        self.cached_screen_plots = {}
+        self.last_camera_state = None
+        self._overlay_cache_surface = None
+        self._overlay_cache_camera = None
+        self._hover_surface = None
+        self._last_hover_territory = None
+        self._last_hover_camera_state = None
+        self._territory_overlay_cache = {}
 
     def _prewarm_image_caches(self):
         """
@@ -719,25 +758,47 @@ class MapRenderer:
         if not screen_polygon:
             return
 
-        # FPS OPT: Compute screen-space bbox for small clipped surface
-        border_width = max(1, int(1.5 * self.game.camera_zoom)) if outline else 0
-        margin = border_width + 2
-        xs = [p[0] for p in screen_polygon]
-        ys = [p[1] for p in screen_polygon]
-        bbox_x = max(0, int(min(xs) - margin))
-        bbox_y = max(0, int(min(ys) - margin))
-        bbox_w = max(1, int(max(xs) - min(xs) + margin * 2))
-        bbox_h = max(1, int(max(ys) - min(ys) + margin * 2))
+        # FPS OPT: this had NO cache at all — it allocated a fresh SRCALPHA surface
+        # and re-filled a 455-1027 point polygon on EVERY call. Campaign/tutorial
+        # highlight steps call it every frame with a pulsing alpha, so it ran
+        # continuously for the whole highlight. Quantizing the alpha to 16 steps
+        # makes the result cacheable with no visible change to the pulse.
+        quantized_alpha = (int(alpha) // 16) * 16
+        camera_state = (self.game.camera_offset[0], self.game.camera_offset[1],
+                        self.game.camera_zoom)
+        cache_key = (territory, camera_state, tuple(color), quantized_alpha, bool(outline))
 
-        # Small SRCALPHA surface (supports mixed alphas for fill + outline)
-        overlay = pygame.Surface((bbox_w, bbox_h), pygame.SRCALPHA)
-        local_polygon = [(p[0] - bbox_x, p[1] - bbox_y) for p in screen_polygon]
+        cached = self._territory_overlay_cache.get(cache_key)
+        if cached is None:
+            border_width = max(1, int(1.5 * self.game.camera_zoom)) if outline else 0
+            margin = border_width + 2
+            xs = [p[0] for p in screen_polygon]
+            ys = [p[1] for p in screen_polygon]
+            bbox_x = max(0, int(min(xs) - margin))
+            bbox_y = max(0, int(min(ys) - margin))
+            # Cap to the screen as well as flooring at 1 — an unclamped bbox grows
+            # with zoom squared and can be far larger than the visible area.
+            screen_w = self.game.screen.get_width()
+            screen_h = self.game.screen.get_height()
+            bbox_w = max(1, min(int(max(xs) - min(xs) + margin * 2), screen_w - bbox_x))
+            bbox_h = max(1, min(int(max(ys) - min(ys) + margin * 2), screen_h - bbox_y))
 
-        pygame.draw.polygon(overlay, (*color, alpha), local_polygon)
-        if outline:
-            pygame.draw.lines(overlay, (*color, 255), True, local_polygon, border_width)
+            # Small SRCALPHA surface (supports mixed alphas for fill + outline)
+            overlay = pygame.Surface((bbox_w, bbox_h), pygame.SRCALPHA)
+            local_polygon = [(p[0] - bbox_x, p[1] - bbox_y) for p in screen_polygon]
 
-        self.game.screen.blit(overlay, (bbox_x, bbox_y))
+            pygame.draw.polygon(overlay, (*color, quantized_alpha), local_polygon)
+            if outline:
+                pygame.draw.lines(overlay, (*color, 255), True, local_polygon, border_width)
+
+            # Bounded: the camera_state in the key means entries die on every camera
+            # move, so clear wholesale rather than growing without limit.
+            if len(self._territory_overlay_cache) > self._TERRITORY_OVERLAY_CACHE_MAX:
+                self._territory_overlay_cache.clear()
+            cached = (overlay, (bbox_x, bbox_y))
+            self._territory_overlay_cache[cache_key] = cached
+
+        self.game.screen.blit(cached[0], cached[1])
     def draw_territories(self):
         """Draw territory overlays, markers and ownership colors"""
         # H8 fix: Rebuild overlay surfaces if window was resized
@@ -804,8 +865,15 @@ class MapRenderer:
                     pygame.draw.polygon(self.fullscreen_overlay, (200, 200, 200, 45), screen_polygon)
                     pygame.draw.lines(self.fullscreen_overlay, (220, 220, 220, 120), True, screen_polygon, 1)
 
-            # Store cache state
-            self._overlay_cache_surface = self.fullscreen_overlay.copy()
+            # Store cache state.
+            # FPS OPT: reference, not .copy(). This used to copy the whole
+            # SRCALPHA overlay (5.76MB at 1600x900) on EVERY camera delta — i.e.
+            # every frame while panning or zooming — purely so the cached content
+            # would survive the next rebuild's fill(). But `fullscreen_overlay` is
+            # written nowhere else (it is filled and redrawn only inside this
+            # block), so the cache can simply alias it: on a hit we blit the
+            # surface untouched since the last rebuild, and on a miss we refill it.
+            self._overlay_cache_surface = self.fullscreen_overlay
             self._overlay_cache_camera = current_camera
             self._overlay_cache_version = owners_version
             self.game.screen.blit(self.fullscreen_overlay, (0, 0))
@@ -839,11 +907,18 @@ class MapRenderer:
                     bbox_w = max(xs) - min(xs) + margin * 2
                     bbox_h = max(ys) - min(ys) + margin * 2
 
-                    # Clamp to screen bounds to avoid negative-size surfaces
+                    # Clamp to screen bounds. FPS OPT: the width/height were
+                    # previously only floored at 1, never capped to the screen, so a
+                    # large territory at high zoom allocated a surface far bigger than
+                    # anything visible (~1000x1000 = 4MB at zoom 4) — and this runs on
+                    # every camera delta. Off-screen parts cannot be seen anyway, and
+                    # pygame clips the polygon draw to the surface.
+                    screen_w = self.game.screen.get_width()
+                    screen_h = self.game.screen.get_height()
                     bbox_x = max(0, int(bbox_x))
                     bbox_y = max(0, int(bbox_y))
-                    bbox_w = max(1, int(bbox_w))
-                    bbox_h = max(1, int(bbox_h))
+                    bbox_w = max(1, min(int(bbox_w), screen_w - bbox_x))
+                    bbox_h = max(1, min(int(bbox_h), screen_h - bbox_y))
 
                     # Create small SRCALPHA surface (needs two alphas: fill=60, border=255)
                     self._hover_surface = pygame.Surface((bbox_w, bbox_h), pygame.SRCALPHA)

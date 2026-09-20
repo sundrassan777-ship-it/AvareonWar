@@ -1461,6 +1461,22 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - Derive source rects from `surface.get_size()`, **not** the `ORIGINAL_MAP_*` constants, so
   alternate map backgrounds and the black fallback keep working.
 
+**Rebuild scale-derived caches when `scale_factor` changes:**
+- `MapRenderer.territory_bounding_boxes` and `multi_zoom_cache` are derived from
+  `game.scaled_polygons`. Any path that re-scales those polygons after construction must call
+  `MapRenderer.rebuild_scale_caches()`, as `apply_display_settings()` does.
+- Skipping it left the caches at the old scale: after 1600x900 → 1280x720 the cached projection
+  was **418px** off, misaligning polygons with the map and breaking AABB hit-testing.
+- Guarded by `tests/test_resolution_caches.py`.
+
+**Cache, don't copy, full-screen overlays:**
+- `_overlay_cache_surface` aliases `fullscreen_overlay` rather than `.copy()`-ing it. The copy
+  cost 5.76MB per camera delta (i.e. every frame while panning/zooming) and existed only so the
+  content survived the next `fill()` — safe to alias because nothing else writes that surface.
+- **Clamp bbox-sized surfaces to the screen**, not just to a minimum of 1. Polygon screen
+  bounding boxes grow with zoom squared; unclamped they allocated ~4MB at zoom 4.0 for area that
+  is not visible. pygame clips the draw for you.
+
 **Never key a cache on a raw continuous float (quantize it):**
 - Keying on an un-quantized zoom/scale/alpha float means the cache **never hits** while that
   value animates. `ProductionGlowEffect` keyed its sprite cache on the raw zoom and so rebuilt

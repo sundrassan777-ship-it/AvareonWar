@@ -70,6 +70,12 @@ class UIRenderer:
         self.text_cache = OrderedDict()
         self.TEXT_CACHE_MAX_SIZE = 200  # Limit cache size to prevent memory bloat
 
+        # FPS counter throttling — the displayed value refreshes ~4x/second instead
+        # of every frame (see draw_top_panel). Rendering it per frame added a new
+        # text-cache entry each frame, churning the very cache it used.
+        self._fps_text_surface = None
+        self._fps_text_updated_at = 0
+
         # FPS OPTIMIZATION: Reusable overlay surface for modal dialogs
         # Avoids creating full-screen SRCALPHA surfaces (5.44MB each) every frame
         self._reusable_overlay = None
@@ -595,10 +601,18 @@ class UIRenderer:
 
         # FPS counter (top-right corner, if enabled)
         if self.game.show_fps:
-            fps = int(self.game.clock.get_fps())
-            fps_text = self.get_cached_text(f"FPS: {fps}", self.game.small_font, BROWN_TEXT_SECONDARY, "small")
-            fps_rect = fps_text.get_rect(topright=(self.WINDOW_WIDTH - 10, 2))
-            self.game.screen.blit(fps_text, fps_rect)
+            # Refresh ~4x/second rather than every frame. The FPS string changes
+            # almost every frame, so rendering it through get_cached_text() added a
+            # new cache entry per frame (churning the cache it was meant to use) —
+            # and a value updating 60+ times a second is unreadable anyway.
+            now = pygame.time.get_ticks()
+            if now - self._fps_text_updated_at >= 250 or self._fps_text_surface is None:
+                fps = int(self.game.clock.get_fps())
+                self._fps_text_surface = self.get_cached_text(
+                    f"FPS: {fps}", self.game.small_font, BROWN_TEXT_SECONDARY, "small")
+                self._fps_text_updated_at = now
+            fps_rect = self._fps_text_surface.get_rect(topright=(self.WINDOW_WIDTH - 10, 2))
+            self.game.screen.blit(self._fps_text_surface, fps_rect)
 
     def _draw_resolve_all_battles_button(self, scale):
         """

@@ -2,6 +2,52 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Fixed: renderer caches went stale after an in-game resolution change
+
+- **Bug:** `MapRenderer.territory_bounding_boxes` and `multi_zoom_cache` are built once in
+  `__init__` from `game.scaled_polygons`. `apply_display_settings()` re-derives `scale_factor`
+  and re-rounds every polygon on a resolution change, but never rebuilt those caches — so they
+  kept the **old** scale. Measured impact after switching 1600x900 → 1280x720:
+  bounding boxes off by **178px**, multi-zoom polygons by **427px**, and the cached screen
+  projection by **418px** versus a direct `world_to_screen()`. In practice: territory polygons
+  visibly misaligned with the map background, and AABB hit-testing selected the wrong territory.
+- **Fix:** new `MapRenderer.rebuild_scale_caches()`, called from `apply_display_settings()`.
+  Rebuilds both pre-computed caches and clears everything derived from the old projection.
+- Map *switching* was never affected — `MapRenderer` is constructed inside `initialize_game()`,
+  which calls `_reload_map_assets()` first, so it always saw the correct map's polygons.
+- **New regression tests:** `tests/test_resolution_caches.py` (4 tests) assert the caches track
+  `scale_factor` across resolution changes and a round trip. Verified the tests genuinely fail
+  without the fix (418px projection error). They skip themselves when the environment refuses
+  the resolution change (e.g. a fullscreen window under `SDL_VIDEODRIVER=dummy`), since the
+  regression cannot be exercised there.
+
+## 2026-09-20 - Performance: overlay copy removal, surface clamping, overlay caching
+
+- **Removed a 5.76MB full-screen surface copy per camera delta** (`map_renderer.py`). The
+  ownership-overlay cache did `_overlay_cache_surface = fullscreen_overlay.copy()` on every
+  camera move, purely so the cached content survived the next rebuild's `fill()`. But
+  `fullscreen_overlay` is written nowhere else, so the cache can simply alias it.
+- **Clamped hover/overlay surfaces to the screen.** Bounding-box sizes were floored at 1 but
+  never capped, so a large territory at high zoom allocated a surface far bigger than anything
+  visible (~1000x1000 = 4MB at zoom 4.0) — on every camera delta. Off-screen area cannot be
+  seen and pygame clips the polygon draw anyway.
+- **Cached `draw_territory_overlay()`**, which previously had *no* cache — it allocated a fresh
+  SRCALPHA surface and re-filled a 455-1027 point polygon on every call, and campaign/tutorial
+  highlight steps call it every frame with a pulsing alpha. Alpha is quantized to 16 steps so
+  the result is cacheable with no visible change to the pulse.
+- **FPS counter** now refreshes ~4x/second instead of every frame (`ui_renderer.py`). The string
+  changed almost every frame, so each frame added a new entry to the very text cache it used —
+  and a value updating 60+ times a second is unreadable regardless.
+
+| Scenario | Baseline | Now |
+|---|---|---|
+| Panning @ zoom 3.0 | 39.9 FPS | **79.2 FPS** (+98%) |
+| Static @ max zoom | 66.1 FPS | **236.3 FPS** (+257%) |
+| Mouse-wheel zoom | 16.9 FPS | **41.3 FPS** (+145%) |
+| Zooming with 99 glows | 6.6 FPS | **38.9 FPS** (+486%) |
+
+- Files: `rendering/map_renderer.py`, `rendering/ui_renderer.py`, `main.py`
+
 ## 2026-09-20 - Campaign intro zoom is now continuous instead of stepped
 
 - **Removed the 0.2-step zoom quantization** from both camera animation classes:
