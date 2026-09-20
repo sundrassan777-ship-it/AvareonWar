@@ -47,8 +47,29 @@ import pygame
 logger = logging.getLogger(__name__)
 
 
+# Last mode this module actually established: (size, flags, vsync_requested).
+# Used to skip a redundant re-init — see the warning in set_display_mode().
+_last_mode = None
+_last_vsync_active = False
+
+
 def _base_flags(fullscreen):
     return pygame.FULLSCREEN if fullscreen else 0
+
+
+def current_surface():
+    """
+    The live display surface.
+
+    IMPORTANT: `pygame.display.quit()` (required to apply VSync) DESTROYS the old
+    display Surface object. Any variable still holding it raises
+    `pygame.error: display Surface quit` on use — plain `set_mode()` never did
+    that, so long-lived `screen` references used to survive display changes.
+
+    Call this instead of caching a surface across anything that may recreate the
+    display (options Apply, returning from a game, window recreation).
+    """
+    return pygame.display.get_surface()
 
 
 def _reinit_display():
@@ -76,7 +97,20 @@ def set_display_mode(size, fullscreen, vsync, force_reinit=False):
         (surface, vsync_active) — vsync_active reports what was actually achieved,
         which may be False if the driver refused SCALED/vsync.
     """
+    global _last_mode, _last_vsync_active
+
+    size = (int(size[0]), int(size[1]))
     flags = _base_flags(fullscreen)
+    desired = (size, flags, bool(vsync))
+
+    # Reuse the existing surface when nothing needs to change. This matters for
+    # correctness, not just speed: re-initialising the display DESTROYS the current
+    # Surface object, breaking any reference other code still holds. Screens that
+    # keep a `screen` variable (main(), CampaignScreen, MainMenu, ...) would then
+    # fail with "display Surface quit". Only actually re-init when the mode differs.
+    existing = pygame.display.get_surface()
+    if not force_reinit and existing is not None and _last_mode == desired:
+        return existing, _last_vsync_active
 
     if vsync:
         # A fresh display is required; see note 2 in the module docstring.
@@ -85,6 +119,7 @@ def set_display_mode(size, fullscreen, vsync, force_reinit=False):
             surface = pygame.display.set_mode(size, flags | pygame.SCALED, vsync=1)
             logger.info(f"Display: {size[0]}x{size[1]} "
                         f"{'fullscreen' if fullscreen else 'windowed'} SCALED vsync=ON")
+            _last_mode, _last_vsync_active = desired, True
             return surface, True
         except pygame.error as exc:
             # Some drivers cannot create the SCALED renderer. Never fail to launch:
@@ -98,6 +133,7 @@ def set_display_mode(size, fullscreen, vsync, force_reinit=False):
     surface = pygame.display.set_mode(size, flags)
     logger.info(f"Display: {size[0]}x{size[1]} "
                 f"{'fullscreen' if fullscreen else 'windowed'} vsync=OFF")
+    _last_mode, _last_vsync_active = desired, False
     return surface, False
 
 

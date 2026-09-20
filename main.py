@@ -72,7 +72,7 @@ from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
 from config.font_manager import FontManager
 from steam_integration import steam_manager
-from display_utils import set_display_mode, resolve_frame_cap
+from display_utils import set_display_mode, resolve_frame_cap, current_surface
 # Import sparkle version of turn announcement (can switch back to turn_announcement_effect if needed)
 from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
 from ui.effects.chat_notification_effect import ChatNotificationEffect
@@ -15425,6 +15425,15 @@ if __name__ == "__main__":
         return game_result
 
     while True:
+        # Re-fetch the live display surface each iteration. Toggling VSync requires
+        # pygame.display.quit(), which DESTROYS the previous Surface object — a
+        # cached `screen` then raises "display Surface quit" when a screen is
+        # constructed from it (e.g. CampaignScreen). set_mode() alone never
+        # invalidated surfaces, so this only became possible once VSync existed.
+        _live = current_surface()
+        if _live is not None:
+            screen = _live
+
         # If launched via Steam invite, skip main menu and go directly to multiplayer join
         if _steam_connect_target:
             action = 'steam_invite_join'
@@ -15471,6 +15480,7 @@ if __name__ == "__main__":
         elif action == 'campaign':
             # Campaign loop: campaign screen <-> mission screens
             while True:
+                screen = current_surface() or screen
                 campaign = CampaignScreen(screen)
                 mission_id = campaign.run()
 
@@ -15485,6 +15495,7 @@ if __name__ == "__main__":
                 # Saved Games button clicked — open save browser
                 if mission_id == 'saved_games':
                     from save_browser import SaveBrowser
+                    screen = current_surface() or screen
                     browser = SaveBrowser(screen)
                     browser_result = browser.run()
 
@@ -15775,6 +15786,9 @@ if __name__ == "__main__":
                 # Check if we need to resize for main menu
                 initial_resolution = settings.get_resolution()
                 initial_fullscreen = settings.is_fullscreen()
+                # Refresh first: a VSync toggle during the game destroys the old
+                # display Surface, so the cached `screen` may be dead here.
+                screen = current_surface() or screen
                 current_size = screen.get_size()
                 current_flags = screen.get_flags()
                 current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
@@ -16014,6 +16028,9 @@ if __name__ == "__main__":
                 # Check if we need to resize
                 initial_resolution = settings.get_resolution()
                 initial_fullscreen = settings.is_fullscreen()
+                # Refresh first: a VSync toggle during the game destroys the old
+                # display Surface, so the cached `screen` may be dead here.
+                screen = current_surface() or screen
                 current_size = screen.get_size()
                 current_flags = screen.get_flags()
                 current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
@@ -16035,6 +16052,7 @@ if __name__ == "__main__":
             from replay_viewer import ReplayViewer
 
             while True:
+                screen = current_surface() or screen
                 browser = ReplayBrowser(screen)
                 browser_result = browser.run()
 

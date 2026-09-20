@@ -2,6 +2,27 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Fixed: "display Surface quit" crash after toggling VSync
+
+- **Bug:** enabling VSync and then opening the Campaign screen crashed with
+  `pygame.error: display Surface quit` at `CampaignScreen(screen)`.
+- **Cause:** applying VSync requires `pygame.display.quit()` + `init()`, and that **destroys
+  the current display Surface object**. `main()` keeps the surface in a local `screen` and
+  passes it to screens constructed later, so that reference was dead. Plain `set_mode()`
+  never invalidated surfaces, so long-lived `screen` references had always been safe — the
+  hazard only appeared once VSync could recreate the display.
+- **Fix, two parts:**
+  1. `set_display_mode()` now records the mode it established and **returns the existing
+     surface unchanged when nothing needs to change**. Redundant calls (returning to the
+     menu, re-applying the same settings) no longer destroy live surfaces. A genuine change
+     still re-initialises.
+  2. `main()` re-fetches the live surface via new `display_utils.current_surface()` at the
+     top of its loop, and before constructing `CampaignScreen` / `SaveBrowser` /
+     `ReplayBrowser` or inspecting the surface on the return-to-menu paths.
+- **Side benefit:** VSync after a resolution change now measures 6.06ms/165Hz (was
+  8.92ms/112Hz) — the redundant second re-initialisation is gone.
+- Files: `display_utils.py`, `main.py`
+
 ## 2026-09-20 - Smooth (eased) mouse-wheel zoom
 
 - Mouse-wheel zoom previously jumped a full notch per event. `handle_zoom()` now sets a
