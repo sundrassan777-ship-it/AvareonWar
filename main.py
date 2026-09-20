@@ -125,6 +125,77 @@ UIConstants.update_sidebar_height(_ui_layout['sidebar_height'])
 # ========================================
 
 
+# ========================================
+# WINDOW / TASKBAR ICON
+# ========================================
+# These live at MODULE level (not inside `if __name__ == "__main__"`) because
+# Game.__init__ and every pygame.display.set_mode() site call _set_app_icon().
+# When main.py is imported rather than run as a script (tests, benchmarks, tools),
+# the __main__ block never executes — previously leaving _set_app_icon undefined
+# and raising NameError on Game() construction.
+
+_app_icon = None
+_ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'icon.ico')
+
+
+def _load_app_icon():
+    """
+    Load the window/taskbar icon once and cache it in the module-level _app_icon.
+
+    Safe to call before pygame.display is initialized — pygame.image.load()
+    does not require a display surface. Returns None if the icon is missing.
+    """
+    global _app_icon
+    if _app_icon is None:
+        try:
+            _app_icon = pygame.image.load(_ico_path)
+        except Exception:
+            _app_icon = None
+    return _app_icon
+
+
+def _set_app_icon():
+    """Re-apply window and taskbar icon after any pygame.display.set_mode() call.
+    Uses both pygame.display.set_icon (title bar) and Win32 SendMessage
+    WM_SETICON (taskbar) to ensure the icon persists through display recreation."""
+    icon = _load_app_icon()
+    if icon is not None:
+        try:
+            pygame.display.set_icon(icon)
+        except Exception:
+            pass
+    # Force taskbar icon via Win32 API (pygame.display.set_icon only sets title bar)
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            _ICON_SMALL, _ICON_BIG = 0, 1
+            _WM_SETICON = 0x0080
+            _IMAGE_ICON = 1
+            _LR_LOADFROMFILE = 0x0010
+            hwnd = pygame.display.get_wm_info()['window']
+            # Use system metrics for DPI-correct icon sizes (e.g. 48x48 on 150% scaling)
+            _SM_CXICON, _SM_CYICON = 11, 12      # Large icon (taskbar, Alt+Tab)
+            _SM_CXSMICON, _SM_CYSMICON = 49, 50   # Small icon (title bar)
+            big_w = user32.GetSystemMetrics(_SM_CXICON) or 32
+            big_h = user32.GetSystemMetrics(_SM_CYICON) or 32
+            small_w = user32.GetSystemMetrics(_SM_CXSMICON) or 16
+            small_h = user32.GetSystemMetrics(_SM_CYSMICON) or 16
+            # Large icon (taskbar)
+            hicon_big = user32.LoadImageW(
+                None, _ico_path, _IMAGE_ICON, big_w, big_h, _LR_LOADFROMFILE)
+            if hicon_big:
+                user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, hicon_big)
+            # Small icon (title bar)
+            hicon_small = user32.LoadImageW(
+                None, _ico_path, _IMAGE_ICON, small_w, small_h, _LR_LOADFROMFILE)
+            if hicon_small:
+                user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, hicon_small)
+        except Exception:
+            pass
+
+
 class Game:
     def __init__(self, existing_screen=None, network_connection=None, campaign_map=None):
         # campaign_map: optional path to a campaign-specific map image (e.g., 'assets/CampaignMaps/Campaign1Map.png')
@@ -14929,55 +15000,16 @@ if __name__ == "__main__":
     pygame.init()
 
     # Load and set window/taskbar icon early — must be set before first set_mode
-    # on Windows.  _app_icon is reused by _set_app_icon() after every set_mode
-    # call to prevent pygame from reverting to the default Python icon.
-    _app_icon = None
-    _ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'icon.ico')
-    try:
-        _app_icon = pygame.image.load(_ico_path)
-        pygame.display.set_icon(_app_icon)
-    except Exception:
-        pass
-
-    def _set_app_icon():
-        """Re-apply window and taskbar icon after any pygame.display.set_mode() call.
-        Uses both pygame.display.set_icon (title bar) and Win32 SendMessage
-        WM_SETICON (taskbar) to ensure the icon persists through display recreation."""
-        if _app_icon is not None:
-            try:
-                pygame.display.set_icon(_app_icon)
-            except Exception:
-                pass
-        # Force taskbar icon via Win32 API (pygame.display.set_icon only sets title bar)
-        if sys.platform == 'win32':
-            try:
-                import ctypes
-                from ctypes import wintypes
-                user32 = ctypes.windll.user32
-                _ICON_SMALL, _ICON_BIG = 0, 1
-                _WM_SETICON = 0x0080
-                _IMAGE_ICON = 1
-                _LR_LOADFROMFILE = 0x0010
-                hwnd = pygame.display.get_wm_info()['window']
-                # Use system metrics for DPI-correct icon sizes (e.g. 48x48 on 150% scaling)
-                _SM_CXICON, _SM_CYICON = 11, 12      # Large icon (taskbar, Alt+Tab)
-                _SM_CXSMICON, _SM_CYSMICON = 49, 50   # Small icon (title bar)
-                big_w = user32.GetSystemMetrics(_SM_CXICON) or 32
-                big_h = user32.GetSystemMetrics(_SM_CYICON) or 32
-                small_w = user32.GetSystemMetrics(_SM_CXSMICON) or 16
-                small_h = user32.GetSystemMetrics(_SM_CYSMICON) or 16
-                # Large icon (taskbar)
-                hicon_big = user32.LoadImageW(
-                    None, _ico_path, _IMAGE_ICON, big_w, big_h, _LR_LOADFROMFILE)
-                if hicon_big:
-                    user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, hicon_big)
-                # Small icon (title bar)
-                hicon_small = user32.LoadImageW(
-                    None, _ico_path, _IMAGE_ICON, small_w, small_h, _LR_LOADFROMFILE)
-                if hicon_small:
-                    user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, hicon_small)
-            except Exception:
-                pass
+    # on Windows.  _load_app_icon()/_set_app_icon() are defined at MODULE level
+    # (above class Game) so they also exist when main.py is imported rather than
+    # run as a script; _app_icon is reused after every set_mode call to prevent
+    # pygame from reverting to the default Python icon.
+    _loaded_icon = _load_app_icon()
+    if _loaded_icon is not None:
+        try:
+            pygame.display.set_icon(_loaded_icon)
+        except Exception:
+            pass
 
     # Initialize Steamworks SDK (no-op if Steam not running or SteamworksPy not installed)
     steam_manager.initialize()

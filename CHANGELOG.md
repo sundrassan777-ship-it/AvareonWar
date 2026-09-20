@@ -2,6 +2,17 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Fixed: FPS benchmark suite could not run (NameError)
+
+- **Bug:** All 8 tests in `tests/test_fps_benchmark.py` errored at setup with `NameError: name '_set_app_icon' is not defined`, making the performance suite completely unrunnable.
+- **Cause:** `_app_icon`, `_ico_path` and `def _set_app_icon()` were declared inside the `if __name__ == "__main__":` block. That block never executes when `main.py` is *imported* rather than run as a script, so `Game.__init__` (which calls `_set_app_icon()` after `set_mode`) raised `NameError` for any importer — tests, benchmarks, and tooling. Running the game normally was unaffected, which is why this went unnoticed.
+- **Fix:** Hoisted the icon helpers to module level (above `class Game`) and split loading from applying:
+  - `_load_app_icon()` — loads and caches the icon; safe to call before `pygame.display` is initialized.
+  - `_set_app_icon()` — unchanged behaviour, now lazily loads via `_load_app_icon()`.
+  - The `__main__` block now calls `_load_app_icon()` + `pygame.display.set_icon()` instead of redefining them.
+- **Result:** `py -m pytest tests/test_fps_benchmark.py` → 8 passed. Icon behaviour when running the game is unchanged.
+- Files: `main.py`, `.gitignore`
+
 ## 2026-04-18 - Gold Transfer Feature (ally-to-ally gold sending)
 
 - **Feature:** Players can now send gold to their allies during the Planning phase.
