@@ -2,6 +2,30 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Army circle hit area now matches the ring you can see
+
+- **Reported:** hovering and clicking ~2mm BELOW the army circle still selected the army.
+- **Cause:** not the new banner box - the banner stops exactly at the anchor and never
+  reaches below it. It was the **circle**, and it had always been wrong.
+  `_draw_army_circle()` draws the ring at **0.75 x** `ARMY_CIRCLE_RADIUS`, lifted **0.35 x**
+  above the anchor (so the flag pole sits inside it), but all three passes hit-tested a
+  **full-radius** circle centred **on** the anchor. The hit circle therefore reached
+  `0.60 * radius` below the visible ring - measured **9.0 px** at min zoom, **13.5 px** at
+  max - and picked up clicks on empty map. Widening the banner target simply made it
+  noticeable.
+- **Fix:** new `Game.get_army_circle_hit()` / `point_in_army_circle()`, derived from new
+  `ARMY_CIRCLE_DRAW_SCALE` (0.75) and `ARMY_CIRCLE_DRAW_LIFT` (0.35) in
+  `config/constants.py`. Click, hover and the renderer's own ring-brightening test all use
+  it, and `_draw_army_circle()` plus the pulsing selection glow now derive their geometry
+  from the same two constants (4 duplicated sites hoisted).
+- The glow halo is excluded from the hit area on purpose: it is a soft alpha-35 decoration,
+  not the object you aim at.
+- Net effect: the clickable circle is exactly the drawn ring, and the banner covers
+  everything above it. Nothing below the ring responds any more.
+- Tests: `TestCircleMatchesTheDrawnRing` (7 tests) in
+  `tests/test_army_banner_selection.py`, covering all three zoom levels.
+- Files: `main.py`, `rendering/map_renderer.py`, `config/constants.py`
+
 ## 2026-09-20 - Army banners are fully selectable
 
 - **Problem:** players expect to click the banner (flag), not just the small circle under

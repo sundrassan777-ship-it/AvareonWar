@@ -27,6 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.constants import (
     ARMY_CIRCLE_RADIUS,
+    ARMY_CIRCLE_DRAW_LIFT,
+    ARMY_CIRCLE_DRAW_SCALE,
     ARMY_FLAG_HEIGHT_RATIO,
     DEFAULT_ARMY_FLAG_ASPECT,
 )
@@ -237,6 +239,90 @@ class TestBannerIsFullyClickable:
         _, top, _, height = game.get_army_banner_rect(cx, cy, 1, 3)
         assert game.get_army_at_pos((cx, top + height * 0.1)) is None
         assert game.get_army_at_pos((cx, cy)) is None
+
+
+class TestCircleMatchesTheDrawnRing:
+    """
+    The hit circle must be the ring you can SEE.
+
+    MapRenderer._draw_army_circle() draws the ring at 0.75 * radius, lifted
+    0.35 * radius above the anchor. Hit-testing used a FULL-radius circle centred
+    ON the anchor, so it reached 0.60 * radius (9-14 screen px) BELOW the visible
+    ring and selected armies from empty map below the circle.
+    """
+
+    def test_hit_circle_is_lifted_above_the_anchor(self, game):
+        cx, cy, radius = game.get_army_circle_hit(500.0, 400.0, space='screen')
+        base = ARMY_CIRCLE_RADIUS * game.get_ui_scale_factor()
+
+        assert cx == pytest.approx(500.0)
+        assert cy == pytest.approx(400.0 - base * ARMY_CIRCLE_DRAW_LIFT)
+        assert radius == pytest.approx(base * ARMY_CIRCLE_DRAW_SCALE)
+
+    def test_hit_circle_bottom_matches_the_drawn_ring_bottom(self, game):
+        """The whole point: no reach below what is drawn."""
+        game.camera_zoom = 1.0
+        base = ARMY_CIRCLE_RADIUS * game.get_ui_scale_factor()
+
+        _, cy, radius = game.get_army_circle_hit(0.0, 0.0, space='screen')
+        drawn_bottom = base * (ARMY_CIRCLE_DRAW_SCALE - ARMY_CIRCLE_DRAW_LIFT)
+
+        assert cy + radius == pytest.approx(drawn_bottom)
+        assert cy + radius < base, "hit circle still reaches a full radius below the anchor"
+
+    @pytest.mark.parametrize("zoom", [1.65, 2.5, 4.0])
+    def test_just_below_the_visible_ring_is_not_selectable(self, game, zoom):
+        _clear_armies(game)
+        territory = next(iter(game.scaled_centers))
+        cx, cy = _place(game, territory, 0, count=3)
+        game.camera_zoom = zoom
+        game.camera.zoom = zoom
+
+        _, circle_y, radius = game.get_army_circle_hit(cx, cy)
+        just_below = circle_y + radius + (3.0 / zoom)
+
+        assert game.get_army_at_pos((cx, just_below)) is None
+
+    @pytest.mark.parametrize("zoom", [1.65, 2.5, 4.0])
+    def test_the_ring_itself_is_still_selectable(self, game, zoom):
+        _clear_armies(game)
+        territory = next(iter(game.scaled_centers))
+        cx, cy = _place(game, territory, 0, count=3)
+        game.camera_zoom = zoom
+        game.camera.zoom = zoom
+
+        _, circle_y, _ = game.get_army_circle_hit(cx, cy)
+        assert game.get_army_at_pos((cx, circle_y)) == (territory, 0)
+
+    def test_old_full_radius_probe_is_now_rejected(self, game):
+        """Documents the bug: a point a full radius below the anchor used to hit."""
+        _clear_armies(game)
+        territory = next(iter(game.scaled_centers))
+        cx, cy = _place(game, territory, 0, count=3)
+
+        base_world = (ARMY_CIRCLE_RADIUS * game.get_ui_scale_factor()) / game.camera_zoom
+        old_probe = (cx, cy + base_world * 0.9)  # inside the OLD circle, outside the new
+
+        assert game.get_army_at_pos(old_probe) is None
+
+    def test_banner_never_extends_below_the_anchor(self, game):
+        """The banner was never the cause - it stops exactly at the pole base."""
+        _, top, _, height = game.get_army_banner_rect(500.0, 400.0, 0, 3)
+        assert top + height == pytest.approx(400.0)
+
+    def test_hover_agrees_with_click_below_the_ring(self, game):
+        """Hover must not highlight where a click would miss."""
+        _clear_armies(game)
+        territory = next(iter(game.scaled_centers))
+        cx, cy = _place(game, territory, 0, count=3)
+
+        _, circle_y, radius = game.get_army_circle_hit(cx, cy)
+        just_below_world = (cx, circle_y + radius + (3.0 / game.camera_zoom))
+        sx, sy = game.world_to_screen(just_below_world)
+
+        game.handle_mouse_motion((int(sx), int(sy)))
+        assert game.hovered_army is None
+        assert game.get_army_at_pos(just_below_world) is None
 
 
 class TestCircleBeatsBanner:

@@ -160,6 +160,14 @@ BADGE_RADIUS = 16
 # Game.get_army_banner_rect(). If the two ever use different values, the clickable
 # area drifts away from the drawn banner. Never inline this number again.
 ARMY_FLAG_HEIGHT_RATIO = 3.3  # banner height = ARMY_CIRCLE_RADIUS * ui_scale * this
+
+# The army circle is DRAWN smaller than ARMY_CIRCLE_RADIUS and lifted above its
+# anchor, so the flag pole sits naturally inside the ring. Hit-testing must use
+# the same two numbers or the clickable circle drifts off the visible one - it
+# used to hit-test a full-radius circle centred ON the anchor, which reached
+# 0.60 * radius BELOW the drawn ring (~9-14px) and picked up clicks on empty map.
+ARMY_CIRCLE_DRAW_SCALE = 0.75  # drawn ring radius = ARMY_CIRCLE_RADIUS * ui_scale * this
+ARMY_CIRCLE_DRAW_LIFT = 0.35   # ring centre sits this * base radius ABOVE the anchor
 DEFAULT_ARMY_FLAG_ASPECT = 0.66  # width/height fallback if flag art has no usable size
 
 # Button Sizes

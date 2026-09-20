@@ -3851,11 +3851,6 @@ class Game:
         """
         x, y = pos
 
-        # Click radius in world space that matches the drawn circle size
-        ui_scale = self.get_ui_scale_factor()
-        click_radius_world = (ARMY_CIRCLE_RADIUS * ui_scale) / self.camera_zoom
-        click_radius_sq = click_radius_world * click_radius_world
-
         current_player = self.game_state.current_player
 
         # PERFORMANCE: index inbound animations once instead of rescanning the
@@ -3886,8 +3881,7 @@ class Game:
             anchor_x, anchor_y, army_count = anchor
 
             if mode in ('circle', 'both'):
-                distance_sq = (x - anchor_x) ** 2 + (y - anchor_y) ** 2
-                if distance_sq <= click_radius_sq:
+                if self.point_in_army_circle(x, y, anchor_x, anchor_y):
                     return (territory, current_player)
 
             if mode in ('banner', 'both'):
@@ -4050,6 +4044,44 @@ class Game:
         if height <= 0:
             return DEFAULT_ARMY_FLAG_ASPECT
         return icon.get_width() / height
+
+    def get_army_circle_hit(self, center_x, center_y, space='world'):
+        """
+        Get the VISIBLE army ring's circle - the one the player actually sees.
+
+        MapRenderer._draw_army_circle() draws the ring 25% smaller than
+        ARMY_CIRCLE_RADIUS and lifted above the anchor, so the flag pole sits
+        inside it. Hit-testing must use the same geometry.
+
+        Args:
+            center_x, center_y: Garrison anchor (flag-pole base) in `space` coords
+            space: 'world' for hit-testing, 'screen' for rendering
+
+        Returns:
+            (x, y, radius) of the drawn ring. y is LIFTED above the anchor.
+
+        The glow halo around the ring is deliberately excluded: it is a soft
+        alpha-35 decoration, not part of the object you are aiming at.
+        """
+        base_radius = ARMY_CIRCLE_RADIUS * self.get_ui_scale_factor()
+        radius = base_radius * ARMY_CIRCLE_DRAW_SCALE
+        lift = base_radius * ARMY_CIRCLE_DRAW_LIFT
+
+        if space == 'world':
+            inv_zoom = 1.0 / self.camera_zoom
+            radius *= inv_zoom
+            lift *= inv_zoom
+
+        return (center_x, center_y - lift, radius)
+
+    def point_in_army_circle(self, px, py, center_x, center_y, space='world'):
+        """
+        Check whether a point falls inside the drawn army ring.
+
+        The point and the anchor must be expressed in the SAME space.
+        """
+        circle_x, circle_y, radius = self.get_army_circle_hit(center_x, center_y, space)
+        return (px - circle_x) ** 2 + (py - circle_y) ** 2 <= radius * radius
 
     def get_army_banner_rect(self, center_x, center_y, player_index, army_count,
                              space='world'):
@@ -14390,11 +14422,6 @@ class Game:
         # This makes hover work correctly with camera offset and zoom!
         world_pos = self.screen_to_world(pos)
         
-        # Calculate army hover radius in world space that matches visual size
-        # (same calculation as click detection for consistency)
-        ui_scale = self.get_ui_scale_factor()
-        army_hover_radius_world = (ARMY_CIRCLE_RADIUS * ui_scale) / self.camera_zoom
-        
         # Only track territory/army hover when in map area (not top panel, bottom UI, or sidebar)
         sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
         in_sidebar = self.game_state.sidebar_expanded and pos[0] >= sidebar_x
@@ -14413,8 +14440,6 @@ class Game:
             # banner from a neighbouring territory that happens to overlap it.
             # Unlike clicking, hover considers EVERY garrison regardless of owner,
             # so allied/enemy stacks highlight too (existing behaviour, preserved).
-            hover_radius_sq = army_hover_radius_world * army_hover_radius_world
-
             # PERFORMANCE: index inbound animations once instead of rescanning the
             # animation list per territory (was O(T*A)).
             incoming_by_territory = {}
@@ -14443,9 +14468,8 @@ class Game:
                         continue
                     anchor_x, anchor_y, army_count = anchor
 
-                    distance_sq = ((world_pos[0] - anchor_x) ** 2 +
-                                   (world_pos[1] - anchor_y) ** 2)
-                    if distance_sq <= hover_radius_sq:
+                    if self.point_in_army_circle(world_pos[0], world_pos[1],
+                                                 anchor_x, anchor_y):
                         army_circle_hit = territory
                         break
 

@@ -748,6 +748,17 @@ missing the allied-reinforcement slot rule the other two had.
 sits ON the circle anchor and the banner hangs UPWARD: `top = anchor_y - height`,
 `bottom = anchor_y`. Never inline the ratio again.
 
+**Circle geometry:** the ring is NOT drawn at `ARMY_CIRCLE_RADIUS`. It is drawn at
+`ARMY_CIRCLE_DRAW_SCALE` (0.75) of it and lifted `ARMY_CIRCLE_DRAW_LIFT` (0.35) above the
+anchor, so the flag pole sits inside it. Use `get_army_circle_hit()` /
+`point_in_army_circle()` - never hit-test a full-radius circle centred on the anchor, which
+reaches 0.60 * radius (9-14 screen px) BELOW the visible ring and selects armies from empty
+map. The faint glow halo around the ring is decoration and is deliberately NOT clickable.
+
+**The anchor is the pole base, not the circle centre.** `scaled_centers[territory]` and
+`get_flag_positions_for_territory()` both give the pole base; the ring is drawn above it and
+the banner hangs above that.
+
 **Click priority is circle > plot > banner**, split across `handle_map_area_click()`:
 
 - PRIORITY 3 - `get_army_at_pos(world_pos, mode='circle')`

@@ -409,9 +409,10 @@ class MapRenderer:
             is_hovering: Whether mouse is hovering over this circle
             is_clicking: Whether this circle is being clicked/selected
         """
-        # 25% smaller circle, shifted up so flag sits inside it
-        draw_radius = int(radius * 0.75)
-        draw_y = y - int(radius * 0.35)
+        # Smaller circle, shifted up so the flag pole sits inside it.
+        # SHARED with hit-testing via Game.get_army_circle_hit() - keep in sync.
+        draw_radius = int(radius * ARMY_CIRCLE_DRAW_SCALE)
+        draw_y = y - int(radius * ARMY_CIRCLE_DRAW_LIFT)
 
         # Blit pre-cached glow halo centered at draw position
         glow = self._get_static_glow(color, draw_radius)
@@ -1142,9 +1143,9 @@ class MapRenderer:
                         flag_world_x, flag_world_y = flag_positions[garrison_position_idx]
                         glow_x, glow_y = self.game.world_to_screen((flag_world_x, flag_world_y))
 
-                # Align glow with the army circle (25% smaller, shifted up)
-                circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * 0.75)
-                circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * 0.35)
+                # Align glow with the drawn army circle (SHARED constants)
+                circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
+                circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
                 glow_y = glow_y - circle_y_offset
 
                 # Pulsing green glow effect (scales with zoom!)
@@ -1248,8 +1249,8 @@ class MapRenderer:
             # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
             is_hovering = False
             mouse_screen_x, mouse_screen_y = self.game.mouse_pos
-            distance_sq = (x - mouse_screen_x) ** 2 + (y - mouse_screen_y) ** 2
-            if distance_sq <= scaled_army_radius ** 2:
+            if self.game.point_in_army_circle(mouse_screen_x, mouse_screen_y,
+                                              x, y, space='screen'):
                 is_hovering = True
             elif num_garrisons <= 1:
                 # Banner is a hover target too, so the ring brightens anywhere the
@@ -1312,8 +1313,9 @@ class MapRenderer:
                     # Check for hover/click on this specific garrison
                     # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
                     garrison_is_hovering = False
-                    distance_to_flag_sq = (flag_screen_x - mouse_screen_x) ** 2 + (flag_screen_y - mouse_screen_y) ** 2
-                    if distance_to_flag_sq <= scaled_army_radius ** 2:
+                    if self.game.point_in_army_circle(mouse_screen_x, mouse_screen_y,
+                                                      flag_screen_x, flag_screen_y,
+                                                      space='screen'):
                         garrison_is_hovering = True
                     else:
                         # This garrison's banner is a hover target too. Each garrison in
