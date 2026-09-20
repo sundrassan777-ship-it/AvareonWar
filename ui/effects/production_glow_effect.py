@@ -46,6 +46,121 @@ RAY_BASE_BRIGHTNESS = 0.5  # Minimum brightness at ray tip (0.0-1.0, higher = br
 # PERFORMANCE: Number of pre-rendered rotation frames for sprite caching
 NUM_CACHED_FRAMES = 16
 
+# PERFORMANCE: Zoom quantization for the sprite cache.
+# Previously the cache key was the RAW continuous zoom float, so every effect
+# rebuilt all 16 frames on every distinct zoom value — i.e. every mouse-wheel
+# tick and every frame of a campaign intro zoom. With ~100 producing buildings
+# that is ~1,600 surface allocations and ~12,600 polygon draws in ONE frame,
+# measured at 150ms average / 214ms worst (6.6 FPS).
+# Rounding to 0.1 steps caps rebuilds at ~24 across the whole 1.65-4.0 range.
+ZOOM_QUANTIZE_STEPS = 10.0
+
+# Sprite frames depend ONLY on (quantized zoom, player colour): ray angles are
+# identical for every instance and frames are baked at full alpha (the pulse is
+# applied at blit time, not baked in). So all effects sharing a colour can share
+# one set of frames — turning ~100 rebuilds per zoom change into exactly one.
+_SHARED_SPRITE_CACHE = {}  # (zoom_key, player_color) -> (frames, surface_size)
+# Bounded so a long zoom sweep cannot grow the cache without limit. Only a few
+# zoom levels are live at once, so a small LRU keeps the hit rate high.
+_SHARED_SPRITE_CACHE_MAX = 16
+
+
+def _quantize_zoom(zoom_scale):
+    """Round zoom to the sprite-cache granularity (see ZOOM_QUANTIZE_STEPS)."""
+    return round(zoom_scale * ZOOM_QUANTIZE_STEPS) / ZOOM_QUANTIZE_STEPS
+
+
+def _build_shared_sprite_frames(zoom_key, player_color):
+    """
+    Build (and memoize) the 16 rotation frames for one (zoom, colour) pair.
+
+    Returns:
+        (frames, surface_size) — frames is a list of NUM_CACHED_FRAMES surfaces.
+    """
+    cache_key = (zoom_key, player_color)
+    cached = _SHARED_SPRITE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    scaled_ray_length = RAY_LENGTH * zoom_key
+    surface_size = max(50, int(scaled_ray_length * 2.5))
+    surface_center = surface_size // 2
+    scaled_base_width = RAY_BASE_WIDTH * zoom_key
+    scaled_tip_width = RAY_TIP_WIDTH * zoom_key
+    base_angles = [i * (2 * math.pi / NUM_RAYS) for i in range(NUM_RAYS)]
+
+    frames = []
+    for frame_idx in range(NUM_CACHED_FRAMES):
+        rotation = frame_idx * (2 * math.pi / NUM_CACHED_FRAMES)
+        surface = pygame.Surface((surface_size, surface_size), pygame.SRCALPHA)
+        for base_angle in base_angles:
+            # Render at full alpha — pulse variation (0.85-1.0) is subtle enough to skip
+            _draw_ray_on(surface, surface_center, surface_center, player_color,
+                         base_angle + rotation, scaled_ray_length,
+                         scaled_base_width, scaled_tip_width, 1.0)
+        frames.append(surface)
+
+    # Evict oldest entry when over budget (dicts preserve insertion order)
+    if len(_SHARED_SPRITE_CACHE) >= _SHARED_SPRITE_CACHE_MAX:
+        del _SHARED_SPRITE_CACHE[next(iter(_SHARED_SPRITE_CACHE))]
+
+    entry = (frames, surface_size)
+    _SHARED_SPRITE_CACHE[cache_key] = entry
+    return entry
+
+
+def _draw_ray_on(surface, cx, cy, player_color, angle, length,
+                 base_width, tip_width, pulse_alpha):
+    """
+    Draw a single ray with gradient fade onto a surface.
+
+    Module-level so the shared sprite cache can build frames without needing an
+    effect instance (frames are identical for every instance of a given colour).
+    """
+    r, g, b = player_color
+
+    # Draw ray as a series of trapezoids from base to tip; each segment fades
+    for i in range(RAY_SEGMENTS):
+        start_progress = i / RAY_SEGMENTS
+        end_progress = (i + 1) / RAY_SEGMENTS
+
+        start_dist = start_progress * length
+        end_dist = end_progress * length
+
+        start_width = base_width + (tip_width - base_width) * start_progress
+        end_width = base_width + (tip_width - base_width) * end_progress
+
+        # Alpha fades towards tip with base brightness floor
+        fade_factor = RAY_BASE_BRIGHTNESS + (1.0 - RAY_BASE_BRIGHTNESS) * (1.0 - start_progress ** 1.5)
+        alpha = int(255 * fade_factor * pulse_alpha)
+        if alpha < 5:
+            continue  # Skip nearly invisible segments
+
+        color_with_alpha = (r, g, b, alpha)
+
+        perp_angle = angle + math.pi / 2
+        cos_perp = math.cos(perp_angle)
+        sin_perp = math.sin(perp_angle)
+        cos_ray = math.cos(angle)
+        sin_ray = math.sin(angle)
+
+        start_x = cx + cos_ray * start_dist
+        start_y = cy + sin_ray * start_dist
+        end_x = cx + cos_ray * end_dist
+        end_y = cy + sin_ray * end_dist
+
+        half_start_w = start_width / 2
+        half_end_w = end_width / 2
+
+        points = [
+            (start_x - cos_perp * half_start_w, start_y - sin_perp * half_start_w),
+            (start_x + cos_perp * half_start_w, start_y + sin_perp * half_start_w),
+            (end_x + cos_perp * half_end_w, end_y + sin_perp * half_end_w),
+            (end_x - cos_perp * half_end_w, end_y - sin_perp * half_end_w),
+        ]
+
+        pygame.draw.polygon(surface, color_with_alpha, points)
+
 
 # ========================================
 # PRODUCTION GLOW EFFECT CLASS
@@ -136,29 +251,17 @@ class ProductionGlowEffect:
         return PULSE_MIN_ALPHA + (pulse_progress + 1) * 0.5 * alpha_range
 
     def _build_sprite_cache(self, zoom_scale):
-        """Pre-render rotation frames for fast rendering (avoids 64 polygon draws per frame)."""
-        scaled_ray_length = RAY_LENGTH * zoom_scale
-        surface_size = max(50, int(scaled_ray_length * 2.5))
-        surface_center = surface_size // 2
-        scaled_base_width = RAY_BASE_WIDTH * zoom_scale
-        scaled_tip_width = RAY_TIP_WIDTH * zoom_scale
+        """
+        Point this effect at the shared sprite frames for the given zoom.
 
-        self._sprite_cache = []
-        self._sprite_cache_zoom = zoom_scale
+        Frames are quantized and shared process-wide (see _build_shared_sprite_frames),
+        so N effects of the same colour cost ONE build instead of N.
+        """
+        zoom_key = _quantize_zoom(zoom_scale)
+        frames, surface_size = _build_shared_sprite_frames(zoom_key, tuple(self.player_color))
+        self._sprite_cache = frames
+        self._sprite_cache_zoom = zoom_key
         self._sprite_cache_size = surface_size
-
-        for frame_idx in range(NUM_CACHED_FRAMES):
-            rotation = frame_idx * (2 * math.pi / NUM_CACHED_FRAMES)
-            surface = pygame.Surface((surface_size, surface_size), pygame.SRCALPHA)
-
-            for ray_index, base_angle in enumerate(self.ray_base_angles):
-                current_angle = base_angle + rotation
-                # Render at full alpha — pulse variation (0.85-1.0) is subtle enough to skip
-                self._draw_ray(surface, surface_center, surface_center,
-                               current_angle, scaled_ray_length, scaled_base_width,
-                               scaled_tip_width, 1.0)
-
-            self._sprite_cache.append(surface)
 
     def render(self, screen, world_to_screen_func=None, zoom_scale=1.0):
         """
@@ -181,8 +284,11 @@ class ProductionGlowEffect:
             self.center_y < -margin or self.center_y > screen.get_height() + margin):
             return
 
-        # PERFORMANCE: Rebuild sprite cache when zoom changes (16 pre-rendered frames)
-        if self._sprite_cache_zoom != zoom_scale:
+        # PERFORMANCE: Re-point at the shared sprite frames only when the QUANTIZED
+        # zoom changes. Comparing against the raw float here meant every effect
+        # rebuilt 16 frames on every wheel tick / animation frame (150ms+ frames).
+        zoom_key = _quantize_zoom(zoom_scale)
+        if self._sprite_cache_zoom != zoom_key or not self._sprite_cache:
             self._build_sprite_cache(zoom_scale)
 
         # Pick nearest cached frame by rotation angle (single blit instead of 64 polygon draws)
@@ -196,76 +302,6 @@ class ProductionGlowEffect:
         blit_y = int(self.center_y - surface_center)
         screen.blit(cached_frame, (blit_x, blit_y))
 
-    def _draw_ray(self, surface, cx, cy, angle, length, base_width, tip_width, pulse_alpha):
-        """
-        Draw a single ray with gradient fade.
-
-        Args:
-            surface: Surface to draw on
-            cx, cy: Center position
-            angle: Ray direction in radians
-            length: Ray length in pixels
-            base_width: Width at base
-            tip_width: Width at tip
-            pulse_alpha: Current pulse opacity multiplier
-        """
-        r, g, b = self.player_color
-
-        # Draw ray as a series of trapezoids from base to tip
-        # Each segment fades in opacity
-        for i in range(RAY_SEGMENTS):
-            # Progress along the ray (0.0 = base, 1.0 = tip)
-            start_progress = i / RAY_SEGMENTS
-            end_progress = (i + 1) / RAY_SEGMENTS
-
-            # Distance from center
-            start_dist = start_progress * length
-            end_dist = end_progress * length
-
-            # Width at this segment (linear interpolation)
-            start_width = base_width + (tip_width - base_width) * start_progress
-            end_width = base_width + (tip_width - base_width) * end_progress
-
-            # Alpha fades towards tip with base brightness floor
-            # RAY_BASE_BRIGHTNESS ensures tips stay visible (0.5 = 50% brightness at tip)
-            fade_factor = RAY_BASE_BRIGHTNESS + (1.0 - RAY_BASE_BRIGHTNESS) * (1.0 - start_progress ** 1.5)
-            segment_alpha = fade_factor * pulse_alpha
-            alpha = int(255 * segment_alpha)
-
-            if alpha < 5:
-                continue  # Skip nearly invisible segments
-
-            color_with_alpha = (r, g, b, alpha)
-
-            # Calculate the 4 corners of this segment
-            # Perpendicular direction for width
-            perp_angle = angle + math.pi / 2
-            cos_perp = math.cos(perp_angle)
-            sin_perp = math.sin(perp_angle)
-            cos_ray = math.cos(angle)
-            sin_ray = math.sin(angle)
-
-            # Start edge (closer to center)
-            start_x = cx + cos_ray * start_dist
-            start_y = cy + sin_ray * start_dist
-
-            # End edge (further from center)
-            end_x = cx + cos_ray * end_dist
-            end_y = cy + sin_ray * end_dist
-
-            # 4 corners of the trapezoid
-            half_start_w = start_width / 2
-            half_end_w = end_width / 2
-
-            points = [
-                (start_x - cos_perp * half_start_w, start_y - sin_perp * half_start_w),
-                (start_x + cos_perp * half_start_w, start_y + sin_perp * half_start_w),
-                (end_x + cos_perp * half_end_w, end_y + sin_perp * half_end_w),
-                (end_x - cos_perp * half_end_w, end_y - sin_perp * half_end_w),
-            ]
-
-            pygame.draw.polygon(surface, color_with_alpha, points)
-
     def update_color(self, new_color):
         """
         Update the player color (in case territory ownership changes).
@@ -273,7 +309,14 @@ class ProductionGlowEffect:
         Args:
             new_color: New (r, g, b) color tuple
         """
+        if tuple(new_color) == tuple(self.player_color):
+            return
         self.player_color = new_color
+        # Sprite frames are keyed on colour as well as zoom, so drop this effect's
+        # reference and let render() pick up the frames for the new colour. Without
+        # this the glow kept the previous owner's colour until the zoom changed.
+        self._sprite_cache = []
+        self._sprite_cache_zoom = None
 
     def is_finished(self):
         """

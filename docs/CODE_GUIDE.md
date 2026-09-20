@@ -1434,8 +1434,29 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `_text_cache` (main.py) - Cache static text: `self._get_cached_text(text, font, color)` — used by 128+ call sites
 - `_rotated_tab_text_cache` (main.py) - Cache rotated text surfaces
 - `text_cache` (ui_renderer.py) - UIRenderer's own text cache: `self._get_cached_text(text, font, color)`
-- `_sprite_cache` (production_glow_effect.py) - 16 pre-rendered rotation frames, rebuilt on zoom change
+- `_SHARED_SPRITE_CACHE` (production_glow_effect.py) - 16 pre-rendered rotation frames, keyed by `(quantized_zoom, player_color)` and **shared process-wide** across all effect instances (bounded LRU). Instances hold a reference via `_sprite_cache`.
 - `_scaled_text_cache` (turn_announcement_effect.py) - Smoothscale cache by quantized (width, height)
+
+**Always `.convert()` / `.convert_alpha()` loaded images — including backgrounds:**
+- An unconverted surface stays in *file* pixel format, so **every blit** of it (or of anything
+  scaled from it) performs a per-pixel format conversion. Measured on the 4096x3072 map:
+  **9.26ms per frame unconverted vs 0.15ms converted.**
+- `transform.scale()` / `smoothscale()` output **inherits the source format**, so converting
+  the original is what matters — converting the scaled copy is too late.
+- Map backgrounds load through `_load_map_background()` (main.py), which uses `.convert()`
+  (opaque bottom layer). **New map backgrounds must be fully opaque**; transparency would be
+  flattened rather than blended. Use `.convert_alpha()` for anything that needs real alpha.
+- `.convert()` bakes in the *current display's* pixel format — **re-convert after any
+  `set_mode()`** (resolution, fullscreen, or flag change), as `apply_display_settings()` does.
+
+**Never key a cache on a raw continuous float (quantize it):**
+- Keying on an un-quantized zoom/scale/alpha float means the cache **never hits** while that
+  value animates. `ProductionGlowEffect` keyed its sprite cache on the raw zoom and so rebuilt
+  16 surfaces per effect per zoom change — ~150ms frames with ~100 producing buildings.
+- Quantize the key (glow: 0.1 zoom steps; flags: 5px; static glows: 3px) and, where the cached
+  result depends only on shared inputs, share one cache across instances rather than per-object.
+- Known remaining instances of this bug: `battleeffect.py` and `alliance_marker_effect.py`
+  cache on a continuously-animated scale float, so they `smoothscale` every frame.
 
 **Surface reuse:**
 - `_get_overlay_surface()` (ui_renderer.py) - Reusable full-screen SRCALPHA surface for modals

@@ -154,6 +154,44 @@ def _load_app_icon():
     return _app_icon
 
 
+def _load_map_background(map_path):
+    """
+    Load a map background image in DISPLAY format.
+
+    PERFORMANCE — this .convert() is worth ~9ms on EVERY frame:
+    The map was the one asset in this file never converted (every other image uses
+    .convert_alpha()). An unconverted 4096x3072 RGBA surface stays in *file* format,
+    and transform.scale()/smoothscale() output inherits that format — so the
+    per-frame `screen.blit(scaled_map, ...)` became a per-pixel format conversion
+    plus alpha blend of ~1.4M pixels. Measured on assets/map.png at viewport size:
+
+        unconverted RGBA blit : 9.26 ms   <- ~74% of a 12.5ms (80 FPS) frame budget
+        .convert() blit       : 0.15 ms
+        .convert_alpha() blit : 0.74 ms
+
+    A map background is the bottom layer — it is blitted over a filled screen and
+    nothing shows through it — so it is treated as opaque and uses .convert().
+    Both shipped backgrounds (assets/map.png, maps/azincournean_highlands/map.png)
+    were verified fully opaque (0 non-opaque pixels). New map backgrounds must
+    likewise be opaque; transparency in one would be flattened, not blended.
+
+    Args:
+        map_path: Path to the background image, or None for the dark fallback.
+
+    Returns:
+        pygame.Surface in display format (never None).
+    """
+    if map_path and os.path.exists(map_path):
+        try:
+            return pygame.image.load(map_path).convert()
+        except pygame.error as exc:
+            logger.error(f"Error loading map background '{map_path}': {exc}")
+    # Fallback: dark surface for maps without background images
+    fallback = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT)).convert()
+    fallback.fill((0, 0, 0))
+    return fallback
+
+
 def _set_app_icon():
     """Re-apply window and taskbar icon after any pygame.display.set_mode() call.
     Uses both pygame.display.set_icon (title bar) and Win32 SendMessage
@@ -352,13 +390,9 @@ class Game:
 
             logger.info(f"Loading map: {map_path}")
 
-            if map_path and os.path.exists(map_path):
-                # Load original high-resolution image (4096×3072)
-                self.map_image_original = pygame.image.load(map_path)
-            else:
-                # Fallback: dark surface for maps without background images
-                self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-                self.map_image_original.fill((0, 0, 0))
+            # Load original high-resolution image (4096×3072) in display format.
+            # The .convert() inside _load_map_background saves ~9ms per frame.
+            self.map_image_original = _load_map_background(map_path)
 
             # Create scaled version for initial display
             # But keep original for high-quality zooming!
@@ -366,8 +400,7 @@ class Game:
         except pygame.error as e:
             logger.error(f"Error loading map: {e}")
             # Last-resort fallback
-            self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-            self.map_image_original.fill((0, 0, 0))
+            self.map_image_original = _load_map_background(None)
             self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
         
         # Load bottom panel background image
@@ -626,16 +659,13 @@ class Game:
                 map_path = None
 
             try:
-                if map_path and os.path.exists(map_path):
-                    self.map_image_original = pygame.image.load(map_path)
-                else:
-                    self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-                    self.map_image_original.fill((0, 0, 0))
+                # Display-format load (see _load_map_background) — applies to every
+                # map, including Azincournean Highlands and future backgrounds.
+                self.map_image_original = _load_map_background(map_path)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
             except pygame.error as e:
                 logger.error(f"Error reloading map image for '{map_id}': {e}")
-                self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-                self.map_image_original.fill((0, 0, 0))
+                self.map_image_original = _load_map_background(None)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
 
         # Rescale polygons from the newly loaded map_data globals
@@ -4146,12 +4176,22 @@ class Game:
             }
             self.ui_renderer.update_layout(layout_values)
             
+            # Re-convert the map to the NEW display format before rescaling.
+            # .convert() bakes in the pixel format of the display that was current
+            # at load time; set_mode() above may have changed it (resolution,
+            # fullscreen, or the SCALED/vsync flags). Skipping this would silently
+            # reintroduce the ~9ms-per-frame unconverted blit after a settings change.
+            try:
+                self.map_image_original = self.map_image_original.convert()
+            except pygame.error as e:
+                logger.warning(f"Could not re-convert map image after display change: {e}")
+
             # Rescale map image from original (ensures high quality)
             self.map_image = pygame.transform.scale(
                 self.map_image_original,
                 (self.map_width, self.map_height)
             )
-            
+
             # Rescale polygons (using round() to match __init__ for smoother edges)
             for territory, polygon in map_data.TERRITORY_POLYGONS.items():
                 self.scaled_polygons[territory] = [

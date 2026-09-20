@@ -2,6 +2,51 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-20 - Performance: map background .convert() + shared production-glow sprite cache
+
+Two fixes with large, measured FPS impact. Benchmarks: `py -m pytest tests/test_fps_benchmark.py -v -s`
+
+- **Map background was never `.convert()`ed** (`main.py`) — the only image in the file
+  not converted to display format. An unconverted 4096x3072 RGBA surface stays in *file*
+  format and `transform.scale()` output inherits it, so the per-frame `screen.blit()` of
+  the map was a per-pixel format conversion + alpha blend of ~1.4M pixels.
+  - Measured blit of the scaled map: **9.26ms unconverted → 0.15ms converted** (`.convert_alpha()` = 0.74ms).
+  - Both shipped backgrounds verified fully opaque (0 non-opaque pixels), so `.convert()` is
+    lossless here. New map backgrounds must be opaque.
+  - Centralized in `_load_map_background()`, used by `Game.__init__` and `_reload_map_assets()`
+    (so it applies to Azincournean Highlands and future maps, including the black fallback).
+  - `apply_display_settings()` now re-converts after `set_mode()`, since `.convert()` bakes in
+    the display's pixel format and a resolution/fullscreen change can invalidate it.
+- **ProductionGlowEffect rebuilt its 16-frame sprite cache on every zoom change**
+  (`ui/effects/production_glow_effect.py`) — the cache key was the *raw continuous zoom float*,
+  so every producing building rebuilt all 16 frames on every mouse-wheel tick and every frame
+  of a campaign intro zoom. With ~100 producing buildings that is ~1,600 surface allocations
+  and ~12,600 polygon draws in a single frame.
+  - Zoom is now quantized to 0.1 steps (`ZOOM_QUANTIZE_STEPS`), capping rebuilds at ~24 across
+    the whole 1.65-4.0 zoom range.
+  - Sprite frames depend only on `(quantized zoom, player colour)` — ray angles are identical
+    per instance and frames are baked at full alpha — so they are now shared process-wide via
+    `_SHARED_SPRITE_CACHE` (bounded LRU). ~100 rebuilds per zoom change become **one**.
+  - **Bug fix:** `update_color()` did not invalidate the cache, so a glow kept the previous
+    owner's colour after a territory changed hands until the zoom happened to change.
+  - Removed the now-duplicated instance `_draw_ray()` (superseded by module-level `_draw_ray_on()`).
+
+**Measured results (1600x900, before → after):**
+
+| Scenario | Before | After |
+|---|---|---|
+| Zooming with 99 production glows | 6.6 FPS (213.9ms worst) | **19.7 FPS** (63.6ms worst) |
+| Static @ max zoom | 66.1 FPS | **211.7 FPS** |
+| Campaign-intro zoom sweep | 50.0 FPS | **119.3 FPS** |
+| Panning @ zoom 3.0 | 39.9 FPS | **69.8 FPS** |
+| 107 buildings on map | 64.3 FPS | **163.7 FPS** |
+| 171 banners on map | 59.4 FPS | **137.5 FPS** |
+
+Mouse-wheel zoom (16.9 → 20.5 FPS) remains the weakest scenario; it is dominated by the
+full-map rescale, addressed separately.
+
+- Files: `main.py`, `ui/effects/production_glow_effect.py`
+
 ## 2026-09-20 - Fixed: FPS benchmark suite could not run (NameError)
 
 - **Bug:** All 8 tests in `tests/test_fps_benchmark.py` errored at setup with `NameError: name '_set_app_icon' is not defined`, making the performance suite completely unrunnable.
