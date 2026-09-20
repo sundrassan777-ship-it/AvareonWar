@@ -87,6 +87,12 @@ class MapRenderer:
         self.scaled_flag_cache = {}
         # Cache scaled building icons: key = (building_type, size)
         self.scaled_building_cache = {}
+        # Grey-tinted variants for buildings not owned by the viewing player.
+        # Keyed the same way (building_type, size) — see get_cached_greyed_building().
+        self.greyed_building_cache = {}
+        # Pre-rendered 3-ring plot borders, keyed by (radius, player_color).
+        self._plot_chrome_cache = {}
+        self._PLOT_CHROME_CACHE_MAX = 64
         # Cache scaled plot icons: key = (plot_icon_name, size)
         self.scaled_plot_cache = {}
         # Cache scaled unit training icons: key = (unit_type, size)
@@ -505,6 +511,60 @@ class MapRenderer:
         scaled_icon = pygame.transform.smoothscale(building_icon, (size, size))
         self.scaled_building_cache[cache_key] = scaled_icon
         return scaled_icon
+
+    def _blit_plot_chrome(self, x, y, radius, player_color):
+        """
+        Draw the three-ring border around a completed plot, from a cached surface.
+
+        FPS OPT: this was three `pygame.draw.circle` calls per completed plot, every
+        frame (~0.87ms for 228 plots). The rings depend only on (radius, colour), so
+        they are pre-rendered once per combination and blitted.
+        """
+        cache_key = (radius, player_color)
+        chrome = self._plot_chrome_cache.get(cache_key)
+        if chrome is None:
+            size = radius * 2 + 2
+            centre = size // 2
+            chrome = pygame.Surface((size, size), pygame.SRCALPHA)
+            pygame.draw.circle(chrome, BLACK, (centre, centre), radius, 1)
+            pygame.draw.circle(chrome, player_color, (centre, centre), radius - 1, 3)
+            pygame.draw.circle(chrome, BLACK, (centre, centre), radius - 4, 1)
+            if len(self._plot_chrome_cache) > self._PLOT_CHROME_CACHE_MAX:
+                self._plot_chrome_cache.clear()
+            self._plot_chrome_cache[cache_key] = chrome
+
+        self.game.screen.blit(chrome, chrome.get_rect(center=(x, y)))
+
+    def get_cached_greyed_building(self, building_type, building_icon, size):
+        """
+        Get the GREYED (not-owned-by-viewer) variant of a scaled building icon.
+
+        FPS OPT: `_render_completed_plot` used to build this per plot, per frame —
+        `cached_icon.copy()` plus a pooled overlay fill plus a BLEND_RGBA_MULT blit.
+        On a crowded map most buildings belong to someone else, so that ran for
+        nearly every visible building every frame. The result depends only on
+        (building_type, size), so it caches exactly like the plain scaled icon.
+
+        Args:
+            building_type: Type of building (e.g. 'Farm', 'Barracks')
+            building_icon: The unscaled source icon
+            size: Target size (width and height)
+
+        Returns:
+            Scaled, grey-tinted building surface
+        """
+        cache_key = (building_type, size)
+
+        if cache_key in self.greyed_building_cache:
+            return self.greyed_building_cache[cache_key]
+
+        base = self.get_cached_scaled_building(building_type, building_icon, size)
+        greyed = base.copy()
+        grey_overlay = pygame.Surface((size, size), pygame.SRCALPHA)
+        grey_overlay.fill((128, 128, 128, 180))
+        greyed.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        self.greyed_building_cache[cache_key] = greyed
+        return greyed
 
     def get_cached_scaled_plot(self, plot_icon_name, plot_icon, size):
         """
@@ -3015,6 +3075,13 @@ class MapRenderer:
             if owner < 0:
                 continue
 
+            # FPS OPT: skip whole off-screen territories BEFORE projecting their plots.
+            # The per-plot off-screen test below only ran after get_cached_screen_plots()
+            # had already projected every plot, so zoomed-in views still paid for the
+            # ~90% of territories that are nowhere near the viewport.
+            if not self.is_territory_on_screen(territory):
+                continue
+
             # Get cached screen positions for this territory (single lookup)
             screen_plots = self.get_cached_screen_plots(territory)
 
@@ -3113,15 +3180,19 @@ class MapRenderer:
             building_icon = self.game.building_icons[icon_building]
             icon_size = int(scaled_empty_plot_radius * 2)
             cached_icon = self.get_cached_scaled_building(icon_building, building_icon, icon_size)
-            needs_effects = (owner != current_player or is_clicking or is_hovering)
+            # FPS OPT: the greyed (not-owned) variant is fully cacheable — it depends
+            # only on (building_type, icon_size). Only hover/click, which apply to at
+            # most one plot, still need a per-frame copy. Previously EVERY non-owned
+            # building did copy + overlay fill + BLEND_RGBA_MULT every frame.
+            is_greyed = (owner != current_player)
+            needs_effects = (is_clicking or is_hovering)
 
             if needs_effects:
-                display_icon = cached_icon.copy()
-                if owner != current_player:
-                    grey_overlay = self.get_reusable_surface(icon_size, icon_size)
-                    grey_overlay.fill((128, 128, 128, 180))
-                    display_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                    self.return_surface_to_pool(grey_overlay)
+                if is_greyed:
+                    display_icon = self.get_cached_greyed_building(
+                        icon_building, building_icon, icon_size).copy()
+                else:
+                    display_icon = cached_icon.copy()
                 if is_clicking:
                     bright_overlay = self.get_reusable_surface(icon_size, icon_size)
                     bright_overlay.fill((100, 100, 100, 100))
@@ -3132,6 +3203,10 @@ class MapRenderer:
                     light_overlay.fill((50, 50, 50, 50))
                     display_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
                     self.return_surface_to_pool(light_overlay)
+            elif is_greyed:
+                # Cached grey variant — no per-frame copy or blend
+                display_icon = self.get_cached_greyed_building(
+                    icon_building, building_icon, icon_size)
             else:
                 display_icon = cached_icon
 
@@ -3142,11 +3217,9 @@ class MapRenderer:
             letter_rect = letter_surface.get_rect(center=(x, y))
             self.game.screen.blit(letter_surface, letter_rect)
 
-        # Draw layered border
+        # Draw layered border (cached: 3 draw.circle calls per plot, per frame)
         player_color = self.game.game_state.get_player_color(owner)
-        pygame.draw.circle(self.game.screen, BLACK, (x, y), scaled_empty_plot_radius, 1)
-        pygame.draw.circle(self.game.screen, player_color, (x, y), scaled_empty_plot_radius - 1, 3)
-        pygame.draw.circle(self.game.screen, BLACK, (x, y), scaled_empty_plot_radius - 4, 1)
+        self._blit_plot_chrome(x, y, scaled_empty_plot_radius, player_color)
 
         # Selection glow
         is_selected_hero_keep = False
