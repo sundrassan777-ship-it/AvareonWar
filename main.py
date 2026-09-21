@@ -72,6 +72,7 @@ from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
 from config.font_manager import FontManager
 from steam_integration import steam_manager
+from display_utils import set_display_mode, resolve_frame_cap, current_surface
 # Import sparkle version of turn announcement (can switch back to turn_announcement_effect if needed)
 from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
 from ui.effects.chat_notification_effect import ChatNotificationEffect
@@ -125,6 +126,115 @@ UIConstants.update_sidebar_height(_ui_layout['sidebar_height'])
 # ========================================
 
 
+# ========================================
+# WINDOW / TASKBAR ICON
+# ========================================
+# These live at MODULE level (not inside `if __name__ == "__main__"`) because
+# Game.__init__ and every pygame.display.set_mode() site call _set_app_icon().
+# When main.py is imported rather than run as a script (tests, benchmarks, tools),
+# the __main__ block never executes — previously leaving _set_app_icon undefined
+# and raising NameError on Game() construction.
+
+_app_icon = None
+_ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'icon.ico')
+
+
+def _load_app_icon():
+    """
+    Load the window/taskbar icon once and cache it in the module-level _app_icon.
+
+    Safe to call before pygame.display is initialized — pygame.image.load()
+    does not require a display surface. Returns None if the icon is missing.
+    """
+    global _app_icon
+    if _app_icon is None:
+        try:
+            _app_icon = pygame.image.load(_ico_path)
+        except Exception:
+            _app_icon = None
+    return _app_icon
+
+
+def _load_map_background(map_path):
+    """
+    Load a map background image in DISPLAY format.
+
+    PERFORMANCE — this .convert() is worth ~9ms on EVERY frame:
+    The map was the one asset in this file never converted (every other image uses
+    .convert_alpha()). An unconverted 4096x3072 RGBA surface stays in *file* format,
+    and transform.scale()/smoothscale() output inherits that format — so the
+    per-frame `screen.blit(scaled_map, ...)` became a per-pixel format conversion
+    plus alpha blend of ~1.4M pixels. Measured on assets/map.png at viewport size:
+
+        unconverted RGBA blit : 9.26 ms   <- ~74% of a 12.5ms (80 FPS) frame budget
+        .convert() blit       : 0.15 ms
+        .convert_alpha() blit : 0.74 ms
+
+    A map background is the bottom layer — it is blitted over a filled screen and
+    nothing shows through it — so it is treated as opaque and uses .convert().
+    Both shipped backgrounds (assets/map.png, maps/azincournean_highlands/map.png)
+    were verified fully opaque (0 non-opaque pixels). New map backgrounds must
+    likewise be opaque; transparency in one would be flattened, not blended.
+
+    Args:
+        map_path: Path to the background image, or None for the dark fallback.
+
+    Returns:
+        pygame.Surface in display format (never None).
+    """
+    if map_path and os.path.exists(map_path):
+        try:
+            return pygame.image.load(map_path).convert()
+        except pygame.error as exc:
+            logger.error(f"Error loading map background '{map_path}': {exc}")
+    # Fallback: dark surface for maps without background images
+    fallback = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT)).convert()
+    fallback.fill((0, 0, 0))
+    return fallback
+
+
+def _set_app_icon():
+    """Re-apply window and taskbar icon after any pygame.display.set_mode() call.
+    Uses both pygame.display.set_icon (title bar) and Win32 SendMessage
+    WM_SETICON (taskbar) to ensure the icon persists through display recreation."""
+    icon = _load_app_icon()
+    if icon is not None:
+        try:
+            pygame.display.set_icon(icon)
+        except Exception:
+            pass
+    # Force taskbar icon via Win32 API (pygame.display.set_icon only sets title bar)
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            _ICON_SMALL, _ICON_BIG = 0, 1
+            _WM_SETICON = 0x0080
+            _IMAGE_ICON = 1
+            _LR_LOADFROMFILE = 0x0010
+            hwnd = pygame.display.get_wm_info()['window']
+            # Use system metrics for DPI-correct icon sizes (e.g. 48x48 on 150% scaling)
+            _SM_CXICON, _SM_CYICON = 11, 12      # Large icon (taskbar, Alt+Tab)
+            _SM_CXSMICON, _SM_CYSMICON = 49, 50   # Small icon (title bar)
+            big_w = user32.GetSystemMetrics(_SM_CXICON) or 32
+            big_h = user32.GetSystemMetrics(_SM_CYICON) or 32
+            small_w = user32.GetSystemMetrics(_SM_CXSMICON) or 16
+            small_h = user32.GetSystemMetrics(_SM_CYSMICON) or 16
+            # Large icon (taskbar)
+            hicon_big = user32.LoadImageW(
+                None, _ico_path, _IMAGE_ICON, big_w, big_h, _LR_LOADFROMFILE)
+            if hicon_big:
+                user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, hicon_big)
+            # Small icon (title bar)
+            hicon_small = user32.LoadImageW(
+                None, _ico_path, _IMAGE_ICON, small_w, small_h, _LR_LOADFROMFILE)
+            if hicon_small:
+                user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, hicon_small)
+        except Exception:
+            pass
+
+
 class Game:
     def __init__(self, existing_screen=None, network_connection=None, campaign_map=None):
         # campaign_map: optional path to a campaign-specific map image (e.g., 'assets/CampaignMaps/Campaign1Map.png')
@@ -169,6 +279,15 @@ class Game:
         initial_width = initial_resolution[0]
         initial_height = initial_resolution[1]
 
+        # Frame pacing settings. vsync_active records what the display ACTUALLY
+        # achieved — it cannot be read back from the surface, because get_flags()
+        # does not report the SCALED bit (see display_utils).
+        self.vsync = settings.get('vsync', False)
+        self.fps_limit = settings.get('fps_limit', 0)
+        self.vsync_active = False
+        # Float frame clock for delta_time (Clock.get_time() is integer ms)
+        self._last_frame_time = time.perf_counter()
+
         # Use existing screen if provided (for seamless transitions)
         if existing_screen is not None:
             logger.info("Reusing existing screen for seamless transition")
@@ -179,21 +298,22 @@ class Game:
             current_flags = self.screen.get_flags()
             current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
 
-            # Only recreate if settings changed
+            # Only recreate if settings changed. NOTE: vsync state is deliberately
+            # not compared here — it is unreadable from the surface, and the menu
+            # that handed us this screen already created it with the right mode.
             if current_size != (initial_width, initial_height) or current_is_fullscreen != initial_fullscreen:
                 logger.info(f"Adjusting screen from {current_size} to {initial_width}x{initial_height}")
-                if initial_fullscreen:
-                    self.screen = pygame.display.set_mode((initial_width, initial_height), pygame.FULLSCREEN)
-                else:
-                    self.screen = pygame.display.set_mode((initial_width, initial_height))
+                self.screen, self.vsync_active = set_display_mode(
+                    (initial_width, initial_height), initial_fullscreen, self.vsync)
+            else:
+                # Inherited an already-correct surface; trust the saved setting.
+                self.vsync_active = self.vsync
         else:
             # Create new screen
-            if initial_fullscreen:
-                logger.info(f"Starting game in FULLSCREEN at {initial_width}x{initial_height}")
-                self.screen = pygame.display.set_mode((initial_width, initial_height), pygame.FULLSCREEN)
-            else:
-                logger.info(f"Starting game in WINDOWED at {initial_width}x{initial_height}")
-                self.screen = pygame.display.set_mode((initial_width, initial_height))
+            logger.info(f"Starting game in {'FULLSCREEN' if initial_fullscreen else 'WINDOWED'} "
+                        f"at {initial_width}x{initial_height}")
+            self.screen, self.vsync_active = set_display_mode(
+                (initial_width, initial_height), initial_fullscreen, self.vsync)
         pygame.display.set_caption("War of Avareon")
         _set_app_icon()  # Re-apply icon after display recreation
         pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
@@ -281,13 +401,9 @@ class Game:
 
             logger.info(f"Loading map: {map_path}")
 
-            if map_path and os.path.exists(map_path):
-                # Load original high-resolution image (4096×3072)
-                self.map_image_original = pygame.image.load(map_path)
-            else:
-                # Fallback: dark surface for maps without background images
-                self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-                self.map_image_original.fill((0, 0, 0))
+            # Load original high-resolution image (4096×3072) in display format.
+            # The .convert() inside _load_map_background saves ~9ms per frame.
+            self.map_image_original = _load_map_background(map_path)
 
             # Create scaled version for initial display
             # But keep original for high-quality zooming!
@@ -295,8 +411,7 @@ class Game:
         except pygame.error as e:
             logger.error(f"Error loading map: {e}")
             # Last-resort fallback
-            self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-            self.map_image_original.fill((0, 0, 0))
+            self.map_image_original = _load_map_background(None)
             self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
         
         # Load bottom panel background image
@@ -473,8 +588,12 @@ class Game:
         # Start-game camera animation (zoom to player's starting territory)
         # Created in initialize_game() for Custom Game and Multiplayer modes
         self.start_camera_animation = None
-        # FPS OPT: Flag indicating a zoom animation is active — rendering pipeline
-        # uses this to skip expensive operations (smoothscale, overlay rebuild)
+        # Flag indicating a zoom animation (start/campaign animation, or mouse-wheel
+        # settle) is active. NOTE: the old comment here claimed the rendering pipeline
+        # used this to "skip expensive operations (smoothscale, overlay rebuild)" —
+        # that was never true of the overlay (map_renderer.py has never read this
+        # flag), and the smoothscale downgrade is gone now that the map rescale is
+        # viewport-sized. Kept as camera state for animation-aware logic.
         self.is_zoom_animating = False
 
         # Phase 4A: Initialize all attributes to defaults so hasattr() guards are unnecessary.
@@ -555,17 +674,21 @@ class Game:
                 map_path = None
 
             try:
-                if map_path and os.path.exists(map_path):
-                    self.map_image_original = pygame.image.load(map_path)
-                else:
-                    self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-                    self.map_image_original.fill((0, 0, 0))
+                # Display-format load (see _load_map_background) — applies to every
+                # map, including Azincournean Highlands and future backgrounds.
+                self.map_image_original = _load_map_background(map_path)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
             except pygame.error as e:
                 logger.error(f"Error reloading map image for '{map_id}': {e}")
-                self.map_image_original = pygame.Surface((ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT))
-                self.map_image_original.fill((0, 0, 0))
+                self.map_image_original = _load_map_background(None)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
+
+            # Drop the viewport map cache so the new background is picked up even if
+            # the camera happens to be in exactly the same position.
+            self.cached_scaled_map = None
+            self.cached_zoom_level = None
+            self._map_view_key = None
+            self._map_view_surface = None
 
         # Rescale polygons from the newly loaded map_data globals
         self.scaled_polygons = {}
@@ -1258,6 +1381,8 @@ class Game:
         # Temporary settings (for Options menu - applied on Apply button)
         self.temp_resolution = self.current_resolution
         self.temp_fullscreen = self.is_fullscreen
+        self.temp_vsync = self.vsync
+        self.temp_fps_limit = self.fps_limit
         
         # Army Composition UI (Phase 3)
         self.show_army_composition = False  # Is composition UI visible?
@@ -1266,6 +1391,16 @@ class Game:
         self.selected_army_units = []  # List of selected unit IDs within composition
         self.army_composition_buttons = []  # List of (rect, unit_id) for click detection
         self.hovered_composition_button = None  # Which button is being hovered (for tooltip)
+
+        # Unit right-click context menu (mouse-only alternative to CTRL+click multi-select)
+        # Purpose: right-clicking a unit icon in the composition strip opens a small drop-down
+        # with Select / Add to Group / Remove from Group / Cancel, so partial selections can be
+        # built without the keyboard.
+        # Format: {'unit_id': int, 'territory': str, 'player': int, 'anchor': pygame.Rect,
+        #          'items': [(action_id, label), ...]} or None when closed.
+        # 'items' is frozen at open time so labels can't flip while the menu is on screen.
+        self.unit_context_menu = None
+        self.unit_context_menu_rects = []  # List of (rect, action_id), rebuilt every draw
 
         # Track current player to detect turn changes
         self.previous_player = 0  # Will be set properly when game_state is initialized
@@ -1402,9 +1537,17 @@ class Game:
         self.panel_renderer = PanelRenderer(self)
         
         # Map scaling cache (optimization: avoid rescaling every frame)
-        self.cached_scaled_map = None     # Cached scaled map image
+        self.cached_scaled_map = None     # Legacy full-map cache (kept for compatibility)
         self.cached_zoom_level = None     # Zoom level of cached map
-        
+        # Viewport map cache — see _blit_map_background(). Holds a viewport-sized
+        # slice plus a margin, in scaled-map space, as
+        # (source id, zoom, region_x0, region_y0, region_x1, region_y1).
+        # Panning within the margin re-blits at a new screen offset (no rescale);
+        # a rebuild happens only when the view leaves the margin or zoom changes.
+        self._map_view_key = None
+        self._map_view_surface = None
+        self._map_view_offset = (0, 0)
+
         # Camera debug state
         self.debug_edge_scroll = None
         self.debug_keyboard_scroll = None
@@ -3688,122 +3831,78 @@ class Game:
                 return territory
         return None
     
-    def get_army_at_pos(self, pos):
+    def get_army_at_pos(self, pos, mode='both'):
         """
-        Check if clicking on an army circle or flag icon.
+        Check if a point lands on an army circle or its banner.
 
-        Now supports multi-garrison territories - checks if current player has a garrison
-        in the territory, not just if they own it. For multi-garrison territories, each
-        garrison has its own flag position and click area.
+        Supports multi-garrison territories (allied reinforcement): each garrison
+        has its own flag position, circle and banner.
 
         Args:
             pos: (x, y) tuple in WORLD coordinates (not screen coordinates!)
                  Caller should convert screen to world before calling this.
+            mode: Which shapes to test -
+                  'circle' -> army circles only
+                  'banner' -> banner rects only
+                  'both'   -> circles across ALL territories first, then banners
 
         Returns:
-            (territory, player_index) tuple if click is on a garrison, None otherwise
-            For backward compatibility when unpacking fails, returns just territory name
+            (territory, player_index) tuple if the point hits one of the current
+            player's garrisons, None otherwise.
 
-        Note:
-            Phase 2D: Now expects world coordinates. Callers must use
-            screen_to_world() before calling this method.
+        Selection semantics are unchanged: only the CURRENT player's garrison is
+        ever returned. Other players' banners are hoverable but not clickable.
 
-            For single garrison: Click area includes circle + flag above center
-            For multi-garrison: Each garrison has its own flag position and click area
+        Why circles are tested before banners ('both'):
+            At minimum zoom a banner is ~30 world units tall while sibling flags
+            sit on a radius-25 ring, so a banner routinely overlaps a NEIGHBOURING
+            territory's circle. Testing every circle before any banner keeps
+            "click the ring you can actually see" working.
         """
         x, y = pos
 
-        # Calculate click dimensions in world space that match visual size
-        ui_scale = self.get_ui_scale_factor()
-        click_radius_world = (ARMY_CIRCLE_RADIUS * ui_scale) / self.camera_zoom
+        current_player = self.game_state.current_player
 
-        # Flag extends upward - calculate flag height in world space
-        flag_height_world = (ARMY_CIRCLE_RADIUS * 3.3 * ui_scale) / self.camera_zoom
+        # PERFORMANCE: index inbound animations once instead of rescanning the
+        # full animation list inside the per-territory loop (was O(T*A)).
+        incoming_by_territory = {}
+        for anim in self.game_state.active_animations:
+            if anim.to_territory not in incoming_by_territory:
+                incoming_by_territory[anim.to_territory] = set()
+            incoming_by_territory[anim.to_territory].add(anim.player)
 
-        # Check all territory centers (scaled_centers are in world coordinates)
+        banner_hit = None
+
+        # Single traversal, but circles resolve immediately while banners are
+        # deferred until the loop ends - that makes it a true global two-pass.
         for territory, (cx, cy) in self.scaled_centers.items():
-            # Check if current player has a garrison here (not just ownership)
             garrisons = self.game_state.territory_garrisons.get(territory, {})
-            if self.game_state.current_player not in garrisons:
+            if current_player not in garrisons:
                 continue
 
-            player_garrison = garrisons[self.game_state.current_player]
-            garrison_armies = player_garrison.get('unmoved', 0) + player_garrison.get('moved', 0)
-            if garrison_armies <= 0:
+            num_garrisons = self.get_effective_garrison_count(
+                territory, garrisons, incoming_by_territory.get(territory, set())
+            )
+
+            anchor = self.get_garrison_anchor(territory, cx, cy, current_player,
+                                              num_garrisons)
+            if anchor is None:
                 continue
+            anchor_x, anchor_y, army_count = anchor
 
-            # Check if this is a multi-garrison territory
-            # Count only non-empty garrisons for positioning
-            num_garrisons = sum(1 for g in garrisons.values() if g.get('unmoved', 0) + g.get('moved', 0) > 0)
+            if mode in ('circle', 'both'):
+                if self.point_in_army_circle(x, y, anchor_x, anchor_y):
+                    return (territory, current_player)
 
-            # IMPORTANT: Check if there are incoming animations to this territory
-            # If so, use the FUTURE garrison count (after arrivals) for click detection
-            # This keeps click positions synchronized with visual flag positions
-            incoming_players = set()
-            for anim in self.game_state.active_animations:
-                if anim.to_territory == territory:
-                    incoming_players.add(anim.player)
+            if mode in ('banner', 'both'):
+                if self.point_in_army_banner(x, y, anchor_x, anchor_y,
+                                             current_player, army_count):
+                    # Keep the LAST match, not the first: the renderer iterates
+                    # scaled_centers in this same order, so a later territory is
+                    # drawn on top - last match is the topmost banner.
+                    banner_hit = (territory, current_player)
 
-            if incoming_players:
-                # Calculate future garrison count (current + incoming)
-                future_garrisons = set()
-                for player_index, garrison in garrisons.items():
-                    if garrison.get('unmoved', 0) + garrison.get('moved', 0) > 0:
-                        future_garrisons.add(player_index)
-                future_garrisons.update(incoming_players)
-                num_garrisons = len(future_garrisons)
-
-            if num_garrisons > 1:
-                # Multi-garrison: Check flag positions for current player's garrison
-                flag_positions = self.game_state.get_flag_positions_for_territory(
-                    territory, cx, cy, num_garrisons
-                )
-
-                # Assign positions to existing garrisons first
-                for player_index in sorted(garrisons.keys()):
-                    g = garrisons[player_index]
-                    if g.get('unmoved', 0) + g.get('moved', 0) > 0:
-                        self.game_state.assign_garrison_position(territory, player_index, num_garrisons)
-
-                # Get assigned position index for current player's garrison
-                garrison_index = self.game_state.assign_garrison_position(territory, self.game_state.current_player, num_garrisons)
-
-                # Get flag position for current player's garrison (world coords)
-                if garrison_index < len(flag_positions):
-                    flag_cx, flag_cy = flag_positions[garrison_index]
-
-                    # Check circular area around this garrison's flag position
-                    distance = ((x - flag_cx) ** 2 + (y - flag_cy) ** 2) ** 0.5
-                    if distance <= click_radius_world:
-                        return (territory, self.game_state.current_player)
-
-                    # Check rectangular flag area for this garrison
-                    flag_width_world = click_radius_world * 2
-                    flag_left = flag_cx - flag_width_world / 2
-                    flag_right = flag_cx + flag_width_world / 2
-                    flag_top = flag_cy - flag_height_world / 2
-                    flag_bottom = flag_cy
-
-                    if flag_left <= x <= flag_right and flag_top <= y <= flag_bottom:
-                        return (territory, self.game_state.current_player)
-            else:
-                # Single garrison: Check main territory center
-                # Check 1: Circular area (the circle itself)
-                distance = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
-                if distance <= click_radius_world:
-                    return (territory, self.game_state.current_player)
-
-                # Check 2: Rectangular area for flag (extends upward from circle)
-                flag_width_world = click_radius_world * 2
-                flag_left = cx - flag_width_world / 2
-                flag_right = cx + flag_width_world / 2
-                flag_top = cy - flag_height_world / 2
-                flag_bottom = cy
-
-                if flag_left <= x <= flag_right and flag_top <= y <= flag_bottom:
-                    return (territory, self.game_state.current_player)
-
-        return None
+        return banner_hit
     
     def get_plot_at_pos(self, pos):
         """
@@ -3914,6 +4013,255 @@ class Game:
         else:
             return 3
 
+    # ============================================================
+    # ARMY BANNER GEOMETRY - SINGLE SOURCE OF TRUTH
+    # ============================================================
+    # The banner (flag) drawn above an army circle is a first-class click/hover
+    # target, not just decoration. Three separate passes need its geometry:
+    #   - click  : get_army_at_pos()            (world space)
+    #   - hover  : handle_mouse_motion()        (world space)
+    #   - render : MapRenderer.draw_territories() (screen space)
+    # These used to each recompute it independently and DISAGREED - the click box
+    # was only half the banner's height, so the flag cloth was unclickable, and
+    # hover ignored the banner entirely. Everything now routes through the helpers
+    # below so the three passes cannot drift apart again.
+
+    def get_army_flag_aspect(self, player_index, army_count):
+        """
+        Get width/height ratio of the SOURCE flag art for a garrison.
+
+        Args:
+            player_index: Garrison owner (-1 for neutral)
+            army_count: Garrison size (selects flag tier 1/2/3 - tiers have
+                        different aspect ratios, so this matters)
+
+        Returns:
+            float aspect ratio, or None if this garrison has no flag art.
+
+        None is meaningful: the renderer falls back to drawing a plain army-count
+        number instead of a banner (different footprint), so callers must NOT
+        hit-test a banner in that case.
+
+        NOT memoised on purpose - campaign missions hot-swap army_flag_icons
+        entries at runtime (see campaign_mission_2.py), and two Surface attribute
+        reads are cheaper than a correct cache-invalidation scheme.
+        """
+        tier = self.get_army_flag_tier(army_count)
+        icon = self.army_flag_icons.get(player_index, {}).get(tier)
+        if icon is None:
+            return None
+        height = icon.get_height()
+        if height <= 0:
+            return DEFAULT_ARMY_FLAG_ASPECT
+        return icon.get_width() / height
+
+    def get_army_circle_hit(self, center_x, center_y, space='world'):
+        """
+        Get the VISIBLE army ring's circle - the one the player actually sees.
+
+        MapRenderer._draw_army_circle() draws the ring 25% smaller than
+        ARMY_CIRCLE_RADIUS and lifted above the anchor, so the flag pole sits
+        inside it. Hit-testing must use the same geometry.
+
+        Args:
+            center_x, center_y: Garrison anchor (flag-pole base) in `space` coords
+            space: 'world' for hit-testing, 'screen' for rendering
+
+        Returns:
+            (x, y, radius) of the drawn ring. y is LIFTED above the anchor.
+
+        The glow halo around the ring is deliberately excluded: it is a soft
+        alpha-35 decoration, not part of the object you are aiming at.
+        """
+        base_radius = ARMY_CIRCLE_RADIUS * self.get_ui_scale_factor()
+        radius = base_radius * ARMY_CIRCLE_DRAW_SCALE
+        lift = base_radius * ARMY_CIRCLE_DRAW_LIFT
+
+        if space == 'world':
+            inv_zoom = 1.0 / self.camera_zoom
+            radius *= inv_zoom
+            lift *= inv_zoom
+
+        return (center_x, center_y - lift, radius)
+
+    def point_in_army_circle(self, px, py, center_x, center_y, space='world'):
+        """
+        Check whether a point falls inside the drawn army ring.
+
+        The point and the anchor must be expressed in the SAME space.
+        """
+        circle_x, circle_y, radius = self.get_army_circle_hit(center_x, center_y, space)
+        return (px - circle_x) ** 2 + (py - circle_y) ** 2 <= radius * radius
+
+    def get_army_banner_rect(self, center_x, center_y, player_index, army_count,
+                             space='world'):
+        """
+        Get the geometry of the army banner drawn above an army circle.
+
+        The banner is blitted with its pole base at (center_x, center_y) and
+        extends UPWARD by its full height. Width comes from the source art's
+        aspect ratio, NOT from the circle radius.
+
+        Args:
+            center_x, center_y: Garrison anchor in `space` coordinates. This is the
+                territory center for a single garrison, or flag_positions[idx] for
+                one of several garrisons in an allied-reinforced territory.
+            player_index: Garrison owner (-1 for neutral) - selects the art
+            army_count: Garrison size - selects the flag tier
+            space: 'world' for hit-testing (scaled_centers / flag_positions are in
+                   world coords), 'screen' for rendering (world_to_screen output).
+                   world_to_screen is a uniform scale+offset, so an axis-aligned
+                   world rect maps exactly to an axis-aligned screen rect - one
+                   primitive serves both spaces via a single division.
+
+        Returns:
+            (left, top, width, height) as floats, or None if no flag art exists.
+            top == center_y - height, bottom == center_y.
+
+        Returns a plain tuple rather than a pygame.Rect because Rect coerces its
+        values to int, and world coordinates are fractional.
+        """
+        aspect = self.get_army_flag_aspect(player_index, army_count)
+        if aspect is None:
+            return None
+
+        height = ARMY_CIRCLE_RADIUS * self.get_ui_scale_factor() * ARMY_FLAG_HEIGHT_RATIO
+        width = height * aspect
+
+        if space == 'world':
+            # Convert screen-pixel size back into world units so the hit box
+            # tracks the drawn banner at every zoom level.
+            inv_zoom = 1.0 / self.camera_zoom
+            height *= inv_zoom
+            width *= inv_zoom
+
+        return (center_x - width / 2.0, center_y - height, width, height)
+
+    def point_in_army_banner(self, px, py, center_x, center_y, player_index,
+                             army_count, space='world'):
+        """
+        Check whether a point falls inside a garrison's banner.
+
+        The point and the anchor must be expressed in the SAME space.
+        Returns False when the garrison has no banner art (nothing was drawn).
+        """
+        rect = self.get_army_banner_rect(center_x, center_y, player_index,
+                                         army_count, space)
+        if rect is None:
+            return False
+        left, top, width, height = rect
+        return left <= px <= left + width and top <= py <= top + height
+
+    def get_effective_garrison_count(self, territory, garrisons=None,
+                                     incoming_players=None):
+        """
+        Get the number of flag SLOTS a territory uses for its garrison layout.
+
+        MUST match the renderer exactly, or hit boxes land where no flag is drawn.
+        This logic used to be copy-pasted into the click path, the hover path and
+        the renderer - and the click copy was missing the allied-reinforcement
+        rule, which made a garrison briefly unclickable mid-animation.
+
+        Rules, in order:
+          1. Count garrisons that actually have armies.
+          2. Widen the count to include in-flight arrivals, so flags don't "jump"
+             when a movement animation lands.
+          3. Allied-reinforcement rule: an OWNED territory whose only future
+             garrison is not the owner uses the 2-slot layout, to match where the
+             animation is flying to.
+
+        Args:
+            territory: Territory name
+            garrisons: Optional pre-fetched garrison dict (avoids a re-lookup)
+            incoming_players: Optional pre-built set of inbound players, for
+                callers that already indexed active_animations by destination
+                (the renderer does this once per frame).
+        """
+        if garrisons is None:
+            garrisons = self.game_state.territory_garrisons.get(territory, {})
+
+        present = {p for p, g in garrisons.items()
+                   if g.get('unmoved', 0) + g.get('moved', 0) > 0}
+        num_garrisons = len(present)
+
+        if incoming_players is None:
+            incoming_players = {anim.player for anim in self.game_state.active_animations
+                                if anim.to_territory == territory}
+
+        if incoming_players:
+            future_garrisons = present | incoming_players
+            num_garrisons = len(future_garrisons)
+
+            # Allied reinforcement: use the 2-position layout so the static flag
+            # sits where the incoming animation is headed.
+            owner = self.game_state.territory_owners.get(territory, -1)
+            if owner >= 0 and num_garrisons == 1:
+                if next(iter(future_garrisons)) != owner:
+                    num_garrisons = 2
+
+        return num_garrisons
+
+    def get_garrison_anchor(self, territory, center_x, center_y, player_index,
+                            num_garrisons=None):
+        """
+        Get the world-space anchor (flag-pole base / circle center) for ONE
+        player's garrison in a territory.
+
+        Collapses the single-garrison and multi-garrison branches that the click,
+        hover and render paths each used to open-code.
+
+        Args:
+            territory: Territory name
+            center_x, center_y: Territory center in world coords (scaled_centers)
+            player_index: Which garrison to locate
+            num_garrisons: Optional pre-computed slot count from
+                get_effective_garrison_count() (avoids recomputing per garrison)
+
+        Returns:
+            (x, y, army_count) in world coords, or None if this player has no
+            armies in this territory.
+
+        NOTE: calls assign_garrison_position(), which mutates
+        game_state.garrison_positions. That is pre-existing behaviour of both
+        hit-test paths and is preserved deliberately - slot assignment must be
+        identical across click, hover and render or the flags shuffle.
+        """
+        garrisons = self.game_state.territory_garrisons.get(territory, {})
+        garrison = garrisons.get(player_index)
+        if not garrison:
+            return None
+
+        army_count = garrison.get('unmoved', 0) + garrison.get('moved', 0)
+        if army_count <= 0:
+            return None
+
+        if num_garrisons is None:
+            num_garrisons = self.get_effective_garrison_count(territory, garrisons)
+
+        if num_garrisons <= 1:
+            return (center_x, center_y, army_count)
+
+        flag_positions = self.game_state.get_flag_positions_for_territory(
+            territory, center_x, center_y, num_garrisons
+        )
+
+        # Assign slots for EVERY live garrison before reading one index, so the
+        # indices are stable and match the renderer's assignment order.
+        for other_player in sorted(garrisons.keys()):
+            other = garrisons[other_player]
+            if other.get('unmoved', 0) + other.get('moved', 0) > 0:
+                self.game_state.assign_garrison_position(territory, other_player,
+                                                         num_garrisons)
+
+        garrison_index = self.game_state.assign_garrison_position(
+            territory, player_index, num_garrisons
+        )
+        if garrison_index >= len(flag_positions):
+            return (center_x, center_y, army_count)
+
+        flag_x, flag_y = flag_positions[garrison_index]
+        return (flag_x, flag_y, army_count)
+
     def trigger_click_flash(self, element_type, identifier):
         """
         Trigger a brief visual flash when an element is clicked.
@@ -3936,10 +4284,21 @@ class Game:
         self.clicked_element = (element_type, identifier)
         self.click_flash_timer = self.click_flash_duration
     
-    def apply_display_settings(self, width, height, fullscreen=False):
+    @staticmethod
+    def _cycle_fps_limit(current):
+        """Advance to the next FPS-limit option, wrapping around."""
+        try:
+            idx = FPS_LIMIT_OPTIONS.index(current)
+        except ValueError:
+            idx = 0  # Unknown/legacy value — restart from "Unlimited"
+        return FPS_LIMIT_OPTIONS[(idx + 1) % len(FPS_LIMIT_OPTIONS)]
+
+    def apply_display_settings(self, width, height, fullscreen=False, vsync=None):
         """
-        Apply new display settings (resolution and fullscreen mode).
-        
+        Apply new display settings (resolution, fullscreen mode and VSync).
+
+        `vsync=None` keeps the current setting; pass True/False to change it.
+
         IMPORTANT: In fullscreen mode, always uses native monitor resolution to prevent
         scaling/letterboxing issues. Custom resolutions only work in windowed mode.
         
@@ -3993,9 +4352,17 @@ class Game:
             # Update UIConstants with new sidebar height
             UIConstants.update_sidebar_height(new_layout['sidebar_height'])
             
-            # Recreate display surface
-            flags = pygame.FULLSCREEN if fullscreen else 0
-            self.screen = pygame.display.set_mode((actual_width, actual_height), flags)
+            # Recreate display surface.
+            # CRITICAL: route through set_display_mode so VSync survives. VSync is
+            # silently lost by ANY later set_mode() call, even one passing vsync=1
+            # again — only a display quit()/init() restores it. Since this method IS
+            # the resolution path, a plain set_mode() here would mean VSync died the
+            # first time a player changed resolution and never came back.
+            want_vsync = self.vsync if vsync is None else vsync
+            self.screen, self.vsync_active = set_display_mode(
+                (actual_width, actual_height), fullscreen, want_vsync,
+                force_reinit=(self.vsync_active and not want_vsync))
+            self.vsync = want_vsync
             _set_app_icon()  # Re-apply icon after display recreation
 
             # CRITICAL FIX: Check if pygame created a different size (happens with Windows display scaling)
@@ -4030,7 +4397,8 @@ class Game:
                     # CRITICAL: Reapply fullscreen mode to prevent dropping to windowed
                     # This ensures fullscreen persists even after display scaling adjustments
                     logger.info(f"[FIX] Reapplying fullscreen mode after scaling adjustment...")
-                    self.screen = pygame.display.set_mode((actual_width, actual_height), pygame.FULLSCREEN)
+                    self.screen, self.vsync_active = set_display_mode(
+                        (actual_width, actual_height), True, want_vsync)
                     _set_app_icon()  # Re-apply icon after fullscreen reapply
 
                     # Verify it's actually fullscreen
@@ -4075,12 +4443,22 @@ class Game:
             }
             self.ui_renderer.update_layout(layout_values)
             
+            # Re-convert the map to the NEW display format before rescaling.
+            # .convert() bakes in the pixel format of the display that was current
+            # at load time; set_mode() above may have changed it (resolution,
+            # fullscreen, or the SCALED/vsync flags). Skipping this would silently
+            # reintroduce the ~9ms-per-frame unconverted blit after a settings change.
+            try:
+                self.map_image_original = self.map_image_original.convert()
+            except pygame.error as e:
+                logger.warning(f"Could not re-convert map image after display change: {e}")
+
             # Rescale map image from original (ensures high quality)
             self.map_image = pygame.transform.scale(
                 self.map_image_original,
                 (self.map_width, self.map_height)
             )
-            
+
             # Rescale polygons (using round() to match __init__ for smoother edges)
             for territory, polygon in map_data.TERRITORY_POLYGONS.items():
                 self.scaled_polygons[territory] = [
@@ -4105,11 +4483,24 @@ class Game:
             # Clear caches (H11 fix: also clear icon/text caches to prevent stale entries)
             self.cached_scaled_map = None
             self.cached_zoom_level = None
+            # Viewport map cache: the destination surface was created in the OLD
+            # display format and the layout globals have changed, so drop both.
+            self._map_view_key = None
+            self._map_view_surface = None
+            # The map scale_factor just changed, so the renderer's pre-computed
+            # bounding boxes and multi-zoom polygons are stale (they were built from
+            # the polygons at the OLD scale). Without this, territory polygons
+            # misalign with the map and hit-testing goes wrong after a resolution change.
+            if hasattr(self, 'map_renderer') and self.map_renderer is not None:
+                self.map_renderer.rebuild_scale_caches()
             self._ui_icon_cache = {}
             self._tech_border_cache = {}
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
             self._hero_overlay_cache = {}
+            # Close the unit context menu: its anchor rect belongs to the old layout
+            self.unit_context_menu = None
+            self.unit_context_menu_rects = []
             # Territory preview caches (border scaled size + preview images)
             self._territory_preview_cache = {}
             self._scaled_preview_border = None
@@ -5394,6 +5785,55 @@ class Game:
     # PHASE 4: EXTRACTED PLOT RENDERING METHODS
     # ========================================
     
+    def _select_army_garrison(self, army_result):
+        """
+        Open the army composition UI for a garrison that was just clicked.
+
+        Extracted so the circle hit-test (PRIORITY 3) and the banner hit-test
+        (PRIORITY 4.5) share one body instead of duplicating it.
+
+        Args:
+            army_result: (territory, player_index) from get_army_at_pos(), or a
+                         bare territory name for backward compatibility.
+        """
+        # Unpack territory and player from result
+        if isinstance(army_result, tuple):
+            army_territory, army_player = army_result
+        else:
+            # Backward compatibility - shouldn't happen with new code
+            army_territory = army_result
+            army_player = self.game_state.current_player
+
+        # Clear any stale plot/barracks selections that might interfere
+        # (This fixes the bug where after battles, clicking armies doesn't work until you click a plot)
+        self.selected_plot = None
+        self.selected_barracks = None
+        self.selected_keep = None
+        self.selected_territory_info = None
+
+        # Trigger click flash for visual feedback
+        self.trigger_click_flash('army', army_territory)
+
+        # Open army composition UI
+        self.show_army_composition = True
+        self.army_composition_territory = army_territory
+        self.army_composition_player = army_player  # Track which player's garrison
+        # Auto-select all ready units when opening composition UI
+        player = army_player if army_player is not None else self.game_state.current_player
+        garrison = self.game_state.territory_garrisons.get(army_territory, {}).get(player)
+        if garrison:
+            units = garrison.get('units', [])
+            self.selected_army_units = [u['id'] for u in units if u['status'] == 'ready']
+        else:
+            self.selected_army_units = []
+
+        # Play random army composition sound when opening the UI
+        self.sound_manager.play_random('armycomp')
+
+        # Deselect other UI elements
+        self.game_state.deselect_army()
+        self.selected_hero = None  # Deselect hero
+
     def handle_map_area_click(self, pos):
         """
         Handle mouse click on map area (Phase 2A extraction, Phase 2D camera update).
@@ -5722,48 +6162,15 @@ class Game:
 
         # PRIORITY 2B: Hero training icons removed - use Keep UI only
 
-        # PRIORITY 3: Check if clicking on an army number circle (opens composition UI)
+        # PRIORITY 3: Check if clicking on an army CIRCLE (opens composition UI)
         # NOTE: Army check comes AFTER icon checks so icons take precedence when overlapping
+        # Circles only here - banners are checked at PRIORITY 4.5, AFTER plots, because
+        # the banner's full-height hit box overlaps building plots (including through the
+        # flag art's transparent margins) and would otherwise steal plot clicks.
         if self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning':
-            army_result = self.get_army_at_pos(world_pos)
+            army_result = self.get_army_at_pos(world_pos, mode='circle')
             if army_result:
-                # Unpack territory and player from result
-                if isinstance(army_result, tuple):
-                    army_territory, army_player = army_result
-                else:
-                    # Backward compatibility - shouldn't happen with new code
-                    army_territory = army_result
-                    army_player = self.game_state.current_player
-
-                # Clear any stale plot/barracks selections that might interfere
-                # (This fixes the bug where after battles, clicking armies doesn't work until you click a plot)
-                self.selected_plot = None
-                self.selected_barracks = None
-                self.selected_keep = None
-                self.selected_territory_info = None
-
-                # Trigger click flash for visual feedback
-                self.trigger_click_flash('army', army_territory)
-
-                # Open army composition UI
-                self.show_army_composition = True
-                self.army_composition_territory = army_territory
-                self.army_composition_player = army_player  # NEW: Track which player's garrison
-                # Auto-select all ready units when opening composition UI
-                player = army_player if army_player is not None else self.game_state.current_player
-                garrison = self.game_state.territory_garrisons.get(army_territory, {}).get(player)
-                if garrison:
-                    units = garrison.get('units', [])
-                    self.selected_army_units = [u['id'] for u in units if u['status'] == 'ready']
-                else:
-                    self.selected_army_units = []
-
-                # Play random army composition sound when opening the UI
-                self.sound_manager.play_random('armycomp')
-
-                # Deselect other UI elements
-                self.game_state.deselect_army()
-                self.selected_hero = None  # Deselect hero
+                self._select_army_garrison(army_result)
                 return  # Don't process other click handling
         
         # PRIORITY 4: Check if clicking on a plot
@@ -5841,6 +6248,15 @@ class Game:
                         play_structure_sound('Construction')
                 return
         
+        # PRIORITY 4.5: Check if clicking on an army BANNER (opens composition UI)
+        # Runs after plots so plot clicking keeps its existing behaviour exactly,
+        # while the banner remains clickable everywhere a plot is not.
+        if self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning':
+            army_result = self.get_army_at_pos(world_pos, mode='banner')
+            if army_result:
+                self._select_army_garrison(army_result)
+                return  # Don't process other click handling
+
         # Not clicking on a plot - handle territory click
         territory = self.get_territory_at_pos(world_pos)
         # Tutorial hook: filter out non-interactive territories
@@ -9668,7 +10084,12 @@ class Game:
             return
 
         units = garrison.get('units', [])
-        
+
+        # The unit context menu sits on top of this panel - nothing beneath it may
+        # light up on hover, so hover tests below use hover_pos instead of mouse_pos.
+        ctx_menu_rect = self._get_unit_context_menu_rect()
+        hover_pos = (-1, -1) if (ctx_menu_rect and ctx_menu_rect.collidepoint(self.mouse_pos)) else self.mouse_pos
+
         # Count status
         ready_count = sum(1 for u in units if u['status'] == 'ready')
         moved_count = sum(1 for u in units if u['status'] == 'moved')
@@ -9726,7 +10147,7 @@ class Game:
         # Base color
         button_color = (100, 150, 200)
         # Check hover
-        is_hovering = select_all_rect.collidepoint(self.mouse_pos)
+        is_hovering = select_all_rect.collidepoint(hover_pos)
         # Check click
         is_clicking = (self.clicked_element and
                       self.clicked_element[0] == 'army_comp' and
@@ -9750,7 +10171,7 @@ class Game:
         # Base color
         button_color = (150, 100, 100)
         # Check hover
-        is_hovering = deselect_all_rect.collidepoint(self.mouse_pos)
+        is_hovering = deselect_all_rect.collidepoint(hover_pos)
         # Check click
         is_clicking = (self.clicked_element and
                       self.clicked_element[0] == 'army_comp' and
@@ -9802,7 +10223,7 @@ class Game:
             unit_letter = self.game_state.UNIT_TYPES[unit_type]['letter']
 
             # Check hover and click state
-            is_hovering = button_rect.collidepoint(self.mouse_pos)
+            is_hovering = button_rect.collidepoint(hover_pos)
             is_clicking = (self.clicked_element and
                           self.clicked_element[0] == 'army_unit' and
                           self.clicked_element[1] == unit['id'])
@@ -9950,22 +10371,273 @@ class Game:
         # PERFORMANCE: Cache static instruction text renders
         header_text = self._get_cached_text("Unit Selection Info:", self.font_bold, WHITE)
         self.screen.blit(header_text, (instructions_x, instructions_y))
-        instructions_y += 30  # Space after header
+        instructions_y += self.scale(30)  # Space after header
 
         # Instruction lines - each point on one line
         instruction_lines = [
             "- Click to select",
             "- CTRL+Click for multi-select",
+            "- Right-click unit for options",
             "- Right-click destination",
             "  to command",
             "- Click elsewhere to close"
         ]
 
+        # Bounds-check: the list grew with the right-click hint, so stop before
+        # spilling past the bottom panel on short layouts (min panel height is 180px).
+        line_spacing = self.scale(22)
+        max_instructions_y = BOTTOM_UI_Y + BOTTOM_UI_HEIGHT - line_spacing
+
         for line in instruction_lines:
+            if instructions_y > max_instructions_y:
+                break
             inst_text = self._get_cached_text(line, self.small_font, BROWN_TEXT_SECONDARY)
             self.screen.blit(inst_text, (instructions_x, instructions_y))
-            instructions_y += 22
+            instructions_y += line_spacing
     
+    # ------------------------------------------------------------------
+    # Unit right-click context menu (army composition strip)
+    # Purpose: give mouse-only players a way to build partial garrison
+    # selections without holding CTRL. Right-clicking a unit icon opens a
+    # small drop-down anchored to that icon.
+    # ------------------------------------------------------------------
+
+    def handle_unit_context_menu_right_click(self, pos):
+        """
+        Open (or close) the unit context menu on right-click in the bottom UI.
+
+        Hooked into the main event loop BEFORE the planning-phase gate, so the
+        menu behaves like the existing left-click selection, which is only
+        gated on phase == 'playing'.
+
+        Args:
+            pos: Right-click position (x, y)
+
+        Returns:
+            bool: True if the click was consumed (menu opened or closed)
+        """
+        # Any right-click while the menu is open just dismisses it, with no action,
+        # and is consumed - the same contract as a left-click outside the menu. A
+        # dismissing right-click on the map must not also issue a movement order.
+        if self.unit_context_menu:
+            self.unit_context_menu = None
+            return True
+
+        # Same guards as handle_bottom_ui_click: playing phase, bottom UI area,
+        # not spectating, composition strip actually on screen.
+        if self.game_state.phase != 'playing' or pos[1] < BOTTOM_UI_Y:
+            return False
+        if not self.is_local_player_active():
+            return False
+        if not self.show_army_composition or not self.army_composition_buttons:
+            return False
+
+        # Hit-test the unit icon grid built by draw_army_composition_ui()
+        for button_rect, unit_id in self.army_composition_buttons:
+            if not button_rect.collidepoint(pos):
+                continue
+
+            # Build the option list. "Other" = any selected unit that isn't this one.
+            # Opening the menu on a 'moved'/'ordered' unit is allowed, matching
+            # plain left-click which also selects any unit regardless of status.
+            others = [uid for uid in self.selected_army_units if uid != unit_id]
+            items = [('select', 'Select')]
+            if others:
+                if unit_id in self.selected_army_units:
+                    # Already part of the group - CTRL+click would remove it,
+                    # so label it honestly.
+                    items.append(('toggle', 'Remove from Group'))
+                else:
+                    items.append(('toggle', 'Add to Group'))
+            items.append(('cancel', 'Cancel'))
+
+            # Remember which garrison this menu belongs to so a stale menu
+            # (units moved, turn ended, strip closed) can be detected at draw time.
+            self.unit_context_menu = {
+                'unit_id': unit_id,
+                'territory': self.army_composition_territory,
+                'player': (self.army_composition_player
+                           if self.army_composition_player is not None
+                           else self.game_state.current_player),
+                'anchor': button_rect.copy(),
+                'items': items,
+            }
+            return True
+
+        return False
+
+    def _get_unit_context_menu_rect(self):
+        """
+        Derive the context menu panel rect (returns None when closed).
+
+        Single source of geometry for both drawing and hit-testing so the two
+        can never desync (same idiom as integrated_setup._get_dropdown_items_rects).
+
+        Returns:
+            pygame.Rect or None: the full menu panel bounds
+        """
+        menu = self.unit_context_menu
+        if not menu:
+            return None
+
+        item_h = self.scale(24)
+        pad = self.scale(4)
+
+        # Width follows the widest label, with a sensible minimum
+        text_w = max(self.small_font.size(label)[0] for _, label in menu['items'])
+        width = max(self.scale(120), text_w + self.scale(24))
+        height = len(menu['items']) * item_h + pad * 2
+
+        anchor = menu['anchor']
+        overlap = self.scale(6)  # Slight overlap onto the icon corner
+
+        # Preferred placement: down and to the right of the icon
+        rect = pygame.Rect(anchor.right - overlap, anchor.bottom - overlap, width, height)
+
+        # Flip up when it would run off the bottom of the screen (opens over the map)
+        if rect.bottom > WINDOW_HEIGHT:
+            rect.bottom = anchor.top + overlap
+
+        # Clamp horizontally so the panel always stays fully on screen
+        if rect.right > WINDOW_WIDTH - self.scale(4):
+            rect.right = WINDOW_WIDTH - self.scale(4)
+        if rect.left < 0:
+            rect.left = 0
+        # Vertical clamp as a safety net (tiny windows / very tall menus)
+        if rect.top < 0:
+            rect.top = 0
+
+        return rect
+
+    def _close_stale_unit_context_menu(self):
+        """
+        Drop the context menu if the garrison it points at is gone.
+
+        Called at the start of draw_unit_context_menu(), which runs every frame
+        before the next frame's input, so a stale menu can never consume a click.
+        """
+        menu = self.unit_context_menu
+        if not menu:
+            return
+
+        if not self.show_army_composition:
+            self.unit_context_menu = None
+            return
+
+        current_player = (self.army_composition_player
+                          if self.army_composition_player is not None
+                          else self.game_state.current_player)
+        if menu['territory'] != self.army_composition_territory or menu['player'] != current_player:
+            self.unit_context_menu = None
+            return
+
+        garrison = self.game_state.territory_garrisons.get(menu['territory'], {}).get(menu['player'])
+        if not garrison:
+            self.unit_context_menu = None
+            return
+        if not any(u['id'] == menu['unit_id'] for u in garrison.get('units', [])):
+            self.unit_context_menu = None
+
+    def draw_unit_context_menu(self):
+        """
+        Draw the unit context menu on top of everything in the bottom UI.
+
+        Called late in the render pass (alongside the other popups) so the
+        drop-down is never covered - the same "draw dropdown options last" rule
+        the options menu resolution dropdown follows.
+        """
+        self._close_stale_unit_context_menu()
+
+        menu_rect = self._get_unit_context_menu_rect()
+        if menu_rect is None:
+            self.unit_context_menu_rects = []
+            return
+
+        menu = self.unit_context_menu
+        item_h = self.scale(24)
+        pad = self.scale(4)
+
+        # Panel: dark background with a thin golden border
+        pygame.draw.rect(self.screen, (40, 35, 30), menu_rect)
+        pygame.draw.rect(self.screen, (218, 165, 32), menu_rect, max(1, self.scale(1)))
+
+        # Rebuild hit-test rects every frame from the same geometry we draw with
+        self.unit_context_menu_rects = []
+
+        # Explicit highlight colours rather than lighten_color()/brighten_color():
+        # those scale multiplicatively, so on a near-black panel (40, 35, 30) they
+        # move each channel by only a few points and the feedback is invisible.
+        hover_color = (82, 72, 55)    # Warm brown - clearly lighter than the panel
+        click_color = (150, 126, 76)  # Brass - stronger still, for the click flash
+
+        for i, (action_id, label) in enumerate(menu['items']):
+            item_rect = pygame.Rect(
+                menu_rect.x + pad,
+                menu_rect.y + pad + i * item_h,
+                menu_rect.width - pad * 2,
+                item_h
+            )
+
+            # Hover/click feedback using the standard bottom-UI treatment
+            is_clicking = (self.clicked_element
+                           and self.clicked_element[0] == 'unit_ctx'
+                           and self.clicked_element[1] == action_id)
+            is_hovering = item_rect.collidepoint(self.mouse_pos)
+
+            if is_clicking:
+                pygame.draw.rect(self.screen, click_color, item_rect)
+            elif is_hovering:
+                pygame.draw.rect(self.screen, hover_color, item_rect)
+
+            label_surface = self._get_cached_text(label, self.small_font, WHITE)
+            label_rect = label_surface.get_rect(
+                midleft=(item_rect.x + self.scale(8), item_rect.centery))
+            self.screen.blit(label_surface, label_rect)
+
+            self.unit_context_menu_rects.append((item_rect, action_id))
+
+    def handle_unit_context_menu_click(self, pos):
+        """
+        Handle a left-click while the unit context menu is open.
+
+        The menu is modal: every click is consumed and always closes the menu.
+        Clicking outside it closes with no action.
+
+        Args:
+            pos: Click position (x, y)
+
+        Returns:
+            bool: always True (click consumed)
+        """
+        self._close_stale_unit_context_menu()
+
+        menu = self.unit_context_menu
+        if not menu:
+            return True
+
+        unit_id = menu['unit_id']
+
+        for item_rect, action_id in self.unit_context_menu_rects:
+            if not item_rect.collidepoint(pos):
+                continue
+
+            self.trigger_click_flash('unit_ctx', action_id)
+
+            if action_id == 'select':
+                # Same as a plain left-click: replace the whole selection
+                self.selected_army_units = [unit_id]
+            elif action_id == 'toggle':
+                # Same as CTRL+click: toggle this unit in/out of the selection
+                if unit_id in self.selected_army_units:
+                    self.selected_army_units.remove(unit_id)
+                else:
+                    self.selected_army_units.append(unit_id)
+            # 'cancel' falls through - close with no action
+            break
+
+        self.unit_context_menu = None
+        return True
+
     def draw_action_log_overlay(self):
         """Draw action log as an overlay on the right side of the screen"""
         if not self.action_log_visible:
@@ -10062,29 +10734,130 @@ class Game:
 
         self.main_menu_button = menu_button_rect
     
+    # Pixels of map over-rendered beyond the viewport on each side, so that panning
+    # re-blits a cached surface at a new offset instead of rescaling every frame.
+    # Larger = fewer rebuilds while panning, but more pixels scaled per rebuild.
+    _MAP_VIEW_MARGIN = 192
+
+    def _blit_map_background(self):
+        """
+        Scale and blit ONLY the visible slice of the map background.
+
+        PERFORMANCE — this replaces scaling the ENTIRE map on every zoom change.
+        The old path built a surface of (map_width * zoom, map_height * zoom) from
+        the 4096x3072 source, so its cost grew as zoom squared even though at most
+        a viewport-sized slice is ever visible. At 1600x900 that is 1.53M pixels at
+        zoom 1.65 but 8.98M pixels (36MB) at zoom 4.0. Measured:
+
+            full-map   scale -> 3732x2800 : 16.1 ms      (nearest-neighbour)
+            full-map   smoothscale        : 53.1 ms      <- a 53ms hitch, ~19 FPS
+            viewport   scale  -> 1920x700 :  0.31 ms
+            viewport   smoothscale        :  2.50 ms
+
+        Because the viewport smoothscale is affordable every frame, quality no
+        longer has to be traded away while moving: the old code fell back to
+        nearest-neighbour during zoom animations and then paid one full-map
+        smoothscale when the zoom settled (a guaranteed hitch). We now smoothscale
+        always, and cache the result so a stationary camera costs nothing.
+
+        Map-agnostic by design: the source rect is derived from the ACTUAL source
+        surface size, not the ORIGINAL_MAP_* constants, so maps whose background
+        differs in size (and the black fallback surface) work unchanged.
+        """
+        zoom = self.camera_zoom
+        src = self.map_image_original
+        src_w, src_h = src.get_size()
+
+        scaled_map_width = int(self.map_width * zoom)
+        scaled_map_height = int(self.map_height * zoom)
+        if scaled_map_width <= 0 or scaled_map_height <= 0 or src_w <= 0 or src_h <= 0:
+            return
+
+        # Where the whole map would sit on screen (negative: camera moves opposite)
+        map_x = int(-self.camera_offset[0] * zoom)
+        map_y = int(-self.camera_offset[1] * zoom) + TOP_PANEL_HEIGHT
+
+        # Intersect the map rect with the visible map area. Clipping at BOTTOM_UI_Y
+        # also avoids scaling the strip that the bottom panel draws over anyway.
+        view_bottom = BOTTOM_UI_Y if BOTTOM_UI_Y else (TOP_PANEL_HEIGHT + MAP_HEIGHT)
+        vis_left = max(map_x, 0)
+        vis_top = max(map_y, TOP_PANEL_HEIGHT)
+        vis_right = min(map_x + scaled_map_width, self.screen.get_width())
+        vis_bottom = min(map_y + scaled_map_height, view_bottom)
+
+        dest_w = int(vis_right - vis_left)
+        dest_h = int(vis_bottom - vis_top)
+        if dest_w <= 0 or dest_h <= 0:
+            return  # Map entirely off-screen; screen.fill() already painted the gap
+
+        # Work in "scaled-map space": offsets relative to the map's top-left corner.
+        # These are stable while the camera pans (only map_x/map_y shift), which is
+        # what lets a cached region survive panning.
+        want_x0 = vis_left - map_x
+        want_y0 = vis_top - map_y
+        want_x1 = vis_right - map_x
+        want_y1 = vis_bottom - map_y
+
+        # Over-render by a margin so small pans re-blit the cached surface at a new
+        # offset instead of rescaling. Without this, panning rescaled EVERY frame —
+        # measured as a regression from 69.8 to 49.9 FPS, because the previous
+        # full-map cache happened to make panning free (only the blit position moved).
+        # A rebuild is now needed only when the view leaves the margin or zoom changes.
+        cached = self._map_view_key
+        reusable = (
+            cached is not None
+            and self._map_view_surface is not None
+            and cached[0] == id(src)
+            and cached[1] == zoom
+            and cached[2] <= want_x0 and cached[3] <= want_y0
+            and cached[4] >= want_x1 and cached[5] >= want_y1
+        )
+
+        if not reusable:
+            # Only pay for the margin when it can actually be reused. While the zoom
+            # is changing every frame the cache is invalidated regardless, so the
+            # extra pixels are pure waste (measured: ~25% off continuous-zoom FPS).
+            # Panning at a fixed zoom is where the margin earns its keep.
+            zoom_unchanged = cached is not None and cached[1] == zoom
+            margin = self._MAP_VIEW_MARGIN if zoom_unchanged else 0
+            reg_x0 = int(max(0, want_x0 - margin))
+            reg_y0 = int(max(0, want_y0 - margin))
+            reg_x1 = int(min(scaled_map_width, want_x1 + margin))
+            reg_y1 = int(min(scaled_map_height, want_y1 + margin))
+            region_w = max(1, reg_x1 - reg_x0)
+            region_h = max(1, reg_y1 - reg_y0)
+
+            x_ratio = src_w / scaled_map_width
+            y_ratio = src_h / scaled_map_height
+
+            src_x = max(0, min(src_w - 1, int(reg_x0 * x_ratio)))
+            src_y = max(0, min(src_h - 1, int(reg_y0 * y_ratio)))
+            # ceil the span so we never sample fewer source pixels than we cover
+            src_w_slice = max(1, min(src_w - src_x, int(math.ceil(region_w * x_ratio))))
+            src_h_slice = max(1, min(src_h - src_y, int(math.ceil(region_h * y_ratio))))
+
+            # Reuse the destination surface while its size is unchanged, so repeated
+            # rebuilds (e.g. continuous zooming) do not allocate every frame.
+            if (self._map_view_surface is None
+                    or self._map_view_surface.get_size() != (region_w, region_h)):
+                self._map_view_surface = pygame.Surface((region_w, region_h)).convert()
+
+            sub = src.subsurface(pygame.Rect(src_x, src_y, src_w_slice, src_h_slice))
+            pygame.transform.smoothscale(sub, (region_w, region_h), self._map_view_surface)
+            self._map_view_key = (id(src), zoom, reg_x0, reg_y0, reg_x0 + region_w, reg_y0 + region_h)
+            self._map_view_offset = (reg_x0, reg_y0)
+
+        # Blit at the cached region's CURRENT screen position. Overdraw beyond the
+        # map area is harmless — the top/bottom panels are drawn after the map.
+        off_x, off_y = self._map_view_offset
+        self.screen.blit(self._map_view_surface, (map_x + off_x, map_y + off_y))
+
     def draw(self):
         """Render a single frame (core rendering pipeline extracted from run() for benchmarking)."""
         self.screen.fill(WHITE)
 
-        # Draw map with camera transform
-        scaled_map_width = int(self.map_width * self.camera_zoom)
-        scaled_map_height = int(self.map_height * self.camera_zoom)
-        if self.cached_zoom_level != self.camera_zoom:
-            # FPS OPT: Use fast scale during zoom animation (same as main render loop)
-            if self.is_zoom_animating:
-                self.cached_scaled_map = pygame.transform.scale(
-                    self.map_image_original,
-                    (scaled_map_width, scaled_map_height)
-                )
-            else:
-                self.cached_scaled_map = pygame.transform.smoothscale(
-                    self.map_image_original,
-                    (scaled_map_width, scaled_map_height)
-                )
-            self.cached_zoom_level = self.camera_zoom
-        map_x = int(-self.camera_offset[0] * self.camera_zoom)
-        map_y = int(-self.camera_offset[1] * self.camera_zoom) + TOP_PANEL_HEIGHT
-        self.screen.blit(self.cached_scaled_map, (map_x, map_y))
+        # Draw map with camera transform (viewport-only rescale)
+        self._blit_map_background()
 
         # Draw map elements (Phase 4D: inlined from delegate methods)
         self.map_renderer.draw_territories()
@@ -10180,10 +10953,19 @@ class Game:
         # Call tick() twice so get_time() has valid previous tick reference
         self.clock.tick()
         self.clock.tick()
+        # Seed the float frame clock used for delta_time (see below)
+        self._last_frame_time = time.perf_counter()
 
         while running:
             # Calculate delta time for animations
-            delta_time = self.clock.get_time() / 1000.0  # Convert milliseconds to seconds
+            # Use a float clock rather than Clock.get_time(), which returns INTEGER
+            # milliseconds. At high frame rates that quantization is severe: measured
+            # in an uncapped loop, 100% of frames reported delta_time == 0.0 and the
+            # summed delta ran at 250% of real time. Even at 1-2ms frames the error
+            # is up to 50% per frame, which visibly changes animation speed.
+            _now = time.perf_counter()
+            delta_time = _now - self._last_frame_time
+            self._last_frame_time = _now
             # Cap delta_time to prevent animation jumps on first frame or frame drops
             delta_time = min(delta_time, 0.1)  # Max 100ms per frame
 
@@ -10304,15 +11086,21 @@ class Game:
                                     and hasattr(self.tutorial_mission, 'camera_animation')
                                     and self.tutorial_mission.camera_animation is not None
                                     and getattr(self.tutorial_mission.camera_animation, 'active', False))
-            # Tick mouse-wheel zoom settle timer
+            # Advance smooth mouse-wheel zoom, then tick the settle timer.
+            # update_zoom() is a no-op unless a wheel zoom is in flight, so it never
+            # fights the campaign/start camera animations, which drive zoom directly.
+            if self.camera.update_zoom(delta_time):
+                self.camera_zoom = self.camera.zoom
+                self.camera_offset = list(self.camera.offset)
             self.camera.update_zoom_settle(delta_time)
-            _was_zoom_animating = self.is_zoom_animating
             self.is_zoom_animating = (_start_anim_active or _mission_anim_active
                                       or self.camera.is_zoom_settling)
-            # When zoom activity ends, invalidate cached map so next frame uses smoothscale
-            # (animation/settling used fast nearest-neighbor scale for performance)
-            if _was_zoom_animating and not self.is_zoom_animating:
-                self.cached_zoom_level = None
+            # NOTE: the map no longer needs re-invalidating when zoom activity ends.
+            # That existed to undo the nearest-neighbour downgrade used during zoom,
+            # which forced one full-map smoothscale on the settle frame (a ~53ms
+            # hitch). _blit_map_background() now smoothscales only the visible slice
+            # (~2.5ms), so it uses full quality on every frame and never needs a
+            # catch-up rescale.
 
             # Check if planning timer has expired (sequential mode only)
             # Skip during mission intro when game is paused
@@ -10773,6 +11561,8 @@ class Game:
                             # Reset temp settings
                             self.temp_resolution = self.current_resolution
                             self.temp_fullscreen = self.is_fullscreen
+                            self.temp_vsync = self.vsync
+                            self.temp_fps_limit = self.fps_limit
                         elif self.game_menu_visible:
                             # Close game menu
                             self.game_menu_visible = False
@@ -10877,6 +11667,12 @@ class Game:
                             self.ability_targeting_ability_index = None
                             self.ability_targeting_ability_name = None
                             continue
+                        # Unit context menu (bottom-UI army strip): right-click a unit
+                        # icon to open it, right-click again to dismiss. Handled here
+                        # rather than in handle_right_click() so it works in any turn
+                        # phase, matching the left-click selection it complements.
+                        if self.handle_unit_context_menu_right_click(event.pos):
+                            continue
                         # Right-click for movement orders (only in planning phase)
                         if self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning':
                             self.mouse.handle_right_click(event.pos)
@@ -10939,8 +11735,14 @@ class Game:
                             sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
                 
                 elif event.type == pygame.KEYDOWN:
+                    # Space/ESC skips the battle bar volley animation while the
+                    # enhanced battle interface is open (it is modal, so the key
+                    # must not fall through to normal game shortcuts).
+                    if (self.enhanced_battle_ui is not None
+                            and self.enhanced_battle_ui.handle_key(event)):
+                        pass  # Animation skipped, consume the key
                     # ESC skips visible campaign transmission before normal handling
-                    if (event.key == pygame.K_ESCAPE
+                    elif (event.key == pygame.K_ESCAPE
                             and self.tutorial_mission
                             and hasattr(self.tutorial_mission, 'skip_transmission')
                             and self.tutorial_mission.skip_transmission()):
@@ -10981,19 +11783,16 @@ class Game:
                 logger.info(f"   Actual:   {'FULLSCREEN' if current_is_fullscreen else 'WINDOWED'}")
                 logger.info(f"   Attempting to restore expected mode...")
 
-                # Attempt to restore the expected mode
+                # Attempt to restore the expected mode.
+                # Routed through set_display_mode so VSync is re-applied: a bare
+                # set_mode() here would silently and permanently drop SCALED/vsync
+                # mid-game, with nothing in the UI reflecting that it had gone.
                 try:
                     current_size = self.screen.get_size()
-                    if self.is_fullscreen:
-                        # Should be fullscreen but isn't - restore it
-                        self.screen = pygame.display.set_mode(current_size, pygame.FULLSCREEN)
-                        _set_app_icon()
-                        logger.info(f"[OK] Restored fullscreen mode")
-                    else:
-                        # Should be windowed but isn't - restore it
-                        self.screen = pygame.display.set_mode(current_size, 0)
-                        _set_app_icon()
-                        logger.info(f"[OK] Restored windowed mode")
+                    self.screen, self.vsync_active = set_display_mode(
+                        current_size, self.is_fullscreen, self.vsync)
+                    _set_app_icon()
+                    logger.info(f"[OK] Restored {'fullscreen' if self.is_fullscreen else 'windowed'} mode")
                 except Exception as e:
                     logger.error(f"[ERROR] Failed to restore display mode: {e}")
                     logger.info(f"   Updating internal state to match actual mode")
@@ -11029,37 +11828,10 @@ class Game:
             self.screen.fill(WHITE)
 
             # Draw map (Phase 2D: transform with camera!)
-            # Optimization: Cache scaled map to avoid rescaling every frame (FPS improvement!)
-            # Calculate target size based on camera zoom
-            scaled_map_width = int(self.map_width * self.camera_zoom)
-            scaled_map_height = int(self.map_height * self.camera_zoom)
-            
-            # Only rescale if zoom level changed (massive FPS improvement!)
-            if self.cached_zoom_level != self.camera_zoom:
-                # FPS OPT: Use fast nearest-neighbor scale during zoom animation
-                # (3-10x faster than smoothscale, quality difference imperceptible mid-animation)
-                if self.is_zoom_animating:
-                    self.cached_scaled_map = pygame.transform.scale(
-                        self.map_image_original,
-                        (scaled_map_width, scaled_map_height)
-                    )
-                else:
-                    self.cached_scaled_map = pygame.transform.smoothscale(
-                        self.map_image_original,
-                        (scaled_map_width, scaled_map_height)
-                    )
-                self.cached_zoom_level = self.camera_zoom
-            
-            # Use cached scaled map (no rescaling needed!)
-            scaled_map = self.cached_scaled_map
-            
-            # Position based on camera offset (negative because camera moves opposite to map)
-            map_x = int(-self.camera_offset[0] * self.camera_zoom)
-            map_y = int(-self.camera_offset[1] * self.camera_zoom) + TOP_PANEL_HEIGHT  # Offset for top panel
-            
-            # Draw scaled and positioned map
-            self.screen.blit(scaled_map, (map_x, map_y))
-            
+            # Viewport-only rescale — see _blit_map_background() for why this is not
+            # a full-map scale (it was 16-53ms per zoom change; now ~0.3-2.5ms).
+            self._blit_map_background()
+
             # Draw territories (Phase 4D: inlined from delegate methods)
             self.map_renderer.draw_territories()
 
@@ -11129,6 +11901,11 @@ class Game:
 
             # Draw forced defend popup (simultaneous mode - overwhelming force notification)
             self.draw_forced_defend_popup()
+
+            # Draw the unit right-click context menu last so it covers the bottom UI
+            # (same "draw dropdown options last" rule the options menu dropdown follows)
+            if self.unit_context_menu:
+                self.draw_unit_context_menu()
 
             # Draw victory/defeat cinematic (on top of everything else)
             if self.victory_sequence_active:
@@ -11215,8 +11992,12 @@ class Game:
 
             # Update display
             pygame.display.flip()
-            # Throttle FPS when window is unfocused (Steam: don't burn CPU in background)
-            self.clock.tick(FPS if self._window_focused else UNFOCUSED_FPS)
+            # Frame pacing: manual cap > vsync (safety-capped) > FPS constant,
+            # and always throttled hard when unfocused (Steam: don't burn CPU in
+            # the background). Never an uncapped tick() — see resolve_frame_cap.
+            self.clock.tick(resolve_frame_cap(
+                self.fps_limit, self.vsync_active, self._window_focused,
+                FPS, UNFOCUSED_FPS))
 
         # Clean up resources (network, replay, logger) before exiting
         self._cleanup()
@@ -11307,6 +12088,8 @@ class Game:
                 # Reset temp settings to current settings
                 self.temp_resolution = self.current_resolution
                 self.temp_fullscreen = self.is_fullscreen
+                self.temp_vsync = self.vsync
+                self.temp_fps_limit = self.fps_limit
                 # Reset temp gameplay settings
                 self.temp_edge_scrolling_enabled = self.edge_scrolling_enabled
                 self.temp_edge_scrolling_mode = self.edge_scrolling_mode
@@ -11500,7 +12283,23 @@ class Game:
                 if self.temp_fullscreen:
                     self.temp_resolution = self.native_resolution
                 return (True, False)
-        
+
+        # VSync checkbox
+        if getattr(self, 'display_vsync_checkbox', None):
+            if self.display_vsync_checkbox.collidepoint(pos):
+                self.sound_manager.play_ui_click()
+                self.trigger_click_flash('options_control', 'vsync_checkbox')
+                self.temp_vsync = not self.temp_vsync
+                return (True, False)
+
+        # FPS limit cycle button
+        if getattr(self, 'display_fps_limit_dropdown', None):
+            if self.display_fps_limit_dropdown.collidepoint(pos):
+                self.sound_manager.play_ui_click()
+                self.trigger_click_flash('options_control', 'fps_limit')
+                self.temp_fps_limit = self._cycle_fps_limit(self.temp_fps_limit)
+                return (True, False)
+
         # ===== GAMEPLAY CONTROLS =====
         
         # Edge Scrolling checkbox
@@ -11646,10 +12445,14 @@ class Game:
             if self.options_apply_button.collidepoint(pos):
                 self.sound_manager.play_ui_click()
                 self.trigger_click_flash('options_button', 'apply')
-                # Apply display settings
+                # Apply display settings. VSync is passed through so the display is
+                # rebuilt with (or without) SCALED — it cannot be toggled on a live
+                # surface, and a later set_mode() would silently drop it.
                 width, height = self.temp_resolution
-                success = self.apply_display_settings(width, height, self.temp_fullscreen)
-                
+                success = self.apply_display_settings(
+                    width, height, self.temp_fullscreen, vsync=self.temp_vsync)
+                self.fps_limit = self.temp_fps_limit
+
                 # Apply gameplay settings
                 self.edge_scrolling_enabled = self.temp_edge_scrolling_enabled
                 self.edge_scrolling_mode = self.temp_edge_scrolling_mode
@@ -11707,6 +12510,8 @@ class Game:
                 # Reset temp settings
                 self.temp_resolution = self.current_resolution
                 self.temp_fullscreen = self.is_fullscreen
+                self.temp_vsync = self.vsync
+                self.temp_fps_limit = self.fps_limit
                 # Reset temp gameplay settings
                 self.temp_edge_scrolling_enabled = self.edge_scrolling_enabled
                 self.temp_edge_scrolling_mode = self.edge_scrolling_mode
@@ -12224,6 +13029,11 @@ class Game:
         # Save dialog keyboard input takes priority over all other keyboard handling
         if self.save_dialog_active:
             return self.handle_save_dialog_keydown(event)
+
+        # ESC dismisses the unit context menu first, so it doesn't also open the game menu
+        if event.key == pygame.K_ESCAPE and self.unit_context_menu:
+            self.unit_context_menu = None
+            return True
 
         # Prepare UI state for handler
         ui_state = {
@@ -13903,11 +14713,6 @@ class Game:
         # This makes hover work correctly with camera offset and zoom!
         world_pos = self.screen_to_world(pos)
         
-        # Calculate army hover radius in world space that matches visual size
-        # (same calculation as click detection for consistency)
-        ui_scale = self.get_ui_scale_factor()
-        army_hover_radius_world = (ARMY_CIRCLE_RADIUS * ui_scale) / self.camera_zoom
-        
         # Only track territory/army hover when in map area (not top panel, bottom UI, or sidebar)
         sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
         in_sidebar = self.game_state.sidebar_expanded and pos[0] >= sidebar_x
@@ -13918,74 +14723,75 @@ class Game:
                 if tab_rect.collidepoint(pos):
                     in_tab_buttons = True
                     break
-        in_map_area = pos[1] >= TOP_PANEL_HEIGHT and pos[1] < MAP_HEIGHT and not in_sidebar and not in_tab_buttons
+        # The unit context menu can overlap the map when it flips upward - nothing
+        # beneath it may highlight while it is open.
+        ctx_menu_rect = self._get_unit_context_menu_rect()
+        in_context_menu = bool(ctx_menu_rect and ctx_menu_rect.collidepoint(pos))
+        in_map_area = (pos[1] >= TOP_PANEL_HEIGHT and pos[1] < MAP_HEIGHT
+                       and not in_sidebar and not in_tab_buttons and not in_context_menu)
         if in_map_area:
             # Check if hovering over an army first (takes priority over territory)
             # NOTE: scaled_centers are in WORLD coordinates, so compare with world_pos!
-            army_at_pos = None
+            # Two-pass, mirroring get_army_at_pos(): a visible circle always beats a
+            # banner from a neighbouring territory that happens to overlap it.
+            # Unlike clicking, hover considers EVERY garrison regardless of owner,
+            # so allied/enemy stacks highlight too (existing behaviour, preserved).
+            # PERFORMANCE: index inbound animations once instead of rescanning the
+            # animation list per territory (was O(T*A)).
+            incoming_by_territory = {}
+            for anim in self.game_state.active_animations:
+                if anim.to_territory not in incoming_by_territory:
+                    incoming_by_territory[anim.to_territory] = set()
+                incoming_by_territory[anim.to_territory].add(anim.player)
+
+            army_circle_hit = None
+            army_banner_hit = None
             for territory, (cx, cy) in self.scaled_centers.items():
-                total_armies = self.game_state.get_territory_total_armies(territory)
-                if total_armies <= 0:
+                if self.game_state.get_territory_total_armies(territory) <= 0:
                     continue
 
-                # Check for multi-garrison territories - need to check flag positions
                 garrisons = self.game_state.territory_garrisons.get(territory, {})
-                num_garrisons = sum(1 for g in garrisons.values() if g.get('unmoved', 0) + g.get('moved', 0) > 0)
+                num_garrisons = self.get_effective_garrison_count(
+                    territory, garrisons, incoming_by_territory.get(territory, set())
+                )
 
-                # Check for incoming animations (adjust garrison count)
-                incoming_players = set()
-                for anim in self.game_state.active_animations:
-                    if anim.to_territory == territory:
-                        incoming_players.add(anim.player)
+                # Multi-garrison (allied reinforcement): every garrison gets its own
+                # circle + banner, so test them all.
+                for player_index in sorted(garrisons.keys()):
+                    anchor = self.get_garrison_anchor(territory, cx, cy, player_index,
+                                                      num_garrisons)
+                    if anchor is None:
+                        continue
+                    anchor_x, anchor_y, army_count = anchor
 
-                if incoming_players:
-                    future_garrisons = set()
-                    for player_index, garrison in garrisons.items():
-                        if garrison.get('unmoved', 0) + garrison.get('moved', 0) > 0:
-                            future_garrisons.add(player_index)
-                    future_garrisons.update(incoming_players)
-                    num_garrisons = len(future_garrisons)
-
-                    # For allied territories with incoming reinforcements
-                    owner = self.game_state.territory_owners.get(territory, -1)
-                    if owner >= 0 and num_garrisons == 1:
-                        single_garrison_player = list(future_garrisons)[0]
-                        if single_garrison_player != owner:
-                            num_garrisons = 2
-
-                if num_garrisons > 1:
-                    # Multi-garrison: Check each garrison's flag position
-                    flag_positions = self.game_state.get_flag_positions_for_territory(territory, cx, cy, num_garrisons)
-
-                    # Assign positions to all garrisons
-                    for player_index in sorted(garrisons.keys()):
-                        g = garrisons[player_index]
-                        if g.get('unmoved', 0) + g.get('moved', 0) > 0:
-                            self.game_state.assign_garrison_position(territory, player_index, num_garrisons)
-
-                    # Check hover over any garrison's flag position
-                    for player_index in sorted(garrisons.keys()):
-                        g = garrisons[player_index]
-                        if g.get('unmoved', 0) + g.get('moved', 0) <= 0:
-                            continue
-
-                        garrison_index = self.game_state.assign_garrison_position(territory, player_index, num_garrisons)
-                        if garrison_index < len(flag_positions):
-                            flag_cx, flag_cy = flag_positions[garrison_index]
-                            distance = ((world_pos[0] - flag_cx) ** 2 + (world_pos[1] - flag_cy) ** 2) ** 0.5
-                            if distance <= army_hover_radius_world:
-                                army_at_pos = territory
-                                break
-
-                    if army_at_pos:
+                    if self.point_in_army_circle(world_pos[0], world_pos[1],
+                                                 anchor_x, anchor_y):
+                        army_circle_hit = territory
                         break
-                else:
-                    # Single garrison: Check territory center
-                    distance = ((world_pos[0] - cx) ** 2 + (world_pos[1] - cy) ** 2) ** 0.5
-                    if distance <= army_hover_radius_world:
-                        army_at_pos = territory
-                        break
-            
+
+                    if self.point_in_army_banner(world_pos[0], world_pos[1],
+                                                 anchor_x, anchor_y,
+                                                 player_index, army_count):
+                        # Keep the LAST match: later = drawn on top = topmost banner
+                        army_banner_hit = territory
+
+                if army_circle_hit:
+                    break
+
+            # Check if hovering over a plot (takes priority over territory for tooltips)
+            # HOISTED above the army resolution so hover mirrors the click priority
+            # exactly: circle > plot > banner. get_plot_at_pos only scans the current
+            # player's territories while playing, so this is cheap and side-effect free.
+            plot_at_pos = self.get_plot_at_pos(world_pos)
+
+            # Resolve which army (if any) the cursor is on, using the click precedence
+            if army_circle_hit:
+                army_at_pos = army_circle_hit   # a visible circle beats a plot
+            elif plot_at_pos:
+                army_at_pos = None              # a plot beats a banner
+            else:
+                army_at_pos = army_banner_hit
+
             # Get territory at current position (if not over army)
             # get_territory_at_pos also needs to work with camera - we'll update it separately
             territory_at_pos = None
@@ -13997,9 +14803,6 @@ class Game:
                         and not self.tutorial_mission.is_territory_interactive(territory_at_pos)):
                     territory_at_pos = None
 
-            # Check if hovering over a plot (takes priority over territory for tooltips)
-            plot_at_pos = self.get_plot_at_pos(world_pos)
-            
             # Check if hovering over map button (building or training icon)
             hovering_map_button = (self.hover_target_button and
                                   self.hover_target_button[0] in ['map_building', 'map_training'])
@@ -14010,9 +14813,12 @@ class Game:
             # INSTANT HIGHLIGHTS (no delay)
             # Suppress territory glow when hovering over map buttons OR plots OR alliance popup is open
             alliance_popup_open = getattr(self, 'alliance_choice_popup_visible', False)
-            if not hovering_map_button and not hovering_resolve_btn and not plot_at_pos and not alliance_popup_open:
+            if not hovering_map_button and not hovering_resolve_btn and not alliance_popup_open:
+                # Army-vs-plot precedence is already resolved above (circle > plot >
+                # banner), so do NOT re-suppress the army highlight on plot_at_pos here.
+                # That used to kill the highlight even where a click WOULD select the army.
                 self.hovered_army = army_at_pos
-                if not self.hovered_army:
+                if not self.hovered_army and not plot_at_pos:
                     self.hovered_territory = territory_at_pos
                 else:
                     self.hovered_territory = None
@@ -14069,7 +14875,8 @@ class Game:
                     self.hover_target_army = None
                     self.show_tooltip_army = None
         else:
-            # Mouse outside map area (top panel, bottom UI, sidebar, or tab buttons) - clear hover states
+            # Mouse outside map area (top panel, bottom UI, sidebar, tab buttons, or
+            # over the unit context menu) - clear hover states
             self.hovered_army = None
             self.hovered_territory = None
             self.hover_target_army = None
@@ -14454,6 +15261,8 @@ class Game:
                 if "fullscreen" in display:
                     self.is_fullscreen = bool(display["fullscreen"])
                     self.temp_fullscreen = self.is_fullscreen
+                    self.temp_vsync = self.vsync
+                    self.temp_fps_limit = self.fps_limit
             
             # Load gameplay settings
             if "gameplay" in config:
@@ -14539,6 +15348,8 @@ class Game:
         # This ensures we use a supported resolution even if native is scaled
         self.temp_resolution = self.default_resolution
         self.temp_fullscreen = True
+        self.temp_vsync = False   # opt-in, matches settings defaults
+        self.temp_fps_limit = 0   # no manual cap
 
         # Gameplay settings
         self.temp_edge_scrolling_enabled = True
@@ -14929,55 +15740,16 @@ if __name__ == "__main__":
     pygame.init()
 
     # Load and set window/taskbar icon early — must be set before first set_mode
-    # on Windows.  _app_icon is reused by _set_app_icon() after every set_mode
-    # call to prevent pygame from reverting to the default Python icon.
-    _app_icon = None
-    _ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'icon.ico')
-    try:
-        _app_icon = pygame.image.load(_ico_path)
-        pygame.display.set_icon(_app_icon)
-    except Exception:
-        pass
-
-    def _set_app_icon():
-        """Re-apply window and taskbar icon after any pygame.display.set_mode() call.
-        Uses both pygame.display.set_icon (title bar) and Win32 SendMessage
-        WM_SETICON (taskbar) to ensure the icon persists through display recreation."""
-        if _app_icon is not None:
-            try:
-                pygame.display.set_icon(_app_icon)
-            except Exception:
-                pass
-        # Force taskbar icon via Win32 API (pygame.display.set_icon only sets title bar)
-        if sys.platform == 'win32':
-            try:
-                import ctypes
-                from ctypes import wintypes
-                user32 = ctypes.windll.user32
-                _ICON_SMALL, _ICON_BIG = 0, 1
-                _WM_SETICON = 0x0080
-                _IMAGE_ICON = 1
-                _LR_LOADFROMFILE = 0x0010
-                hwnd = pygame.display.get_wm_info()['window']
-                # Use system metrics for DPI-correct icon sizes (e.g. 48x48 on 150% scaling)
-                _SM_CXICON, _SM_CYICON = 11, 12      # Large icon (taskbar, Alt+Tab)
-                _SM_CXSMICON, _SM_CYSMICON = 49, 50   # Small icon (title bar)
-                big_w = user32.GetSystemMetrics(_SM_CXICON) or 32
-                big_h = user32.GetSystemMetrics(_SM_CYICON) or 32
-                small_w = user32.GetSystemMetrics(_SM_CXSMICON) or 16
-                small_h = user32.GetSystemMetrics(_SM_CYSMICON) or 16
-                # Large icon (taskbar)
-                hicon_big = user32.LoadImageW(
-                    None, _ico_path, _IMAGE_ICON, big_w, big_h, _LR_LOADFROMFILE)
-                if hicon_big:
-                    user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, hicon_big)
-                # Small icon (title bar)
-                hicon_small = user32.LoadImageW(
-                    None, _ico_path, _IMAGE_ICON, small_w, small_h, _LR_LOADFROMFILE)
-                if hicon_small:
-                    user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, hicon_small)
-            except Exception:
-                pass
+    # on Windows.  _load_app_icon()/_set_app_icon() are defined at MODULE level
+    # (above class Game) so they also exist when main.py is imported rather than
+    # run as a script; _app_icon is reused after every set_mode call to prevent
+    # pygame from reverting to the default Python icon.
+    _loaded_icon = _load_app_icon()
+    if _loaded_icon is not None:
+        try:
+            pygame.display.set_icon(_loaded_icon)
+        except Exception:
+            pass
 
     # Initialize Steamworks SDK (no-op if Steam not running or SteamworksPy not installed)
     steam_manager.initialize()
@@ -15021,10 +15793,9 @@ if __name__ == "__main__":
     initial_resolution = settings.get_resolution()
     initial_fullscreen = settings.is_fullscreen()
 
-    if initial_fullscreen:
-        screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-    else:
-        screen = pygame.display.set_mode(initial_resolution)
+    # Centralized so VSync is applied here too (see display_utils)
+    screen, _ = set_display_mode(
+        initial_resolution, initial_fullscreen, settings.get('vsync', False))
 
     pygame.display.set_caption("War of Avareon")
     _set_app_icon()  # Re-apply icon after display creation
@@ -15172,6 +15943,15 @@ if __name__ == "__main__":
         return game_result
 
     while True:
+        # Re-fetch the live display surface each iteration. Toggling VSync requires
+        # pygame.display.quit(), which DESTROYS the previous Surface object — a
+        # cached `screen` then raises "display Surface quit" when a screen is
+        # constructed from it (e.g. CampaignScreen). set_mode() alone never
+        # invalidated surfaces, so this only became possible once VSync existed.
+        _live = current_surface()
+        if _live is not None:
+            screen = _live
+
         # If launched via Steam invite, skip main menu and go directly to multiplayer join
         if _steam_connect_target:
             action = 'steam_invite_join'
@@ -15207,10 +15987,9 @@ if __name__ == "__main__":
             initial_resolution = settings.get_resolution()
             initial_fullscreen = settings.is_fullscreen()
 
-            if initial_fullscreen:
-                screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-            else:
-                screen = pygame.display.set_mode(initial_resolution)
+            # Centralized so VSync is applied here too (see display_utils)
+            screen, _ = set_display_mode(
+                initial_resolution, initial_fullscreen, settings.get('vsync', False))
 
             pygame.display.set_caption("War of Avareon")
             _set_app_icon()  # Re-apply icon after window recreation
@@ -15219,6 +15998,7 @@ if __name__ == "__main__":
         elif action == 'campaign':
             # Campaign loop: campaign screen <-> mission screens
             while True:
+                screen = current_surface() or screen
                 campaign = CampaignScreen(screen)
                 mission_id = campaign.run()
 
@@ -15233,6 +16013,7 @@ if __name__ == "__main__":
                 # Saved Games button clicked — open save browser
                 if mission_id == 'saved_games':
                     from save_browser import SaveBrowser
+                    screen = current_surface() or screen
                     browser = SaveBrowser(screen)
                     browser_result = browser.run()
 
@@ -15523,16 +16304,18 @@ if __name__ == "__main__":
                 # Check if we need to resize for main menu
                 initial_resolution = settings.get_resolution()
                 initial_fullscreen = settings.is_fullscreen()
+                # Refresh first: a VSync toggle during the game destroys the old
+                # display Surface, so the cached `screen` may be dead here.
+                screen = current_surface() or screen
                 current_size = screen.get_size()
                 current_flags = screen.get_flags()
                 current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
 
                 # Only recreate if settings changed
                 if current_size != initial_resolution or current_is_fullscreen != initial_fullscreen:
-                    if initial_fullscreen:
-                        screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-                    else:
-                        screen = pygame.display.set_mode(initial_resolution)
+                    # Centralized so VSync is applied here too (see display_utils)
+                    screen, _ = set_display_mode(
+                        initial_resolution, initial_fullscreen, settings.get('vsync', False))
                     _set_app_icon()  # Re-apply icon after display recreation
                     pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
 
@@ -15659,10 +16442,9 @@ if __name__ == "__main__":
                 settings.load()
                 initial_resolution = settings.get_resolution()
                 initial_fullscreen = settings.is_fullscreen()
-                if initial_fullscreen:
-                    screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-                else:
-                    screen = pygame.display.set_mode(initial_resolution)
+                # Centralized so VSync is applied here too (see display_utils)
+                screen, _ = set_display_mode(
+                    initial_resolution, initial_fullscreen, settings.get('vsync', False))
                 _set_app_icon()
                 pygame.mouse.set_visible(False)
                 continue
@@ -15764,15 +16546,17 @@ if __name__ == "__main__":
                 # Check if we need to resize
                 initial_resolution = settings.get_resolution()
                 initial_fullscreen = settings.is_fullscreen()
+                # Refresh first: a VSync toggle during the game destroys the old
+                # display Surface, so the cached `screen` may be dead here.
+                screen = current_surface() or screen
                 current_size = screen.get_size()
                 current_flags = screen.get_flags()
                 current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
 
                 if current_size != initial_resolution or current_is_fullscreen != initial_fullscreen:
-                    if initial_fullscreen:
-                        screen = pygame.display.set_mode(initial_resolution, pygame.FULLSCREEN)
-                    else:
-                        screen = pygame.display.set_mode(initial_resolution)
+                    # Centralized so VSync is applied here too (see display_utils)
+                    screen, _ = set_display_mode(
+                        initial_resolution, initial_fullscreen, settings.get('vsync', False))
                     _set_app_icon()  # Re-apply icon after display recreation
                     pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
 
@@ -15786,6 +16570,7 @@ if __name__ == "__main__":
             from replay_viewer import ReplayViewer
 
             while True:
+                screen = current_surface() or screen
                 browser = ReplayBrowser(screen)
                 browser_result = browser.run()
 

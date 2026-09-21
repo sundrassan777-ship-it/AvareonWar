@@ -12,6 +12,13 @@
 - Mouse Wheel: Zoom
 - Middle Drag: Pan Camera
 
+**Army unit selection (bottom UI icon strip):**
+- Left Click a unit icon: select just that unit
+- CTRL + Left Click: add/remove that unit from the selection
+- **Right Click a unit icon: context menu** - Select / Add to Group /
+  Remove from Group / Cancel (mouse-only alternative to CTRL+click)
+- Right Click a destination territory: order the selected units there
+
 **Keyboard:**
 - Arrow Keys: Pan Camera
 - +/-: Zoom
@@ -524,6 +531,29 @@ EDGE_SCROLL_SPEED = 15
 
 ---
 
+## 🖥️ Display & Frame Pacing Settings
+
+Stored in `config.json` via `settings_manager`. Both keys must exist in **`SETTING_TYPES`
+and `defaults`** — a key missing from `defaults` is deleted from config.json on every load.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `vsync` | bool | `False` | Sync frames to the monitor. Opt-in (off keeps pre-2026-09 behaviour) |
+| `fps_limit` | int | `0` | Manual FPS cap; `0` = no manual cap |
+| `fullscreen` | bool | `True` | Fullscreen mode |
+| `resolution` | list | detected | Window resolution |
+
+**FPS limit options** (`config/constants.py FPS_LIMIT_OPTIONS`): `0 (Unlimited), 60, 80,
+120, 144, 165, 240`. Frame cap priority: manual limit → VSync (safety-capped 240) → `FPS`
+(80) → `UNFOCUSED_FPS` (10) when the window loses focus.
+
+**Creating the window:** always `display_utils.set_display_mode(size, fullscreen, vsync)`,
+never `pygame.display.set_mode()` directly. VSync requires `pygame.SCALED` *and* a freshly
+initialised display; it is silently lost by any later `set_mode()`, and the achieved state
+cannot be read back from `get_flags()` (tracked as `game.vsync_active`).
+
+---
+
 ## 🎯 Most Important Files
 
 For Claude Code, read these first:
@@ -538,4 +568,4 @@ For quick answers:
 
 ---
 
-**Last Updated:** February 27, 2026
+**Last Updated:** September 20, 2026

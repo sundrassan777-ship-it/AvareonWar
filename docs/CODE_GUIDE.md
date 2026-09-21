@@ -624,6 +624,61 @@ def set_actual_battle_result(self, winner: int, attacker_survivors: int,
 - Accurate survivor counts displayed (not estimates)
 - Correct unit-by-unit breakdown in report (which Archers/Cavalry survived)
 - Battle cleanup happens separately from resolution
+- The real result reaches `set_actual_battle_result()` while the animation is still at
+  `elapsed ≈ 0`, so it calls `BattleBarVolleyEffect.retarget()` to re-aim the bars at the
+  true outcome without disturbing the volley rhythm
+
+##### Bar animation: `BattleBarVolleyEffect`
+
+Modelled on BFME2's War of the Ring auto-resolve. **Visual layer only** — it never touches
+`resolve_battle()` or the dice.
+
+**How it works:**
+- Both bars are **mirrored**: the attacker anchors at its left edge, the defender at its
+  right, so both erode inward toward the centre. `_render_strength_bars()` (the static
+  SETUP-state draw) must match `_fill_rect()` or the bar jumps when the animation starts.
+  The defender's `BattleBar.png` frame is flipped — the asset is not symmetric.
+- Depletion is **stepwise**, not a continuous slide. Each volley fires one blast per side;
+  when a blast lands, the chunk it destroyed flashes white-hot **in place** for
+  `BURN_DURATION`, then vanishes and the fill steps down.
+- The volley count scales with total army size on a log curve, clamped to
+  `[VOLLEY_MIN, VOLLEY_MAX]`. The duration falls out of the schedule (it is no longer drawn
+  up front), is clamped to `[ANIMATION_MIN_DURATION, ANIMATION_MAX_DURATION]`, and
+  `_start_animation()` reads it back into `self.animation_duration`.
+- Chunk sizes are jittered then **normalised to sum exactly to the damage**, so the bars
+  land precisely on their final fill. `_finish()` also snaps to the final value.
+
+**When modifying, watch for:**
+- **Use the private RNG.** The schedule draws from `random.Random(seed)`, never the global
+  `random`. `_pre_calculate_battle_result()` still calls `random.seed()` on the global RNG
+  immediately before `resolve_battle()` rolls its tie dice — leave that alone, removing it
+  changes tie outcomes. `TestDeterminism.test_does_not_disturb_the_global_rng` guards this.
+- **Nothing is allocated per frame.** Fills, burn chunks and bar backgrounds are drawn
+  straight to the screen; lances, impact bursts and the frame flare are pre-rendered in
+  `__init__`. The old version cleared and blitted a full-screen SRCALPHA surface every
+  frame — do not reintroduce that.
+- **Render order matters.** Lances draw *before* the frame PNG, so a tail still inside the
+  firing bar is hidden by the frame's end cap; each lance is also clipped to the far side of
+  its muzzle. The frame flare and impact bursts draw *after* the PNG.
+- **`BattleBar.png` stores non-zero RGB under fully transparent pixels.** Any additive blit
+  of it lights up the whole rectangle. The flare uses `BLEND_RGB_ADD` (which leaves alpha
+  untouched) plus a normal alpha blit, so transparency is respected.
+- **The flare is one sprite faded with `set_alpha`.** Pre-rendering a sprite per fade step
+  cost ~21 ms up front — a visible hitch on the Resolve click. `set_alpha` is sticky, so the
+  render path sets it unconditionally on every blit.
+- **`retarget()` must keep the RNG stream aligned.** `_split_damage()` draws its weights even
+  when damage is zero, so re-running the build with a fresh `random.Random(seed)` reproduces
+  identical fire times.
+- **Survivor → fill conversion.** Use `_survivor_fill()`, which scales by the side's
+  *initial* fill. A raw `survivors / count` makes a weaker side that wins end with a longer
+  bar than it started with.
+
+**Skip:** clicking anywhere during ANIMATING, or pressing Space/ESC, calls
+`skip_animation()` → `BattleBarVolleyEffect.skip()`. `handle_click()` returns `'skip'`, which
+main.py's existing fall-through consumes; the key is wired in main.py's KEYDOWN branch ahead
+of the campaign-transmission skip.
+
+**Tests:** `tests/test_battle_bar_volley.py`
 
 **Storage pattern in main.py:**
 ```python
@@ -653,7 +708,7 @@ self._resolved_battle_info = {
 - Alliance markers (blue hurricane) → `ui/effects/alliance_marker_effect.py` — 600 particles in 3 spiral arms
 - Production glow (sunrays) → `ui/effects/production_glow_effect.py` — 8 rotating ray trapezoids
 - Castle upgrades (golden explosion) → `ui/effects/castle_upgrade_effect.py` — 140 gold particles, 3 phases
-- Battle bar combat (particles) → `ui/effects/battle_interface.py` (BattleBarParticleEffect) — 600 circle particles
+- Battle bar combat (volleys) → `ui/effects/battle_interface.py` (BattleBarVolleyEffect) — discrete blasts, pre-rendered sprites
 - Sparkle particles → `ui/effects/sparkle_effect.py`
 - Turn announcements → `ui/effects/turn_announcement_sparkle.py`
 - Hero ability bursts (explode/implode) → `ui/effects/ability_burst_effect.py` — configurable particles, phase durations, particle_size, flash_ring, delay
@@ -721,6 +776,117 @@ WINDOW_HEIGHT = 1080
 | `draw_map()` | Delegates to MapRenderer | Search |
 | `draw_ui()` | Delegates to UIRenderer | Search |
 | `update()` | Update animations, effects | Search |
+| `get_army_banner_rect()` | **Banner geometry - single source of truth** | Search |
+| `get_effective_garrison_count()` | Flag slot count (must match renderer) | Search |
+| `get_garrison_anchor()` | One garrison's circle/banner anchor | Search |
+| `get_army_at_pos()` | Army hit-test (`mode='circle'/'banner'/'both'`) | Search |
+
+### Army selection: circles AND banners
+
+**The banner (flag) above an army circle is a first-class click/hover target, not
+decoration.** Three passes need its geometry and they must agree:
+
+| Pass | Where |
+|------|-------|
+| Click | `Game.get_army_at_pos()` (world space) |
+| Hover state | `Game.handle_mouse_motion()` (world space) |
+| Render + ring brightening | `MapRenderer.draw_territories()` (screen space) |
+
+**All three MUST go through the shared helpers** - `get_army_banner_rect()`,
+`get_effective_garrison_count()`, `get_garrison_anchor()`. They used to open-code the
+geometry separately and drifted: the click box was only half the banner's height (so the
+flag cloth was unclickable), hover ignored the banner entirely, and the click path was
+missing the allied-reinforcement slot rule the other two had.
+
+**Banner geometry:** height = `ARMY_CIRCLE_RADIUS * ui_scale * ARMY_FLAG_HEIGHT_RATIO`
+(both in `config/constants.py`), width from the source PNG's aspect ratio. The pole base
+sits ON the circle anchor and the banner hangs UPWARD: `top = anchor_y - height`,
+`bottom = anchor_y`. Never inline the ratio again.
+
+**Circle geometry:** the ring is NOT drawn at `ARMY_CIRCLE_RADIUS`. It is drawn at
+`ARMY_CIRCLE_DRAW_SCALE` (0.75) of it and lifted `ARMY_CIRCLE_DRAW_LIFT` (0.35) above the
+anchor, so the flag pole sits inside it. Use `get_army_circle_hit()` /
+`point_in_army_circle()` - never hit-test a full-radius circle centred on the anchor, which
+reaches 0.60 * radius (9-14 screen px) BELOW the visible ring and selects armies from empty
+map. The faint glow halo around the ring is decoration and is deliberately NOT clickable.
+
+**The anchor is the pole base, not the circle centre.** `scaled_centers[territory]` and
+`get_flag_positions_for_territory()` both give the pole base; the ring is drawn above it and
+the banner hangs above that.
+
+**Click priority is circle > plot > banner**, split across `handle_map_area_click()`:
+
+- PRIORITY 3 - `get_army_at_pos(world_pos, mode='circle')`
+- PRIORITY 4 - `get_plot_at_pos()`
+- PRIORITY 4.5 - `get_army_at_pos(world_pos, mode='banner')`
+
+The banner's full-height box overlaps building plots, including through the flag art's
+large transparent margins, so testing banners before plots would silently steal plot
+clicks. `handle_mouse_motion()` mirrors this ordering exactly, so anywhere the ring
+brightens, a click selects.
+
+Within `mode='both'`, **every** circle is tested before **any** banner: at minimum zoom a
+banner is ~30 world units tall while sibling flags sit on a radius-25 ring, so a banner
+routinely covers a neighbouring territory's circle. The banner pass keeps the **last**
+match, because the renderer iterates `scaled_centers` in the same order - last = drawn on
+top.
+
+**Multi-garrison (allied reinforcement):** each garrison gets its own circle AND banner at
+its own `get_flag_positions_for_territory()` slot. Hover highlights any garrison's banner;
+clicking still only ever selects the current player's garrison.
+
+**When adding a hit target near armies:** derive its rect from a shared helper and add it
+to all three passes, or it will drift the same way.
+
+Tests: `tests/test_army_banner_selection.py`
+
+---
+
+### Unit selection strip: right-click context menu
+
+The bottom-UI unit icon grid (`draw_army_composition_ui()`) supports **right-click on a
+unit icon** to open a small drop-down, so partial garrison selections can be built without
+holding CTRL. The options adapt to the current selection:
+
+| Selection state (within the shown garrison) | Options |
+|---|---|
+| No *other* unit selected | Select, Cancel |
+| Other units selected, this one is not | Select, **Add to Group**, Cancel |
+| Other units selected and this one is too | Select, **Remove from Group**, Cancel |
+
+`Select` replaces `selected_army_units` (plain left-click); `Add`/`Remove from Group` is the
+same toggle CTRL+click performs - the label just reflects which way it will go. Options are
+frozen at open time so they cannot flip while the menu is on screen.
+
+**State** (`main.py`):
+- `self.unit_context_menu` - `{'unit_id', 'territory', 'player', 'anchor', 'items'}` or `None`
+- `self.unit_context_menu_rects` - `[(rect, action_id), ...]`, rebuilt every draw
+
+**Methods** (all in `main.py`):
+| Method | Role |
+|---|---|
+| `handle_unit_context_menu_right_click(pos)` | Opens/dismisses. Hooked in the event loop's `button == 3` branch **before** the planning-phase gate, so it works in any turn phase |
+| `_get_unit_context_menu_rect()` | Sole source of geometry - both draw and hit-test derive from it, so they cannot desync |
+| `_close_stale_unit_context_menu()` | Drops a menu whose garrison/unit is gone |
+| `draw_unit_context_menu()` | Drawn late in `run()` (with the other popups) so it covers the bottom UI |
+| `handle_unit_context_menu_click(pos)` | **Priority 0** in `mouse_handler.handle_left_click()` |
+
+**It is modal.** While open it is Priority 0 in the click chain and consumes *every*
+left-click: an item runs its action, anything else just closes it. Hover underneath is
+suppressed in two places - `draw_army_composition_ui()` swaps `self.mouse_pos` for a
+`hover_pos` that is voided inside the menu rect (this also gates the unit tooltip), and
+`handle_mouse_motion()` excludes the menu rect from `in_map_area` (the menu overlaps the
+map when it flips upward).
+
+**Placement:** prefers down-and-right of the icon, flips to up-and-right when it would run
+past `WINDOW_HEIGHT`, and is clamped to the screen horizontally.
+
+**Highlight colours are explicit, not `lighten_color()`/`brighten_color()`.** Those scale
+multiplicatively, so against the near-black panel `(40, 35, 30)` they shift each channel by
+a few points and the feedback is invisible. The menu uses literal `(82, 72, 55)` for hover
+and `(150, 126, 76)` for the click flash. Use the helpers only on mid-brightness bases.
+
+Tests: `tests/test_unit_context_menu.py`
 
 ---
 
@@ -1434,8 +1600,57 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `_text_cache` (main.py) - Cache static text: `self._get_cached_text(text, font, color)` — used by 128+ call sites
 - `_rotated_tab_text_cache` (main.py) - Cache rotated text surfaces
 - `text_cache` (ui_renderer.py) - UIRenderer's own text cache: `self._get_cached_text(text, font, color)`
-- `_sprite_cache` (production_glow_effect.py) - 16 pre-rendered rotation frames, rebuilt on zoom change
+- `_SHARED_SPRITE_CACHE` (production_glow_effect.py) - 16 pre-rendered rotation frames, keyed by `(quantized_zoom, player_color)` and **shared process-wide** across all effect instances (bounded LRU). Instances hold a reference via `_sprite_cache`.
 - `_scaled_text_cache` (turn_announcement_effect.py) - Smoothscale cache by quantized (width, height)
+
+**Always `.convert()` / `.convert_alpha()` loaded images — including backgrounds:**
+- An unconverted surface stays in *file* pixel format, so **every blit** of it (or of anything
+  scaled from it) performs a per-pixel format conversion. Measured on the 4096x3072 map:
+  **9.26ms per frame unconverted vs 0.15ms converted.**
+- `transform.scale()` / `smoothscale()` output **inherits the source format**, so converting
+  the original is what matters — converting the scaled copy is too late.
+- Map backgrounds load through `_load_map_background()` (main.py), which uses `.convert()`
+  (opaque bottom layer). **New map backgrounds must be fully opaque**; transparency would be
+  flattened rather than blended. Use `.convert_alpha()` for anything that needs real alpha.
+- `.convert()` bakes in the *current display's* pixel format — **re-convert after any
+  `set_mode()`** (resolution, fullscreen, or flag change), as `apply_display_settings()` does.
+
+**Scale only what is visible (never the whole map):**
+- `Game._blit_map_background()` (main.py) scales just the visible slice of the map background.
+  Scaling the FULL map cost `zoom²` — 8.98M pixels (36MB) at zoom 4.0, i.e. 16.1ms nearest /
+  **53.1ms smoothscale** — versus 0.31ms / 2.50ms for a viewport-sized slice.
+- It over-renders a 192px margin **only when zoom is unchanged**, so panning re-blits the
+  cached surface at a new offset rather than rescaling. Skipping the margin while zooming
+  matters: the cache is invalidated every frame then, so the extra pixels are pure waste.
+- Both render paths (`draw()` and the live loop in `run()`) call this one method — they
+  previously held duplicated scaling logic, so a fix had to be applied twice.
+- Derive source rects from `surface.get_size()`, **not** the `ORIGINAL_MAP_*` constants, so
+  alternate map backgrounds and the black fallback keep working.
+
+**Rebuild scale-derived caches when `scale_factor` changes:**
+- `MapRenderer.territory_bounding_boxes` and `multi_zoom_cache` are derived from
+  `game.scaled_polygons`. Any path that re-scales those polygons after construction must call
+  `MapRenderer.rebuild_scale_caches()`, as `apply_display_settings()` does.
+- Skipping it left the caches at the old scale: after 1600x900 → 1280x720 the cached projection
+  was **418px** off, misaligning polygons with the map and breaking AABB hit-testing.
+- Guarded by `tests/test_resolution_caches.py`.
+
+**Cache, don't copy, full-screen overlays:**
+- `_overlay_cache_surface` aliases `fullscreen_overlay` rather than `.copy()`-ing it. The copy
+  cost 5.76MB per camera delta (i.e. every frame while panning/zooming) and existed only so the
+  content survived the next `fill()` — safe to alias because nothing else writes that surface.
+- **Clamp bbox-sized surfaces to the screen**, not just to a minimum of 1. Polygon screen
+  bounding boxes grow with zoom squared; unclamped they allocated ~4MB at zoom 4.0 for area that
+  is not visible. pygame clips the draw for you.
+
+**Never key a cache on a raw continuous float (quantize it):**
+- Keying on an un-quantized zoom/scale/alpha float means the cache **never hits** while that
+  value animates. `ProductionGlowEffect` keyed its sprite cache on the raw zoom and so rebuilt
+  16 surfaces per effect per zoom change — ~150ms frames with ~100 producing buildings.
+- Quantize the key (glow: 0.1 zoom steps; flags: 5px; static glows: 3px) and, where the cached
+  result depends only on shared inputs, share one cache across instances rather than per-object.
+- Known remaining instances of this bug: `battleeffect.py` and `alliance_marker_effect.py`
+  cache on a continuously-animated scale float, so they `smoothscale` every frame.
 
 **Surface reuse:**
 - `_get_overlay_surface()` (ui_renderer.py) - Reusable full-screen SRCALPHA surface for modals

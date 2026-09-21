@@ -87,6 +87,12 @@ class MapRenderer:
         self.scaled_flag_cache = {}
         # Cache scaled building icons: key = (building_type, size)
         self.scaled_building_cache = {}
+        # Grey-tinted variants for buildings not owned by the viewing player.
+        # Keyed the same way (building_type, size) — see get_cached_greyed_building().
+        self.greyed_building_cache = {}
+        # Pre-rendered 3-ring plot borders, keyed by (radius, player_color).
+        self._plot_chrome_cache = {}
+        self._PLOT_CHROME_CACHE_MAX = 64
         # Cache scaled plot icons: key = (plot_icon_name, size)
         self.scaled_plot_cache = {}
         # Cache scaled unit training icons: key = (unit_type, size)
@@ -109,6 +115,12 @@ class MapRenderer:
         self._hover_blit_pos = (0, 0)  # Screen position to blit hover surface
         self._last_hover_territory = None  # Track for cache invalidation
         self._last_hover_camera_state = None  # Track for cache invalidation
+        # FPS OPT: cache for draw_territory_overlay(), which previously allocated a
+        # fresh surface and re-filled the polygon on every call — including every
+        # frame of a campaign/tutorial highlight's alpha pulse.
+        # Keyed by (territory, camera_state, color, quantized_alpha, outline).
+        self._territory_overlay_cache = {}
+        self._TERRITORY_OVERLAY_CACHE_MAX = 64
         # Pools of reusable surfaces by size for overlays, glows, and effects
         self.surface_pool = {}  # key = (width, height), value = list of surfaces
         self.max_pool_size = 50  # Limit pool size to prevent memory bloat
@@ -202,6 +214,39 @@ class MapRenderer:
     def _get_nearest_zoom_level(self, zoom):
         """Get the nearest pre-computed zoom level."""
         return min(self.ZOOM_LEVELS, key=lambda z: abs(z - zoom))
+
+    def rebuild_scale_caches(self):
+        """
+        Rebuild the caches derived from game.scaled_polygons after the map scale changes.
+
+        BUG FIX: `territory_bounding_boxes` and `multi_zoom_cache` are built once in
+        __init__ from the polygons as scaled at that moment. `apply_display_settings()`
+        re-derives `scale_factor` and re-rounds every polygon on a resolution change,
+        but never rebuilt these — so afterwards they still held the OLD scale
+        (0.163 at 1280x720 vs 0.211 at 1600x900 vs 0.256 at 1920x1080, a 57% swing).
+        That left territory polygons misaligned with the map background, and stale
+        bounding boxes made culling and AABB hit-testing wrong.
+
+        Map switching was never affected: MapRenderer is constructed inside
+        initialize_game(), which calls _reload_map_assets() first.
+
+        Call this from any path that changes `game.scaled_polygons` after construction.
+        """
+        self.territory_bounding_boxes = {}
+        self._precompute_territory_bounding_boxes()
+        self.multi_zoom_cache = {}
+        self._precompute_multi_zoom_polygons()
+
+        # Anything derived from the old screen projection is now invalid
+        self.cached_screen_polygons = {}
+        self.cached_screen_plots = {}
+        self.last_camera_state = None
+        self._overlay_cache_surface = None
+        self._overlay_cache_camera = None
+        self._hover_surface = None
+        self._last_hover_territory = None
+        self._last_hover_camera_state = None
+        self._territory_overlay_cache = {}
 
     def _prewarm_image_caches(self):
         """
@@ -364,9 +409,10 @@ class MapRenderer:
             is_hovering: Whether mouse is hovering over this circle
             is_clicking: Whether this circle is being clicked/selected
         """
-        # 25% smaller circle, shifted up so flag sits inside it
-        draw_radius = int(radius * 0.75)
-        draw_y = y - int(radius * 0.35)
+        # Smaller circle, shifted up so the flag pole sits inside it.
+        # SHARED with hit-testing via Game.get_army_circle_hit() - keep in sync.
+        draw_radius = int(radius * ARMY_CIRCLE_DRAW_SCALE)
+        draw_y = y - int(radius * ARMY_CIRCLE_DRAW_LIFT)
 
         # Blit pre-cached glow halo centered at draw position
         glow = self._get_static_glow(color, draw_radius)
@@ -466,6 +512,60 @@ class MapRenderer:
         scaled_icon = pygame.transform.smoothscale(building_icon, (size, size))
         self.scaled_building_cache[cache_key] = scaled_icon
         return scaled_icon
+
+    def _blit_plot_chrome(self, x, y, radius, player_color):
+        """
+        Draw the three-ring border around a completed plot, from a cached surface.
+
+        FPS OPT: this was three `pygame.draw.circle` calls per completed plot, every
+        frame (~0.87ms for 228 plots). The rings depend only on (radius, colour), so
+        they are pre-rendered once per combination and blitted.
+        """
+        cache_key = (radius, player_color)
+        chrome = self._plot_chrome_cache.get(cache_key)
+        if chrome is None:
+            size = radius * 2 + 2
+            centre = size // 2
+            chrome = pygame.Surface((size, size), pygame.SRCALPHA)
+            pygame.draw.circle(chrome, BLACK, (centre, centre), radius, 1)
+            pygame.draw.circle(chrome, player_color, (centre, centre), radius - 1, 3)
+            pygame.draw.circle(chrome, BLACK, (centre, centre), radius - 4, 1)
+            if len(self._plot_chrome_cache) > self._PLOT_CHROME_CACHE_MAX:
+                self._plot_chrome_cache.clear()
+            self._plot_chrome_cache[cache_key] = chrome
+
+        self.game.screen.blit(chrome, chrome.get_rect(center=(x, y)))
+
+    def get_cached_greyed_building(self, building_type, building_icon, size):
+        """
+        Get the GREYED (not-owned-by-viewer) variant of a scaled building icon.
+
+        FPS OPT: `_render_completed_plot` used to build this per plot, per frame —
+        `cached_icon.copy()` plus a pooled overlay fill plus a BLEND_RGBA_MULT blit.
+        On a crowded map most buildings belong to someone else, so that ran for
+        nearly every visible building every frame. The result depends only on
+        (building_type, size), so it caches exactly like the plain scaled icon.
+
+        Args:
+            building_type: Type of building (e.g. 'Farm', 'Barracks')
+            building_icon: The unscaled source icon
+            size: Target size (width and height)
+
+        Returns:
+            Scaled, grey-tinted building surface
+        """
+        cache_key = (building_type, size)
+
+        if cache_key in self.greyed_building_cache:
+            return self.greyed_building_cache[cache_key]
+
+        base = self.get_cached_scaled_building(building_type, building_icon, size)
+        greyed = base.copy()
+        grey_overlay = pygame.Surface((size, size), pygame.SRCALPHA)
+        grey_overlay.fill((128, 128, 128, 180))
+        greyed.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        self.greyed_building_cache[cache_key] = greyed
+        return greyed
 
     def get_cached_scaled_plot(self, plot_icon_name, plot_icon, size):
         """
@@ -719,25 +819,47 @@ class MapRenderer:
         if not screen_polygon:
             return
 
-        # FPS OPT: Compute screen-space bbox for small clipped surface
-        border_width = max(1, int(1.5 * self.game.camera_zoom)) if outline else 0
-        margin = border_width + 2
-        xs = [p[0] for p in screen_polygon]
-        ys = [p[1] for p in screen_polygon]
-        bbox_x = max(0, int(min(xs) - margin))
-        bbox_y = max(0, int(min(ys) - margin))
-        bbox_w = max(1, int(max(xs) - min(xs) + margin * 2))
-        bbox_h = max(1, int(max(ys) - min(ys) + margin * 2))
+        # FPS OPT: this had NO cache at all — it allocated a fresh SRCALPHA surface
+        # and re-filled a 455-1027 point polygon on EVERY call. Campaign/tutorial
+        # highlight steps call it every frame with a pulsing alpha, so it ran
+        # continuously for the whole highlight. Quantizing the alpha to 16 steps
+        # makes the result cacheable with no visible change to the pulse.
+        quantized_alpha = (int(alpha) // 16) * 16
+        camera_state = (self.game.camera_offset[0], self.game.camera_offset[1],
+                        self.game.camera_zoom)
+        cache_key = (territory, camera_state, tuple(color), quantized_alpha, bool(outline))
 
-        # Small SRCALPHA surface (supports mixed alphas for fill + outline)
-        overlay = pygame.Surface((bbox_w, bbox_h), pygame.SRCALPHA)
-        local_polygon = [(p[0] - bbox_x, p[1] - bbox_y) for p in screen_polygon]
+        cached = self._territory_overlay_cache.get(cache_key)
+        if cached is None:
+            border_width = max(1, int(1.5 * self.game.camera_zoom)) if outline else 0
+            margin = border_width + 2
+            xs = [p[0] for p in screen_polygon]
+            ys = [p[1] for p in screen_polygon]
+            bbox_x = max(0, int(min(xs) - margin))
+            bbox_y = max(0, int(min(ys) - margin))
+            # Cap to the screen as well as flooring at 1 — an unclamped bbox grows
+            # with zoom squared and can be far larger than the visible area.
+            screen_w = self.game.screen.get_width()
+            screen_h = self.game.screen.get_height()
+            bbox_w = max(1, min(int(max(xs) - min(xs) + margin * 2), screen_w - bbox_x))
+            bbox_h = max(1, min(int(max(ys) - min(ys) + margin * 2), screen_h - bbox_y))
 
-        pygame.draw.polygon(overlay, (*color, alpha), local_polygon)
-        if outline:
-            pygame.draw.lines(overlay, (*color, 255), True, local_polygon, border_width)
+            # Small SRCALPHA surface (supports mixed alphas for fill + outline)
+            overlay = pygame.Surface((bbox_w, bbox_h), pygame.SRCALPHA)
+            local_polygon = [(p[0] - bbox_x, p[1] - bbox_y) for p in screen_polygon]
 
-        self.game.screen.blit(overlay, (bbox_x, bbox_y))
+            pygame.draw.polygon(overlay, (*color, quantized_alpha), local_polygon)
+            if outline:
+                pygame.draw.lines(overlay, (*color, 255), True, local_polygon, border_width)
+
+            # Bounded: the camera_state in the key means entries die on every camera
+            # move, so clear wholesale rather than growing without limit.
+            if len(self._territory_overlay_cache) > self._TERRITORY_OVERLAY_CACHE_MAX:
+                self._territory_overlay_cache.clear()
+            cached = (overlay, (bbox_x, bbox_y))
+            self._territory_overlay_cache[cache_key] = cached
+
+        self.game.screen.blit(cached[0], cached[1])
     def draw_territories(self):
         """Draw territory overlays, markers and ownership colors"""
         # H8 fix: Rebuild overlay surfaces if window was resized
@@ -804,8 +926,15 @@ class MapRenderer:
                     pygame.draw.polygon(self.fullscreen_overlay, (200, 200, 200, 45), screen_polygon)
                     pygame.draw.lines(self.fullscreen_overlay, (220, 220, 220, 120), True, screen_polygon, 1)
 
-            # Store cache state
-            self._overlay_cache_surface = self.fullscreen_overlay.copy()
+            # Store cache state.
+            # FPS OPT: reference, not .copy(). This used to copy the whole
+            # SRCALPHA overlay (5.76MB at 1600x900) on EVERY camera delta — i.e.
+            # every frame while panning or zooming — purely so the cached content
+            # would survive the next rebuild's fill(). But `fullscreen_overlay` is
+            # written nowhere else (it is filled and redrawn only inside this
+            # block), so the cache can simply alias it: on a hit we blit the
+            # surface untouched since the last rebuild, and on a miss we refill it.
+            self._overlay_cache_surface = self.fullscreen_overlay
             self._overlay_cache_camera = current_camera
             self._overlay_cache_version = owners_version
             self.game.screen.blit(self.fullscreen_overlay, (0, 0))
@@ -839,11 +968,18 @@ class MapRenderer:
                     bbox_w = max(xs) - min(xs) + margin * 2
                     bbox_h = max(ys) - min(ys) + margin * 2
 
-                    # Clamp to screen bounds to avoid negative-size surfaces
+                    # Clamp to screen bounds. FPS OPT: the width/height were
+                    # previously only floored at 1, never capped to the screen, so a
+                    # large territory at high zoom allocated a surface far bigger than
+                    # anything visible (~1000x1000 = 4MB at zoom 4) — and this runs on
+                    # every camera delta. Off-screen parts cannot be seen anyway, and
+                    # pygame clips the polygon draw to the surface.
+                    screen_w = self.game.screen.get_width()
+                    screen_h = self.game.screen.get_height()
                     bbox_x = max(0, int(bbox_x))
                     bbox_y = max(0, int(bbox_y))
-                    bbox_w = max(1, int(bbox_w))
-                    bbox_h = max(1, int(bbox_h))
+                    bbox_w = max(1, min(int(bbox_w), screen_w - bbox_x))
+                    bbox_h = max(1, min(int(bbox_h), screen_h - bbox_y))
 
                     # Create small SRCALPHA surface (needs two alphas: fill=60, border=255)
                     self._hover_surface = pygame.Surface((bbox_w, bbox_h), pygame.SRCALPHA)
@@ -960,31 +1096,13 @@ class MapRenderer:
                 garrison_army_counts[player_index] = count
                 total_armies += count
 
-            # Count only non-empty garrisons for positioning
-            num_garrisons = sum(1 for count in garrison_army_counts.values() if count > 0)
-
-            # IMPORTANT: Check if there are incoming animations to this territory (O(1) lookup now)
-            # If so, use the FUTURE garrison count (after arrivals) for flag positioning
-            # This prevents flags from "jumping" when animations complete
-            incoming_players = incoming_animations_by_territory.get(territory, set())
-
-            if incoming_players:
-                # Calculate future garrison count (current + incoming)
-                future_garrisons = set()
-                for player_index, count in garrison_army_counts.items():
-                    if count > 0:
-                        future_garrisons.add(player_index)
-                future_garrisons.update(incoming_players)
-                num_garrisons = len(future_garrisons)
-
-                # IMPORTANT: For allied territories with incoming reinforcements,
-                # use at least 2 positions even if only 1 garrison will exist
-                # (to match animation destination positioning)
-                if owner >= 0 and num_garrisons == 1:
-                    # Check if the single garrison is not the owner
-                    single_garrison_player = list(future_garrisons)[0]
-                    if single_garrison_player != owner:
-                        num_garrisons = 2  # Use 2-position layout for allied reinforcement
+            # Count flag slots via the shared helper, so the drawn layout and the
+            # click/hover hit boxes can never disagree. Passes the per-frame
+            # animation index to keep the O(1) lookup.
+            num_garrisons = self.game.get_effective_garrison_count(
+                territory, garrisons,
+                incoming_animations_by_territory.get(territory, set())
+            )
 
             # Skip drawing army indicator if territory has 0 armies
             if total_armies == 0:
@@ -1025,9 +1143,9 @@ class MapRenderer:
                         flag_world_x, flag_world_y = flag_positions[garrison_position_idx]
                         glow_x, glow_y = self.game.world_to_screen((flag_world_x, flag_world_y))
 
-                # Align glow with the army circle (25% smaller, shifted up)
-                circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * 0.75)
-                circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * 0.35)
+                # Align glow with the drawn army circle (SHARED constants)
+                circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
+                circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
                 glow_y = glow_y - circle_y_offset
 
                 # Pulsing green glow effect (scales with zoom!)
@@ -1115,13 +1233,33 @@ class MapRenderer:
             # Base color
             army_color = color
             
+            # Resolve which player actually holds this territory's single garrison
+            # (not necessarily the territory owner). HOISTED above the hover test
+            # because the banner hit test needs it; reuses garrison_army_counts
+            # instead of re-reading the garrison dicts.
+            garrison_player = None
+            for player_index, count in garrison_army_counts.items():
+                if count > 0:
+                    garrison_player = player_index
+                    break
+            if garrison_player is None:
+                garrison_player = owner
+
             # Check for hover (using screen position)
             # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
             is_hovering = False
             mouse_screen_x, mouse_screen_y = self.game.mouse_pos
-            distance_sq = (x - mouse_screen_x) ** 2 + (y - mouse_screen_y) ** 2
-            if distance_sq <= scaled_army_radius ** 2:
+            if self.game.point_in_army_circle(mouse_screen_x, mouse_screen_y,
+                                              x, y, space='screen'):
                 is_hovering = True
+            elif num_garrisons <= 1:
+                # Banner is a hover target too, so the ring brightens anywhere the
+                # banner is clickable. Only runs when the circle test missed; costs
+                # a dict lookup plus two Surface attribute reads.
+                is_hovering = self.game.point_in_army_banner(
+                    mouse_screen_x, mouse_screen_y, x, y,
+                    garrison_player, total_armies, space='screen'
+                )
             
             # Check for click flash
             is_clicking = (self.game.clicked_element and 
@@ -1168,12 +1306,26 @@ class MapRenderer:
                     # Draw rotating ring for this garrison at flag position
                     garrison_color = self.game.game_state.get_player_color(player_index)
 
+                    # Determine flag tier based on this garrison's army count.
+                    # HOISTED above the hover test because the banner hit test needs it.
+                    flag_tier = self.game.get_army_flag_tier(garrison_armies)
+
                     # Check for hover/click on this specific garrison
                     # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
                     garrison_is_hovering = False
-                    distance_to_flag_sq = (flag_screen_x - mouse_screen_x) ** 2 + (flag_screen_y - mouse_screen_y) ** 2
-                    if distance_to_flag_sq <= scaled_army_radius ** 2:
+                    if self.game.point_in_army_circle(mouse_screen_x, mouse_screen_y,
+                                                      flag_screen_x, flag_screen_y,
+                                                      space='screen'):
                         garrison_is_hovering = True
+                    else:
+                        # This garrison's banner is a hover target too. Each garrison in
+                        # an allied-reinforced territory gets its own banner, so the
+                        # highlight follows whichever banner the cursor is actually over.
+                        garrison_is_hovering = self.game.point_in_army_banner(
+                            mouse_screen_x, mouse_screen_y,
+                            flag_screen_x, flag_screen_y,
+                            player_index, garrison_armies, space='screen'
+                        )
 
                     # Check if this garrison is selected (for army composition UI)
                     # Use army_composition_player to determine which garrison is selected, not current_player
@@ -1192,39 +1344,29 @@ class MapRenderer:
                                            garrison_color, scaled_army_radius,
                                            garrison_is_hovering, garrison_is_clicking)
 
-                    # Determine flag tier based on this garrison's army count
-                    flag_tier = self.game.get_army_flag_tier(garrison_armies)
-
                     # Get the appropriate flag icon for this player and tier
                     if player_index in self.game.army_flag_icons and flag_tier in self.game.army_flag_icons[player_index]:
                         flag_icon = self.game.army_flag_icons[player_index][flag_tier]
 
                         if flag_icon:
-                            # Scale the flag - 33% larger than before (2.5 * 1.33 ≈ 3.3)
-                            flag_height = int(scaled_army_radius * 3.3)
-                            flag_width = int(flag_icon.get_width() * (flag_height / flag_icon.get_height()))
+                            # Geometry from the SHARED helper - identical rectangle to the
+                            # one the click and hover passes test against.
+                            banner = self.game.get_army_banner_rect(
+                                flag_screen_x, flag_screen_y,
+                                player_index, garrison_armies, space='screen'
+                            )
+                            banner_left, banner_top, flag_width, flag_height = banner
 
                             # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
-                            scaled_flag = self.get_cached_scaled_flag(player_index, flag_tier, flag_icon, flag_width, flag_height)
-
-                            # Position flag with pole centered on garrison position, flag extends upward
-                            flag_rect = scaled_flag.get_rect(center=(int(flag_screen_x), int(flag_screen_y)))
-                            flag_rect.y -= flag_height // 2  # Shift up by half height
-                            self.game.screen.blit(scaled_flag, flag_rect)
+                            scaled_flag = self.get_cached_scaled_flag(
+                                player_index, flag_tier, flag_icon,
+                                int(flag_width), int(flag_height)
+                            )
+                            self.game.screen.blit(scaled_flag, (int(banner_left), int(banner_top)))
 
             else:
                 # SINGLE GARRISON: Draw one flag at territory center
-                # Find which player actually has the garrison (not necessarily the territory owner)
-                garrison_player = None
-                for player_index in garrisons.keys():
-                    garrison = garrisons[player_index]
-                    if garrison.get('unmoved', 0) + garrison.get('moved', 0) > 0:
-                        garrison_player = player_index
-                        break
-
-                # If no garrison found, fall back to territory owner (shouldn't happen)
-                if garrison_player is None:
-                    garrison_player = owner
+                # (garrison_player was resolved above, before the hover test)
 
                 # Determine which flag tier to use based on army count
                 flag_tier = self.game.get_army_flag_tier(total_armies)
@@ -1234,18 +1376,20 @@ class MapRenderer:
                     flag_icon = self.game.army_flag_icons[garrison_player][flag_tier]
 
                     if flag_icon:
-                        # Scale the flag - 33% larger than before (2.5 * 1.33 ≈ 3.3)
-                        flag_height = int(scaled_army_radius * 3.3)
-                        flag_width = int(flag_icon.get_width() * (flag_height / flag_icon.get_height()))
+                        # Geometry comes from the SHARED helper so the drawn banner and
+                        # the click/hover hit box are the same rectangle by construction.
+                        # Pole base sits on the circle anchor; banner extends upward.
+                        banner = self.game.get_army_banner_rect(
+                            x, y, garrison_player, total_armies, space='screen'
+                        )
+                        banner_left, banner_top, flag_width, flag_height = banner
 
                         # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
-                        scaled_flag = self.get_cached_scaled_flag(garrison_player, flag_tier, flag_icon, flag_width, flag_height)
-
-                        # Position flag with pole centered on circle, flag extends upward
-                        # Move flag up by half its height so the pole (bottom) is at circle center
-                        flag_rect = scaled_flag.get_rect(center=(int(x), int(y)))
-                        flag_rect.y -= flag_height // 2  # Shift up by half height
-                        self.game.screen.blit(scaled_flag, flag_rect)
+                        scaled_flag = self.get_cached_scaled_flag(
+                            garrison_player, flag_tier, flag_icon,
+                            int(flag_width), int(flag_height)
+                        )
+                        self.game.screen.blit(scaled_flag, (int(banner_left), int(banner_top)))
                     else:
                         # Fallback to number if flag icon failed to load
                         # For single garrison, just show total
@@ -1384,8 +1528,8 @@ class MapRenderer:
                     flag_icon = self.game.army_flag_icons[player][flag_tier]
 
                     if flag_icon:
-                        # Scale the flag - 33% larger than before (2.5 * 1.33 ≈ 3.3)
-                        flag_height = int(scaled_army_radius * 3.3)
+                        # Scale the flag (in-transit armies are not selectable)
+                        flag_height = int(scaled_army_radius * ARMY_FLAG_HEIGHT_RATIO)
                         flag_width = int(flag_icon.get_width() * (flag_height / flag_icon.get_height()))
 
                         # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
@@ -2940,6 +3084,13 @@ class MapRenderer:
             if owner < 0:
                 continue
 
+            # FPS OPT: skip whole off-screen territories BEFORE projecting their plots.
+            # The per-plot off-screen test below only ran after get_cached_screen_plots()
+            # had already projected every plot, so zoomed-in views still paid for the
+            # ~90% of territories that are nowhere near the viewport.
+            if not self.is_territory_on_screen(territory):
+                continue
+
             # Get cached screen positions for this territory (single lookup)
             screen_plots = self.get_cached_screen_plots(territory)
 
@@ -3038,15 +3189,19 @@ class MapRenderer:
             building_icon = self.game.building_icons[icon_building]
             icon_size = int(scaled_empty_plot_radius * 2)
             cached_icon = self.get_cached_scaled_building(icon_building, building_icon, icon_size)
-            needs_effects = (owner != current_player or is_clicking or is_hovering)
+            # FPS OPT: the greyed (not-owned) variant is fully cacheable — it depends
+            # only on (building_type, icon_size). Only hover/click, which apply to at
+            # most one plot, still need a per-frame copy. Previously EVERY non-owned
+            # building did copy + overlay fill + BLEND_RGBA_MULT every frame.
+            is_greyed = (owner != current_player)
+            needs_effects = (is_clicking or is_hovering)
 
             if needs_effects:
-                display_icon = cached_icon.copy()
-                if owner != current_player:
-                    grey_overlay = self.get_reusable_surface(icon_size, icon_size)
-                    grey_overlay.fill((128, 128, 128, 180))
-                    display_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                    self.return_surface_to_pool(grey_overlay)
+                if is_greyed:
+                    display_icon = self.get_cached_greyed_building(
+                        icon_building, building_icon, icon_size).copy()
+                else:
+                    display_icon = cached_icon.copy()
                 if is_clicking:
                     bright_overlay = self.get_reusable_surface(icon_size, icon_size)
                     bright_overlay.fill((100, 100, 100, 100))
@@ -3057,6 +3212,10 @@ class MapRenderer:
                     light_overlay.fill((50, 50, 50, 50))
                     display_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
                     self.return_surface_to_pool(light_overlay)
+            elif is_greyed:
+                # Cached grey variant — no per-frame copy or blend
+                display_icon = self.get_cached_greyed_building(
+                    icon_building, building_icon, icon_size)
             else:
                 display_icon = cached_icon
 
@@ -3067,11 +3226,9 @@ class MapRenderer:
             letter_rect = letter_surface.get_rect(center=(x, y))
             self.game.screen.blit(letter_surface, letter_rect)
 
-        # Draw layered border
+        # Draw layered border (cached: 3 draw.circle calls per plot, per frame)
         player_color = self.game.game_state.get_player_color(owner)
-        pygame.draw.circle(self.game.screen, BLACK, (x, y), scaled_empty_plot_radius, 1)
-        pygame.draw.circle(self.game.screen, player_color, (x, y), scaled_empty_plot_radius - 1, 3)
-        pygame.draw.circle(self.game.screen, BLACK, (x, y), scaled_empty_plot_radius - 4, 1)
+        self._blit_plot_chrome(x, y, scaled_empty_plot_radius, player_color)
 
         # Selection glow
         is_selected_hero_keep = False

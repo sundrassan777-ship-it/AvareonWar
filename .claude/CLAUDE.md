@@ -128,11 +128,17 @@ AvareonWar/
 - [tools/gif_to_spritesheet.py](tools/gif_to_spritesheet.py) - GIF to spritesheet converter
 
 **Performance Tests:**
-- [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `python -m pytest tests/test_fps_benchmark.py -v -s`)
+- [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
+- [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
+- [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
+- [tests/test_unit_context_menu.py](tests/test_unit_context_menu.py) - Right-click context menu on the army composition unit icons
+- [tests/test_battle_bar_volley.py](tests/test_battle_bar_volley.py) - Volley-based battle bar animation (chunk split, determinism, skip, mirrored geometry)
+- [tests/test_battle_interface_integration.py](tests/test_battle_interface_integration.py) - EnhancedBattleInterface wiring (state machine, derived duration, retarget, skip)
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
 - [settings_manager.py](settings_manager.py) - Game settings persistence
+- [display_utils.py](display_utils.py) - Centralized display-mode creation (resolution, fullscreen, VSync) + frame-cap resolution. All `set_mode()` calls must go through this.
 
 ### Key Subsystems
 
@@ -203,6 +209,7 @@ AvareonWar/
 - [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) - Fast lookups, stat tables, common methods
 - [docs/USER_STORIES_PROGRESS.md](docs/USER_STORIES_PROGRESS.md) - Feature tracking and project status
 - [docs/TESTING_PLAN_MULTIPLAYER_FIXES.md](docs/TESTING_PLAN_MULTIPLAYER_FIXES.md) - Multiplayer testing plan
+- [docs/PERFORMANCE_ROADMAP.md](docs/PERFORMANCE_ROADMAP.md) - Deferred performance work, with measurements and rationale. **Read before starting any optimization** — several obvious-looking wins are now worthless.
 
 **Project History:**
 - [CHANGELOG.md](CHANGELOG.md) - Version history, refactoring phases, major changes
@@ -388,12 +395,15 @@ After making code changes, ask yourself:
 - Add new building → `game_state/data_definitions.py` BUILDING_TYPES dict
 - Change balance/costs → `game_state/economy.py` or `economic_data.json`
 - Modify combat → `game_state/military.py` resolve_battle() method
+- Modify battle bar volley animation → `ui/effects/battle_interface.py` (`BattleBarVolleyEffect`)
 - Modify "Resolve Remaining Battles" button → `rendering/ui_renderer.py` `_draw_resolve_all_battles_button()`, `main.py` `_resolve_all_pending_battles()`
 - Change AI behavior → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py`
 - Add UI element → `main.py` or `rendering/ui_renderer.py`
 - Add visual effect → `ui/effects/` directory
 - Change floating chat notifications → `ui/effects/chat_notification_effect.py`
 - Modify camera/zoom → `input/camera_handler.py`
+- Modify army/banner selection or hover → `main.py` `get_army_banner_rect()` / `get_army_at_pos()` / `handle_mouse_motion()` + `rendering/map_renderer.py` (all three must share the helpers)
+- Modify unit right-click context menu (bottom UI army strip) → `main.py` `handle_unit_context_menu_right_click()` / `_get_unit_context_menu_rect()` / `draw_unit_context_menu()` / `handle_unit_context_menu_click()` + `input/mouse_handler.py` (Priority 0)
 - Add territory → Use `Polygon_Tool.py`, `Economic_Tool.py`, `Plot_Tool.py` (use `--map <map_id>` for non-default maps)
 - Add/modify map → `maps/manifest.json` (registry), `maps/<map_id>/` (data files), `map_data.py` (loader)
 - Fortress territories → `maps/<map_id>/fortress_territories.json`, `map_data.is_fortress_territory()`, `game_state/military.py` (defense), `game_state/buildings.py` (Keep restriction)
@@ -416,6 +426,8 @@ After making code changes, ask yourself:
 - Change background music → `music_manager.py`
 - Change volume settings → `settings_manager.py` + `music_manager.py`
 - Change volume slider UI → `rendering/ui_renderer.py` (in-game) + `main_menu.py` (main menu)
+- Change VSync / FPS limit → `display_utils.py` (`set_display_mode`, `resolve_frame_cap`, `menu_frame_cap`) + `settings_manager.py` keys + both options menus
+- Create/recreate the display window → **always** `display_utils.set_display_mode()`, never `pygame.display.set_mode()` directly (VSync needs `SCALED` + a fresh display, and is silently lost otherwise)
 - Shared campaign utilities → `campaign_utils.py`
 - Modify gold transfer feature → `game_state/economy.py` (`can_transfer_gold`, `get_transfer_cap`, `transfer_gold`) + `players_window.py` (UI) + `network/protocol.py` (`GOLD_TRANSFER` msg)
 - Change gold transfer cap options → `integrated_setup.py` `gold_transfer_options` + `network/territory_selector.py` `gold_transfer_options`

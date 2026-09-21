@@ -70,6 +70,12 @@ class UIRenderer:
         self.text_cache = OrderedDict()
         self.TEXT_CACHE_MAX_SIZE = 200  # Limit cache size to prevent memory bloat
 
+        # FPS counter throttling — the displayed value refreshes ~4x/second instead
+        # of every frame (see draw_top_panel). Rendering it per frame added a new
+        # text-cache entry each frame, churning the very cache it used.
+        self._fps_text_surface = None
+        self._fps_text_updated_at = 0
+
         # FPS OPTIMIZATION: Reusable overlay surface for modal dialogs
         # Avoids creating full-screen SRCALPHA surfaces (5.44MB each) every frame
         self._reusable_overlay = None
@@ -595,10 +601,18 @@ class UIRenderer:
 
         # FPS counter (top-right corner, if enabled)
         if self.game.show_fps:
-            fps = int(self.game.clock.get_fps())
-            fps_text = self.get_cached_text(f"FPS: {fps}", self.game.small_font, BROWN_TEXT_SECONDARY, "small")
-            fps_rect = fps_text.get_rect(topright=(self.WINDOW_WIDTH - 10, 2))
-            self.game.screen.blit(fps_text, fps_rect)
+            # Refresh ~4x/second rather than every frame. The FPS string changes
+            # almost every frame, so rendering it through get_cached_text() added a
+            # new cache entry per frame (churning the cache it was meant to use) —
+            # and a value updating 60+ times a second is unreadable anyway.
+            now = pygame.time.get_ticks()
+            if now - self._fps_text_updated_at >= 250 or self._fps_text_surface is None:
+                fps = int(self.game.clock.get_fps())
+                self._fps_text_surface = self.get_cached_text(
+                    f"FPS: {fps}", self.game.small_font, BROWN_TEXT_SECONDARY, "small")
+                self._fps_text_updated_at = now
+            fps_rect = self._fps_text_surface.get_rect(topright=(self.WINDOW_WIDTH - 10, 2))
+            self.game.screen.blit(self._fps_text_surface, fps_rect)
 
     def _draw_resolve_all_battles_button(self, scale):
         """
@@ -1076,7 +1090,8 @@ class UIRenderer:
         content_y += 35
         
         # Display settings box - dark brown background
-        display_box = pygame.Rect(section_x, content_y, section_width, 140)
+        # Height grown from 140 to fit the VSync + FPS Limit row
+        display_box = pygame.Rect(section_x, content_y, section_width, 185)
         pygame.draw.rect(self.game.screen, (60, 40, 30), display_box, border_radius=5)  # Dark brown
         pygame.draw.rect(self.game.screen, (100, 100, 100), display_box, 2, border_radius=5)
         
@@ -1148,8 +1163,48 @@ class UIRenderer:
             self.game.small_font, (150, 150, 150)
         )
         self.game.screen.blit(note_text, (section_x + 15, checkbox_y + 55))
-        
-        content_y += 155  # Adjusted for extra line
+
+        # ---- VSync checkbox + FPS limit dropdown (same row) ----
+        vsync_y = checkbox_y + 80
+        vsync_checkbox = pygame.Rect(section_x + 15, vsync_y, 20, 20)
+        self.game.helpers.draw_feedback_button(vsync_checkbox, (70, 70, 80),
+                                  self.game.mouse_pos, self.game.clicked_element,
+                                  'options_control', 'vsync_checkbox',
+                                  text="", border_width=2)
+        if self.game.temp_vsync:
+            vs_mark = self.get_cached_text("X", self.game.font_bold, (100, 255, 100), "font_bold")
+            self.game.screen.blit(vs_mark, vs_mark.get_rect(center=vsync_checkbox.center))
+        self.game.display_vsync_checkbox = vsync_checkbox
+
+        vsync_label = self.get_cached_text("VSync", self.game.small_font, WHITE, "small_font")
+        self.game.screen.blit(vsync_label, (section_x + 43, vsync_y + 2))
+
+        # FPS limit cycle button. When VSync is on the monitor paces frames, so the
+        # manual cap is shown as inactive rather than implying it still applies.
+        fps_label = self.get_cached_text("FPS Limit:", self.game.small_font, WHITE, "small_font")
+        self.game.screen.blit(fps_label, (section_x + 120, vsync_y + 2))
+
+        fps_rect = pygame.Rect(section_x + 195, vsync_y - 3, 110, 25)
+        if self.game.temp_vsync:
+            fps_value_text = "VSync"
+            fps_btn_color = (55, 55, 62)
+        elif self.game.temp_fps_limit and self.game.temp_fps_limit > 0:
+            fps_value_text = f"{self.game.temp_fps_limit}"
+            fps_btn_color = (70, 70, 80)
+        else:
+            fps_value_text = "Unlimited"
+            fps_btn_color = (70, 70, 80)
+        self.game.helpers.draw_feedback_button(fps_rect, fps_btn_color,
+                                  self.game.mouse_pos, self.game.clicked_element,
+                                  'options_control', 'fps_limit',
+                                  text=fps_value_text, text_color=WHITE,
+                                  font=self.game.small_font, border_width=1)
+        fps_arrow = self.get_cached_text("v", self.game.small_font, WHITE, "small_font")
+        self.game.screen.blit(fps_arrow, fps_arrow.get_rect(
+            right=fps_rect.right - 8, centery=fps_rect.centery))
+        self.game.display_fps_limit_dropdown = fps_rect
+
+        content_y += 200  # Adjusted for the VSync/FPS row
         
         # ===== AUDIO SETTINGS SECTION =====
         audio_header = self.get_cached_text("Audio Settings", self.game.font, WHITE, "font")

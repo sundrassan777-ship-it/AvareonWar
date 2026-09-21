@@ -21,6 +21,7 @@ from network_config import MessageType
 from global_sound import get_game_sound_tasks
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
+from display_utils import menu_frame_cap
 
 logger = get_logger(__name__)
 
@@ -363,7 +364,7 @@ class LoadingScreen:
                 logger.error(f"Loading task '{label}' failed: {e}")
                 # Continue loading remaining tasks even if one fails
 
-            self.clock.tick(60)
+            self.clock.tick(menu_frame_cap())
 
         # Loading complete
         self.progress = 1.0
@@ -401,7 +402,7 @@ class LoadingScreen:
                 waiting = False
 
             self._draw()
-            self.clock.tick(30)
+            self.clock.tick(menu_frame_cap(30))
 
     def _send_game_ready(self):
         """Send GAME_READY to remote player(s) indicating loading is done."""

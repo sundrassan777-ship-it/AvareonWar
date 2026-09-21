@@ -33,6 +33,7 @@ logs/
 
 # Per-player data (profile, XP, achievements, settings, campaign saves, replays)
 config.json
+config.json.bak
 Saves/
 Replays/
 
@@ -51,3 +52,5 @@ steamworks/
 
 # Windows reserved device name artifacts (left behind by "> nul" under Git Bash)
 nul
+
+benchmark_results.json

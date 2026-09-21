@@ -48,6 +48,10 @@ SETTING_TYPES = {
     'resolution': (list, tuple),
     'default_resolution': (list, tuple),
     'fullscreen': (bool,),
+    # Frame pacing. vsync requires recreating the display with pygame.SCALED
+    # (see display_utils.set_display_mode); fps_limit of 0 means "no manual cap".
+    'vsync': (bool,),
+    'fps_limit': (int,),
     'edge_scrolling_enabled': (bool,),
     'edge_scrolling_mode': (str,),
     'tooltips_enabled': (bool,),
@@ -109,6 +113,10 @@ class SettingsManager:
             'resolution': list(self.default_resolution),  # Use chosen default resolution
             'default_resolution': list(self.default_resolution),  # Store for "Reset to Defaults"
             'fullscreen': True,  # Default to fullscreen on first run
+            # Opt-in: enabling vsync recreates the display with pygame.SCALED, so it
+            # defaults off to avoid changing behaviour for existing players on upgrade.
+            'vsync': False,
+            'fps_limit': 0,  # 0 = no manual cap (vsync or the FPS constant paces frames)
 
             # Gameplay settings
             'edge_scrolling_enabled': True,
@@ -431,6 +439,11 @@ class SettingsManager:
         # Display settings
         game.current_resolution = self.get_resolution()
         game.is_fullscreen = self.is_fullscreen()
+        # NOTE: this only updates the REQUESTED state. Changing it does not rebuild
+        # the display — call game.apply_display_settings(..., vsync=...) for that,
+        # which also refreshes game.vsync_active.
+        game.vsync = self.get('vsync', False)
+        game.fps_limit = self.get('fps_limit', 0)
 
         # Gameplay settings
         game.edge_scrolling_enabled = self.get('edge_scrolling_enabled', True)
@@ -469,6 +482,11 @@ class SettingsManager:
         # Display settings
         self.set_resolution(game.current_resolution[0], game.current_resolution[1])
         self.set_fullscreen(game.is_fullscreen)
+        # Persist the REQUESTED vsync state, not vsync_active: if a driver refused
+        # SCALED this session we still want to honour the user's choice next launch,
+        # when it may succeed.
+        self.set('vsync', bool(getattr(game, 'vsync', False)))
+        self.set('fps_limit', int(getattr(game, 'fps_limit', 0)))
 
         # Gameplay settings
         self.set('edge_scrolling_enabled', game.edge_scrolling_enabled)

@@ -2,6 +2,402 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-21 - Battle bar volley animation (BFME2 auto-resolve style)
+
+- **Why:** the battle bars drained in a single continuous eased slide while ~600 circle
+  particles streamed steadily between them. It read as "a bar sliding", not as a fight.
+  Reference: BFME2, War of the Ring, auto-resolve.
+- **Reworked** `BattleBarParticleEffect` into **`BattleBarVolleyEffect`**
+  (`ui/effects/battle_interface.py`):
+  - **Stepwise depletion.** Each volley fires one blast per side; on impact the chunk it
+    destroyed flashes white-hot in place, then burns away and the fill steps down. Chunk
+    sizes are jittered but normalised to sum exactly to the damage, so the bars land
+    precisely on their final fill.
+  - **Volley count scales with army size** (log curve, clamped 3-14). The animation
+    duration now falls out of the schedule instead of being drawn up front, clamped to
+    2.0-6.0s (was a flat random 3.0-5.0s).
+  - **Mirrored bars.** The defender bar is anchored at its right edge, so both bars erode
+    inward toward the centre "VS". Its `BattleBar.png` frame is flipped to match.
+  - **One travelling blast per shot** instead of a continuous particle stream - a tapered,
+    motion-blurred lance in the shooter's colour, with a white-hot tip.
+  - **Impact burst** of a white-hot core, radiating spikes and a coloured glow, plus a
+    flare that lights up the bar's ornate frame artwork.
+  - Shots interleave between the two sides, so the hits trade rather than land together.
+- **Bars now animate to the real battle result.** `set_actual_battle_result()` calls
+  `retarget()`, which rebuilds the chunk split from a freshly seeded RNG so the volley
+  rhythm is unchanged. Fixes the strength-tie case, where the pre-calculated estimate
+  drained both bars to empty and the report then named a winner anyway.
+- **Fixed survivor → bar fill conversion.** It used a raw `survivors / count`, which made a
+  weaker side that won end with a *longer* bar than it started with. Now scaled by the
+  side's initial fill.
+- **Added a skip:** clicking anywhere during the animation, or pressing Space/ESC, jumps
+  straight to the final bar state and the splash. There was previously no way to shorten a
+  single battle animation.
+- **Performance:**
+  - Dropped the full-screen SRCALPHA surface that was allocated, cleared and blitted every
+    frame. Nothing is allocated per frame now - fills and burn chunks draw straight to the
+    screen, everything else is a pre-rendered sprite. Render+update measures 0.89 ms/frame
+    against 1.16 ms/frame for the old particle surface *alone*.
+  - Fixed the pulsing battle icon being `smoothscale`d uncached every frame in both the
+    SETUP and ANIMATING states (flagged in `docs/PERFORMANCE_ROADMAP.md`). The pulse scale
+    is quantised to 1/64 and cached, and both states now share one helper.
+  - The frame flare is a single sprite faded with `set_alpha`; pre-rendering a sprite per
+    fade step cost ~21 ms up front, a visible hitch on the Resolve click. Construction is
+    5.4 ms, down from 24.3 ms.
+- **Battle logic untouched** - `resolve_battle()`, casualties and the tie dice are unchanged,
+  including the existing global `random.seed()` in `_pre_calculate_battle_result()`. The
+  effect draws only from its own `random.Random(seed)`, so multiplayer clients stay in sync.
+- Tests:
+  - `tests/test_battle_bar_volley.py` (51 tests - chunk split, volley scaling, determinism,
+    playback, skip, retarget, mirrored geometry, sprite/render contracts)
+  - `tests/test_battle_interface_integration.py` (17 tests - drives the real interface over a
+    real GameState: state machine, derived duration, retarget, click/key skip, icon cache)
+
+## 2026-09-21 - Right-click context menu on army composition unit icons
+
+- **Why:** building a partial selection out of a garrison required CTRL + left-click on
+  each unit icon. The only keyboard-free options were "select one" or "Select All", which
+  made mouse-only play awkward.
+- **Added:** right-clicking a unit icon in the bottom-UI strip opens a small drop-down
+  anchored to that icon:
+  - no *other* unit of that garrison selected -> **Select**, **Cancel**
+  - other units selected, this one is not -> **Select**, **Add to Group**, **Cancel**
+  - other units selected and this one is too -> **Select**, **Remove from Group**, **Cancel**
+  `Select` replaces the selection; Add/Remove from Group is the CTRL+click toggle, with the
+  label reflecting which way it will go. Options are frozen at open time.
+- **Modal while open:** Priority 0 in the left-click chain, so it consumes every click -
+  clicking outside closes it with no action (a dismissing right-click on the map does NOT
+  also issue a movement order), and nothing beneath the drop-down is clickable
+  or hoverable (hover is suppressed in both `draw_army_composition_ui()` and
+  `handle_mouse_motion()`). ESC and a second right-click also dismiss it.
+- **Placement:** opens down-and-right of the icon, flips up over the map when it would run
+  past the bottom of the screen, clamped to stay on screen horizontally.
+- **Styling:** dark panel with a thin golden border, white Cinzel `small_font` labels.
+  Hover and click highlights use literal colours, not `lighten_color()`/`brighten_color()` -
+  those scale multiplicatively and are invisible against a near-black panel.
+- Also bounds-checked the "Unit Selection Info" instruction list (it grew a line) so it
+  cannot spill past the bottom panel, and scaled its line spacing with `ui_scale`.
+- Tests: `tests/test_unit_context_menu.py` (23 tests - options, actions, modal contract,
+  placement, staleness, draw path, hover suppression)
+- Files: `main.py`, `input/mouse_handler.py`, `tests/test_unit_context_menu.py`
+
+## 2026-09-20 - Army circle hit area now matches the ring you can see
+
+- **Reported:** hovering and clicking ~2mm BELOW the army circle still selected the army.
+- **Cause:** not the new banner box - the banner stops exactly at the anchor and never
+  reaches below it. It was the **circle**, and it had always been wrong.
+  `_draw_army_circle()` draws the ring at **0.75 x** `ARMY_CIRCLE_RADIUS`, lifted **0.35 x**
+  above the anchor (so the flag pole sits inside it), but all three passes hit-tested a
+  **full-radius** circle centred **on** the anchor. The hit circle therefore reached
+  `0.60 * radius` below the visible ring - measured **9.0 px** at min zoom, **13.5 px** at
+  max - and picked up clicks on empty map. Widening the banner target simply made it
+  noticeable.
+- **Fix:** new `Game.get_army_circle_hit()` / `point_in_army_circle()`, derived from new
+  `ARMY_CIRCLE_DRAW_SCALE` (0.75) and `ARMY_CIRCLE_DRAW_LIFT` (0.35) in
+  `config/constants.py`. Click, hover and the renderer's own ring-brightening test all use
+  it, and `_draw_army_circle()` plus the pulsing selection glow now derive their geometry
+  from the same two constants (4 duplicated sites hoisted).
+- The glow halo is excluded from the hit area on purpose: it is a soft alpha-35 decoration,
+  not the object you aim at.
+- Net effect: the clickable circle is exactly the drawn ring, and the banner covers
+  everything above it. Nothing below the ring responds any more.
+- Tests: `TestCircleMatchesTheDrawnRing` (7 tests) in
+  `tests/test_army_banner_selection.py`, covering all three zoom levels.
+- Files: `main.py`, `rendering/map_renderer.py`, `config/constants.py`
+
+## 2026-09-20 - Army banners are fully selectable
+
+- **Problem:** players expect to click the banner (flag), not just the small circle under
+  it. The banner was only *half* clickable and never hoverable, so it read as decoration.
+- **Cause:** the render, click and hover passes each computed the banner's geometry
+  independently and disagreed:
+  - render drew it spanning `anchor_y - flag_height` .. `anchor_y`
+  - click tested only `anchor_y - flag_height/2` .. `anchor_y` - **the bottom half**, i.e.
+    the thin pole, while the flag cloth was dead
+  - hover (both the `hovered_army` state and the renderer's ring-brightening) ignored the
+    banner entirely, so nothing ever hinted it was clickable
+- **Fix:** one shared source of truth. New `Game.get_army_banner_rect()` /
+  `point_in_army_banner()` / `get_effective_garrison_count()` / `get_garrison_anchor()`,
+  used by all three passes. Hit area is now the **full** drawn banner, with width derived
+  from the flag art's real aspect ratio instead of a fixed `2 x radius`.
+- **Click priority is now circle > plot > banner** (`handle_map_area_click` PRIORITY 3 /
+  4 / 4.5). The taller banner box overlaps building plots - including through the flag
+  art's transparent margins - so banners resolve *after* plots and plot clicking is
+  unchanged. `handle_mouse_motion` mirrors the same ordering.
+- Circles are tested across **all** territories before any banner: at min zoom a banner is
+  ~30 world units tall against a radius-25 sibling ring, so banners routinely overlap a
+  neighbour's circle.
+- **Two bugs fixed along the way:**
+  1. The click path lacked the allied-reinforcement slot rule that render and hover both
+     had, so mid-animation the flag was drawn ~25 world units off-centre while the click
+     test still probed the territory centre - the garrison was briefly unclickable.
+  2. Hovering a circle that overlapped a plot killed the army highlight even though
+     clicking there *did* select the army.
+- Magic number `3.3` (4 sites) hoisted to `ARMY_FLAG_HEIGHT_RATIO`, plus
+  `DEFAULT_ARMY_FLAG_ASPECT`, in `config/constants.py`.
+- **Cost:** 0.036 ms/frame worst case (banner test for all 57 territories, circle missing
+  every time) = 0.2% of a 60 FPS budget. All 19 FPS benchmarks pass.
+- Multi-garrison territories keep one banner per garrison; hover highlights any of them,
+  clicking still only selects your own.
+- Tests: `tests/test_army_banner_selection.py` (29 tests)
+- Files: `main.py`, `rendering/map_renderer.py`, `config/constants.py`
+
+## 2026-09-20 - Fixed: "display Surface quit" crash after toggling VSync
+
+- **Bug:** enabling VSync and then opening the Campaign screen crashed with
+  `pygame.error: display Surface quit` at `CampaignScreen(screen)`.
+- **Cause:** applying VSync requires `pygame.display.quit()` + `init()`, and that **destroys
+  the current display Surface object**. `main()` keeps the surface in a local `screen` and
+  passes it to screens constructed later, so that reference was dead. Plain `set_mode()`
+  never invalidated surfaces, so long-lived `screen` references had always been safe — the
+  hazard only appeared once VSync could recreate the display.
+- **Fix, two parts:**
+  1. `set_display_mode()` now records the mode it established and **returns the existing
+     surface unchanged when nothing needs to change**. Redundant calls (returning to the
+     menu, re-applying the same settings) no longer destroy live surfaces. A genuine change
+     still re-initialises.
+  2. `main()` re-fetches the live surface via new `display_utils.current_surface()` at the
+     top of its loop, and before constructing `CampaignScreen` / `SaveBrowser` /
+     `ReplayBrowser` or inspecting the surface on the return-to-menu paths.
+- **Side benefit:** VSync after a resolution change now measures 6.06ms/165Hz (was
+  8.92ms/112Hz) — the redundant second re-initialisation is gone.
+- Files: `display_utils.py`, `main.py`
+
+## 2026-09-20 - Smooth (eased) mouse-wheel zoom
+
+- Mouse-wheel zoom previously jumped a full notch per event. `handle_zoom()` now sets a
+  **target** and `CameraHandler.update_zoom(delta_time)` eases toward it, called once per frame
+  from the main loop. A single notch now spans ~22 frames instead of 1.
+- **Frame-rate independent** smoothing (`1 - exp(-rate * dt)`), so the feel is identical at
+  30/60/165 FPS — measured settle times 0.400s / 0.367s / 0.358s for the same notch.
+- **Zoom-to-cursor holds for the whole interpolation.** The anchor (cursor position at the wheel
+  event) is re-applied every step: the world point under it is sampled before the step and
+  restored after. Measured drift across a full ease: **0.088 world px** (~0.2 screen px) where
+  the camera is free to move. At map edges `clamp_to_bounds()` legitimately moves the camera and
+  the anchor cannot hold — unchanged from the original behaviour.
+- **Rapid notches accumulate**: each compounds from `target_zoom`, not the current eased value,
+  so spinning the wheel does not lose notches.
+- `is_zoom_settling` now covers the interpolation, so the renderer keeps treating the camera as
+  active for its whole duration.
+- **`cancel_zoom_interpolation()`** is called by `CameraAnimation` / `CameraZoomAnimation` and
+  `reset_camera()`. Those drive `camera.zoom` directly, and a pending wheel target would
+  otherwise pull the camera back mid-animation.
+- **Benchmarks updated**: `handle_zoom()` no longer moves the camera by itself, so the wheel-zoom
+  scenarios now call `update_zoom()` too. Without that they would have rendered static frames and
+  reported inflated FPS.
+- New `tests/test_camera_zoom.py` (10 tests) covering easing, accumulation, cursor anchoring,
+  clamping, frame-rate independence, and the animation/reset interactions.
+- Files: `input/camera_handler.py`, `main.py`, `tutorial_mission.py`, `campaign_utils.py`,
+  `tests/test_fps_benchmark.py`, `tests/test_camera_zoom.py` *(new)*
+
+## 2026-09-20 - Feature: VSync toggle + FPS limit (both options menus)
+
+- **New settings:** `vsync` (bool, default **False** — opt-in so nothing changes for existing
+  players on upgrade) and `fps_limit` (int, `0` = no manual cap). Added to both `SETTING_TYPES`
+  and `defaults` in `settings_manager.py`; a key missing from `defaults` is deleted from
+  config.json on every load, so both are required.
+- **New `display_utils.py`** centralizes display creation. Every `pygame.display.set_mode()`
+  call in `main.py` (17 sites) now routes through `set_display_mode()`. Three measured pygame
+  behaviours make this necessary:
+  1. `vsync=1` **without `pygame.SCALED` is silently ignored** — accepted, no error, frames
+     unsynchronized (~1.3-1.9ms flips). Real VSync needs `SCALED`.
+  2. **VSync is lost by any later `set_mode()`**, even one passing `vsync=1` and `SCALED` again
+     (5.99ms → 0.95ms → 1.26ms). Only `display.quit()` + `display.init()` restores it. Since
+     `apply_display_settings()` *is* the resolution path, without this VSync would have died the
+     first time a player changed resolution and never returned.
+  3. **The achieved state cannot be read back** — `get_flags()` does not report the SCALED bit.
+     Tracked explicitly as `game.vsync_active`.
+- **Graceful fallback:** if a driver refuses `SCALED`/`vsync=1`, `set_display_mode()` falls back
+  to the previous flags so the game always launches; the achieved state is reported back.
+- **Frame limiter** (`resolve_frame_cap`): manual cap > VSync (safety-capped at 240) > `FPS`
+  constant, with `UNFOCUSED_FPS` when the window loses focus. Deliberately **never uncapped** —
+  see the `delta_time` fix below.
+- **`delta_time` now uses `time.perf_counter()`** instead of `Clock.get_time()`, which returns
+  **integer milliseconds**. Measured in an uncapped loop: **100% of frames reported
+  `delta_time == 0.0`**, with summed delta running at 250% of real time. Even at 1-2ms frames
+  the quantization error reaches 50% per frame, visibly changing animation speed.
+- **The per-frame defensive display guard** now routes through the helper — a bare `set_mode()`
+  there would have silently and permanently dropped VSync mid-game.
+- **UI:** VSync checkbox + FPS Limit cycle button in *both* options menus, each following its
+  file's existing idiom. The FPS control displays "VSync" while VSync is on, since the monitor
+  paces frames then. Options: `Unlimited, 60, 80, 120, 144, 165, 240` (`FPS_LIMIT_OPTIONS`).
+- **Other screens** (menu, setup, cutscene, recap, loading, replay/save browsers, MP setup —
+  14 call sites) now honour `fps_limit` via `menu_frame_cap()` instead of a hard-coded 60.
+  VSync needs no handling there, being a property of the display surface.
+- Verified end-to-end through the real `Game` path: vsync OFF 1.87ms (534Hz) → ON 6.27ms
+  (160Hz) → **still synced after a resolution change** (8.92ms) → back to 6.06ms (165Hz) →
+  OFF again 1.56ms. Settings round-trip through config.json and survive validation.
+- Files: `display_utils.py` *(new)*, `main.py`, `main_menu.py`, `settings_manager.py`,
+  `rendering/ui_renderer.py`, `config/constants.py`, + 11 screen modules
+
+## 2026-09-20 - Fixed: renderer caches went stale after an in-game resolution change
+
+- **Bug:** `MapRenderer.territory_bounding_boxes` and `multi_zoom_cache` are built once in
+  `__init__` from `game.scaled_polygons`. `apply_display_settings()` re-derives `scale_factor`
+  and re-rounds every polygon on a resolution change, but never rebuilt those caches — so they
+  kept the **old** scale. Measured impact after switching 1600x900 → 1280x720:
+  bounding boxes off by **178px**, multi-zoom polygons by **427px**, and the cached screen
+  projection by **418px** versus a direct `world_to_screen()`. In practice: territory polygons
+  visibly misaligned with the map background, and AABB hit-testing selected the wrong territory.
+- **Fix:** new `MapRenderer.rebuild_scale_caches()`, called from `apply_display_settings()`.
+  Rebuilds both pre-computed caches and clears everything derived from the old projection.
+- Map *switching* was never affected — `MapRenderer` is constructed inside `initialize_game()`,
+  which calls `_reload_map_assets()` first, so it always saw the correct map's polygons.
+- **New regression tests:** `tests/test_resolution_caches.py` (4 tests) assert the caches track
+  `scale_factor` across resolution changes and a round trip. Verified the tests genuinely fail
+  without the fix (418px projection error). They skip themselves when the environment refuses
+  the resolution change (e.g. a fullscreen window under `SDL_VIDEODRIVER=dummy`), since the
+  regression cannot be exercised there.
+
+## 2026-09-20 - Performance: overlay copy removal, surface clamping, overlay caching
+
+- **Removed a 5.76MB full-screen surface copy per camera delta** (`map_renderer.py`). The
+  ownership-overlay cache did `_overlay_cache_surface = fullscreen_overlay.copy()` on every
+  camera move, purely so the cached content survived the next rebuild's `fill()`. But
+  `fullscreen_overlay` is written nowhere else, so the cache can simply alias it.
+- **Clamped hover/overlay surfaces to the screen.** Bounding-box sizes were floored at 1 but
+  never capped, so a large territory at high zoom allocated a surface far bigger than anything
+  visible (~1000x1000 = 4MB at zoom 4.0) — on every camera delta. Off-screen area cannot be
+  seen and pygame clips the polygon draw anyway.
+- **Cached `draw_territory_overlay()`**, which previously had *no* cache — it allocated a fresh
+  SRCALPHA surface and re-filled a 455-1027 point polygon on every call, and campaign/tutorial
+  highlight steps call it every frame with a pulsing alpha. Alpha is quantized to 16 steps so
+  the result is cacheable with no visible change to the pulse.
+- **FPS counter** now refreshes ~4x/second instead of every frame (`ui_renderer.py`). The string
+  changed almost every frame, so each frame added a new entry to the very text cache it used —
+  and a value updating 60+ times a second is unreadable regardless.
+
+| Scenario | Baseline | Now |
+|---|---|---|
+| Panning @ zoom 3.0 | 39.9 FPS | **79.2 FPS** (+98%) |
+| Static @ max zoom | 66.1 FPS | **236.3 FPS** (+257%) |
+| Mouse-wheel zoom | 16.9 FPS | **41.3 FPS** (+145%) |
+| Zooming with 99 glows | 6.6 FPS | **38.9 FPS** (+486%) |
+
+- Files: `rendering/map_renderer.py`, `rendering/ui_renderer.py`, `main.py`
+
+## 2026-09-20 - Campaign intro zoom is now continuous instead of stepped
+
+- **Removed the 0.2-step zoom quantization** from both camera animation classes:
+  `CameraAnimation.update()` (`tutorial_mission.py`, mission 1) and
+  `CameraZoomAnimation.update()` (`campaign_utils.py`, missions 2-7).
+- That `round(raw_zoom * 5) / 5` existed purely to limit how often the map rescale and the
+  production-glow sprite cache were invalidated — it was a **performance workaround that made
+  the intro visibly step rather than glide**. Both underlying costs are now gone (viewport-only
+  map rescale, shared/quantized glow frames), so the workaround is no longer needed.
+- Measured: the 1.5s intro sweep now produces **88 distinct zoom values across 90 frames**
+  (previously ~12).
+- **Verified no Z-SCALE regression.** `map_renderer` pre-scales polygons at 7 discrete
+  `ZOOM_LEVELS` and corrects with `zoom_ratio = actual_zoom / nearest_zoom`; continuous zoom
+  leans on that correction far more heavily. Compared the cached projection against a direct
+  `world_to_screen()` projection at ten zoom values chosen to fall *between* the pre-computed
+  levels (e.g. 2.61, nearest 2.80, ratio 0.932): **maximum error 0.000 px at every value.**
+  Territory polygons track continuous zoom exactly.
+- **Honest trade-off:** the zoom-sweep benchmark drops from 126.7 to 49.0 FPS (≈ the original
+  50.0 FPS baseline), because the sweep now rescales on every frame rather than every ~8th.
+  The animation is genuinely smooth where it was previously both stepped *and* 50 FPS, so this
+  buys smoothness at no cost relative to the original. The remaining per-frame cost is camera-delta
+  cache invalidation (`_overlay_cache_surface` + screen-polygon rebuild), measurable as the gap
+  between a static frame (218.5 FPS / 6.4ms) and a panning frame (70.8 FPS / 15.6ms) — addressed
+  by the culling/overlay-cache work that follows.
+
+- Files: `tutorial_mission.py`, `campaign_utils.py`
+
+## 2026-09-20 - Performance: viewport-only map rescale (replaces full-map scaling)
+
+- **The whole map was rescaled on every zoom change** (`main.py`), building a surface of
+  `(map_width * zoom, map_height * zoom)` from the 4096x3072 source — so the cost grew as
+  **zoom squared** even though at most a viewport-sized slice is ever visible. At 1600x900
+  that is 1.53M pixels at zoom 1.65 but **8.98M pixels (36MB) at zoom 4.0**. Measured:
+  full-map `scale` 16.1ms, full-map `smoothscale` **53.1ms**, versus viewport `scale` 0.31ms
+  and viewport `smoothscale` 2.50ms.
+- **New `Game._blit_map_background()`** scales only the visible slice, used by both render
+  paths (`draw()` and the live loop in `run()` — previously duplicated logic).
+  - Source rect is derived from the **actual source surface size**, not the `ORIGINAL_MAP_*`
+    constants, so it works for any map background and the black fallback surface.
+  - Clips to `BOTTOM_UI_Y`, so the strip the bottom panel covers is never scaled.
+- **Adaptive margin:** the cached slice is over-rendered by 192px per side *only when the zoom
+  is unchanged*. Panning then re-blits the cached surface at a new offset instead of rescaling
+  (a naive viewport rescale regressed panning from 69.8 to 49.9 FPS, because the old full-map
+  cache happened to make panning free). While zoom changes every frame the margin is skipped,
+  since the cache is invalidated regardless — that recovered ~25% on continuous-zoom FPS.
+- **Quality improved, not traded:** because a viewport `smoothscale` is affordable every frame,
+  the nearest-neighbour downgrade used during zoom animations is gone, along with the
+  `cached_zoom_level = None` settle-invalidate that forced one full-map `smoothscale` (a
+  guaranteed ~53ms hitch) whenever a zoom ended. The map is now full quality on every frame.
+- Corrected a stale comment claiming `is_zoom_animating` made the pipeline skip "smoothscale,
+  overlay rebuild" — `map_renderer.py` has never read that flag.
+
+**Cumulative measured results (1600x900, original baseline → now):**
+
+| Scenario | Baseline | Now | Gain |
+|---|---|---|---|
+| Zooming with 99 production glows | 6.6 FPS (213.9ms worst) | **37.2 FPS** (33.1ms) | +460% |
+| Static @ max zoom | 66.1 FPS | **207.7 FPS** | +214% |
+| Campaign-intro zoom sweep | 50.0 FPS | **126.7 FPS** | +153% |
+| Mouse-wheel zoom | 16.9 FPS (75.5ms worst) | **39.7 FPS** (33.3ms) | +135% |
+| Panning @ zoom 3.0 | 39.9 FPS | **70.7 FPS** | +77% |
+| 107 buildings | 64.3 FPS | **161.0 FPS** | +150% |
+| 171 banners | 59.4 FPS | **135.0 FPS** | +127% |
+
+- Files: `main.py`
+
+## 2026-09-20 - Performance: map background .convert() + shared production-glow sprite cache
+
+Two fixes with large, measured FPS impact. Benchmarks: `py -m pytest tests/test_fps_benchmark.py -v -s`
+
+- **Map background was never `.convert()`ed** (`main.py`) — the only image in the file
+  not converted to display format. An unconverted 4096x3072 RGBA surface stays in *file*
+  format and `transform.scale()` output inherits it, so the per-frame `screen.blit()` of
+  the map was a per-pixel format conversion + alpha blend of ~1.4M pixels.
+  - Measured blit of the scaled map: **9.26ms unconverted → 0.15ms converted** (`.convert_alpha()` = 0.74ms).
+  - Both shipped backgrounds verified fully opaque (0 non-opaque pixels), so `.convert()` is
+    lossless here. New map backgrounds must be opaque.
+  - Centralized in `_load_map_background()`, used by `Game.__init__` and `_reload_map_assets()`
+    (so it applies to Azincournean Highlands and future maps, including the black fallback).
+  - `apply_display_settings()` now re-converts after `set_mode()`, since `.convert()` bakes in
+    the display's pixel format and a resolution/fullscreen change can invalidate it.
+- **ProductionGlowEffect rebuilt its 16-frame sprite cache on every zoom change**
+  (`ui/effects/production_glow_effect.py`) — the cache key was the *raw continuous zoom float*,
+  so every producing building rebuilt all 16 frames on every mouse-wheel tick and every frame
+  of a campaign intro zoom. With ~100 producing buildings that is ~1,600 surface allocations
+  and ~12,600 polygon draws in a single frame.
+  - Zoom is now quantized to 0.1 steps (`ZOOM_QUANTIZE_STEPS`), capping rebuilds at ~24 across
+    the whole 1.65-4.0 zoom range.
+  - Sprite frames depend only on `(quantized zoom, player colour)` — ray angles are identical
+    per instance and frames are baked at full alpha — so they are now shared process-wide via
+    `_SHARED_SPRITE_CACHE` (bounded LRU). ~100 rebuilds per zoom change become **one**.
+  - **Bug fix:** `update_color()` did not invalidate the cache, so a glow kept the previous
+    owner's colour after a territory changed hands until the zoom happened to change.
+  - Removed the now-duplicated instance `_draw_ray()` (superseded by module-level `_draw_ray_on()`).
+
+**Measured results (1600x900, before → after):**
+
+| Scenario | Before | After |
+|---|---|---|
+| Zooming with 99 production glows | 6.6 FPS (213.9ms worst) | **19.7 FPS** (63.6ms worst) |
+| Static @ max zoom | 66.1 FPS | **211.7 FPS** |
+| Campaign-intro zoom sweep | 50.0 FPS | **119.3 FPS** |
+| Panning @ zoom 3.0 | 39.9 FPS | **69.8 FPS** |
+| 107 buildings on map | 64.3 FPS | **163.7 FPS** |
+| 171 banners on map | 59.4 FPS | **137.5 FPS** |
+
+Mouse-wheel zoom (16.9 → 20.5 FPS) remains the weakest scenario; it is dominated by the
+full-map rescale, addressed separately.
+
+- Files: `main.py`, `ui/effects/production_glow_effect.py`
+
+## 2026-09-20 - Fixed: FPS benchmark suite could not run (NameError)
+
+- **Bug:** All 8 tests in `tests/test_fps_benchmark.py` errored at setup with `NameError: name '_set_app_icon' is not defined`, making the performance suite completely unrunnable.
+- **Cause:** `_app_icon`, `_ico_path` and `def _set_app_icon()` were declared inside the `if __name__ == "__main__":` block. That block never executes when `main.py` is *imported* rather than run as a script, so `Game.__init__` (which calls `_set_app_icon()` after `set_mode`) raised `NameError` for any importer — tests, benchmarks, and tooling. Running the game normally was unaffected, which is why this went unnoticed.
+- **Fix:** Hoisted the icon helpers to module level (above `class Game`) and split loading from applying:
+  - `_load_app_icon()` — loads and caches the icon; safe to call before `pygame.display` is initialized.
+  - `_set_app_icon()` — unchanged behaviour, now lazily loads via `_load_app_icon()`.
+  - The `__main__` block now calls `_load_app_icon()` + `pygame.display.set_icon()` instead of redefining them.
+- **Result:** `py -m pytest tests/test_fps_benchmark.py` → 8 passed. Icon behaviour when running the game is unchanged.
+- Files: `main.py`, `.gitignore`
+
 ## 2026-04-18 - Gold Transfer Feature (ally-to-ally gold sending)
 
 - **Feature:** Players can now send gold to their allies during the Planning phase.

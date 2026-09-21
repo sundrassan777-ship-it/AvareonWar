@@ -15,8 +15,17 @@ This module provides the camera system for War of Avareon:
 Extracted from main.py during Phase 2 of refactoring.
 """
 
+import math
+
 import pygame
 from config.constants import *
+
+# Exponential smoothing rate for mouse-wheel zoom (higher = snappier).
+# 16.0 reaches ~99% of the target in roughly 0.29s, which keeps the zoom
+# responsive while removing the per-notch jump.
+ZOOM_SMOOTHING_RATE = 16.0
+# Below this difference the zoom snaps to the target and interpolation stops.
+ZOOM_SNAP_EPSILON = 0.0005
 
 
 class CameraHandler:
@@ -76,9 +85,19 @@ class CameraHandler:
         self.debug_edge_scroll = None
         self.debug_keyboard_scroll = None
 
-        # FPS OPT: Zoom settle timer — after mouse-wheel zoom, rendering uses
-        # fast scale instead of smoothscale for a brief period
+        # FPS OPT: Zoom settle timer — brief period after a mouse-wheel zoom during
+        # which the renderer treats the camera as "animating"
         self._zoom_settle_timer = 0.0
+
+        # Smooth zoom: the wheel sets a TARGET and update_zoom() eases toward it,
+        # instead of the zoom jumping a full notch per event.
+        self.target_zoom = initial_zoom
+        self._zoom_interpolating = False
+        # Screen point to keep fixed while easing (the cursor at the time of the
+        # wheel event), so zoom-to-cursor holds for the whole interpolation rather
+        # than only on the frame the event arrived.
+        self._zoom_anchor_screen = None
+        self._zoom_anchor_panel = 0
     
     def update_map_dimensions(self, map_width, map_height, window_width, window_height, map_height_ui):
         """
@@ -104,6 +123,18 @@ class CameraHandler:
         self.offset = [0.0, 0.0]
         self.zoom = 1.65
         self.drag_start = None
+        self.cancel_zoom_interpolation()
+
+    def cancel_zoom_interpolation(self):
+        """
+        Stop any in-flight smooth zoom and adopt the current zoom as the target.
+
+        Call this before driving `zoom` directly (camera animations, resets), so a
+        pending wheel-zoom target does not immediately pull the camera back.
+        """
+        self.target_zoom = self.zoom
+        self._zoom_interpolating = False
+        self._zoom_anchor_screen = None
     
     # ========================================
     # COORDINATE CONVERSION
@@ -160,13 +191,59 @@ class CameraHandler:
     
     @property
     def is_zoom_settling(self):
-        """True for a brief period after mouse-wheel zoom — rendering uses fast paths."""
-        return self._zoom_settle_timer > 0
+        """True while a mouse-wheel zoom is still easing (or just finished)."""
+        return self._zoom_settle_timer > 0 or self._zoom_interpolating
 
     def update_zoom_settle(self, delta_time):
         """Tick down the zoom settle timer. Call once per frame from main loop."""
         if self._zoom_settle_timer > 0:
             self._zoom_settle_timer = max(0, self._zoom_settle_timer - delta_time)
+
+    def update_zoom(self, delta_time):
+        """
+        Ease the camera toward target_zoom. Call once per frame from the main loop.
+
+        Uses frame-rate independent exponential smoothing, so the feel is the same
+        at 60 and 165 FPS. The zoom-to-cursor anchor is re-applied on every step:
+        the world point under the cursor is sampled before the step and restored
+        after it, which keeps that point fixed for the whole interpolation and
+        stays correct even if the camera is panned mid-zoom.
+
+        Returns:
+            bool: True if the zoom changed this frame.
+        """
+        if not self._zoom_interpolating:
+            return False
+
+        remaining = self.target_zoom - self.zoom
+        if abs(remaining) < ZOOM_SNAP_EPSILON or delta_time <= 0:
+            self.zoom = self.target_zoom
+            self._zoom_interpolating = False
+            self._zoom_anchor_screen = None
+            self.clamp_to_bounds()
+            return True
+
+        anchor = self._zoom_anchor_screen
+        panel = self._zoom_anchor_panel
+        if anchor is None:
+            anchor = (self.window_width / 2.0, self.map_height_ui / 2.0 + panel)
+
+        world_before = self.screen_to_world(anchor, panel)
+
+        # 1 - exp(-rate * dt) is the frame-rate independent form of a lerp
+        factor = 1.0 - math.exp(-ZOOM_SMOOTHING_RATE * delta_time)
+        self.zoom += remaining * factor
+        # Guard against overshoot from a large delta_time spike
+        if (remaining > 0 and self.zoom > self.target_zoom) or \
+           (remaining < 0 and self.zoom < self.target_zoom):
+            self.zoom = self.target_zoom
+        self.zoom = max(self.min_zoom, min(self.max_zoom, self.zoom))
+
+        world_after = self.screen_to_world(anchor, panel)
+        self.offset[0] += world_before[0] - world_after[0]
+        self.offset[1] += world_before[1] - world_after[1]
+        self.clamp_to_bounds()
+        return True
 
     def get_ui_scale_factor(self):
         """
@@ -387,35 +464,27 @@ class CameraHandler:
         Returns:
             bool: True if zoom was applied, False if at zoom limits
         """
-        # Get world position before zoom
-        world_pos_before = self.screen_to_world(mouse_pos, top_panel_height)
-        
-        # Calculate new zoom level
+        # Compound from the TARGET, not the current zoom, so several wheel notches
+        # in quick succession accumulate instead of each restarting from wherever
+        # the easing happened to be.
+        base_zoom = self.target_zoom if self._zoom_interpolating else self.zoom
+
         if delta > 0:
             zoom_factor = 1.0 + zoom_speed
         else:
             zoom_factor = 1.0 - zoom_speed
-        
-        new_zoom = self.zoom * zoom_factor
-        
-        # Clamp zoom to limits
-        new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
-        
-        # Only update if zoom actually changed
-        if new_zoom != self.zoom:
-            # Update zoom
-            self.zoom = new_zoom
-            # FPS OPT: Start settle timer so rendering uses fast scale
-            self._zoom_settle_timer = 0.2
-            
-            # Adjust camera offset to keep world position under cursor
-            world_pos_after = self.screen_to_world(mouse_pos, top_panel_height)
-            self.offset[0] += world_pos_before[0] - world_pos_after[0]
-            self.offset[1] += world_pos_before[1] - world_pos_after[1]
-            
-            # Enforce map bounds
-            self.clamp_to_bounds()
-            
-            return True
-        
-        return False
+
+        new_target = max(self.min_zoom, min(self.max_zoom, base_zoom * zoom_factor))
+
+        # Already at the limit in this direction — nothing to do
+        if abs(new_target - base_zoom) < ZOOM_SNAP_EPSILON:
+            return False
+
+        self.target_zoom = new_target
+        self._zoom_interpolating = True
+        # Anchor zoom-to-cursor at the pointer position for the whole interpolation
+        self._zoom_anchor_screen = tuple(mouse_pos)
+        self._zoom_anchor_panel = top_panel_height
+        # Keep the renderer in "zoom activity" state a moment after easing ends
+        self._zoom_settle_timer = 0.2
+        return True

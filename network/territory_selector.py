@@ -24,6 +24,7 @@ from global_sound import sound_manager
 from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
+from display_utils import menu_frame_cap
 
 logger = get_logger(__name__)
 
@@ -611,7 +612,7 @@ class TerritorySelector:
             pygame.display.flip()
             # Reset overlay click flash after frame
             self.overlay_clicked = None
-            clock.tick(60)
+            clock.tick(menu_frame_cap())
 
         return None
 
