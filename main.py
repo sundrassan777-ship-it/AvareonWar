@@ -1795,6 +1795,7 @@ class Game:
             new_owner = data.get('new_owner')
             alliance_marker = data.get('alliance_marker')  # For simultaneous mode
             surviving_units = data.get('surviving_units')  # Unit composition from host
+            battle_reports = data.get('battle_reports') or []  # Defender summaries
 
             # VALIDATION: Verify battle exists in pending_battles
             battle_exists = False
@@ -1853,6 +1854,13 @@ class Game:
                             self.game_state.eliminate_player(player_index)
                             self.sim_state.eliminate_player(player_index)
                             logger.info(f"[NETWORK] Capital Assault: eliminated Player {player_index + 1} on client")
+
+                # Battle Reports: the resolver captured these, so queue any addressed to
+                # us. This client applied the result above rather than running
+                # resolve_battle(), so this message is its ONLY source for them.
+                for report in battle_reports:
+                    if isinstance(report, dict):
+                        self.queue_battle_report(report)
 
                 # Universal last-team-standing: check victory on client after territory change
                 # (host already checks via _update_battle_results; client needs this for sync)
@@ -11317,6 +11325,11 @@ class Game:
                                     ]
                             if alliance_marker:
                                 battle_data['alliance_marker'] = alliance_marker
+                            # Battle Reports ride along: a client APPLIES this result rather
+                            # than running resolve_battle(), so without this the defending
+                            # client would never learn what happened in its own territory.
+                            if self.game_state.last_battle_reports:
+                                battle_data['battle_reports'] = list(self.game_state.last_battle_reports)
                             self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
                             logger.info(f"[HOST] Broadcast AI battle result: {territory} -> player {new_owner}")
 
@@ -12742,7 +12755,11 @@ class Game:
                     'territory': territory,
                     'winner': actual_winner,
                     'surviving_armies': actual_survivors,
-                    'new_owner': self.game_state.territory_owners.get(territory, -1)
+                    'new_owner': self.game_state.territory_owners.get(territory, -1),
+                    # Stash the Battle Reports now: resolve_battle() ran on THIS click but
+                    # the broadcast happens on the later CLOSE click, by which time another
+                    # battle could have overwritten game_state.last_battle_reports.
+                    'battle_reports': list(self.game_state.last_battle_reports),
                 }
                 return True
 
@@ -12818,6 +12835,11 @@ class Game:
                                     }
                                     battle_data['alliance_marker'] = alliance_marker
                                     self.sim_state.phase_manager.pending_alliance_markers.append(alliance_marker)
+                        # Battle Reports ride along: a client APPLIES this result rather
+                        # than running resolve_battle(), so without this the defending
+                        # client would never learn what happened in its own territory.
+                        if self.game_state.last_battle_reports:
+                            battle_data['battle_reports'] = list(self.game_state.last_battle_reports)
                         self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
 
                     # Transition to resolving animation
@@ -12922,6 +12944,7 @@ class Game:
         battle = self._resolved_battle_info['battle']
         territory = self._resolved_battle_info['territory']
         new_owner = self._resolved_battle_info['new_owner']
+        stashed_battle_reports = self._resolved_battle_info.get('battle_reports', [])
 
         # Clear stored battle info
         self._resolved_battle_info = None
@@ -12987,6 +13010,11 @@ class Game:
             # Include alliance marker info for simultaneous mode
             if alliance_marker:
                 battle_data['alliance_marker'] = alliance_marker
+            # Battle Reports ride along: a client APPLIES this result rather
+            # than running resolve_battle(), so without this the defending
+            # client would never learn what happened in its own territory.
+            if stashed_battle_reports:
+                battle_data['battle_reports'] = list(stashed_battle_reports)
             self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
 
         # Clean up the interface
@@ -14112,6 +14140,11 @@ class Game:
                         ]
                 if alliance_marker:
                     battle_data['alliance_marker'] = alliance_marker
+                # Battle Reports ride along: a client APPLIES this result rather
+                # than running resolve_battle(), so without this the defending
+                # client would never learn what happened in its own territory.
+                if self.game_state.last_battle_reports:
+                    battle_data['battle_reports'] = list(self.game_state.last_battle_reports)
                 self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
 
             # Capital Assault: sync battle-based eliminations to sim_state
@@ -14414,10 +14447,23 @@ class Game:
         return True
 
     def queue_battle_report(self, report):
-        """Add one report snapshot to its defender's queue (bounded)."""
+        """
+        Add one report snapshot to its defender's queue (bounded).
+
+        In multiplayer only the local slot is kept: the resolver also captures the
+        reports of REMOTE defenders (it is the machine that ran resolve_battle), and
+        those belong to the other player, who receives them over the network. Keeping
+        them here would pile up queues this client can never display.
+
+        In single-player every human is kept, so hotseat works -- each player sees
+        their own reports as their turn comes round.
+        """
         defender = report.get('defender')
         if defender is None or defender < 0:
             return
+        if self.multiplayer_mode and self.local_player_index is not None:
+            if defender != self.local_player_index:
+                return
         queue = self.battle_report_queues.setdefault(defender, [])
         queue.append(report)
         if len(queue) > self.MAX_BATTLE_REPORTS_SHOWN:
