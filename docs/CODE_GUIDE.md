@@ -787,6 +787,54 @@ Tests: `tests/test_army_banner_selection.py`
 
 ---
 
+### Unit selection strip: right-click context menu
+
+The bottom-UI unit icon grid (`draw_army_composition_ui()`) supports **right-click on a
+unit icon** to open a small drop-down, so partial garrison selections can be built without
+holding CTRL. The options adapt to the current selection:
+
+| Selection state (within the shown garrison) | Options |
+|---|---|
+| No *other* unit selected | Select, Cancel |
+| Other units selected, this one is not | Select, **Add to Group**, Cancel |
+| Other units selected and this one is too | Select, **Remove from Group**, Cancel |
+
+`Select` replaces `selected_army_units` (plain left-click); `Add`/`Remove from Group` is the
+same toggle CTRL+click performs - the label just reflects which way it will go. Options are
+frozen at open time so they cannot flip while the menu is on screen.
+
+**State** (`main.py`):
+- `self.unit_context_menu` - `{'unit_id', 'territory', 'player', 'anchor', 'items'}` or `None`
+- `self.unit_context_menu_rects` - `[(rect, action_id), ...]`, rebuilt every draw
+
+**Methods** (all in `main.py`):
+| Method | Role |
+|---|---|
+| `handle_unit_context_menu_right_click(pos)` | Opens/dismisses. Hooked in the event loop's `button == 3` branch **before** the planning-phase gate, so it works in any turn phase |
+| `_get_unit_context_menu_rect()` | Sole source of geometry - both draw and hit-test derive from it, so they cannot desync |
+| `_close_stale_unit_context_menu()` | Drops a menu whose garrison/unit is gone |
+| `draw_unit_context_menu()` | Drawn late in `run()` (with the other popups) so it covers the bottom UI |
+| `handle_unit_context_menu_click(pos)` | **Priority 0** in `mouse_handler.handle_left_click()` |
+
+**It is modal.** While open it is Priority 0 in the click chain and consumes *every*
+left-click: an item runs its action, anything else just closes it. Hover underneath is
+suppressed in two places - `draw_army_composition_ui()` swaps `self.mouse_pos` for a
+`hover_pos` that is voided inside the menu rect (this also gates the unit tooltip), and
+`handle_mouse_motion()` excludes the menu rect from `in_map_area` (the menu overlaps the
+map when it flips upward).
+
+**Placement:** prefers down-and-right of the icon, flips to up-and-right when it would run
+past `WINDOW_HEIGHT`, and is clamped to the screen horizontally.
+
+**Highlight colours are explicit, not `lighten_color()`/`brighten_color()`.** Those scale
+multiplicatively, so against the near-black panel `(40, 35, 30)` they shift each channel by
+a few points and the feedback is invisible. The menu uses literal `(82, 72, 55)` for hover
+and `(150, 126, 76)` for the click flash. Use the helpers only on mid-brightness bases.
+
+Tests: `tests/test_unit_context_menu.py`
+
+---
+
 ## AI System
 
 **Modules:** `ai_player.py`, `ai_strategy.py`, `ai_military.py`, `ai_economy.py`, `ai_hero.py`

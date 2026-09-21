@@ -1392,6 +1392,16 @@ class Game:
         self.army_composition_buttons = []  # List of (rect, unit_id) for click detection
         self.hovered_composition_button = None  # Which button is being hovered (for tooltip)
 
+        # Unit right-click context menu (mouse-only alternative to CTRL+click multi-select)
+        # Purpose: right-clicking a unit icon in the composition strip opens a small drop-down
+        # with Select / Add to Group / Remove from Group / Cancel, so partial selections can be
+        # built without the keyboard.
+        # Format: {'unit_id': int, 'territory': str, 'player': int, 'anchor': pygame.Rect,
+        #          'items': [(action_id, label), ...]} or None when closed.
+        # 'items' is frozen at open time so labels can't flip while the menu is on screen.
+        self.unit_context_menu = None
+        self.unit_context_menu_rects = []  # List of (rect, action_id), rebuilt every draw
+
         # Track current player to detect turn changes
         self.previous_player = 0  # Will be set properly when game_state is initialized
 
@@ -4488,6 +4498,9 @@ class Game:
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
             self._hero_overlay_cache = {}
+            # Close the unit context menu: its anchor rect belongs to the old layout
+            self.unit_context_menu = None
+            self.unit_context_menu_rects = []
             # Territory preview caches (border scaled size + preview images)
             self._territory_preview_cache = {}
             self._scaled_preview_border = None
@@ -10071,7 +10084,12 @@ class Game:
             return
 
         units = garrison.get('units', [])
-        
+
+        # The unit context menu sits on top of this panel - nothing beneath it may
+        # light up on hover, so hover tests below use hover_pos instead of mouse_pos.
+        ctx_menu_rect = self._get_unit_context_menu_rect()
+        hover_pos = (-1, -1) if (ctx_menu_rect and ctx_menu_rect.collidepoint(self.mouse_pos)) else self.mouse_pos
+
         # Count status
         ready_count = sum(1 for u in units if u['status'] == 'ready')
         moved_count = sum(1 for u in units if u['status'] == 'moved')
@@ -10129,7 +10147,7 @@ class Game:
         # Base color
         button_color = (100, 150, 200)
         # Check hover
-        is_hovering = select_all_rect.collidepoint(self.mouse_pos)
+        is_hovering = select_all_rect.collidepoint(hover_pos)
         # Check click
         is_clicking = (self.clicked_element and
                       self.clicked_element[0] == 'army_comp' and
@@ -10153,7 +10171,7 @@ class Game:
         # Base color
         button_color = (150, 100, 100)
         # Check hover
-        is_hovering = deselect_all_rect.collidepoint(self.mouse_pos)
+        is_hovering = deselect_all_rect.collidepoint(hover_pos)
         # Check click
         is_clicking = (self.clicked_element and
                       self.clicked_element[0] == 'army_comp' and
@@ -10205,7 +10223,7 @@ class Game:
             unit_letter = self.game_state.UNIT_TYPES[unit_type]['letter']
 
             # Check hover and click state
-            is_hovering = button_rect.collidepoint(self.mouse_pos)
+            is_hovering = button_rect.collidepoint(hover_pos)
             is_clicking = (self.clicked_element and
                           self.clicked_element[0] == 'army_unit' and
                           self.clicked_element[1] == unit['id'])
@@ -10353,22 +10371,273 @@ class Game:
         # PERFORMANCE: Cache static instruction text renders
         header_text = self._get_cached_text("Unit Selection Info:", self.font_bold, WHITE)
         self.screen.blit(header_text, (instructions_x, instructions_y))
-        instructions_y += 30  # Space after header
+        instructions_y += self.scale(30)  # Space after header
 
         # Instruction lines - each point on one line
         instruction_lines = [
             "- Click to select",
             "- CTRL+Click for multi-select",
+            "- Right-click unit for options",
             "- Right-click destination",
             "  to command",
             "- Click elsewhere to close"
         ]
 
+        # Bounds-check: the list grew with the right-click hint, so stop before
+        # spilling past the bottom panel on short layouts (min panel height is 180px).
+        line_spacing = self.scale(22)
+        max_instructions_y = BOTTOM_UI_Y + BOTTOM_UI_HEIGHT - line_spacing
+
         for line in instruction_lines:
+            if instructions_y > max_instructions_y:
+                break
             inst_text = self._get_cached_text(line, self.small_font, BROWN_TEXT_SECONDARY)
             self.screen.blit(inst_text, (instructions_x, instructions_y))
-            instructions_y += 22
+            instructions_y += line_spacing
     
+    # ------------------------------------------------------------------
+    # Unit right-click context menu (army composition strip)
+    # Purpose: give mouse-only players a way to build partial garrison
+    # selections without holding CTRL. Right-clicking a unit icon opens a
+    # small drop-down anchored to that icon.
+    # ------------------------------------------------------------------
+
+    def handle_unit_context_menu_right_click(self, pos):
+        """
+        Open (or close) the unit context menu on right-click in the bottom UI.
+
+        Hooked into the main event loop BEFORE the planning-phase gate, so the
+        menu behaves like the existing left-click selection, which is only
+        gated on phase == 'playing'.
+
+        Args:
+            pos: Right-click position (x, y)
+
+        Returns:
+            bool: True if the click was consumed (menu opened or closed)
+        """
+        # Any right-click while the menu is open just dismisses it, with no action,
+        # and is consumed - the same contract as a left-click outside the menu. A
+        # dismissing right-click on the map must not also issue a movement order.
+        if self.unit_context_menu:
+            self.unit_context_menu = None
+            return True
+
+        # Same guards as handle_bottom_ui_click: playing phase, bottom UI area,
+        # not spectating, composition strip actually on screen.
+        if self.game_state.phase != 'playing' or pos[1] < BOTTOM_UI_Y:
+            return False
+        if not self.is_local_player_active():
+            return False
+        if not self.show_army_composition or not self.army_composition_buttons:
+            return False
+
+        # Hit-test the unit icon grid built by draw_army_composition_ui()
+        for button_rect, unit_id in self.army_composition_buttons:
+            if not button_rect.collidepoint(pos):
+                continue
+
+            # Build the option list. "Other" = any selected unit that isn't this one.
+            # Opening the menu on a 'moved'/'ordered' unit is allowed, matching
+            # plain left-click which also selects any unit regardless of status.
+            others = [uid for uid in self.selected_army_units if uid != unit_id]
+            items = [('select', 'Select')]
+            if others:
+                if unit_id in self.selected_army_units:
+                    # Already part of the group - CTRL+click would remove it,
+                    # so label it honestly.
+                    items.append(('toggle', 'Remove from Group'))
+                else:
+                    items.append(('toggle', 'Add to Group'))
+            items.append(('cancel', 'Cancel'))
+
+            # Remember which garrison this menu belongs to so a stale menu
+            # (units moved, turn ended, strip closed) can be detected at draw time.
+            self.unit_context_menu = {
+                'unit_id': unit_id,
+                'territory': self.army_composition_territory,
+                'player': (self.army_composition_player
+                           if self.army_composition_player is not None
+                           else self.game_state.current_player),
+                'anchor': button_rect.copy(),
+                'items': items,
+            }
+            return True
+
+        return False
+
+    def _get_unit_context_menu_rect(self):
+        """
+        Derive the context menu panel rect (returns None when closed).
+
+        Single source of geometry for both drawing and hit-testing so the two
+        can never desync (same idiom as integrated_setup._get_dropdown_items_rects).
+
+        Returns:
+            pygame.Rect or None: the full menu panel bounds
+        """
+        menu = self.unit_context_menu
+        if not menu:
+            return None
+
+        item_h = self.scale(24)
+        pad = self.scale(4)
+
+        # Width follows the widest label, with a sensible minimum
+        text_w = max(self.small_font.size(label)[0] for _, label in menu['items'])
+        width = max(self.scale(120), text_w + self.scale(24))
+        height = len(menu['items']) * item_h + pad * 2
+
+        anchor = menu['anchor']
+        overlap = self.scale(6)  # Slight overlap onto the icon corner
+
+        # Preferred placement: down and to the right of the icon
+        rect = pygame.Rect(anchor.right - overlap, anchor.bottom - overlap, width, height)
+
+        # Flip up when it would run off the bottom of the screen (opens over the map)
+        if rect.bottom > WINDOW_HEIGHT:
+            rect.bottom = anchor.top + overlap
+
+        # Clamp horizontally so the panel always stays fully on screen
+        if rect.right > WINDOW_WIDTH - self.scale(4):
+            rect.right = WINDOW_WIDTH - self.scale(4)
+        if rect.left < 0:
+            rect.left = 0
+        # Vertical clamp as a safety net (tiny windows / very tall menus)
+        if rect.top < 0:
+            rect.top = 0
+
+        return rect
+
+    def _close_stale_unit_context_menu(self):
+        """
+        Drop the context menu if the garrison it points at is gone.
+
+        Called at the start of draw_unit_context_menu(), which runs every frame
+        before the next frame's input, so a stale menu can never consume a click.
+        """
+        menu = self.unit_context_menu
+        if not menu:
+            return
+
+        if not self.show_army_composition:
+            self.unit_context_menu = None
+            return
+
+        current_player = (self.army_composition_player
+                          if self.army_composition_player is not None
+                          else self.game_state.current_player)
+        if menu['territory'] != self.army_composition_territory or menu['player'] != current_player:
+            self.unit_context_menu = None
+            return
+
+        garrison = self.game_state.territory_garrisons.get(menu['territory'], {}).get(menu['player'])
+        if not garrison:
+            self.unit_context_menu = None
+            return
+        if not any(u['id'] == menu['unit_id'] for u in garrison.get('units', [])):
+            self.unit_context_menu = None
+
+    def draw_unit_context_menu(self):
+        """
+        Draw the unit context menu on top of everything in the bottom UI.
+
+        Called late in the render pass (alongside the other popups) so the
+        drop-down is never covered - the same "draw dropdown options last" rule
+        the options menu resolution dropdown follows.
+        """
+        self._close_stale_unit_context_menu()
+
+        menu_rect = self._get_unit_context_menu_rect()
+        if menu_rect is None:
+            self.unit_context_menu_rects = []
+            return
+
+        menu = self.unit_context_menu
+        item_h = self.scale(24)
+        pad = self.scale(4)
+
+        # Panel: dark background with a thin golden border
+        pygame.draw.rect(self.screen, (40, 35, 30), menu_rect)
+        pygame.draw.rect(self.screen, (218, 165, 32), menu_rect, max(1, self.scale(1)))
+
+        # Rebuild hit-test rects every frame from the same geometry we draw with
+        self.unit_context_menu_rects = []
+
+        # Explicit highlight colours rather than lighten_color()/brighten_color():
+        # those scale multiplicatively, so on a near-black panel (40, 35, 30) they
+        # move each channel by only a few points and the feedback is invisible.
+        hover_color = (82, 72, 55)    # Warm brown - clearly lighter than the panel
+        click_color = (150, 126, 76)  # Brass - stronger still, for the click flash
+
+        for i, (action_id, label) in enumerate(menu['items']):
+            item_rect = pygame.Rect(
+                menu_rect.x + pad,
+                menu_rect.y + pad + i * item_h,
+                menu_rect.width - pad * 2,
+                item_h
+            )
+
+            # Hover/click feedback using the standard bottom-UI treatment
+            is_clicking = (self.clicked_element
+                           and self.clicked_element[0] == 'unit_ctx'
+                           and self.clicked_element[1] == action_id)
+            is_hovering = item_rect.collidepoint(self.mouse_pos)
+
+            if is_clicking:
+                pygame.draw.rect(self.screen, click_color, item_rect)
+            elif is_hovering:
+                pygame.draw.rect(self.screen, hover_color, item_rect)
+
+            label_surface = self._get_cached_text(label, self.small_font, WHITE)
+            label_rect = label_surface.get_rect(
+                midleft=(item_rect.x + self.scale(8), item_rect.centery))
+            self.screen.blit(label_surface, label_rect)
+
+            self.unit_context_menu_rects.append((item_rect, action_id))
+
+    def handle_unit_context_menu_click(self, pos):
+        """
+        Handle a left-click while the unit context menu is open.
+
+        The menu is modal: every click is consumed and always closes the menu.
+        Clicking outside it closes with no action.
+
+        Args:
+            pos: Click position (x, y)
+
+        Returns:
+            bool: always True (click consumed)
+        """
+        self._close_stale_unit_context_menu()
+
+        menu = self.unit_context_menu
+        if not menu:
+            return True
+
+        unit_id = menu['unit_id']
+
+        for item_rect, action_id in self.unit_context_menu_rects:
+            if not item_rect.collidepoint(pos):
+                continue
+
+            self.trigger_click_flash('unit_ctx', action_id)
+
+            if action_id == 'select':
+                # Same as a plain left-click: replace the whole selection
+                self.selected_army_units = [unit_id]
+            elif action_id == 'toggle':
+                # Same as CTRL+click: toggle this unit in/out of the selection
+                if unit_id in self.selected_army_units:
+                    self.selected_army_units.remove(unit_id)
+                else:
+                    self.selected_army_units.append(unit_id)
+            # 'cancel' falls through - close with no action
+            break
+
+        self.unit_context_menu = None
+        return True
+
     def draw_action_log_overlay(self):
         """Draw action log as an overlay on the right side of the screen"""
         if not self.action_log_visible:
@@ -11398,6 +11667,12 @@ class Game:
                             self.ability_targeting_ability_index = None
                             self.ability_targeting_ability_name = None
                             continue
+                        # Unit context menu (bottom-UI army strip): right-click a unit
+                        # icon to open it, right-click again to dismiss. Handled here
+                        # rather than in handle_right_click() so it works in any turn
+                        # phase, matching the left-click selection it complements.
+                        if self.handle_unit_context_menu_right_click(event.pos):
+                            continue
                         # Right-click for movement orders (only in planning phase)
                         if self.game_state.phase == 'playing' and self.game_state.turn_phase == 'planning':
                             self.mouse.handle_right_click(event.pos)
@@ -11620,6 +11895,11 @@ class Game:
 
             # Draw forced defend popup (simultaneous mode - overwhelming force notification)
             self.draw_forced_defend_popup()
+
+            # Draw the unit right-click context menu last so it covers the bottom UI
+            # (same "draw dropdown options last" rule the options menu dropdown follows)
+            if self.unit_context_menu:
+                self.draw_unit_context_menu()
 
             # Draw victory/defeat cinematic (on top of everything else)
             if self.victory_sequence_active:
@@ -12743,6 +13023,11 @@ class Game:
         # Save dialog keyboard input takes priority over all other keyboard handling
         if self.save_dialog_active:
             return self.handle_save_dialog_keydown(event)
+
+        # ESC dismisses the unit context menu first, so it doesn't also open the game menu
+        if event.key == pygame.K_ESCAPE and self.unit_context_menu:
+            self.unit_context_menu = None
+            return True
 
         # Prepare UI state for handler
         ui_state = {
@@ -14432,7 +14717,12 @@ class Game:
                 if tab_rect.collidepoint(pos):
                     in_tab_buttons = True
                     break
-        in_map_area = pos[1] >= TOP_PANEL_HEIGHT and pos[1] < MAP_HEIGHT and not in_sidebar and not in_tab_buttons
+        # The unit context menu can overlap the map when it flips upward - nothing
+        # beneath it may highlight while it is open.
+        ctx_menu_rect = self._get_unit_context_menu_rect()
+        in_context_menu = bool(ctx_menu_rect and ctx_menu_rect.collidepoint(pos))
+        in_map_area = (pos[1] >= TOP_PANEL_HEIGHT and pos[1] < MAP_HEIGHT
+                       and not in_sidebar and not in_tab_buttons and not in_context_menu)
         if in_map_area:
             # Check if hovering over an army first (takes priority over territory)
             # NOTE: scaled_centers are in WORLD coordinates, so compare with world_pos!
@@ -14579,7 +14869,8 @@ class Game:
                     self.hover_target_army = None
                     self.show_tooltip_army = None
         else:
-            # Mouse outside map area (top panel, bottom UI, sidebar, or tab buttons) - clear hover states
+            # Mouse outside map area (top panel, bottom UI, sidebar, tab buttons, or
+            # over the unit context menu) - clear hover states
             self.hovered_army = None
             self.hovered_territory = None
             self.hover_target_army = None

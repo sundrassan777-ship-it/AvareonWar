@@ -2,6 +2,34 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-21 - Right-click context menu on army composition unit icons
+
+- **Why:** building a partial selection out of a garrison required CTRL + left-click on
+  each unit icon. The only keyboard-free options were "select one" or "Select All", which
+  made mouse-only play awkward.
+- **Added:** right-clicking a unit icon in the bottom-UI strip opens a small drop-down
+  anchored to that icon:
+  - no *other* unit of that garrison selected -> **Select**, **Cancel**
+  - other units selected, this one is not -> **Select**, **Add to Group**, **Cancel**
+  - other units selected and this one is too -> **Select**, **Remove from Group**, **Cancel**
+  `Select` replaces the selection; Add/Remove from Group is the CTRL+click toggle, with the
+  label reflecting which way it will go. Options are frozen at open time.
+- **Modal while open:** Priority 0 in the left-click chain, so it consumes every click -
+  clicking outside closes it with no action (a dismissing right-click on the map does NOT
+  also issue a movement order), and nothing beneath the drop-down is clickable
+  or hoverable (hover is suppressed in both `draw_army_composition_ui()` and
+  `handle_mouse_motion()`). ESC and a second right-click also dismiss it.
+- **Placement:** opens down-and-right of the icon, flips up over the map when it would run
+  past the bottom of the screen, clamped to stay on screen horizontally.
+- **Styling:** dark panel with a thin golden border, white Cinzel `small_font` labels.
+  Hover and click highlights use literal colours, not `lighten_color()`/`brighten_color()` -
+  those scale multiplicatively and are invisible against a near-black panel.
+- Also bounds-checked the "Unit Selection Info" instruction list (it grew a line) so it
+  cannot spill past the bottom panel, and scaled its line spacing with `ui_scale`.
+- Tests: `tests/test_unit_context_menu.py` (23 tests - options, actions, modal contract,
+  placement, staleness, draw path, hover suppression)
+- Files: `main.py`, `input/mouse_handler.py`, `tests/test_unit_context_menu.py`
+
 ## 2026-09-20 - Army circle hit area now matches the ring you can see
 
 - **Reported:** hovering and clicking ~2mm BELOW the army circle still selected the army.

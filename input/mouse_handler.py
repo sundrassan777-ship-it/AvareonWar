@@ -77,10 +77,16 @@ class MouseHandler:
             bool or tuple: True if handled, or (handled, should_quit) tuple
         """
         # L1: Click priority chain (highest to lowest). First match consumes the click.
-        # 1. Victory screen  2. Battle popup  2.5. Alliance choice popup
-        # 3. Options menu    4. Game menu     5. Top panel
+        # 0. Unit context menu  1. Victory screen  2. Battle popup
+        # 2.5. Alliance choice popup  3. Options menu  4. Game menu  5. Top panel
         # 6. Battle markers  6.5. Alliance markers  7. Order sidebar / tabs
         # 8. Bottom UI       9. Map area (territory selection, movement orders)
+
+        # Priority 0: Unit right-click context menu (bottom-UI army strip).
+        # Modal while open: it consumes every click, so nothing underneath the
+        # drop-down is clickable. Clicking outside it just closes it.
+        if getattr(self.game, 'unit_context_menu', None):
+            return self.game.handle_unit_context_menu_click(pos)
 
         # Priority 1: Victory screen - only intercept if NOT using cinematic sequence
         # During victory_sequence_pending, let clicks through so battles can still be resolved

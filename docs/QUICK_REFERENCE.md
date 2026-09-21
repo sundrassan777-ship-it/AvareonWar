@@ -12,6 +12,13 @@
 - Mouse Wheel: Zoom
 - Middle Drag: Pan Camera
 
+**Army unit selection (bottom UI icon strip):**
+- Left Click a unit icon: select just that unit
+- CTRL + Left Click: add/remove that unit from the selection
+- **Right Click a unit icon: context menu** - Select / Add to Group /
+  Remove from Group / Cancel (mouse-only alternative to CTRL+click)
+- Right Click a destination territory: order the selected units there
+
 **Keyboard:**
 - Arrow Keys: Pan Camera
 - +/-: Zoom
