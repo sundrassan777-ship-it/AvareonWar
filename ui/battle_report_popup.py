@@ -55,11 +55,6 @@ COLOR_BODY = (38, 28, 16)       # Dark brown, readable on the wooden board
 FALLBACK_FILL = (46, 36, 24, 236)
 FALLBACK_BORDER = (180, 160, 100)
 
-# draw_feedback_button() draws a solid rect when it has no bg_image, and passing
-# base_color=None there raises "invalid color argument". menu_button_img is None
-# whenever GMenuButton.png fails to load, so always hand it a real colour.
-BUTTON_FALLBACK_COLOR = (92, 74, 46)
-
 
 def _plural(count, singular, plural):
     """'1 Unit' vs '3 Units'."""
@@ -286,12 +281,11 @@ class BattleReportPopupRenderer:
         for rect, action, label in (
                 (layout['detail_rect'], 'detail', "Detail"),
                 (layout['close_rect'], 'close', "Close")):
-            button_image = getattr(game, 'menu_button_img', None)
             game.helpers.draw_feedback_button(
-                rect, None if button_image is not None else BUTTON_FALLBACK_COLOR,
+                rect, None,
                 game.mouse_pos, game.clicked_element,
                 'battle_report', action,
                 text=label,
                 text_color=(255, 255, 255),
                 font=game.small_font_bold,
-                bg_image=button_image)
+                bg_image=getattr(game, 'menu_button_img', None))

@@ -21,6 +21,13 @@ from config.constants import *
 from utils.colors import lighten_color, brighten_color
 
 
+# Used when a caller asks for an image-backed button but the image failed to load.
+# Every image button in the game passes base_color=None (the image supplies the look),
+# so without this the solid-colour fallback path would be handed None and raise
+# "invalid color argument" -- turning a missing PNG into a crash.
+DEFAULT_BUTTON_COLOR = (92, 74, 46)
+
+
 class DrawingHelpers:
     """
     Collection of reusable drawing utilities.
@@ -137,6 +144,13 @@ class DrawingHelpers:
                 # No hover/click - blit the cached base directly (no copy needed)
                 self.screen.blit(base_img, rect.topleft)
         else:
+            # Fall back to a real colour when the caller passed none. Image buttons pass
+            # base_color=None and rely on bg_image; if that image is missing (a failed
+            # pygame.image.load leaves it None) we land here, and brighten_color(None)
+            # and pygame.draw.rect(..., None) would both raise.
+            if base_color is None:
+                base_color = DEFAULT_BUTTON_COLOR
+
             # Apply visual feedback to color
             final_color = base_color
             if is_clicking:
