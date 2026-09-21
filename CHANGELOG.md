@@ -2,6 +2,57 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-21 - Battle bar volley animation (BFME2 auto-resolve style)
+
+- **Why:** the battle bars drained in a single continuous eased slide while ~600 circle
+  particles streamed steadily between them. It read as "a bar sliding", not as a fight.
+  Reference: BFME2, War of the Ring, auto-resolve.
+- **Reworked** `BattleBarParticleEffect` into **`BattleBarVolleyEffect`**
+  (`ui/effects/battle_interface.py`):
+  - **Stepwise depletion.** Each volley fires one blast per side; on impact the chunk it
+    destroyed flashes white-hot in place, then burns away and the fill steps down. Chunk
+    sizes are jittered but normalised to sum exactly to the damage, so the bars land
+    precisely on their final fill.
+  - **Volley count scales with army size** (log curve, clamped 3-14). The animation
+    duration now falls out of the schedule instead of being drawn up front, clamped to
+    2.0-6.0s (was a flat random 3.0-5.0s).
+  - **Mirrored bars.** The defender bar is anchored at its right edge, so both bars erode
+    inward toward the centre "VS". Its `BattleBar.png` frame is flipped to match.
+  - **One travelling blast per shot** instead of a continuous particle stream - a tapered,
+    motion-blurred lance in the shooter's colour, with a white-hot tip.
+  - **Impact burst** of a white-hot core, radiating spikes and a coloured glow, plus a
+    flare that lights up the bar's ornate frame artwork.
+  - Shots interleave between the two sides, so the hits trade rather than land together.
+- **Bars now animate to the real battle result.** `set_actual_battle_result()` calls
+  `retarget()`, which rebuilds the chunk split from a freshly seeded RNG so the volley
+  rhythm is unchanged. Fixes the strength-tie case, where the pre-calculated estimate
+  drained both bars to empty and the report then named a winner anyway.
+- **Fixed survivor → bar fill conversion.** It used a raw `survivors / count`, which made a
+  weaker side that won end with a *longer* bar than it started with. Now scaled by the
+  side's initial fill.
+- **Added a skip:** clicking anywhere during the animation, or pressing Space/ESC, jumps
+  straight to the final bar state and the splash. There was previously no way to shorten a
+  single battle animation.
+- **Performance:**
+  - Dropped the full-screen SRCALPHA surface that was allocated, cleared and blitted every
+    frame. Nothing is allocated per frame now - fills and burn chunks draw straight to the
+    screen, everything else is a pre-rendered sprite. Render+update measures 0.89 ms/frame
+    against 1.16 ms/frame for the old particle surface *alone*.
+  - Fixed the pulsing battle icon being `smoothscale`d uncached every frame in both the
+    SETUP and ANIMATING states (flagged in `docs/PERFORMANCE_ROADMAP.md`). The pulse scale
+    is quantised to 1/64 and cached, and both states now share one helper.
+  - The frame flare is a single sprite faded with `set_alpha`; pre-rendering a sprite per
+    fade step cost ~21 ms up front, a visible hitch on the Resolve click. Construction is
+    5.4 ms, down from 24.3 ms.
+- **Battle logic untouched** - `resolve_battle()`, casualties and the tie dice are unchanged,
+  including the existing global `random.seed()` in `_pre_calculate_battle_result()`. The
+  effect draws only from its own `random.Random(seed)`, so multiplayer clients stay in sync.
+- Tests:
+  - `tests/test_battle_bar_volley.py` (51 tests - chunk split, volley scaling, determinism,
+    playback, skip, retarget, mirrored geometry, sprite/render contracts)
+  - `tests/test_battle_interface_integration.py` (17 tests - drives the real interface over a
+    real GameState: state machine, derived duration, retarget, click/key skip, icon cache)
+
 ## 2026-09-21 - Right-click context menu on army composition unit icons
 
 - **Why:** building a partial selection out of a garrison required CTRL + left-click on

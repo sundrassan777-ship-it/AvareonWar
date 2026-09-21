@@ -624,6 +624,61 @@ def set_actual_battle_result(self, winner: int, attacker_survivors: int,
 - Accurate survivor counts displayed (not estimates)
 - Correct unit-by-unit breakdown in report (which Archers/Cavalry survived)
 - Battle cleanup happens separately from resolution
+- The real result reaches `set_actual_battle_result()` while the animation is still at
+  `elapsed ≈ 0`, so it calls `BattleBarVolleyEffect.retarget()` to re-aim the bars at the
+  true outcome without disturbing the volley rhythm
+
+##### Bar animation: `BattleBarVolleyEffect`
+
+Modelled on BFME2's War of the Ring auto-resolve. **Visual layer only** — it never touches
+`resolve_battle()` or the dice.
+
+**How it works:**
+- Both bars are **mirrored**: the attacker anchors at its left edge, the defender at its
+  right, so both erode inward toward the centre. `_render_strength_bars()` (the static
+  SETUP-state draw) must match `_fill_rect()` or the bar jumps when the animation starts.
+  The defender's `BattleBar.png` frame is flipped — the asset is not symmetric.
+- Depletion is **stepwise**, not a continuous slide. Each volley fires one blast per side;
+  when a blast lands, the chunk it destroyed flashes white-hot **in place** for
+  `BURN_DURATION`, then vanishes and the fill steps down.
+- The volley count scales with total army size on a log curve, clamped to
+  `[VOLLEY_MIN, VOLLEY_MAX]`. The duration falls out of the schedule (it is no longer drawn
+  up front), is clamped to `[ANIMATION_MIN_DURATION, ANIMATION_MAX_DURATION]`, and
+  `_start_animation()` reads it back into `self.animation_duration`.
+- Chunk sizes are jittered then **normalised to sum exactly to the damage**, so the bars
+  land precisely on their final fill. `_finish()` also snaps to the final value.
+
+**When modifying, watch for:**
+- **Use the private RNG.** The schedule draws from `random.Random(seed)`, never the global
+  `random`. `_pre_calculate_battle_result()` still calls `random.seed()` on the global RNG
+  immediately before `resolve_battle()` rolls its tie dice — leave that alone, removing it
+  changes tie outcomes. `TestDeterminism.test_does_not_disturb_the_global_rng` guards this.
+- **Nothing is allocated per frame.** Fills, burn chunks and bar backgrounds are drawn
+  straight to the screen; lances, impact bursts and the frame flare are pre-rendered in
+  `__init__`. The old version cleared and blitted a full-screen SRCALPHA surface every
+  frame — do not reintroduce that.
+- **Render order matters.** Lances draw *before* the frame PNG, so a tail still inside the
+  firing bar is hidden by the frame's end cap; each lance is also clipped to the far side of
+  its muzzle. The frame flare and impact bursts draw *after* the PNG.
+- **`BattleBar.png` stores non-zero RGB under fully transparent pixels.** Any additive blit
+  of it lights up the whole rectangle. The flare uses `BLEND_RGB_ADD` (which leaves alpha
+  untouched) plus a normal alpha blit, so transparency is respected.
+- **The flare is one sprite faded with `set_alpha`.** Pre-rendering a sprite per fade step
+  cost ~21 ms up front — a visible hitch on the Resolve click. `set_alpha` is sticky, so the
+  render path sets it unconditionally on every blit.
+- **`retarget()` must keep the RNG stream aligned.** `_split_damage()` draws its weights even
+  when damage is zero, so re-running the build with a fresh `random.Random(seed)` reproduces
+  identical fire times.
+- **Survivor → fill conversion.** Use `_survivor_fill()`, which scales by the side's
+  *initial* fill. A raw `survivors / count` makes a weaker side that wins end with a longer
+  bar than it started with.
+
+**Skip:** clicking anywhere during ANIMATING, or pressing Space/ESC, calls
+`skip_animation()` → `BattleBarVolleyEffect.skip()`. `handle_click()` returns `'skip'`, which
+main.py's existing fall-through consumes; the key is wired in main.py's KEYDOWN branch ahead
+of the campaign-transmission skip.
+
+**Tests:** `tests/test_battle_bar_volley.py`
 
 **Storage pattern in main.py:**
 ```python
@@ -653,7 +708,7 @@ self._resolved_battle_info = {
 - Alliance markers (blue hurricane) → `ui/effects/alliance_marker_effect.py` — 600 particles in 3 spiral arms
 - Production glow (sunrays) → `ui/effects/production_glow_effect.py` — 8 rotating ray trapezoids
 - Castle upgrades (golden explosion) → `ui/effects/castle_upgrade_effect.py` — 140 gold particles, 3 phases
-- Battle bar combat (particles) → `ui/effects/battle_interface.py` (BattleBarParticleEffect) — 600 circle particles
+- Battle bar combat (volleys) → `ui/effects/battle_interface.py` (BattleBarVolleyEffect) — discrete blasts, pre-rendered sprites
 - Sparkle particles → `ui/effects/sparkle_effect.py`
 - Turn announcements → `ui/effects/turn_announcement_sparkle.py`
 - Hero ability bursts (explode/implode) → `ui/effects/ability_burst_effect.py` — configurable particles, phase durations, particle_size, flash_ring, delay

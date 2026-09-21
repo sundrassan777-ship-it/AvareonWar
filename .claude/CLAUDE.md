@@ -132,6 +132,8 @@ AvareonWar/
 - [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
 - [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
 - [tests/test_unit_context_menu.py](tests/test_unit_context_menu.py) - Right-click context menu on the army composition unit icons
+- [tests/test_battle_bar_volley.py](tests/test_battle_bar_volley.py) - Volley-based battle bar animation (chunk split, determinism, skip, mirrored geometry)
+- [tests/test_battle_interface_integration.py](tests/test_battle_interface_integration.py) - EnhancedBattleInterface wiring (state machine, derived duration, retarget, skip)
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -393,6 +395,7 @@ After making code changes, ask yourself:
 - Add new building → `game_state/data_definitions.py` BUILDING_TYPES dict
 - Change balance/costs → `game_state/economy.py` or `economic_data.json`
 - Modify combat → `game_state/military.py` resolve_battle() method
+- Modify battle bar volley animation → `ui/effects/battle_interface.py` (`BattleBarVolleyEffect`)
 - Modify "Resolve Remaining Battles" button → `rendering/ui_renderer.py` `_draw_resolve_all_battles_button()`, `main.py` `_resolve_all_pending_battles()`
 - Change AI behavior → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py`
 - Add UI element → `main.py` or `rendering/ui_renderer.py`

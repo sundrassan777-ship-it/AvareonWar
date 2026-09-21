@@ -11735,8 +11735,14 @@ class Game:
                             sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
                 
                 elif event.type == pygame.KEYDOWN:
+                    # Space/ESC skips the battle bar volley animation while the
+                    # enhanced battle interface is open (it is modal, so the key
+                    # must not fall through to normal game shortcuts).
+                    if (self.enhanced_battle_ui is not None
+                            and self.enhanced_battle_ui.handle_key(event)):
+                        pass  # Animation skipped, consume the key
                     # ESC skips visible campaign transmission before normal handling
-                    if (event.key == pygame.K_ESCAPE
+                    elif (event.key == pygame.K_ESCAPE
                             and self.tutorial_mission
                             and hasattr(self.tutorial_mission, 'skip_transmission')
                             and self.tutorial_mission.skip_transmission()):

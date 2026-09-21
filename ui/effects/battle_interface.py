@@ -24,6 +24,7 @@ from enum import Enum, auto
 from config.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WHITE, BLACK
 from utils.logger import get_logger
 from utils.surface_utils import crop_to_opaque
+from utils.colors import lighten_color
 
 logger = get_logger(__name__)
 
@@ -59,6 +60,8 @@ BAR_BORDER_WIDTH = 2
 ICON_PULSE_MIN_SCALE = 1.0  # Minimum scale (normal size)
 ICON_PULSE_MAX_SCALE = 1.08  # Maximum scale (8% larger)
 ICON_PULSE_SPEED = 1.0  # Pulsations per second (slower, more dramatic)
+ICON_PULSE_SCALE_STEPS = 64  # Pulse scale is quantised to 1/64 so it can be cached
+ICON_PULSE_CACHE_MAX = 32  # Upper bound on cached pulsed-icon sizes
 
 # Button dimensions (reference resolution)
 RESOLVE_BUTTON_WIDTH_REF = 180
@@ -67,8 +70,10 @@ CLOSE_BUTTON_WIDTH_REF = 150
 CLOSE_BUTTON_HEIGHT_REF = 45
 
 # Animation timing
-ANIMATION_MIN_DURATION = 3.0  # Minimum animation duration (seconds)
-ANIMATION_MAX_DURATION = 5.0  # Maximum animation duration (seconds)
+# Bounds the volley schedule is clamped into (the duration is derived from the
+# volley count, not drawn directly)
+ANIMATION_MIN_DURATION = 2.0  # Minimum animation duration (seconds)
+ANIMATION_MAX_DURATION = 6.0  # Maximum animation duration (seconds)
 
 # Splash timing (seconds)
 SPLASH_GROW_DURATION = 0.5
@@ -76,13 +81,39 @@ SPLASH_HOLD_DURATION = 2.0
 SPLASH_SHRINK_DURATION = 0.5
 SPLASH_TARGET_SCALE = 0.75  # 75% of original size
 
-# Particle settings
-PARTICLES_PER_BAR = 600  # Dense particle stream
-PARTICLE_MIN_SIZE_REF = 2
-PARTICLE_MAX_SIZE_REF = 4
-PARTICLE_MIN_LIFETIME = 0.08  # Particle lifetime (slower for visibility)
-PARTICLE_MAX_LIFETIME = 0.20  # Longer traversal time
-PARTICLE_ARC_HEIGHT = 0  # No arc - purely horizontal
+# Volley settings - each volley is one blast per side, and each hit removes a
+# visible chunk of the target bar (BFME2 auto-resolve style)
+VOLLEY_MIN = 3  # Fewest volleys, however small the skirmish
+VOLLEY_MAX = 14  # Cap so huge stacks do not trade blows forever
+VOLLEY_SIZE_LOG_COEFF = 1.6  # volleys = 2 + coeff * ln(total armies), then clamped
+VOLLEY_INTERVAL_MIN = 0.28  # Seconds between volleys (clamped to fit the duration window)
+VOLLEY_INTERVAL_MAX = 0.42
+VOLLEY_STAGGER_MIN = 0.06  # Offset between the two sides' shots within one volley
+VOLLEY_STAGGER_MAX = 0.14
+VOLLEY_LEAD_IN = 0.35  # Pause before the first shot
+VOLLEY_TAIL = 0.60  # Pause after the last hit settles
+CHUNK_JITTER_MIN = 0.6  # Per-volley damage weight, normalised so chunks sum exactly
+CHUNK_JITTER_MAX = 1.4
+
+# Travelling blast (one streak per shot, not a stream)
+PROJECTILE_TRAVEL = 0.10  # Seconds to cross the gap
+PROJECTILE_LENGTH_REF = 130  # Streak length at reference resolution
+PROJECTILE_THICKNESS_REF = 10
+
+# Impact burst
+FLASH_DURATION = 0.22  # Seconds the burst is visible
+FLASH_SIZE_REF = 90  # Burst sprite size at reference resolution
+FLASH_FRAMES = 6  # Pre-rendered frames per side
+FLASH_SPIKES = 8  # Radiating spikes per burst
+FLASH_GLOW_RINGS = 5  # Concentric rings faking a radial gradient
+
+# Hit reaction on the struck bar
+BURN_DURATION = 0.13  # Seconds the doomed chunk glows white-hot before vanishing
+FRAME_GLOW_DURATION = 0.30  # Seconds the bar frame keeps flaring
+FRAME_GLOW_INTENSITY = 0.55  # How hard the flare brightens the frame artwork
+
+# Bar background (empty portion of a strength bar)
+DARK_GRAY = (60, 60, 60)
 
 # Text settings (reference resolution)
 TEXT_LINE_HEIGHT_REF = 34  # Vertical spacing between lines (reduced from 38 for 5 unit types)
@@ -212,304 +243,697 @@ class BattleSplashEffect:
 
 
 # ========================================
-# BATTLE BAR PARTICLE EFFECT
+# BATTLE BAR VOLLEY EFFECT
 # ========================================
 
-class BattleBarParticleEffect:
+class BattleBarVolleyEffect:
     """
-    Particle effect for strength bar combat animation.
+    Volley-based strength bar combat animation (BFME2 auto-resolve style).
 
-    Two bars shoot particles at each other. At the end:
-    - Loser's bar is empty
-    - Winner's bar shows survivor ratio
+    Instead of both bars sliding continuously to their final value, each side
+    fires a discrete blast at the other. When a blast lands, the chunk of the
+    target bar it destroyed flashes white-hot in place and then burns away, so
+    the bar depletes in visible steps - one step per hit.
+
+    The two bars are mirrored: the attacker bar is anchored at its left edge and
+    the defender bar at its right edge, so both erode inward toward the centre.
+
+    The whole schedule (how many volleys, when each one fires, how big each
+    chunk is) is built once in __init__ from a seeded private RNG, so the
+    animation is identical on every client in multiplayer. The chunk sizes are
+    normalised to sum exactly to the damage each side takes, so the bars always
+    land precisely on their final fill.
     """
+
+    # Side indices into self.sides
+    ATTACKER = 0
+    DEFENDER = 1
 
     def __init__(self, attacker_bar_rect, defender_bar_rect,
                  attacker_color, defender_color,
                  attacker_initial_fill, defender_initial_fill,
                  attacker_final_fill, defender_final_fill,
-                 duration, seed=None, bar_border_img=None, bar_png_width=None,
-                 bar_fill_offset=None, bar_png_height=None, ui_scale=1.0):
+                 seed=None, bar_border_img=None, bar_png_width=None,
+                 bar_fill_offset=None, bar_png_height=None, ui_scale=1.0,
+                 attacker_count=0, defender_count=0):
         """
-        Initialize particle combat effect.
+        Initialize the volley combat effect.
 
         Args:
-            attacker_bar_rect: pygame.Rect for attacker strength bar
-            defender_bar_rect: pygame.Rect for defender strength bar
-            attacker_color: RGB tuple for attacker particles
-            defender_color: RGB tuple for defender particles
+            attacker_bar_rect: pygame.Rect for attacker strength bar (fill area)
+            defender_bar_rect: pygame.Rect for defender strength bar (fill area)
+            attacker_color: RGB tuple for attacker blasts
+            defender_color: RGB tuple for defender blasts
             attacker_initial_fill: Initial fill ratio (0.0-1.0) for attacker bar
             defender_initial_fill: Initial fill ratio (0.0-1.0) for defender bar
             attacker_final_fill: Final fill ratio after animation
             defender_final_fill: Final fill ratio after animation
-            duration: Total animation duration in seconds
             seed: Random seed for deterministic animation (for multiplayer sync)
             bar_border_img: Optional pygame.Surface for bar border (BattleBar.png)
             bar_png_width: Optional width for PNG (if different from fill width)
             bar_fill_offset: Scaled offset for fill positioning
             bar_png_height: Scaled height for PNG overlay
-            ui_scale: Scale factor for particle sizes
+            ui_scale: Scale factor for sprite sizes
+            attacker_count: Attacker army count (drives how many volleys are fired)
+            defender_count: Defender army count (drives how many volleys are fired)
+
+        Note:
+            There is no `duration` argument - the duration falls out of the
+            volley schedule and is exposed as `self.duration` for the caller.
         """
         self.attacker_rect = attacker_bar_rect
         self.defender_rect = defender_bar_rect
-        self.attacker_color = attacker_color
-        self.defender_color = defender_color
         self.bar_border_img = bar_border_img
         self.ui_scale = ui_scale
+        self.attacker_count = attacker_count
+        self.defender_count = defender_count
+        self.seed = seed
+
         # PNG dimensions - use passed values or defaults
         self.bar_png_width = bar_png_width if bar_png_width else attacker_bar_rect.width
         self.bar_fill_offset = bar_fill_offset if bar_fill_offset is not None else BAR_FILL_OFFSET_REF
         self.bar_png_height = bar_png_height if bar_png_height else BAR_PNG_HEIGHT_REF
 
-        # Pre-scale bar border to avoid smoothscale per frame
+        # Fill area shares one Y for both bars (matches _render_strength_bars)
+        self.fill_y = self.attacker_rect.top + self.bar_fill_offset
+
+        # Pre-scale bar border once. The defender bar is mirrored, so its frame
+        # is flipped too - BattleBar.png is not horizontally symmetric, and an
+        # unflipped copy would break the mirror.
         self._scaled_bar_border = None
+        self._scaled_bar_border_flipped = None
         if self.bar_border_img:
             self._scaled_bar_border = pygame.transform.smoothscale(
                 self.bar_border_img, (self.bar_png_width, self.bar_png_height))
+            self._scaled_bar_border_flipped = pygame.transform.flip(
+                self._scaled_bar_border, True, False)
 
-        # Bar fill states
-        self.attacker_initial = attacker_initial_fill
-        self.defender_initial = defender_initial_fill
-        self.attacker_final = attacker_final_fill
-        self.defender_final = defender_final_fill
+        # Per-side state. 'anchor_right' mirrors the defender bar so both bars
+        # erode inward toward the centre "VS".
+        self.sides = [
+            {
+                'rect': attacker_bar_rect,
+                'color': attacker_color,
+                'anchor_right': False,
+                'border': self._scaled_bar_border,
+                'initial': attacker_initial_fill,
+                'final': attacker_final_fill,
+                'current': attacker_initial_fill,
+                'chunks': [],
+                'burn': None,            # {'t0', 'chunk'} - chunk burning white-hot
+                'flash': None,           # {'t0', 'x', 'y'} - impact burst
+                'glow_t0': None,         # frame flare start time
+                'lance': None,           # sprite this side FIRES (own colour)
+                'flash_frames': [],      # sprites for hits taken (attacker colour)
+                'glow': None,            # frame flare overlay for hits taken
+            },
+            {
+                'rect': defender_bar_rect,
+                'color': defender_color,
+                'anchor_right': True,
+                'border': self._scaled_bar_border_flipped,
+                'initial': defender_initial_fill,
+                'final': defender_final_fill,
+                'current': defender_initial_fill,
+                'chunks': [],
+                'burn': None,
+                'flash': None,
+                'glow_t0': None,
+                'lance': None,
+                'flash_frames': [],
+                'glow': None,
+            },
+        ]
 
-        self.duration = duration
+        # Pre-render every sprite once. A blast fired BY a side carries that
+        # side's colour, so the flashes a side RECEIVES are tinted with its
+        # opponent's colour.
+        for i, side in enumerate(self.sides):
+            other = self.sides[1 - i]
+            side['lance'] = self._build_lance_sprite(side['color'], side['anchor_right'])
+            side['flash_frames'] = self._build_flash_sprites(other['color'])
+            side['glow'] = self._build_frame_glow_sprite(side['border'], other['color'])
+
         self.elapsed = 0.0
         self.is_complete = False
+        self.volleys = []
+        self.duration = ANIMATION_MIN_DURATION
 
-        # Set random seed for deterministic behavior
-        if seed is not None:
-            random.seed(seed)
+        self._build_schedule(attacker_final_fill, defender_final_fill)
 
-        # Initialize particle lists
-        self.attacker_particles = []
-        self.defender_particles = []
+    # ------------------------------------------------------------------
+    # Schedule construction
+    # ------------------------------------------------------------------
 
-        # Particle spawn timing - spawn more frequently for flash effect
-        self.spawn_interval = duration / PARTICLES_PER_BAR
-        self.last_spawn_time = 0.0
-
-        # Create reusable surface for particles
-        self.particle_surface = None
-
-    def _vary_color(self, color, variation=30):
+    def _build_schedule(self, attacker_final_fill, defender_final_fill):
         """
-        Add slight variation to a color.
+        Build the deterministic volley schedule.
+
+        Uses a private random.Random so it never disturbs the global RNG that
+        game logic draws from. Re-running it with the same seed reproduces the
+        identical timing, which is what retarget() relies on.
 
         Args:
-            color: RGB tuple
-            variation: Max variation per channel
+            attacker_final_fill: Fill ratio the attacker bar must end on
+            defender_final_fill: Fill ratio the defender bar must end on
+        """
+        rng = random.Random(self.seed)
+
+        self.sides[self.ATTACKER]['final'] = attacker_final_fill
+        self.sides[self.DEFENDER]['final'] = defender_final_fill
+
+        # Volley count scales with the size of the battle: a skirmish resolves
+        # in a few punches, a huge stack trades blows for longer. Log curve so
+        # very large battles do not run away.
+        total_armies = max(2, self.attacker_count + self.defender_count)
+        count = int(round(2 + VOLLEY_SIZE_LOG_COEFF * math.log(total_armies)))
+        count = max(VOLLEY_MIN, min(VOLLEY_MAX, count))
+
+        # Pick the gap between volleys, then clamp it so the resulting total
+        # duration stays inside the allowed window for any volley count.
+        interval = rng.uniform(VOLLEY_INTERVAL_MIN, VOLLEY_INTERVAL_MAX)
+        fixed = VOLLEY_LEAD_IN + VOLLEY_TAIL
+        min_interval = (ANIMATION_MIN_DURATION - fixed) / count
+        max_interval = (ANIMATION_MAX_DURATION - fixed) / count
+        interval = max(min_interval, min(max_interval, interval))
+        self.duration = fixed + count * interval
+
+        # Split each side's damage into chunks that sum exactly to the damage.
+        atk_chunks = self._split_damage(
+            rng, self.sides[self.ATTACKER]['initial'] - attacker_final_fill, count)
+        def_chunks = self._split_damage(
+            rng, self.sides[self.DEFENDER]['initial'] - defender_final_fill, count)
+        self.sides[self.ATTACKER]['chunks'] = atk_chunks
+        self.sides[self.DEFENDER]['chunks'] = def_chunks
+
+        # Build the shot list. Each volley is two shots - one per side - fired
+        # a fraction of a second apart so the hits interleave rather than
+        # landing on top of each other.
+        self.volleys = []
+        for i in range(count):
+            base_t = VOLLEY_LEAD_IN + i * interval
+            stagger = rng.uniform(VOLLEY_STAGGER_MIN, VOLLEY_STAGGER_MAX)
+            attacker_leads = rng.random() < 0.5
+
+            atk_fire = base_t if attacker_leads else base_t + stagger
+            def_fire = base_t + stagger if attacker_leads else base_t
+
+            # A shot fired by the attacker damages the defender, and vice versa.
+            self.volleys.append(self._make_shot(self.ATTACKER, self.DEFENDER,
+                                                atk_fire, def_chunks[i]))
+            self.volleys.append(self._make_shot(self.DEFENDER, self.ATTACKER,
+                                                def_fire, atk_chunks[i]))
+
+        self.volleys.sort(key=lambda v: v['fire_t'])
+
+    @staticmethod
+    def _make_shot(shooter, target, fire_t, chunk):
+        """
+        Build one shot record.
+
+        Args:
+            shooter: Side index firing the blast
+            target: Side index taking the hit
+            fire_t: Time (seconds into the animation) the lance leaves the bar
+            chunk: Fill ratio this hit removes from the target
 
         Returns:
-            RGB tuple with variation applied
+            Shot dict
         """
-        r, g, b = color
-        return (
-            max(0, min(255, r + random.randint(-variation, variation))),
-            max(0, min(255, g + random.randint(-variation, variation))),
-            max(0, min(255, b + random.randint(-variation, variation)))
-        )
-
-    def _spawn_particle(self, from_attacker=True):
-        """
-        Spawn a new particle from one bar toward the other.
-
-        Particles travel horizontally in a straight line (flash-like effect).
-
-        Args:
-            from_attacker: If True, spawn from attacker bar toward defender
-        """
-        if from_attacker:
-            # Spawn from right edge of attacker bar, toward defender bar
-            start_x = self.attacker_rect.right
-            start_y = random.uniform(self.attacker_rect.top + 5, self.attacker_rect.bottom - 5)
-            end_x = self.defender_rect.left
-            end_y = start_y  # Horizontal movement - same Y
-            color = self._vary_color(self.attacker_color)
-        else:
-            # Spawn from left edge of defender bar, toward attacker bar
-            start_x = self.defender_rect.left
-            start_y = random.uniform(self.defender_rect.top + 5, self.defender_rect.bottom - 5)
-            end_x = self.attacker_rect.right
-            end_y = start_y  # Horizontal movement - same Y
-            color = self._vary_color(self.defender_color)
-
-        # Scale particle sizes based on resolution
-        min_size = max(1, int(PARTICLE_MIN_SIZE_REF * self.ui_scale))
-        max_size = max(2, int(PARTICLE_MAX_SIZE_REF * self.ui_scale))
-
-        particle = {
-            'start_x': start_x,
-            'start_y': start_y,
-            'end_x': end_x,
-            'end_y': end_y,
-            'arc_height': PARTICLE_ARC_HEIGHT,  # No arc - horizontal flash
-            'lifetime': random.uniform(PARTICLE_MIN_LIFETIME, PARTICLE_MAX_LIFETIME),
-            'age': 0.0,
-            'color': color,
-            'size': random.randint(min_size, max_size)
+        return {
+            'shooter': shooter,
+            'target': target,
+            'fire_t': fire_t,
+            'land_t': fire_t + PROJECTILE_TRAVEL,
+            'chunk': chunk,
+            'fired': False,
+            'landed': False,
+            'start_x': 0.0,   # filled in at fire time
+            'end_x': 0.0,
         }
 
-        if from_attacker:
-            self.attacker_particles.append(particle)
-        else:
-            self.defender_particles.append(particle)
-
-    def _calculate_particle_position(self, particle):
+    @staticmethod
+    def _split_damage(rng, damage, count):
         """
-        Calculate current position of a particle along its arc.
+        Split a total damage amount into `count` jittered chunks.
+
+        The chunks are normalised so they sum to exactly `damage`, which is what
+        lets the bar land precisely on its final fill instead of drifting.
 
         Args:
-            particle: Particle dict
+            rng: random.Random instance
+            damage: Total fill ratio to remove (may be 0 or negative)
+            count: Number of chunks
 
         Returns:
-            (x, y) tuple of current position
+            List of chunk sizes
         """
-        progress = min(1.0, particle['age'] / particle['lifetime'])
+        if count <= 0:
+            return []
+        # Draw the weights unconditionally so the RNG stream advances by the
+        # same number of steps regardless of damage - retarget() depends on it.
+        weights = [rng.uniform(CHUNK_JITTER_MIN, CHUNK_JITTER_MAX) for _ in range(count)]
+        if damage <= 0:
+            return [0.0] * count
+        total = sum(weights)
+        chunks = [damage * w / total for w in weights]
+        # Fold any float residue into the last chunk
+        chunks[-1] += damage - sum(chunks)
+        return chunks
 
-        # Linear interpolation for x and y
-        x = particle['start_x'] + (particle['end_x'] - particle['start_x']) * progress
-        y = particle['start_y'] + (particle['end_y'] - particle['start_y']) * progress
+    def retarget(self, attacker_final_fill, defender_final_fill):
+        """
+        Re-aim the bars at a new final fill without disturbing the rhythm.
 
-        # Add parabolic arc (peaks at middle of trajectory)
-        arc_offset = particle['arc_height'] * math.sin(progress * math.pi)
-        y -= arc_offset  # Negative because y increases downward
+        Called once the real battle result is known (a moment after the
+        animation starts). Because the schedule is rebuilt from a freshly
+        seeded RNG that is consumed in the same order, the volley count and all
+        fire times come out identical - only the chunk sizes change.
 
-        return (int(x), int(y))
+        Args:
+            attacker_final_fill: Real final fill ratio for the attacker bar
+            defender_final_fill: Real final fill ratio for the defender bar
+        """
+        self._build_schedule(attacker_final_fill, defender_final_fill)
+
+    # ------------------------------------------------------------------
+    # Sprite pre-rendering
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _lerp_color(a, b, t):
+        """
+        Blend between two RGB colours.
+
+        utils.colors.lighten_color is multiplicative, so it barely moves a dark
+        player colour toward white. These blasts need a true linear blend.
+
+        Args:
+            a: RGB tuple at t=0
+            b: RGB tuple at t=1
+            t: Blend factor 0.0-1.0
+
+        Returns:
+            Blended RGB tuple
+        """
+        t = max(0.0, min(1.0, t))
+        return (
+            int(a[0] + (b[0] - a[0]) * t),
+            int(a[1] + (b[1] - a[1]) * t),
+            int(a[2] + (b[2] - a[2]) * t),
+        )
+
+    def _build_lance_sprite(self, color, fires_left):
+        """
+        Pre-render the travelling blast as a tapered, motion-blurred streak.
+
+        Built once per side at init, then blitted - nothing is drawn per frame.
+
+        Args:
+            color: RGB tuple of the firing player
+            fires_left: True if this side shoots right-to-left (the defender)
+
+        Returns:
+            pygame.Surface with per-pixel alpha, head pointing in travel direction
+        """
+        length = max(8, int(PROJECTILE_LENGTH_REF * self.ui_scale))
+        thickness = max(3, int(PROJECTILE_THICKNESS_REF * self.ui_scale))
+        surf = pygame.Surface((length, thickness), pygame.SRCALPHA)
+
+        # Build it pointing right: faint, thin tail at x=0 growing into a hot,
+        # white-tipped head at x=length-1.
+        for x in range(length):
+            p = x / max(1, length - 1)
+            alpha = int(255 * (p ** 1.6))
+            # Whiten only the last few pixels - a gentler curve here washed the
+            # whole streak out and both sides' blasts looked identical.
+            col = self._lerp_color(color, WHITE, p ** 8)
+            height = max(1, int(thickness * (0.35 + 0.65 * p)))
+            top = (thickness - height) // 2
+            pygame.draw.line(surf, (*col, alpha), (x, top), (x, top + height - 1))
+
+        if fires_left:
+            surf = pygame.transform.flip(surf, True, False)
+        return surf
+
+    def _build_flash_sprites(self, color):
+        """
+        Pre-render the impact burst as a short sprite sequence.
+
+        Frame 0 is the bright, tight burst; the last frame is the faded, spread
+        remnant. Same pre-rendered-frames approach as ProductionGlowEffect.
+
+        Args:
+            color: RGB tuple of the player whose blast lands here
+
+        Returns:
+            List of FLASH_FRAMES pygame.Surfaces with per-pixel alpha
+        """
+        size = max(12, int(FLASH_SIZE_REF * self.ui_scale))
+        centre = size // 2
+        spike_color = lighten_color(color, 0.5)
+        frames = []
+
+        for frame in range(FLASH_FRAMES):
+            p = frame / max(1, FLASH_FRAMES - 1)   # 0 at impact, 1 at the end
+            fade = (1.0 - p) ** 1.6
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+
+            # Soft radial glow in the shooter's colour. pygame.draw does not
+            # blend onto SRCALPHA, it overwrites - so draw the widest, faintest
+            # ring first and work inward to build a stepped gradient.
+            glow_radius = size * (0.22 + 0.34 * p)
+            for ring in range(FLASH_GLOW_RINGS, 0, -1):
+                r = int(glow_radius * ring / FLASH_GLOW_RINGS)
+                if r < 1:
+                    continue
+                ring_alpha = int(200 * fade * (1.0 - (ring - 1) / FLASH_GLOW_RINGS))
+                if ring_alpha > 0:
+                    pygame.draw.circle(surf, (*color, ring_alpha), (centre, centre), r)
+
+            # Radiating spikes, lengthening and thinning as the burst expands
+            spike_len = size * (0.34 + 0.26 * p)
+            spike_width = max(1, int((1.0 - p * 0.6) * 3 * self.ui_scale))
+            spike_alpha = int(220 * fade)
+            if spike_alpha > 0:
+                for s in range(FLASH_SPIKES):
+                    angle = 2 * math.pi * s / FLASH_SPIKES
+                    ex = centre + math.cos(angle) * spike_len
+                    ey = centre + math.sin(angle) * spike_len
+                    pygame.draw.line(surf, (*spike_color, spike_alpha),
+                                     (centre, centre), (int(ex), int(ey)), spike_width)
+
+            # White-hot core, shrinking as it cools
+            core_radius = max(1, int(size * 0.10 * (1.0 - p * 0.8)))
+            core_alpha = int(255 * fade)
+            if core_alpha > 0:
+                pygame.draw.circle(surf, (255, 255, 255, core_alpha),
+                                   (centre, centre), core_radius)
+
+            frames.append(surf)
+
+        return frames
+
+    def _build_frame_glow_sprite(self, border, color):
+        """
+        Pre-render the flare that runs over a bar frame when it is hit.
+
+        A single brightened copy of the frame artwork, laid over the normal
+        frame and faded out with set_alpha at blit time. Earlier attempts drew a
+        rectangular halo around the bar, which read as a grey box over an ornate
+        frame - lighting up the actual artwork is closer to the reference.
+
+        BLEND_RGB_ADD brightens the colour channels but leaves alpha alone, so
+        the frame's transparent regions stay transparent. That matters here:
+        BattleBar.png stores non-zero RGB under its fully transparent pixels, so
+        a plain additive blit would light up the whole rectangle.
+
+        Args:
+            border: The pre-scaled frame surface for this side, or None
+            color: RGB tuple of the player whose blast lands here
+
+        Returns:
+            pygame.Surface to blit over the frame, or None if there is no frame
+        """
+        if border is None:
+            return None
+
+        # Held well below full strength: added on top of the gold artwork, a
+        # brighter tint just saturates the whole frame to flat white and the
+        # detail disappears.
+        hot = self._lerp_color(color, WHITE, 0.2)
+        hot = tuple(int(c * FRAME_GLOW_INTENSITY) for c in hot)
+
+        surf = border.copy()
+        surf.fill((*hot, 0), special_flags=pygame.BLEND_RGB_ADD)
+        return surf
+
+    # ------------------------------------------------------------------
+    # Geometry helpers (mirror-aware)
+    # ------------------------------------------------------------------
+
+    def _fill_rect(self, side, fill):
+        """
+        Rect covering a side's filled portion.
+
+        Args:
+            side: Side dict
+            fill: Fill ratio 0.0-1.0
+
+        Returns:
+            pygame.Rect anchored at the bar's outer edge
+        """
+        rect = side['rect']
+        width = int(rect.width * max(0.0, min(1.0, fill)))
+        if side['anchor_right']:
+            return pygame.Rect(rect.right - width, self.fill_y, width, rect.height)
+        return pygame.Rect(rect.left, self.fill_y, width, rect.height)
+
+    def _fill_tip_x(self, side, fill):
+        """
+        X coordinate of the inner (centre-facing) end of a side's fill.
+
+        This is where incoming blasts land and where chunks burn away.
+
+        Args:
+            side: Side dict
+            fill: Fill ratio 0.0-1.0
+
+        Returns:
+            float x coordinate
+        """
+        rect = side['rect']
+        width = rect.width * max(0.0, min(1.0, fill))
+        if side['anchor_right']:
+            return rect.right - width
+        return rect.left + width
+
+    def _chunk_rect(self, side, from_fill, to_fill):
+        """
+        Rect covering the slice of bar between two fill ratios.
+
+        Args:
+            side: Side dict
+            from_fill: Lower fill ratio (inner edge of the slice)
+            to_fill: Higher fill ratio (outer edge of the slice)
+
+        Returns:
+            pygame.Rect, possibly zero-width
+        """
+        x1 = self._fill_tip_x(side, from_fill)
+        x2 = self._fill_tip_x(side, to_fill)
+        left, right = (x2, x1) if side['anchor_right'] else (x1, x2)
+        return pygame.Rect(int(left), self.fill_y,
+                           max(0, int(right) - int(left)), side['rect'].height)
+
+    def _muzzle_x(self, side):
+        """
+        X coordinate a side's blasts are fired from (its inner bar edge).
+
+        Args:
+            side: Side dict
+
+        Returns:
+            float x coordinate
+        """
+        rect = side['rect']
+        return rect.left if side['anchor_right'] else rect.right
+
+    # ------------------------------------------------------------------
+    # Update
+    # ------------------------------------------------------------------
+
+    def _settle_burn(self, side):
+        """
+        Close a side's active burn, removing the chunk from its fill.
+
+        Args:
+            side: Side dict
+        """
+        burn = side['burn']
+        if burn is None:
+            return
+        side['current'] = max(0.0, side['current'] - burn['chunk'])
+        side['burn'] = None
 
     def update(self, delta_time):
         """
-        Update particle positions and spawn new particles.
+        Advance the volley schedule.
 
         Args:
             delta_time: Time since last update in seconds
         """
-        self.elapsed += delta_time
-
-        # Check if animation is complete
-        if self.elapsed >= self.duration:
-            self.is_complete = True
+        if self.is_complete:
             return
 
-        # Spawn new particles periodically
-        if self.elapsed - self.last_spawn_time >= self.spawn_interval:
-            self._spawn_particle(from_attacker=True)
-            self._spawn_particle(from_attacker=False)
-            self.last_spawn_time = self.elapsed
+        self.elapsed += delta_time
 
-        # Update existing particles
-        for particle in self.attacker_particles + self.defender_particles:
-            particle['age'] += delta_time
+        # Fire and land shots that have come due
+        for shot in self.volleys:
+            if not shot['fired'] and self.elapsed >= shot['fire_t']:
+                shot['fired'] = True
+                shooter = self.sides[shot['shooter']]
+                target = self.sides[shot['target']]
+                shot['start_x'] = self._muzzle_x(shooter)
+                # Aim at where the target's fill tip is right now and hold that
+                # point for the flight, so the lance does not chase the bar.
+                shot['end_x'] = self._fill_tip_x(target, target['current'])
 
-        # Remove dead particles
-        self.attacker_particles = [p for p in self.attacker_particles if p['age'] < p['lifetime']]
-        self.defender_particles = [p for p in self.defender_particles if p['age'] < p['lifetime']]
+            if shot['fired'] and not shot['landed'] and self.elapsed >= shot['land_t']:
+                shot['landed'] = True
+                target = self.sides[shot['target']]
+                # A second hit arriving mid-burn settles the first one, so no
+                # chunk is ever silently dropped.
+                self._settle_burn(target)
+                target['burn'] = {'t0': shot['land_t'], 'chunk': shot['chunk']}
+                target['flash'] = {'t0': shot['land_t'],
+                                   'x': shot['end_x'],
+                                   'y': self.fill_y + target['rect'].height / 2}
+                target['glow_t0'] = shot['land_t']
 
-    def _get_current_fills(self):
+        # Close burns whose window has elapsed, and expire flashes/glows
+        for side in self.sides:
+            burn = side['burn']
+            if burn is not None and self.elapsed - burn['t0'] >= BURN_DURATION:
+                self._settle_burn(side)
+            if side['flash'] is not None and self.elapsed - side['flash']['t0'] >= FLASH_DURATION:
+                side['flash'] = None
+            if side['glow_t0'] is not None and self.elapsed - side['glow_t0'] >= FRAME_GLOW_DURATION:
+                side['glow_t0'] = None
+
+        if self.elapsed >= self.duration:
+            self._finish()
+
+    def _finish(self):
+        """Settle everything and snap both bars exactly onto their final fill."""
+        for side in self.sides:
+            self._settle_burn(side)
+            side['current'] = side['final']
+            side['flash'] = None
+            side['glow_t0'] = None
+        self.is_complete = True
+
+    def skip(self):
         """
-        Get current bar fill ratios based on animation progress.
+        Jump straight to the end of the animation.
 
-        Returns:
-            (attacker_fill, defender_fill) tuple
+        Used by the click/Space skip so a player can cut a long battle short.
         """
-        progress = min(1.0, self.elapsed / self.duration)
+        self.elapsed = self.duration
+        for shot in self.volleys:
+            shot['fired'] = True
+            shot['landed'] = True
+        self._finish()
 
-        # Ease-in-out for smooth transition
-        if progress < 0.5:
-            eased = 2 * progress * progress
-        else:
-            eased = 1 - math.pow(-2 * progress + 2, 2) / 2
-
-        # Interpolate between initial and final fills
-        attacker_fill = self.attacker_initial + (self.attacker_final - self.attacker_initial) * eased
-        defender_fill = self.defender_initial + (self.defender_final - self.defender_initial) * eased
-
-        return (attacker_fill, defender_fill)
+    # ------------------------------------------------------------------
+    # Render
+    # ------------------------------------------------------------------
 
     def render(self, screen):
         """
-        Render strength bars and particles.
+        Render both bars, the blasts in flight and the impacts.
+
+        Nothing is allocated per frame: the fills and the burning chunk are
+        drawn straight to the screen, and the lances, frame flares and impact
+        bursts are all sprites pre-rendered in __init__.
 
         Args:
             screen: pygame.Surface to render to
         """
-        # Get current fill ratios
-        attacker_fill, defender_fill = self._get_current_fills()
+        # 1. Bar backgrounds and the surviving fill
+        for side in self.sides:
+            rect = side['rect']
+            pygame.draw.rect(screen, DARK_GRAY,
+                             pygame.Rect(rect.left, self.fill_y, rect.width, rect.height))
+            if side['current'] > 0:
+                pygame.draw.rect(screen, side['color'],
+                                 self._fill_rect(side, side['current']))
 
-        # Calculate fill Y position (offset from bar rect for independent positioning)
-        fill_y = self.attacker_rect.top + self.bar_fill_offset
+        # 2. The chunk currently burning away: white-hot, cooling to empty
+        for side in self.sides:
+            burn = side['burn']
+            if burn is None or burn['chunk'] <= 0:
+                continue
+            p = max(0.0, min(1.0, (self.elapsed - burn['t0']) / BURN_DURATION))
+            chunk_rect = self._chunk_rect(
+                side, side['current'] - burn['chunk'], side['current'])
+            if chunk_rect.width > 0:
+                pygame.draw.rect(screen, self._lerp_color(WHITE, DARK_GRAY, p), chunk_rect)
 
-        # Draw bar backgrounds (empty) at offset position
-        attacker_fill_rect = pygame.Rect(
-            self.attacker_rect.left, fill_y,
-            self.attacker_rect.width, self.attacker_rect.height
-        )
-        defender_fill_rect = pygame.Rect(
-            self.defender_rect.left, fill_y,
-            self.defender_rect.width, self.defender_rect.height
-        )
-        pygame.draw.rect(screen, DARK_GRAY, attacker_fill_rect)
-        pygame.draw.rect(screen, DARK_GRAY, defender_fill_rect)
+        # 3. Lances in flight. Drawn BEFORE the frame so the tail, which is
+        #    still inside the firing bar at launch, is hidden by the frame's
+        #    solid end cap instead of poking out over it.
+        for shot in self.volleys:
+            if not shot['fired'] or shot['landed']:
+                continue
+            p = max(0.0, min(1.0, (self.elapsed - shot['fire_t']) / PROJECTILE_TRAVEL))
+            x = shot['start_x'] + (shot['end_x'] - shot['start_x']) * p
+            shooter = self.sides[shot['shooter']]
+            sprite = shooter['lance']
+            # Anchor the sprite's head on the travelling point; the tail trails
+            # back toward the bar that fired it.
+            sprite_x = x if shooter['anchor_right'] else x - sprite.get_width()
+            sprite_y = self.fill_y + (shooter['rect'].height - sprite.get_height()) / 2
 
-        # Draw bar fills at offset position
-        if attacker_fill > 0:
-            fill_rect = pygame.Rect(
-                self.attacker_rect.left,
-                fill_y,
-                int(self.attacker_rect.width * attacker_fill),
-                self.attacker_rect.height
-            )
-            pygame.draw.rect(screen, self.attacker_color, fill_rect)
+            # Clip to everything beyond the muzzle. At launch the tail is still
+            # inside the firing bar, and without this it renders as a streak
+            # lying across the bar's own fill.
+            muzzle = int(self._muzzle_x(shooter))
+            screen_rect = screen.get_rect()
+            if shooter['anchor_right']:
+                clip = pygame.Rect(0, 0, muzzle, screen_rect.height)
+            else:
+                clip = pygame.Rect(muzzle, 0, screen_rect.width - muzzle, screen_rect.height)
+            previous_clip = screen.get_clip()
+            screen.set_clip(clip.clip(screen_rect))
+            screen.blit(sprite, (int(sprite_x), int(sprite_y)))
+            screen.set_clip(previous_clip)
 
-        if defender_fill > 0:
-            fill_rect = pygame.Rect(
-                self.defender_rect.left,
-                fill_y,
-                int(self.defender_rect.width * defender_fill),
-                self.defender_rect.height
-            )
-            pygame.draw.rect(screen, self.defender_color, fill_rect)
+        # 4. Decorative frame (defender's copy is mirrored)
+        png_offset_y = (self.attacker_rect.height - self.bar_png_height) // 2
+        for side in self.sides:
+            rect = side['rect']
+            if side['border']:
+                png_x = rect.centerx - self.bar_png_width // 2
+                screen.blit(side['border'], (png_x, rect.top + png_offset_y))
+            else:
+                pygame.draw.rect(screen, WHITE, rect, BAR_BORDER_WIDTH)
 
-        # Draw bar borders using BattleBar.png if available
-        # P2 fix: use pre-scaled bar border instead of smoothscale per frame
-        if self._scaled_bar_border:
-            # Center PNG both vertically and horizontally over the fill area
-            png_offset_y = (self.attacker_rect.height - self.bar_png_height) // 2
-            attacker_png_x = self.attacker_rect.centerx - self.bar_png_width // 2
-            defender_png_x = self.defender_rect.centerx - self.bar_png_width // 2
-            screen.blit(self._scaled_bar_border, (attacker_png_x, self.attacker_rect.top + png_offset_y))
-            screen.blit(self._scaled_bar_border, (defender_png_x, self.defender_rect.top + png_offset_y))
-        else:
-            pygame.draw.rect(screen, WHITE, self.attacker_rect, BAR_BORDER_WIDTH)
-            pygame.draw.rect(screen, WHITE, self.defender_rect, BAR_BORDER_WIDTH)
+        # 5. Frame flare on a bar that was just hit - a hot copy of the frame
+        #    laid over the normal one at the exact same position.
+        for side in self.sides:
+            if side['glow_t0'] is None or side['glow'] is None:
+                continue
+            p = max(0.0, min(1.0, (self.elapsed - side['glow_t0']) / FRAME_GLOW_DURATION))
+            fade = (1.0 - p) ** 1.5
+            sprite = side['glow']
+            # pygame multiplies surface alpha with per-pixel alpha, so one hot
+            # copy covers every fade level. Pre-rendering a frame per step cost
+            # ~21 ms up front, a visible hitch when the battle starts. The alpha
+            # is set unconditionally on every blit, so the sprite never carries
+            # a stale value.
+            sprite.set_alpha(int(255 * fade))
+            rect = side['rect']
+            png_x = rect.centerx - self.bar_png_width // 2
+            screen.blit(sprite, (png_x, rect.top + png_offset_y))
 
-        # Create particle surface if needed
-        if self.particle_surface is None:
-            self.particle_surface = pygame.Surface(
-                (screen.get_width(), screen.get_height()),
-                pygame.SRCALPHA
-            )
-        else:
-            self.particle_surface.fill((0, 0, 0, 0))
-
-        # Draw particles (flash-like horizontal streaks)
-        for particle in self.attacker_particles + self.defender_particles:
-            x, y = self._calculate_particle_position(particle)
-            # Calculate opacity based on lifetime (bright flash that fades)
-            age_ratio = particle['age'] / particle['lifetime']
-            alpha = int(255 * (1 - age_ratio * 0.7))  # Fade faster for flash effect
-            color_with_alpha = (*particle['color'], alpha)
-            pygame.draw.circle(self.particle_surface, color_with_alpha, (x, y), particle['size'])
-
-        screen.blit(self.particle_surface, (0, 0))
+        # 6. Impact bursts
+        for side in self.sides:
+            flash = side['flash']
+            if flash is None:
+                continue
+            p = max(0.0, min(1.0, (self.elapsed - flash['t0']) / FLASH_DURATION))
+            frames = side['flash_frames']
+            if not frames:
+                continue
+            index = min(len(frames) - 1, int(p * len(frames)))
+            sprite = frames[index]
+            screen.blit(sprite, (int(flash['x'] - sprite.get_width() / 2),
+                                 int(flash['y'] - sprite.get_height() / 2)))
 
     def is_finished(self):
         """Check if animation is complete."""
         return self.is_complete
-
-
-# Import DARK_GRAY for bar backgrounds
-DARK_GRAY = (60, 60, 60)
 
 
 # ========================================
@@ -770,9 +1194,17 @@ class EnhancedBattleInterface:
 
         # P2/P3 fix: pre-scale battle bar borders and panel backgrounds (constant sizes)
         self._scaled_bar_border = None
+        self._scaled_bar_border_flipped = None
         if self.bar_border_img:
             self._scaled_bar_border = pygame.transform.smoothscale(
                 self.bar_border_img, (self.bar_png_width, self.bar_png_height))
+            # The defender bar is mirrored, so its frame is mirrored too -
+            # BattleBar.png is not horizontally symmetric.
+            self._scaled_bar_border_flipped = pygame.transform.flip(
+                self._scaled_bar_border, True, False)
+        # Bounded cache of pulsed battle-icon sizes, keyed on a quantised scale,
+        # so the pulse no longer smoothscales the icon every single frame.
+        self._pulsed_icon_cache = {}
         self._scaled_panel_bg = None
         self._scaled_report_bg = None
         if self.panel_bg:
@@ -927,6 +1359,29 @@ class EnhancedBattleInterface:
             self.attacker_fill = 0.5
             self.defender_fill = 0.5
 
+    @staticmethod
+    def _survivor_fill(initial_fill, survivors, initial_count):
+        """
+        Convert a survivor count into a bar fill ratio.
+
+        The bars are normalised so the stronger side starts at 1.0 and the
+        weaker side at strength_ratio, so a raw survivors/count value is only
+        meaningful relative to that starting fill. Scaling by initial_fill keeps
+        the bar shrinking proportionally - without it a weaker side that wins
+        would end with a *longer* bar than it started with.
+
+        Args:
+            initial_fill: The side's starting fill ratio (0.0-1.0)
+            survivors: Surviving army count
+            initial_count: Army count before the battle
+
+        Returns:
+            Final fill ratio (0.0-1.0)
+        """
+        if initial_count <= 0:
+            return 0.0
+        return initial_fill * (survivors / initial_count)
+
     def _pre_calculate_battle_result(self):
         """
         Pre-calculate battle outcome before animation.
@@ -978,11 +1433,13 @@ class EnhancedBattleInterface:
             self.attacker_final_fill = 0.0
             self.defender_final_fill = 0.0
         elif self.winner == self.attacker_player:
-            self.attacker_final_fill = self.attacker_survivors / initial_attacker if initial_attacker > 0 else 0
+            self.attacker_final_fill = self._survivor_fill(
+                self.attacker_fill, self.attacker_survivors, initial_attacker)
             self.defender_final_fill = 0.0
         else:
             self.attacker_final_fill = 0.0
-            self.defender_final_fill = self.defender_survivors / initial_defender if initial_defender > 0 else 0
+            self.defender_final_fill = self._survivor_fill(
+                self.defender_fill, self.defender_survivors, initial_defender)
 
         # Determine if current player won
         self.current_player_won = (self.winner == self.current_player)
@@ -1060,12 +1517,12 @@ class EnhancedBattleInterface:
         }
 
     def _start_animation(self):
-        """Start the particle combat animation."""
+        """Start the volley combat animation."""
         self.state = BattleInterfaceState.ANIMATING
         self.elapsed = 0.0
 
-        # Create particle effect with bar border image and scaled dimensions
-        self.particle_effect = BattleBarParticleEffect(
+        # Create volley effect with bar border image and scaled dimensions
+        self.particle_effect = BattleBarVolleyEffect(
             attacker_bar_rect=self.attacker_bar_rect,
             defender_bar_rect=self.defender_bar_rect,
             attacker_color=self.attacker_color,
@@ -1074,14 +1531,20 @@ class EnhancedBattleInterface:
             defender_initial_fill=self.defender_fill,
             attacker_final_fill=self.attacker_final_fill,
             defender_final_fill=self.defender_final_fill,
-            duration=self.animation_duration,
             seed=self.animation_seed,
             bar_border_img=self.bar_border_img,
             bar_png_width=self.bar_png_width,
             bar_fill_offset=self.bar_fill_offset,
             bar_png_height=self.bar_png_height,
-            ui_scale=self.scale
+            ui_scale=self.scale,
+            attacker_count=self.attacker_count,
+            defender_count=self.defender_count
         )
+
+        # The duration now falls out of the volley schedule rather than being
+        # drawn up front, so adopt it - update() times the post-animation hold
+        # against self.animation_duration.
+        self.animation_duration = self.particle_effect.duration
 
     def _start_splash(self):
         """Start the victory/defeat splash animation."""
@@ -1151,6 +1614,27 @@ class EnhancedBattleInterface:
         self.attacker_survivors = attacker_survivors
         self.defender_survivors = defender_survivors
         self.current_player_won = (winner == self.current_player)
+
+        # Re-aim the bars at the real outcome. This runs a frame after the
+        # animation starts, while nothing has landed yet, so the volley rhythm
+        # is untouched and only the chunk sizes change. It also fixes the
+        # strength-tie case, where the pre-calculated estimate drains both bars
+        # to empty and the report then names a winner anyway.
+        if winner == self.attacker_player:
+            self.attacker_final_fill = self._survivor_fill(
+                self.attacker_fill, attacker_survivors, self.attacker_count)
+            self.defender_final_fill = 0.0
+        elif winner in self.defender_players:
+            self.attacker_final_fill = 0.0
+            self.defender_final_fill = self._survivor_fill(
+                self.defender_fill, defender_survivors, self.defender_count)
+        else:
+            self.attacker_final_fill = 0.0
+            self.defender_final_fill = 0.0
+
+        if self.particle_effect is not None:
+            self.particle_effect.retarget(self.attacker_final_fill,
+                                          self.defender_final_fill)
 
         # Recalculate unit breakdown with actual survivors
         if self.current_player == self.attacker_player:
@@ -1249,11 +1733,46 @@ class EnhancedBattleInterface:
                 self._start_animation()
                 return 'resolve'
 
+        elif self.state == BattleInterfaceState.ANIMATING:
+            # Clicking anywhere cuts a long battle short
+            if self.skip_animation():
+                return 'skip'
+
         elif self.state == BattleInterfaceState.REPORT:
             if self.close_button_rect.collidepoint(pos):
                 self.is_finished_flag = True
                 return 'close'
 
+        return None
+
+    def skip_animation(self):
+        """
+        Jump the volley animation straight to its finished state.
+
+        Returns:
+            bool: True if an animation was actually skipped
+        """
+        if self.state != BattleInterfaceState.ANIMATING or self.particle_effect is None:
+            return False
+        self.particle_effect.skip()
+        # Push past the post-animation hold so update() moves on to the splash
+        # on the next frame.
+        self.elapsed = self.animation_duration + 0.5
+        return True
+
+    def handle_key(self, event):
+        """
+        Handle key presses while the interface is open.
+
+        Args:
+            event: pygame KEYDOWN event
+
+        Returns:
+            str or None: 'skip' if the animation was skipped, else None
+        """
+        if event.key in (pygame.K_SPACE, pygame.K_ESCAPE):
+            if self.skip_animation():
+                return 'skip'
         return None
 
     def handle_mouse_motion(self, pos):
@@ -1460,6 +1979,42 @@ class EnhancedBattleInterface:
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
 
+    def _render_pulsed_icon(self):
+        """
+        Draw the pulsing battle icon between the two panels.
+
+        The pulse used to smoothscale the icon on every single frame in both the
+        SETUP and ANIMATING states. The scale is quantised to
+        ICON_PULSE_SCALE_STEPS steps and the results cached, so each distinct
+        size is only ever built once. Shared by both states so the two copies
+        cannot drift apart.
+        """
+        if not self.battle_icon or self.battle_icon_base_w <= 0:
+            return
+
+        # Calculate pulse scale using sine wave for smooth animation
+        pulse_progress = (math.sin(self.elapsed * ICON_PULSE_SPEED * 2 * math.pi) + 1) / 2
+        current_scale = ICON_PULSE_MIN_SCALE + (ICON_PULSE_MAX_SCALE - ICON_PULSE_MIN_SCALE) * pulse_progress
+
+        # Quantise so a continuously-varying float does not defeat the cache
+        step = round(current_scale * ICON_PULSE_SCALE_STEPS)
+        scaled_icon = self._pulsed_icon_cache.get(step)
+        if scaled_icon is None:
+            quantised_scale = step / ICON_PULSE_SCALE_STEPS
+            scaled_w = max(1, int(self.battle_icon_base_w * quantised_scale))
+            scaled_h = max(1, int(self.battle_icon_base_h * quantised_scale))
+            scaled_icon = pygame.transform.smoothscale(self.battle_icon, (scaled_w, scaled_h))
+            # The pulse only ever visits a small fixed set of steps, but keep the
+            # cache bounded anyway so it can never grow without limit.
+            if len(self._pulsed_icon_cache) >= ICON_PULSE_CACHE_MAX:
+                self._pulsed_icon_cache.clear()
+            self._pulsed_icon_cache[step] = scaled_icon
+
+        # Center it at the stored center position
+        icon_x = self.icon_center_x - scaled_icon.get_width() // 2
+        icon_y = self.icon_center_y - scaled_icon.get_height() // 2
+        self.screen.blit(scaled_icon, (icon_x, icon_y))
+
     def _render_strength_bars(self):
         """Render the strength comparison bars using BattleBar.png as border."""
         # Calculate fill Y position (offset from bar rect for independent positioning)
@@ -1477,7 +2032,11 @@ class EnhancedBattleInterface:
         pygame.draw.rect(self.screen, DARK_GRAY, attacker_fill_rect)
         pygame.draw.rect(self.screen, DARK_GRAY, defender_fill_rect)
 
-        # Draw fills at offset position
+        # Draw fills at offset position. The bars are mirrored - the attacker
+        # fills from its left edge, the defender from its right - so both erode
+        # inward toward the centre once the volleys start. This must match
+        # BattleBarVolleyEffect._fill_rect() or the bar would jump when the
+        # animation begins.
         if self.attacker_fill > 0:
             fill_width = int(self.attacker_bar_rect.width * self.attacker_fill)
             fill_rect = pygame.Rect(
@@ -1491,7 +2050,7 @@ class EnhancedBattleInterface:
         if self.defender_fill > 0:
             fill_width = int(self.defender_bar_rect.width * self.defender_fill)
             fill_rect = pygame.Rect(
-                self.defender_bar_rect.left,
+                self.defender_bar_rect.right - fill_width,
                 fill_y,
                 fill_width,
                 self.defender_bar_rect.height
@@ -1506,7 +2065,9 @@ class EnhancedBattleInterface:
             attacker_png_x = self.attacker_bar_rect.centerx - self.bar_png_width // 2
             defender_png_x = self.defender_bar_rect.centerx - self.bar_png_width // 2
             self.screen.blit(self._scaled_bar_border, (attacker_png_x, self.attacker_bar_rect.top + png_offset_y))
-            self.screen.blit(self._scaled_bar_border, (defender_png_x, self.defender_bar_rect.top + png_offset_y))
+            # Mirrored frame for the mirrored defender bar
+            self.screen.blit(self._scaled_bar_border_flipped or self._scaled_bar_border,
+                             (defender_png_x, self.defender_bar_rect.top + png_offset_y))
         else:
             # Fallback to simple rectangle borders
             pygame.draw.rect(self.screen, WHITE, self.attacker_bar_rect, BAR_BORDER_WIDTH)
@@ -1543,20 +2104,7 @@ class EnhancedBattleInterface:
         )
 
         # Render battle icon with pulsation animation
-        if self.battle_icon and self.battle_icon_base_w > 0:
-            # Calculate pulse scale using sine wave for smooth animation
-            pulse_progress = (math.sin(self.elapsed * ICON_PULSE_SPEED * 2 * math.pi) + 1) / 2
-            current_scale = ICON_PULSE_MIN_SCALE + (ICON_PULSE_MAX_SCALE - ICON_PULSE_MIN_SCALE) * pulse_progress
-
-            # Scale the icon
-            scaled_w = int(self.battle_icon_base_w * current_scale)
-            scaled_h = int(self.battle_icon_base_h * current_scale)
-            scaled_icon = pygame.transform.smoothscale(self.battle_icon, (scaled_w, scaled_h))
-
-            # Center it at the stored center position
-            icon_x = self.icon_center_x - scaled_w // 2
-            icon_y = self.icon_center_y - scaled_h // 2
-            self.screen.blit(scaled_icon, (icon_x, icon_y))
+        self._render_pulsed_icon()
 
         # Render resolve button
         self._render_button(self.resolve_button_rect, "Resolve Battle", self.button_bg)
@@ -1593,20 +2141,7 @@ class EnhancedBattleInterface:
         )
 
         # Render battle icon with pulsation animation
-        if self.battle_icon and self.battle_icon_base_w > 0:
-            # Calculate pulse scale using sine wave for smooth animation
-            pulse_progress = (math.sin(self.elapsed * ICON_PULSE_SPEED * 2 * math.pi) + 1) / 2
-            current_scale = ICON_PULSE_MIN_SCALE + (ICON_PULSE_MAX_SCALE - ICON_PULSE_MIN_SCALE) * pulse_progress
-
-            # Scale the icon
-            scaled_w = int(self.battle_icon_base_w * current_scale)
-            scaled_h = int(self.battle_icon_base_h * current_scale)
-            scaled_icon = pygame.transform.smoothscale(self.battle_icon, (scaled_w, scaled_h))
-
-            # Center it at the stored center position
-            icon_x = self.icon_center_x - scaled_w // 2
-            icon_y = self.icon_center_y - scaled_h // 2
-            self.screen.blit(scaled_icon, (icon_x, icon_y))
+        self._render_pulsed_icon()
 
         # Render particle effect (includes animated bars)
         if self.particle_effect:

@@ -87,6 +87,13 @@ the effect `smoothscale`s **every frame** — despite the comment claiming "cach
 - **Why deferred:** these are transient effects (a battle, an alliance marker), not
   continuous per-frame costs across many entities like the production glow was.
 
+**Done for `battle_interface.py` (2026-09-21).** The same bug lived in the pulsing battle
+icon, which had no cache at all and `smoothscale`d every frame in both the SETUP and
+ANIMATING states, in two duplicated copies. Both now go through
+`EnhancedBattleInterface._render_pulsed_icon()`, which quantizes the pulse scale to 1/64 and
+caches into a bounded dict. `battleeffect.py` and `alliance_marker_effect.py` are still
+outstanding.
+
 ### Pre-existing `TestDominationVictory` failures
 3 tests in `tests/test_victory.py` fail: `test_winner_at_threshold`,
 `test_sets_phase_ended` (phase stays `'playing'`), `test_sets_winner` (`winner` stays `-1`).
