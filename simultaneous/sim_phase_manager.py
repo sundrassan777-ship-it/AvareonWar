@@ -927,7 +927,18 @@ class SimPhaseManager:
 
                     # Destroy buildings on conquest (respects Seledra's Champion of the People)
                     # Matches single-turn behavior in military.py _process_arrivals()
+                    # Battle Reports: snapshot the plot layout first so the report can tell
+                    # destroyed plots from ones Champion of the People saved for the winner.
+                    buildings_before = dict(self.gs.buildings.get(territory, {}))
                     self.gs.destroy_buildings(territory, current_owner, new_owner=sole_player)
+
+                    # Battle Reports: this is the SIMULTANEOUS-mode twin of the uncontested
+                    # capture in military.py _process_arrivals(). No Battle object is created
+                    # here, so resolve_battle() never runs and nothing else would tell the
+                    # owner their territory is gone. Must run before check_victory() below,
+                    # which can eliminate them and make them ineligible for a report.
+                    self.gs._capture_uncontested_report(
+                        territory, current_owner, sole_player, buildings_before)
 
                     # Capital Assault: Check if captured territory is enemy's capital
                     self._check_capital_assault_eliminations(territory, sole_player)

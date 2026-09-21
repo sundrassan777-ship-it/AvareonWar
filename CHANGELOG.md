@@ -32,7 +32,9 @@ All notable changes to the AvareonWar project.
   estimate `battle_interface.set_actual_battle_result()` has to use.
 - **Uncontested captures also report.** Walking into an undefended territory creates no
   `Battle`, so it is captured separately in `_process_arrivals()`. It was previously the
-  easiest loss of all to miss.
+  easiest loss of all to miss. **Simultaneous mode has its own copy of that path** in
+  `sim_phase_manager.py` and needs the same hook — without it, losing an undefended
+  territory in a simultaneous game stayed completely silent.
 - **A Keep or Fortress defending alone** still creates a battle: the owner is put into
   `player_armies` with a count equal to the Keep bonus even with an empty garrison, and
   `resolve_battle()` then substitutes a phantom `{'Swordsman': keep_bonus}` composition.
@@ -58,6 +60,9 @@ All notable changes to the AvareonWar project.
 - The board art is scaled uniformly from its measured proportions (solid area: 7.0% inset
   left, 6.9% right, 20.1% top, **20.5% bottom** - `campaign_utils.py` never documented that
   last one) rather than stretched, so the wood grain is never squashed.
+- **Readability:** the board is darkened on blit and the text is light, rather than dark
+  text on bare wood, which measured only 2.58:1 contrast at 12px. Now 12.4:1 for the body
+  lines, 9.4:1 for DEFENDED (light green) and 5.6:1 for LOST (light red).
 - The title underline is drawn with `pygame.draw.line`, **not** `font.set_underline()`:
   `FontManager` hands out one shared font object per (size, weight) and `_get_cached_text()`
   does not key on underline state, so setting it would have leaked into unrelated UI - the

@@ -47,12 +47,19 @@ BUTTON_HEIGHT_REF = 20
 BUTTON_SPACING_REF = 6         # Between the Detail and Close buttons
 ANCHOR_OFFSET_REF = 20         # Gap between the territory centre and the popup
 
-COLOR_DEFENDED = (24, 92, 34)   # Dark green
-COLOR_LOST = (140, 30, 30)      # Dark red
-COLOR_BODY = (38, 28, 16)       # Dark brown, readable on the wooden board
+# The raw board art is a mid-tone wood that dark text sits poorly on at this size.
+# The board is darkened on blit (see BOARD_DARKEN) and the text is light, which gives
+# far more contrast than dark-on-wood at 12px.
+COLOR_DEFENDED = (120, 226, 130)  # Light green
+COLOR_LOST = (245, 118, 110)      # Light red
+COLOR_BODY = (238, 232, 220)      # Near-white
+
+# Multiplied into the board so light text reads against it. Alpha 255 keeps the art's
+# own transparency; only RGB is scaled down.
+BOARD_DARKEN = (88, 84, 80, 255)
 
 # Fallback panel colours when TransmissionBG.png cannot be loaded
-FALLBACK_FILL = (46, 36, 24, 236)
+FALLBACK_FILL = (28, 22, 16, 240)
 FALLBACK_BORDER = (180, 160, 100)
 
 
@@ -129,7 +136,13 @@ class BattleReportPopupRenderer:
         if self._bg_raw is None:
             return None
         if self._bg_scaled is None or self._bg_scaled_size != size:
-            self._bg_scaled = pygame.transform.smoothscale(self._bg_raw, size)
+            scaled = pygame.transform.smoothscale(self._bg_raw, size)
+            # Darken once, into the cache, so light text reads against the wood.
+            # BLEND_RGBA_MULT (not RGB_MULT) so the board's own alpha is preserved.
+            shade = pygame.Surface(size, pygame.SRCALPHA)
+            shade.fill(BOARD_DARKEN)
+            scaled.blit(shade, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            self._bg_scaled = scaled
             self._bg_scaled_size = size
         return self._bg_scaled
 

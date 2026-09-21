@@ -947,6 +947,13 @@ absent entry correctly means "no units, the Keep fought alone".
 preserves Farms/Mines *for the conqueror* — they survive and change owner.
 `structures_captured` is non-zero only when that ability fired.
 
+**There are TWO uncontested-capture paths, and both need the hook.**
+`military.py _process_arrivals()` covers sequential mode; `sim_phase_manager.py
+_process_arrivals()` has its own copy for simultaneous mode. Neither creates a `Battle`,
+so `resolve_battle()` never runs and nothing else would tell the owner their territory is
+gone. Both call `_capture_uncontested_report()` immediately after `destroy_buildings()`
+and **before** `check_victory()`, which can eliminate the owner and make them ineligible.
+
 **Eligibility is judged pre-battle.** `check_victory()` runs inside the battle and can
 eliminate a defender who just lost their last territory; reading `eliminated_players`
 afterwards lets a battle retroactively suppress its own report.
@@ -955,6 +962,17 @@ afterwards lets a battle retroactively suppress its own report.
 in real time. It avoids both hooks only because it sets `territory_owners` directly and
 inlines its own building destruction instead of calling `destroy_buildings()`. That is an
 accident of structure, not a guarantee — `test_battle_reports.py` pins it.
+
+#### Readability: dark board, light text
+
+The raw board art is mid-tone wood. Dark text on it measured **2.58:1** contrast at the
+real 12px size — below even the 3:1 large-text floor — so `BOARD_DARKEN` is multiplied
+into the cached scaled surface once per size and the text is light instead. That gives
+12.4:1 for the body lines, 9.4:1 for DEFENDED and 5.6:1 for LOST.
+
+Use `BLEND_RGBA_MULT`, never `BLEND_RGB_MULT`, which ignores the alpha channel and would
+square off the board's feathered edges. If you restyle, **re-measure at 12px** — a colour
+that looks fine in a zoomed mockup can fail badly at the size it actually renders.
 
 #### Visibility: two predicates, not one
 

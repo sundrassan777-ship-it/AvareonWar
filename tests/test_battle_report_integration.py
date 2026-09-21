@@ -319,6 +319,58 @@ class TestSimultaneousMode:
 
         assert sim.battle_report_popups == []
 
+    def test_uncontested_capture_reports(self, sim):
+        """
+        Simultaneous mode has its OWN uncontested-capture path in
+        sim_phase_manager._process_arrivals(), separate from the one in
+        military.py. An enemy walking into an undefended territory creates no
+        Battle, so without a hook there the loss is completely silent.
+        """
+        gs = sim.game_state
+        territory = sorted(sim.scaled_centers.keys())[3]
+        gs.territory_owners[territory] = 0
+        gs.buildings[territory] = {0: 'Farm', 1: 'Barracks'}
+        gs.territory_garrisons[territory] = {}
+        # Keep player 0 alive so check_victory() does not eliminate them mid-capture.
+        for spare in sorted(sim.scaled_centers.keys())[4:8]:
+            gs.territory_owners[spare] = 0
+        gs.eliminated_players.discard(0)
+        gs.phase = 'playing'
+
+        buildings_before = dict(gs.buildings.get(territory, {}))
+        gs.destroy_buildings(territory, 0, new_owner=1)
+        gs._capture_uncontested_report(territory, 0, 1, buildings_before)
+
+        assert len(gs.battle_report_inbox) == 1
+        report = gs.battle_report_inbox[0]
+        assert report['defender'] == 0
+        assert report['attacker'] == 1
+        assert report['held'] is False
+        assert report['units_lost'] == 0
+        assert report['structures_destroyed'] == 2
+        assert report['unit_breakdown'] == {}
+
+    def test_uncontested_capture_reaches_the_screen(self, sim):
+        """The full path: captured while resolving, shown when planning resumes."""
+        gs = sim.game_state
+        territory = sorted(sim.scaled_centers.keys())[9]
+        gs.territory_owners[territory] = 0
+        gs.buildings[territory] = {0: 'Farm'}
+        for spare in sorted(sim.scaled_centers.keys())[10:14]:
+            gs.territory_owners[spare] = 0
+        gs.eliminated_players.discard(0)
+        gs.phase = 'playing'
+
+        sim.sim_state.sim_phase = 'resolving'
+        buildings_before = dict(gs.buildings.get(territory, {}))
+        gs.destroy_buildings(territory, 0, new_owner=1)
+        gs._capture_uncontested_report(territory, 0, 1, buildings_before)
+        sim._update_battle_reports(0.016)
+
+        sim.sim_state.sim_phase = 'planning'
+        sim._update_battle_reports(0.016)
+        assert [r['territory'] for r in sim.battle_report_popups] == [territory]
+
     def test_full_round_cycle(self, sim):
         """plan -> ready -> execute -> resolve (battle) -> plan: the report shows."""
         sim._update_battle_reports(0.016)          # planning, nothing pending
