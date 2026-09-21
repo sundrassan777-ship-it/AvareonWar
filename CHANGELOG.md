@@ -2,6 +2,27 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-21 - Fixed: outro cutscene played after campaign defeat
+
+- **Bug:** the post-mission cinematic, meant as a reward for winning, also played after a
+  **defeat** in campaign missions 2-7 (reported on mission 3).
+- **Root cause:** victory and defeat were indistinguishable at the mission -> game boundary.
+  Every mission's `update()` returned the same `'exit_campaign'` sentinel from both its
+  victory branch and its defeat branch, so `Game.run()` returned `'campaign'` either way and
+  both outro call sites in `main.py` fired. Their `# only after victory` comments were wrong.
+- **Fix:** defeat now returns a distinct `'exit_campaign_defeat'`, which `Game.run()` maps to
+  `'campaign_defeat'`. The existing `game_result == 'campaign'` gates are therefore correct
+  for the first time. Chosen over sniffing `game_state.winner == 0` at the call site, because
+  `winner` is also written by the generic `check_victory()` path.
+- **Defeat flow is now:** defeat screen -> recap (stats, XP, achievements) -> campaign menu,
+  with no cinematic. Victory is unchanged.
+- Covers both call sites: a freshly launched mission and a loaded campaign save
+  (`_launch_saved_game`).
+- `tutorial_mission.py` (mission 1) was never affected - it has no defeat path.
+- **Added** `tests/test_campaign_outro_cutscene.py` - AST-level regression tests pinning the
+  sentinel contract across all seven mission files plus both `main.py` gates. The bug lived in
+  six near-duplicate files, exactly the shape that regresses silently.
+
 ## 2026-09-21 - Battle bar volley animation (BFME2 auto-resolve style)
 
 - **Why:** the battle bars drained in a single continuous eased slide while ~600 circle

@@ -638,7 +638,11 @@ class Mission4:
     # ========================================================================
 
     def update(self, delta_time):
-        """Called every frame to update mission state."""
+        """Called every frame to update mission state.
+
+        Returns 'exit_campaign' on victory (main.py then plays the outro cutscene)
+        or 'exit_campaign_defeat' on defeat (no cutscene). None otherwise.
+        """
         if not self.active:
             return
         # M10 fix: Cap delta_time to prevent animation jumps on large frame times
@@ -746,7 +750,9 @@ class Mission4:
                 from global_sound import play_transmission_sound
                 play_transmission_sound("M4T8")
 
-        # Update victory sequence — return 'exit_campaign' to tell main.py to exit game loop
+        # Update victory sequence — return 'exit_campaign' to tell main.py to exit the
+        # game loop. Victory uses 'exit_campaign' so the outro cutscene plays; the
+        # defeat branch below returns 'exit_campaign_defeat' instead.
         result = self._update_victory_sequence(delta_time)
         if result == 'exit':
             self._cleanup()
@@ -756,7 +762,9 @@ class Mission4:
         result = self._update_defeat_sequence(delta_time)
         if result == 'exit':
             self._cleanup()
-            return 'exit_campaign'
+            # Defeat exits to the campaign screen but must NOT play the outro
+            # cutscene — main.py maps this sentinel to 'campaign_defeat'.
+            return 'exit_campaign_defeat'
 
     def skip_transmission(self):
         """Skip the currently visible transmission (ESC key).

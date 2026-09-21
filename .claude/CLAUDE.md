@@ -134,6 +134,7 @@ AvareonWar/
 - [tests/test_unit_context_menu.py](tests/test_unit_context_menu.py) - Right-click context menu on the army composition unit icons
 - [tests/test_battle_bar_volley.py](tests/test_battle_bar_volley.py) - Volley-based battle bar animation (chunk split, determinism, skip, mirrored geometry)
 - [tests/test_battle_interface_integration.py](tests/test_battle_interface_integration.py) - EnhancedBattleInterface wiring (state machine, derived duration, retarget, skip)
+- [tests/test_campaign_outro_cutscene.py](tests/test_campaign_outro_cutscene.py) - Campaign mission exit sentinels: outro cutscene plays on victory only
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -285,6 +286,10 @@ These rules were derived from ~100+ bugs found across 8 audit rounds. **Follow s
 - **Invalidate all caches** (icon, text, font, overlay) after resolution change.
 
 #### Campaign Missions
+- **Defeat must return `'exit_campaign_defeat'`, never `'exit_campaign'`.** The victory
+  sentinel `'exit_campaign'` is what makes `main.py` play the outro cutscene. Sharing one
+  sentinel across both branches played the victory cinematic after a defeat in missions 2-7.
+  See "Mission Exit Contract" in CODE_GUIDE.md.
 - **Cap `delta_time` in every mission `update()` method.** Use `delta_time = min(delta_time, 0.05)` to prevent animation jumps on lag spikes. All missions (tutorial, 2, 3, 4) must have this.
 - **Use `map_data.clear_enabled_territories()` in `deactivate()`.** Campaign missions that enable a subset of territories must clear the filter on exit, or the next game starts with wrong territories.
 - **Use try/finally when temporarily swapping `current_player`** for AI actions. If the AI code throws, the player index must be restored.
