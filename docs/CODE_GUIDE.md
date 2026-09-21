@@ -2228,6 +2228,36 @@ Campaign missions are self-contained modules that:
   - `CameraZoomAnimation` - smooth camera zoom to a territory
   - `update_endgame_sequence()` / `render_endgame_sequence()` - victory/defeat animation helpers
 
+### Mission Exit Contract (victory vs defeat)
+
+`Game.run()` calls `mission.update(delta_time)` every frame ([main.py](../main.py),
+in the `_is_tutorial_active()` block). The sentinel a mission returns decides whether
+the **outro cutscene plays**, so victory and defeat must never share one:
+
+| `mission.update()` returns | `Game.run()` returns | Outro cutscene | Recap |
+|----------------------------|----------------------|----------------|-------|
+| `None`                     | (keeps running)      | -              | -     |
+| `'exit_campaign'`          | `'campaign'`         | **Yes**        | Yes   |
+| `'exit_campaign_defeat'`   | `'campaign_defeat'`  | **No**         | Yes   |
+
+**When adding a mission:** the defeat branch MUST return `'exit_campaign_defeat'`.
+Returning `'exit_campaign'` from defeat is the bug that played the victory cinematic
+to a player who had just lost (missions 2-7, fixed 2026-09-21). The victory branch
+keeps `'exit_campaign'`.
+
+The two outro call sites in [main.py](../main.py) both gate on
+`game_result == 'campaign'` - one for a freshly launched mission, one in
+`_launch_saved_game()` for a loaded save. Both are covered by
+[tests/test_campaign_outro_cutscene.py](../tests/test_campaign_outro_cutscene.py),
+which asserts the sentinels at the AST level across every mission file.
+
+Everything *after* the cutscene block - `show_recap_if_ended()` (which also records
+player XP and checks achievements), `map_data` cleanup, and the return to the campaign
+screen - runs for both results. A defeat still shows the recap.
+
+`tutorial_mission.py` (mission 1) has no defeat path at all, so it only ever returns
+the victory sentinel.
+
 ### Files
 
 - [campaign_utils.py](../campaign_utils.py) - Shared campaign utilities (TransmissionOverlay, camera animations, endgame sequences)

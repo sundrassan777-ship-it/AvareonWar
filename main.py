@@ -11816,9 +11816,13 @@ class Game:
             # Tutorial mission: update logic before rendering so camera animation applies this frame
             if self._is_tutorial_active() and not self.is_game_paused:
                 tutorial_result = self.tutorial_mission.update(delta_time)
-                # Handle victory sequence exit to campaign screen
+                # Handle victory/defeat sequence exit to campaign screen. Both exit to
+                # the campaign screen, but only victory ('campaign') plays the outro
+                # cutscene — defeat returns 'campaign_defeat' so the caller can skip it.
                 if tutorial_result == 'exit_campaign':
                     return 'campaign'
+                if tutorial_result == 'exit_campaign_defeat':
+                    return 'campaign_defeat'
                 self.tutorial_mission.update_ai_turn(delta_time)
                 # Sync camera state after tutorial animation updates
                 self.camera_offset = self.camera.offset
@@ -15823,7 +15827,7 @@ if __name__ == "__main__":
         Flow: LoadingScreen (init fresh game) -> overwrite state from save ->
         create mission -> restore mission state -> game.run() -> cleanup.
 
-        Returns game_result ('quit', 'campaign', 'main_menu', etc.)
+        Returns game_result ('quit', 'campaign', 'campaign_defeat', 'main_menu', etc.)
         """
         import importlib
         import map_data as _map_data
@@ -15924,7 +15928,8 @@ if __name__ == "__main__":
         # Stop game music
         music_manager.stop()
 
-        # Post-mission outro cutscene (only after victory)
+        # Post-mission outro cutscene — victory only. A defeat returns
+        # 'campaign_defeat' from Game.run(), which deliberately fails this check.
         if game_result == 'campaign':
             from cutscene_player import CutscenePlayer
             outro_cutscene = CutscenePlayer(screen, f"{mission_id}_outro")
@@ -16198,7 +16203,8 @@ if __name__ == "__main__":
                         # Stop game music before outro cutscene / recap
                         music_manager.stop()
 
-                        # Post-mission outro cutscene (only after victory)
+                        # Post-mission outro cutscene — victory only. A defeat returns
+                        # 'campaign_defeat' from Game.run(), failing this check on purpose.
                         if game_result == 'campaign':
                             outro_cutscene = CutscenePlayer(screen, f"{launched_mission}_outro")
                             if outro_cutscene.has_cutscene:

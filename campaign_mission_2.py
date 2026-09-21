@@ -596,7 +596,11 @@ class Mission2:
     # ========================================================================
 
     def update(self, delta_time):
-        """Called every frame from main.py game loop. Returns 'exit_campaign' to exit."""
+        """Called every frame from main.py game loop.
+
+        Returns 'exit_campaign' on victory (main.py then plays the outro cutscene)
+        or 'exit_campaign_defeat' on defeat (no cutscene). None otherwise.
+        """
         if not self.active:
             return None
 
@@ -712,7 +716,9 @@ class Mission2:
         result = self._update_defeat_sequence(delta_time)
         if result == 'exit':
             self._cleanup()
-            return 'exit_campaign'
+            # Defeat exits to the campaign screen but must NOT play the outro
+            # cutscene — main.py maps this sentinel to 'campaign_defeat'.
+            return 'exit_campaign_defeat'
 
         return None
 
