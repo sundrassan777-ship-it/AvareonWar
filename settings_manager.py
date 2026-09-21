@@ -120,7 +120,7 @@ class SettingsManager:
 
             # Gameplay settings
             'edge_scrolling_enabled': True,
-            'edge_scrolling_mode': 'push',  # 'push' or 'jump'
+            'edge_scrolling_mode': 'window_edge',  # 'map_edge' or 'window_edge'
             'tooltips_enabled': True,
             'tooltip_delay_ms': 500,
             'camera_pan_speed': 10.0,
@@ -319,6 +319,18 @@ class SettingsManager:
                         f"to default ({default_value!r}) - expected {'/'.join(t.__name__ for t in expected_types)}"
                     )
 
+        # Coerce edge_scrolling_mode to one of the two values the camera actually
+        # understands. Older configs stored 'push'/'jump', which matched neither
+        # branch in handle_edge_scrolling() and produced a hybrid mode.
+        valid_edge_modes = ("map_edge", "window_edge")
+        if self.settings.get('edge_scrolling_mode') not in valid_edge_modes:
+            old_mode = self.settings.get('edge_scrolling_mode')
+            self.settings['edge_scrolling_mode'] = self.defaults['edge_scrolling_mode']
+            corrections.append(
+                f"Reset 'edge_scrolling_mode' from {old_mode!r} to "
+                f"{self.defaults['edge_scrolling_mode']!r} - expected one of {valid_edge_modes}"
+            )
+
         # Log all corrections
         if corrections:
             for msg in corrections:
@@ -447,7 +459,7 @@ class SettingsManager:
 
         # Gameplay settings
         game.edge_scrolling_enabled = self.get('edge_scrolling_enabled', True)
-        game.edge_scrolling_mode = self.get('edge_scrolling_mode', 'push')
+        game.edge_scrolling_mode = self.get('edge_scrolling_mode', 'window_edge')
         game.tooltips_enabled = self.get('tooltips_enabled', True)
         game.tooltip_delay_ms = self.get('tooltip_delay_ms', 500)
         game.camera_pan_speed = self.get('camera_pan_speed', 10.0)

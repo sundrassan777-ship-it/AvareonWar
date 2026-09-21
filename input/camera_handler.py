@@ -27,6 +27,13 @@ ZOOM_SMOOTHING_RATE = 16.0
 # Below this difference the zoom snaps to the target and interpolation stops.
 ZOOM_SNAP_EPSILON = 0.0005
 
+# Map Edge scrolling only starts once the cursor has dwelled inside an edge band
+# for this long. The band sits inside the map viewport, so without a dwell a player
+# merely crossing it on the way to the bottom UI would drag the camera with them.
+# Window Edge mode is deliberately exempt — there the band is the physical window
+# border, so entering it is always intentional.
+MAP_EDGE_SCROLL_DELAY = 0.2  # seconds
+
 
 class CameraHandler:
     """
@@ -80,6 +87,11 @@ class CameraHandler:
         assert min_zoom <= initial_zoom <= max_zoom, (
             f"initial_zoom ({initial_zoom}) must be between min_zoom ({min_zoom}) and max_zoom ({max_zoom})")
         self.edge_scroll_margin = 20  # Pixels from edge to trigger scrolling
+
+        # Seconds the cursor has spent continuously inside a Map Edge band.
+        # Resets whenever it leaves every band (including onto the UI panels), so
+        # a quick transit never accumulates enough credit to start a scroll.
+        self._map_edge_dwell = 0.0
         
         # Debug state
         self.debug_edge_scroll = None
@@ -328,7 +340,7 @@ class CameraHandler:
             self.drag_start = None
     
     def handle_edge_scrolling(self, pos, enabled, mode, pan_speed, 
-                             top_panel_height, bottom_ui_y):
+                             top_panel_height, bottom_ui_y, delta_time=0.0):
         """
         Handle edge scrolling when mouse is near map area edges.
         
@@ -339,15 +351,27 @@ class CameraHandler:
             pan_speed: Configurable pan speed (5-20)
             top_panel_height: Height of top panel
             bottom_ui_y: Y position where bottom UI starts
+            delta_time: Seconds since the previous frame. Used only to tick the
+                Map Edge dwell timer (see MAP_EDGE_SCROLL_DELAY); the scroll
+                movement itself remains per-frame. Defaults to 0.0 so callers
+                that do not care about the dwell keep working.
         """
         # Check if edge scrolling is enabled
         if not enabled:
+            self._map_edge_dwell = 0.0
             return
         
         # For map edge mode, only scroll if mouse in map area
         if mode == "map_edge":
             if pos[1] < top_panel_height or pos[1] >= bottom_ui_y:
+                # Cursor moved onto the top panel / bottom UI: it has left every
+                # band, so the dwell restarts if it comes back.
+                self._map_edge_dwell = 0.0
                 return
+        else:
+            # Window Edge (and any legacy mode value) never dwells — keep the
+            # accumulator clean so switching back to Map Edge starts fresh.
+            self._map_edge_dwell = 0.0
         
         x, y = pos
         scroll_x = 0
@@ -401,6 +425,19 @@ class CameraHandler:
                 distance_from_edge = map_relative_y - (self.map_height_ui - self.edge_scroll_margin)
                 speed_multiplier = distance_from_edge / self.edge_scroll_margin
                 scroll_y = base_speed * speed_multiplier
+        
+        # Map Edge: require a short dwell inside the band before scrolling begins,
+        # so a quick transit (e.g. heading down to the bottom UI panel) does not
+        # nudge the camera. Window Edge is deliberately unchanged.
+        if mode == "map_edge":
+            if scroll_x == 0 and scroll_y == 0:
+                # Not in any band — reset so the next entry waits the full delay
+                self._map_edge_dwell = 0.0
+            else:
+                self._map_edge_dwell += delta_time
+                if self._map_edge_dwell < MAP_EDGE_SCROLL_DELAY:
+                    self.debug_edge_scroll = None
+                    return
         
         # Apply scrolling
         if scroll_x != 0 or scroll_y != 0:

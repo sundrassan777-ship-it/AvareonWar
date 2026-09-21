@@ -1281,7 +1281,7 @@ class Game:
         # MUST be defined BEFORE hover_delay system since hover_delay references tooltip_delay_ms
         # Load from settings manager
         self.edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
-        self.edge_scrolling_mode = settings.get('edge_scrolling_mode', 'push')
+        self.edge_scrolling_mode = settings.get('edge_scrolling_mode', 'window_edge')
         self.tooltips_enabled = settings.get('tooltips_enabled', True)
         self.tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
         self.camera_pan_speed = settings.get('camera_pan_speed', 10.0)
@@ -11811,7 +11811,9 @@ class Game:
             # Check mouse position every frame for smooth edge scrolling
             mouse_pos = pygame.mouse.get_pos()
             if _tutorial_camera_ok:
-                self.handle_edge_scrolling(mouse_pos)
+                # delta_time drives the Map Edge dwell delay (not the pan speed,
+                # which stays per-frame as before)
+                self.handle_edge_scrolling(mouse_pos, delta_time)
             
             # Tutorial mission: update logic before rendering so camera animation applies this frame
             if self._is_tutorial_active() and not self.is_game_paused:
@@ -15072,11 +15074,15 @@ class Game:
         self.camera_zoom = self.camera.zoom
         self.camera_drag_start = self.camera.drag_start
     
-    def handle_edge_scrolling(self, pos):
+    def handle_edge_scrolling(self, pos, delta_time=0.0):
         """
         Handle edge scrolling when mouse is near map area edges.
         
         Wrapper that delegates to camera handler.
+        
+        delta_time (seconds) feeds the Map Edge dwell timer, which holds the
+        scroll back until the cursor has stayed in an edge band long enough —
+        see MAP_EDGE_SCROLL_DELAY in input/camera_handler.py.
         """
         # Sync state to camera handler
         self.camera.offset = self.camera_offset
@@ -15089,7 +15095,8 @@ class Game:
             self.edge_scrolling_mode, 
             self.camera_pan_speed,
             TOP_PANEL_HEIGHT,
-            BOTTOM_UI_Y
+            BOTTOM_UI_Y,
+            delta_time
         )
         
         # Sync state back
@@ -15357,7 +15364,7 @@ class Game:
 
         # Gameplay settings
         self.temp_edge_scrolling_enabled = True
-        self.temp_edge_scrolling_mode = "map_edge"
+        self.temp_edge_scrolling_mode = "window_edge"
         self.temp_tooltips_enabled = True
         self.temp_tooltip_delay_ms = 500
         self.temp_camera_pan_speed = 10.0

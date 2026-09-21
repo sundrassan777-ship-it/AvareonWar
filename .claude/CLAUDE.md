@@ -407,6 +407,7 @@ After making code changes, ask yourself:
 - Add visual effect → `ui/effects/` directory
 - Change floating chat notifications → `ui/effects/chat_notification_effect.py`
 - Modify camera/zoom → `input/camera_handler.py`
+- Change edge scrolling / Map Edge start delay → `input/camera_handler.py` (`handle_edge_scrolling()`, `MAP_EDGE_SCROLL_DELAY`)
 - Modify army/banner selection or hover → `main.py` `get_army_banner_rect()` / `get_army_at_pos()` / `handle_mouse_motion()` + `rendering/map_renderer.py` (all three must share the helpers)
 - Modify unit right-click context menu (bottom UI army strip) → `main.py` `handle_unit_context_menu_right_click()` / `_get_unit_context_menu_rect()` / `draw_unit_context_menu()` / `handle_unit_context_menu_click()` + `input/mouse_handler.py` (Priority 0)
 - Add territory → Use `Polygon_Tool.py`, `Economic_Tool.py`, `Plot_Tool.py` (use `--map <map_id>` for non-default maps)

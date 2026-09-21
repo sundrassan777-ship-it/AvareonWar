@@ -1721,6 +1721,42 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - Adjust edge scrolling sensitivity
 - Change zoom limits (min/max)
 
+#### Edge Scrolling: the two modes and the Map Edge dwell delay
+
+`handle_edge_scrolling(pos, enabled, mode, pan_speed, top_panel_height, bottom_ui_y, delta_time)`
+
+Only the vertical trigger band differs between the modes — the horizontal bands are
+identical:
+
+| | `map_edge` | `window_edge` |
+|---|---|---|
+| Band position | Inside the map viewport (just below the top panel, just above the bottom UI) | The physical window border |
+| Over the UI panels | Returns early, never scrolls | Keeps scrolling |
+| Start delay | **`MAP_EDGE_SCROLL_DELAY` (0.2s) dwell** | None — instant |
+
+**Why the dwell exists:** the Map Edge band sits *inside* the viewport, so a player
+moving the cursor down to a bottom-UI button crosses it and used to drag the camera
+along. `_map_edge_dwell` accumulates `delta_time` while the cursor is inside any band
+and resets the moment it leaves one — including via the early return when the cursor
+reaches the UI panels. Scrolling only starts once the accumulator passes the delay.
+
+**If you touch this code:**
+- Every early return must reset `_map_edge_dwell`, or stale credit lets a later
+  transit scroll instantly.
+- One shared accumulator covers all four bands, so sliding from the left band into the
+  bottom-left corner keeps scrolling without a fresh wait. That is intentional.
+- `debug_edge_scroll` is cleared on every non-scrolling frame and cannot carry dwell
+  state — the accumulator needs its own field.
+- `delta_time` is used **only** for the dwell. The pan itself is still per-frame
+  (`offset += scroll / zoom`); converting it to per-second is a separate change.
+- Window Edge behaviour is deliberately untouched — there, entering the band means the
+  cursor is at the screen border, which is always intentional.
+
+⚠️ **`edge_scrolling_mode` legacy values:** settings once defaulted to `'push'`, which
+matched neither branch and produced a hybrid mode (map-edge geometry without the
+map-area guard). `SettingsManager._validate_and_clean_settings()` now coerces anything
+outside `("map_edge", "window_edge")` to the default, `window_edge`.
+
 ---
 
 ## map_data.py

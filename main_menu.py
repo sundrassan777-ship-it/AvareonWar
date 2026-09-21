@@ -122,7 +122,7 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
         self.temp_tooltips_enabled = settings.get('tooltips_enabled', True)
         self.temp_show_fps = settings.get('show_fps', False)
-        self.temp_edge_scrolling_mode = settings.get('edge_scrolling_mode', 'map_edge')
+        self.temp_edge_scrolling_mode = settings.get('edge_scrolling_mode', 'window_edge')
         self.temp_tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
         self.temp_pan_speed = settings.get('camera_pan_speed', 10.0)
         self.temp_zoom_speed = settings.get('camera_zoom_speed', 0.15)
@@ -1034,7 +1034,7 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
         self.temp_tooltips_enabled = settings.get('tooltips_enabled', True)
         self.temp_show_fps = settings.get('show_fps', False)
-        self.temp_edge_scrolling_mode = settings.get('edge_scrolling_mode', 'map_edge')
+        self.temp_edge_scrolling_mode = settings.get('edge_scrolling_mode', 'window_edge')
         self.temp_tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
         self.temp_pan_speed = settings.get('camera_pan_speed', 10.0)
         self.temp_zoom_speed = settings.get('camera_zoom_speed', 0.15)
@@ -1160,7 +1160,7 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = True
         self.temp_tooltips_enabled = True
         self.temp_show_fps = False
-        self.temp_edge_scrolling_mode = "map_edge"
+        self.temp_edge_scrolling_mode = "window_edge"
         self.temp_tooltip_delay_ms = 500
         self.temp_pan_speed = 10.0
         self.temp_zoom_speed = 0.15

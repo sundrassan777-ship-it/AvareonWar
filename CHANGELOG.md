@@ -2,6 +2,33 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-21 - Map Edge scrolling now waits 200ms before panning
+
+- **Why:** Map Edge mode puts its 20px trigger band *inside* the map viewport, directly
+  above the bottom UI panel and below the top panel. Moving the cursor down to a bottom-UI
+  button crossed that band and dragged the camera along - the player wanted a button, not
+  a pan.
+- **Fix:** `handle_edge_scrolling()` now requires the cursor to dwell inside a band for
+  `MAP_EDGE_SCROLL_DELAY` (0.2s) before scrolling starts. A quick transit accumulates too
+  little time to fire; holding at the edge still pans, with the same proximity ramp as
+  before. The accumulator resets whenever the cursor leaves every band, including via the
+  early return that fires when it reaches the UI panels.
+- Applies to all four bands, for a consistent feel. One shared accumulator, so sliding
+  from one band into an adjacent corner does not re-trigger the wait.
+- **Window Edge mode is unchanged** - its band is the physical window border, so entering
+  it is always intentional.
+- `delta_time` is now threaded from the main loop into `handle_edge_scrolling()`. It
+  drives *only* the dwell timer; the pan movement remains per-frame as before.
+- **Also fixed:** `edge_scrolling_mode` defaulted to the stale value `'push'`, which
+  matched neither `"map_edge"` nor `"window_edge"`. It fell through to the map-edge
+  geometry but skipped the map-area guard, so fresh installs got a hybrid mode that
+  scrolled over the UI panels while the options menu labelled it "Window Edge". The
+  default is now `window_edge`, and `SettingsManager._validate_and_clean_settings()`
+  coerces any legacy or unrecognised value to it.
+- **Added** `tests/test_edge_scroll_delay.py` - covers the transit case, the dwell case,
+  both reset paths, all four bands, Window Edge being untouched, and the legacy mode
+  coercion.
+
 ## 2026-09-21 - Fixed: outro cutscene played after campaign defeat
 
 - **Bug:** the post-mission cinematic, meant as a reward for winning, also played after a
