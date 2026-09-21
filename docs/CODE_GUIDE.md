@@ -963,6 +963,37 @@ in real time. It avoids both hooks only because it sets `territory_owners` direc
 inlines its own building destruction instead of calling `destroy_buildings()`. That is an
 accident of structure, not a guarantee — `test_battle_reports.py` pins it.
 
+#### Every ownership-change path, audited
+
+Swept from `grep "territory_owners\[...\] ="`. If you add a new way for a territory to
+change hands, add it here and decide which column it belongs in.
+
+| Path | Reports? | Why |
+|---|---|---|
+| `military.py resolve_battle()` (all 3 branches) | **yes** | `_capture_battle_reports()` |
+| `military.py _process_arrivals()` uncontested | **yes** | `_capture_uncontested_report()` |
+| `sim_phase_manager.py _process_arrivals()` uncontested | **yes** | sim's own copy of the above |
+| `main.py` `BATTLE_RESOLVE` handler | **yes** | reports ride on the message |
+| `heroes.py:750` Aggressive Diplomacy | no | resolves in real time (by design) |
+| `military.py:2937`, `sim_phase_manager.py:901` | no | neutral territory — there is no defender |
+| `sim_alliance_handler.assign_territory()`, `SIM_ALLIANCE_CHOICE` | no | ally-to-ally; the capture itself already reported |
+| `victory.py` elimination redistribution | no | the loser is already out of the game |
+| `campaign_mission_6.py:1356` | no | scripted faction handover, keeps armies and buildings |
+| `SIM_ROUND_COMPLETE` / `FULL_STATE_SYNC` bulk sync | no | desync correction, not a fresh loss |
+| `keyboard_handler.py`, setup phase | no | debug cheats and game setup |
+
+**Multiplayer is covered without extra work for uncontested captures**, because arrivals
+are processed *locally on every machine* — sequential clients run `execute_all_orders()`
+from the `EXECUTE_ORDERS` handler, and `sim_phase_manager._on_animations_complete()` is
+not host-gated. Only *battles* need the network payload, because a client applies those
+rather than resolving them. No duplicates result: `queue_battle_report()` keeps only the
+local slot in multiplayer, so the attacker's machine discards the defender's copy.
+
+**Dead code that would become a gap if revived** (all currently zero-caller / zero-sender):
+`sim_phase_manager._apply_battle_result()`, `_resolve_battle_combat()`,
+`resolve_current_battle()`, and the `SIM_BATTLE_RESULT` handler in `main.py`. Any of these
+applies a battle outcome without producing a report.
+
 #### Readability: dark board, light text
 
 The raw board art is mid-tone wood. Dark text on it measured **2.58:1** contrast at the
