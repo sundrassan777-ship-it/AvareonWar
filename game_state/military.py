@@ -2143,6 +2143,196 @@ class MilitaryMixin:
         # Check for victory
         self.check_victory()
 
+    # ------------------------------------------------------------------
+    # Battle Reports
+    # ------------------------------------------------------------------
+
+    MAX_BATTLE_REPORTS_PER_PLAYER = 20  # Safety cap; mirrored by main.py's queue drain
+
+    def _count_real_buildings(self, mapping):
+        """
+        Count completed buildings, ignoring empty plots.
+
+        destroy_buildings() skips entries whose value is None (neither destroyed nor
+        saved), yet they vanish when the dict is rewritten. Counting only non-None
+        entries on both sides of the diff keeps our arithmetic identical to the
+        destroyed_count that destroy_buildings() computes internally.
+        """
+        return sum(1 for building_type in mapping.values() if building_type is not None)
+
+    def _emit_battle_report(self, report):
+        """Queue a report for both the network send sites and main.py's frame drain."""
+        self.last_battle_reports.append(report)
+        self.battle_report_inbox.append(report)
+        # Bound the inbox: if nothing drains it (headless tests, AI-only games) it must
+        # not grow without limit over a long match.
+        overflow = len(self.battle_report_inbox) - (self.MAX_BATTLE_REPORTS_PER_PLAYER * 8)
+        if overflow > 0:
+            del self.battle_report_inbox[:overflow]
+
+    def _should_report_to(self, defender, attacker, already_eliminated=None):
+        """
+        Whether `defender` should receive a Battle Report for this territory.
+
+        Skips neutral, AI-controlled and eliminated players (nobody would ever see it),
+        and skips allies of the attacker - every "enemy" check in this codebase needs an
+        ally guard, and an allied takeover is not an attack on you.
+        """
+        if defender is None or defender < 0 or defender >= self.num_players:
+            return False
+        if self.player_is_ai[defender]:
+            return False
+        # Callers that mutate state before reporting pass the pre-action value.
+        if already_eliminated is None:
+            already_eliminated = defender in self.eliminated_players
+        if already_eliminated:
+            return False
+        if attacker is None or attacker < 0 or attacker == defender:
+            return False
+        if self.are_allies(defender, attacker):
+            return False
+        return True
+
+    def _split_structure_losses(self, buildings_before, territory, held):
+        """
+        Split building losses into destroyed vs captured.
+
+        Champion of the People (Seledra) preserves Farms/Mines FOR THE CONQUEROR: those
+        plots stay in self.buildings[territory] and simply change owner. They are not
+        rubble, so counting them as "destroyed" would be wrong - but ignoring them would
+        silently under-report the loss, since the enemy now runs them against you.
+        structures_captured is therefore non-zero only when Champion of the People fired.
+
+        Returns: (destroyed, captured, remaining)
+        """
+        before = self._count_real_buildings(buildings_before)
+        after = self._count_real_buildings(self.buildings.get(territory, {}))
+        destroyed = max(0, before - after)
+        captured = 0 if held else after
+        return destroyed, captured, after
+
+    def _make_battle_report(self, territory, defender, attacker, held, units_lost,
+                            units_remaining, structures_destroyed, structures_captured,
+                            structures_remaining, unit_breakdown, attacker_lost,
+                            attacker_survivors):
+        """
+        Build the report dict. Plain and JSON-safe: it rides along on the BATTLE_RESOLVE
+        network message, so no tuples (JSON turns them into lists), no sets, no objects.
+
+        All four *_lost / *_survivors keys are mandatory - the battle interface's
+        _render_report() indexes them directly (KeyError if absent) and picks a branch on
+        current_player == attacker_player. Every unit_breakdown entry likewise needs all
+        three of original/survived/lost.
+        """
+        return {
+            'territory': territory,
+            'turn_number': self.turn_number,
+            'defender': defender,
+            'attacker': attacker,
+            'held': held,
+            'units_lost': units_lost,
+            'units_remaining': units_remaining,
+            'structures_destroyed': structures_destroyed,
+            'structures_captured': structures_captured,
+            'structures_remaining': structures_remaining,
+            'unit_breakdown': unit_breakdown,
+            'defender_lost': units_lost,
+            'defender_survivors': units_remaining,
+            'attacker_lost': attacker_lost,
+            'attacker_survivors': attacker_survivors,
+        }
+
+    def _capture_battle_reports(self, battle, winner, territory):
+        """
+        Snapshot the defender's view of a just-resolved battle.
+
+        Only the territory's ORIGINAL OWNER gets a report. Allied co-defenders are
+        deliberately excluded: after resolution the garrison holds only the winner's
+        units, so an ally would always read as "everything lost" even when the territory
+        held. Owner-only matches the scope of the feature ("your territory was attacked").
+        """
+        defender = getattr(battle, 'original_owner', None)
+        # Attacker = first participant that is not the territory's owner.
+        attacker = None
+        for player in battle.armies:
+            if player != defender:
+                attacker = player
+                break
+
+        if not self._should_report_to(
+                defender, attacker,
+                already_eliminated=getattr(battle, '_defender_was_eliminated', False)):
+            return
+
+        held = (winner == defender)
+        buildings_before = getattr(battle, '_buildings_before', None) or {}
+        destroyed, captured, remaining = self._split_structure_losses(
+            buildings_before, territory, held)
+
+        # Exact per-type survivor counts straight from the final garrison. No estimation
+        # needed here, unlike battle_interface.set_actual_battle_result(), which runs
+        # before the garrison is readable and has to approximate proportionally.
+        survived_by_type = {}
+        if held:
+            garrison = self.territory_garrisons.get(territory, {}).get(winner, {})
+            for unit in (garrison.get('units') or []):
+                unit_type = unit.get('type', 'Swordsman')
+                survived_by_type[unit_type] = survived_by_type.get(unit_type, 0) + 1
+
+        # Use battle.army_compositions, NOT player_compositions: the latter substitutes a
+        # phantom {'Swordsman': N} when a player has no recorded composition, and for a
+        # Keep-only defence N is the Keep bonus itself. That would report units the
+        # defender never had. army_compositions is only ever populated from a real
+        # garrison, so an absent entry correctly means "no units, the Keep fought alone".
+        original_comp = (getattr(battle, 'army_compositions', None) or {}).get(defender) or {}
+        unit_breakdown = {}
+        total_original = 0
+        total_survived = 0
+        for unit_type, count in original_comp.items():
+            survived = min(survived_by_type.get(unit_type, 0), count)
+            unit_breakdown[unit_type] = {
+                'original': count,
+                'survived': survived,
+                'lost': count - survived,
+            }
+            total_original += count
+            total_survived += survived
+
+        attacker_comp = (getattr(battle, 'army_compositions', None) or {}).get(attacker) or {}
+        attacker_original = sum(attacker_comp.values())
+        attacker_survivors = 0
+        if not held and winner == attacker:
+            attacker_survivors = getattr(battle, 'surviving_armies', 0) or 0
+
+        self._emit_battle_report(self._make_battle_report(
+            territory=territory, defender=defender, attacker=attacker, held=held,
+            units_lost=total_original - total_survived, units_remaining=total_survived,
+            structures_destroyed=destroyed, structures_captured=captured,
+            structures_remaining=remaining, unit_breakdown=unit_breakdown,
+            attacker_lost=max(0, attacker_original - attacker_survivors),
+            attacker_survivors=attacker_survivors))
+
+    def _capture_uncontested_report(self, territory, previous_owner, new_owner,
+                                    buildings_before):
+        """
+        Battle Report for a territory taken WITHOUT a fight.
+
+        Walking into an undefended territory creates no Battle object, so resolve_battle()
+        never runs - yet this is arguably the easiest loss to miss entirely. Emits zero
+        unit losses and an empty unit_breakdown; _render_report() covers that case with
+        its "No unit data available" fallback.
+        """
+        if not self._should_report_to(previous_owner, new_owner):
+            return
+        destroyed, captured, remaining = self._split_structure_losses(
+            buildings_before, territory, held=False)
+        self._emit_battle_report(self._make_battle_report(
+            territory=territory, defender=previous_owner, attacker=new_owner, held=False,
+            units_lost=0, units_remaining=0,
+            structures_destroyed=destroyed, structures_captured=captured,
+            structures_remaining=remaining, unit_breakdown={},
+            attacker_lost=0, attacker_survivors=0))
+
     def resolve_battle(self, battle_index):
         """
         Resolve a battle using deterministic combat with unit type effectiveness.
@@ -2201,6 +2391,23 @@ class MilitaryMixin:
         
         territory = battle.territory
         self.add_message(f"=== Resolving battle at {territory} ===")
+
+        # Battle Reports: snapshot the completed-building layout BEFORE any destruction.
+        # This must happen here, not in _update_battle_results(), because the perfect-tie
+        # path calls destroy_buildings() at _handle_battle_tie_with_dice() before
+        # _update_battle_results() is reached (and that method early-returns for a tie).
+        # A plot->type dict rather than a count is what lets _capture_battle_reports()
+        # tell destroyed plots apart from ones Champion of the People saved for the winner.
+        battle._buildings_before = dict(self.buildings.get(territory, {}))
+        # Eligibility must be judged on PRE-battle state. check_victory() runs inside
+        # _update_battle_results() and can eliminate a defender who just lost their last
+        # territory - reading eliminated_players afterwards would let this battle
+        # retroactively suppress its own report.
+        battle._defender_was_eliminated = (
+            getattr(battle, 'original_owner', None) in self.eliminated_players)
+        # Reset the per-resolution report list so network send sites can only ever pick up
+        # reports belonging to THIS battle.
+        self.last_battle_reports = []
         
         # Get army counts and compositions
         player_armies = list(battle.armies.items())
@@ -2268,6 +2475,12 @@ class MilitaryMixin:
 
         # Enforce army limits after battle resolution (winner may exceed cap)
         self._enforce_army_limits()
+
+        # Battle Reports: capture the defender's summary. Placed here because winner,
+        # surviving_armies and player_compositions are bound in ALL THREE branches above
+        # (Keep battle, normal battle, dice tie), the garrison is final, and army-overflow
+        # trimming has already run. It is the only single point covering every path.
+        self._capture_battle_reports(battle, winner, territory)
 
         # Cleanup
         self.pending_battles.pop(battle_index)
@@ -2475,7 +2688,14 @@ class MilitaryMixin:
                 # Handle buildings for conquests (Champion of the People ability)
                 if not is_own_reinforcement and not is_ally_reinforcement and current_owner != -1:
                     # This is a conquest - destroy buildings (or preserve Farms/Mines if Champion active)
+                    # Battle Reports: snapshot the plot layout first. Champion of the People
+                    # runs on this path too, so the destroyed/captured split still applies.
+                    buildings_before = dict(self.buildings.get(territory, {}))
                     self.destroy_buildings(territory, current_owner, new_owner=winner)
+                    # Losing an UNDEFENDED territory creates no Battle, so resolve_battle()
+                    # never fires - report it here or the loss is completely silent.
+                    self._capture_uncontested_report(territory, current_owner, winner,
+                                                     buildings_before)
 
                 if is_own_reinforcement:
                     # OWN REINFORCEMENT: Merge arriving armies into owner's garrison
