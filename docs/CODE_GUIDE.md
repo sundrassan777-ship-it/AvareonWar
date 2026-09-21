@@ -968,6 +968,22 @@ opens the turn they belong to. Keying the clear on visibility destroyed every re
 during that announcement, and the feature looked completely dead in play while every
 unit test passed.
 
+**Clearing happens on the TRANSITION OUT of a planning phase, never merely because we
+are not in one.** `_battle_report_planning_owner` records whose planning phase is
+running; when it ends (or the viewer changes), that player's queue is emptied once.
+
+This matters most in **simultaneous mode**. Battles resolve during the `'resolving'`
+phase, when nobody is planning — and because every player plans at once, the viewer *is*
+the defender at that moment. A "not in planning, therefore clear" rule wiped each report
+on the very frame it was captured, so nothing ever appeared. Sequential mode hid the bug:
+there, battles resolve during the *attacker's* turn, so the defender's queue was never
+the one being cleared.
+
+`_get_report_viewer()` also returns `get_local_player()` in simultaneous mode, not
+`current_player`: "whose turn is it" is meaningless when everyone plans together, and sim
+code temporarily swaps `current_player` while running each player's orders, which could
+otherwise hand back an AI slot.
+
 The `turn_announcement_active` guard is load-bearing, not cosmetic: the event loop
 `continue`s past every mouse and keyboard event while an announcement plays, so a popup
 drawn then would silently swallow clicks.

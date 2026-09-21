@@ -213,3 +213,128 @@ class TestCloseAllButton:
         ready._update_battle_reports(0.016)
         ready.ui_renderer._draw_close_all_battle_reports_button(1.0)
         assert ready.close_all_battle_reports_button is None
+
+
+# ===========================================================================
+# Simultaneous mode
+# ===========================================================================
+
+@pytest.fixture(scope='module')
+def sim_game():
+    """A simultaneous-mode Game. Separate from the sequential fixture above."""
+    pygame.init()
+    map_data.load_polygons()
+    from main import Game
+    instance = Game()
+    instance.initialize_game({
+        'num_players': 2,
+        'player_is_ai': [False, True],
+        'player_ai_difficulty': [None, 1],
+        'game_mode': 'simultaneous',
+    })
+    yield instance
+
+
+@pytest.fixture
+def sim(sim_game):
+    gs = sim_game.game_state
+    gs.phase = 'playing'
+    gs.turn_announcement_active = False
+    sim_game.sim_state.sim_phase = 'planning'
+    sim_game.sim_state.players_ready = {0: False, 1: False}
+    sim_game.battle_report_queues = {}
+    sim_game.battle_report_popups = []
+    sim_game.battle_report_rects = []
+    sim_game.battle_report_detail_ui = None
+    sim_game._battle_report_planning_owner = None
+    gs.battle_report_inbox = []
+    return sim_game
+
+
+class TestSimultaneousMode:
+    """
+    Simultaneous mode is where the clearing rule actually bites.
+
+    Battles resolve during the 'resolving' phase, when NOBODY is planning -- and
+    because every player plans at once, the viewer IS the defender at that moment.
+    A "not in planning, therefore clear" rule wiped each report on the very frame it
+    was captured, so no report ever reached the screen.
+    """
+
+    def test_viewer_is_the_local_human_not_the_current_player(self, sim):
+        """
+        sim code temporarily swaps current_player while running each player's orders,
+        and "whose turn is it" is meaningless when everyone plans together.
+        """
+        sim.game_state.current_player = 1      # an AI slot
+        assert sim._get_report_viewer() == 0
+
+    def test_report_captured_during_resolution_survives(self, sim):
+        report = _report(sim)
+        sim.sim_state.sim_phase = 'resolving'
+        sim.game_state.battle_report_inbox.append(report)
+
+        for _ in range(5):                      # several frames of the resolving phase
+            sim._update_battle_reports(0.016)
+        assert sim.battle_report_queues.get(0) == [report]
+        assert sim.battle_report_popups == []   # not shown yet
+
+    def test_report_appears_when_planning_begins(self, sim):
+        report = _report(sim)
+        sim.sim_state.sim_phase = 'resolving'
+        sim.game_state.battle_report_inbox.append(report)
+        sim._update_battle_reports(0.016)
+
+        sim.sim_state.sim_phase = 'planning'
+        sim._update_battle_reports(0.016)
+        sim.draw_battle_reports()
+
+        assert sim.battle_report_popups == [report]
+        assert [entry[1] for entry in sim.battle_report_rects] == ['detail', 'close']
+
+    def test_marking_ready_ends_the_phase_and_clears(self, sim):
+        """A player's own planning phase ends when they mark ready, not at round end."""
+        report = _report(sim)
+        sim.game_state.battle_report_inbox.append(report)
+        sim._update_battle_reports(0.016)
+        assert sim.battle_report_popups == [report]
+
+        sim.sim_state.players_ready[0] = True
+        sim._update_battle_reports(0.016)
+        assert sim.battle_report_popups == []
+        assert sim.battle_report_queues.get(0) == []
+
+    def test_unreviewed_reports_do_not_return_next_round(self, sim):
+        report = _report(sim)
+        sim.game_state.battle_report_inbox.append(report)
+        sim._update_battle_reports(0.016)
+
+        sim.sim_state.players_ready[0] = True   # ready up without reading them
+        sim._update_battle_reports(0.016)
+        sim.sim_state.sim_phase = 'resolving'
+        sim._update_battle_reports(0.016)
+        sim.sim_state.sim_phase = 'planning'    # next round
+        sim.sim_state.players_ready[0] = False
+        sim._update_battle_reports(0.016)
+
+        assert sim.battle_report_popups == []
+
+    def test_full_round_cycle(self, sim):
+        """plan -> ready -> execute -> resolve (battle) -> plan: the report shows."""
+        sim._update_battle_reports(0.016)          # planning, nothing pending
+        sim.sim_state.players_ready[0] = True
+        sim._update_battle_reports(0.016)          # readied up
+
+        sim.sim_state.sim_phase = 'executing'
+        sim._update_battle_reports(0.016)
+
+        sim.sim_state.sim_phase = 'resolving'
+        report = _report(sim)
+        sim.game_state.battle_report_inbox.append(report)
+        sim._update_battle_reports(0.016)
+
+        sim.sim_state.sim_phase = 'planning'       # complete_round -> new planning
+        sim.sim_state.players_ready = {0: False, 1: False}
+        sim._update_battle_reports(0.016)
+
+        assert sim.battle_report_popups == [report]

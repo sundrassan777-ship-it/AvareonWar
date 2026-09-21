@@ -1271,6 +1271,7 @@ class Game:
         self.battle_report_detail_ui = None   # EnhancedBattleInterface in report-only mode
         self.battle_report_renderer = None    # Lazily built BattleReportPopupRenderer
         self._battle_report_detail_source = None  # Report the detail screen is showing
+        self._battle_report_planning_owner = None  # Whose planning phase is running
         self.close_all_battle_reports_button = None
 
         # Victory/defeat cinematic sequence (custom & multiplayer games)
@@ -14406,6 +14407,11 @@ class Game:
         """
         if self.multiplayer_mode and self.local_player_index is not None:
             return self.local_player_index
+        if self.sim_state is not None:
+            # Everyone plans at once, so "whose turn is it" is meaningless here, and
+            # sim code temporarily swaps current_player while running each player's
+            # orders -- reading it could hand back an AI slot.
+            return self.get_local_player()
         return self.game_state.current_player
 
     def _viewer_in_planning(self):
@@ -14487,21 +14493,32 @@ class Game:
             del inbox[:]
 
         viewer = self._get_report_viewer()
+        in_planning = self._viewer_in_planning()
+        owner = self._battle_report_planning_owner
 
-        if not self._viewer_in_planning():
-            # The viewer's planning phase has ended (or has not started): drop their
-            # unreviewed reports so they cannot reappear on a later turn.
-            if self.battle_report_popups:
-                self.battle_report_popups = []
-                self.battle_report_rects = []
-            if self.battle_report_queues.get(viewer):
-                self.battle_report_queues[viewer] = []
+        # Clear on the TRANSITION OUT of a planning phase, never merely because we are
+        # not in one. Battles resolve while nobody is planning -- in simultaneous mode
+        # that is the 'resolving' phase, where the viewer IS the defender -- so a
+        # "not in planning, therefore clear" rule wipes each report on the very frame
+        # it was captured, and the feature never shows anything.
+        if owner is not None and (not in_planning or owner != viewer):
+            self.battle_report_queues[owner] = []
+            self._battle_report_planning_owner = None
+            owner = None
+
+        if not in_planning:
+            self.battle_report_popups = []
+            self.battle_report_rects = []
             return
 
+        # Their planning phase is running: remember whose, so we know what to clear
+        # when it ends.
+        self._battle_report_planning_owner = viewer
+
         if not self._battle_reports_visible():
-            # Temporarily hidden (turn announcement, victory cinematic). Keep the queue
-            # intact -- reports are queued BEFORE the announcement that opens the turn
-            # they belong to, so clearing here would destroy them unseen.
+            # Temporarily hidden (turn announcement, victory cinematic) but NOT over:
+            # keep the queue, since reports are captured before the announcement that
+            # opens the very turn they belong to.
             if self.battle_report_popups:
                 self.battle_report_popups = []
                 self.battle_report_rects = []

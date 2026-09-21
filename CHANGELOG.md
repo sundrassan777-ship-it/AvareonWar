@@ -62,9 +62,16 @@ All notable changes to the AvareonWar project.
   `FontManager` hands out one shared font object per (size, weight) and `_get_cached_text()`
   does not key on underline state, so setting it would have leaked into unrelated UI - the
   same bug `small_font_italic` already has.
-- **Clearing is keyed on the planning phase ending, not on visibility.** Reports are queued
-  *before* the turn announcement that opens the turn they belong to, so clearing whenever
-  they were hidden destroyed every report unseen.
+- **Clearing is keyed on the transition OUT of a planning phase**, never on "not currently
+  in one". Two separate bugs came from getting this wrong: reports are queued *before* the
+  turn announcement that opens the turn they belong to, and - in **simultaneous mode** -
+  battles resolve during the `'resolving'` phase, when nobody is planning and the viewer
+  *is* the defender, so the report was wiped on the very frame it was captured and nothing
+  ever appeared. Sequential mode hid that second one, because there battles resolve during
+  the *attacker's* turn.
+- `_get_report_viewer()` returns the local human in simultaneous mode rather than
+  `current_player`: everyone plans at once, and sim code temporarily swaps
+  `current_player` while running each player's orders.
 - Reports take **Priority 0** in the click chain but are **not modal**: a click that misses
   every popup falls through to the map, and the handler stands down while a higher modal is
   open so it cannot steal clicks from the game/options menu at Priority 3/4.
