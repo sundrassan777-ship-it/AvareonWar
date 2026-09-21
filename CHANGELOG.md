@@ -2,6 +2,113 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-21 - Battle Reports: defenders finally see what happened to them
+
+- **Why:** When an enemy attacked you, the only feedback was the map changing colour.
+  With 10+ territories it was impossible to tell whether a border province had held, what
+  it cost, or what was lost. The attacker got a full battle result screen; the defender
+  got nothing.
+- **What:** On the turn after you are attacked, a small `TransmissionBG` panel appears over
+  each attacked territory showing **DEFENDED** (dark green) or **LOST** (dark red),
+  underlined, with left-aligned counts beneath - units lost/remaining and structures
+  destroyed/remaining. **Detail** opens the full battle result screen from *your* side (the
+  attacker saw a victory; you see the same fight as a defeat), **Close** dismisses one, and
+  **Close All Battle Reports** appears in the top-bar slot the "Resolve Remaining Battles"
+  button uses. Everything disappears when your planning phase ends.
+- Reports are defender-only, transient (not saved, not in replays) and are **excluded from
+  the state checksum and full-state sync** - per-viewer UI state legitimately differs
+  between host and client, and including it would have produced false desyncs.
+
+### Capture (`game_state/military.py`)
+
+- `resolve_battle()` discarded every per-type casualty figure it computed, so there was no
+  data to report. It now snapshots the building layout up front and calls
+  `_capture_battle_reports()` once at the end, after `_enforce_army_limits()`.
+- **The hook cannot live in `_update_battle_results()`.** On the perfect-dice-tie path,
+  `destroy_buildings()` runs inside `_handle_battle_tie_with_dice()` *before*
+  `_update_battle_results()` is reached, and that method early-returns for a tie - a hook
+  there missed ties entirely and reported zero structures destroyed.
+- Unit counts are **exact**, read from the post-battle garrison, not the proportional
+  estimate `battle_interface.set_actual_battle_result()` has to use.
+- **Uncontested captures also report.** Walking into an undefended territory creates no
+  `Battle`, so it is captured separately in `_process_arrivals()`. It was previously the
+  easiest loss of all to miss.
+- **A Keep or Fortress defending alone** still creates a battle: the owner is put into
+  `player_armies` with a count equal to the Keep bonus even with an empty garrison, and
+  `resolve_battle()` then substitutes a phantom `{'Swordsman': keep_bonus}` composition.
+  The report reads `battle.army_compositions`, which is only ever populated from a real
+  garrison, so a Keep-only defence no longer claims units the defender never had.
+- **Champion of the People** (Seledra) preserves Farms/Mines *for the conqueror*: those
+  plots survive and change owner. Counting them as destroyed would be wrong, ignoring them
+  would under-report the loss, so building losses are split into
+  `structures_destroyed` and `structures_captured`, and the popup grows a third line
+  (" - 2 Structures Captured") only when that ability fired.
+- **Aggressive Diplomacy (Halon Nextroy) deliberately produces no report** - it resolves in
+  real time. It is isolated from both hooks today only by accident of structure, so
+  `tests/test_battle_reports.py` pins that with an explicit guard test.
+- Eligibility is judged on **pre-battle** state: `check_victory()` runs inside the battle
+  and can eliminate a defender who just lost their last territory, which would otherwise
+  let a battle retroactively suppress its own report.
+
+### UI (`ui/battle_report_popup.py`, `main.py`, `rendering/ui_renderer.py`)
+
+- Popups anchor to `scaled_centers` through `world_to_screen()`, so they track the camera,
+  but their **size uses the resolution scale, not the zoom-driven one** - they stay
+  readable at every zoom instead of ballooning. Rects are clamped to the map band.
+- The board art is scaled uniformly from its measured proportions (solid area: 7.0% inset
+  left, 6.9% right, 20.1% top, **20.5% bottom** - `campaign_utils.py` never documented that
+  last one) rather than stretched, so the wood grain is never squashed.
+- The title underline is drawn with `pygame.draw.line`, **not** `font.set_underline()`:
+  `FontManager` hands out one shared font object per (size, weight) and `_get_cached_text()`
+  does not key on underline state, so setting it would have leaked into unrelated UI - the
+  same bug `small_font_italic` already has.
+- **Clearing is keyed on the planning phase ending, not on visibility.** Reports are queued
+  *before* the turn announcement that opens the turn they belong to, so clearing whenever
+  they were hidden destroyed every report unseen.
+- Reports take **Priority 0** in the click chain but are **not modal**: a click that misses
+  every popup falls through to the map, and the handler stands down while a higher modal is
+  open so it cannot steal clicks from the game/options menu at Priority 3/4.
+- The Detail screen gets **its own close path** rather than reusing
+  `_finalize_enhanced_battle()`, which would re-broadcast a `BATTLE_RESOLVE` message and
+  re-create alliance markers for a battle finalised long ago.
+- `EnhancedBattleInterface` gained an optional `report_snapshot` argument that opens it
+  directly in the REPORT state without touching `pending_battles` - the `Battle` object is
+  popped the instant it resolves, so for a report there is nothing left to read.
+
+### Multiplayer (`main.py`)
+
+- **A client never runs `resolve_battle()`** - the `BATTLE_RESOLVE` handler applies the
+  result directly - so the capture hook never fires for a defending client, the one player
+  who needs the report. Reports now ride along on that message.
+- Added as a key on the **existing** payload, not a new message type:
+  `validate_message_data()` has no `BATTLE_RESOLVE` branch, the server relays the original
+  bytes, and the receiver reads via `.get()`, so older builds ignore it harmlessly.
+  `NETWORK_VERSION` is deliberately **not** bumped - the server compares versions by exact
+  string, so a bump would lock out every peer for a purely additive key.
+- `_finalize_enhanced_battle()` broadcasts on the CLOSE click, arbitrary frames after
+  `resolve_battle()` ran on the FIGHT click, so its reports are stashed in
+  `_resolved_battle_info` instead of read live from `last_battle_reports`, which another
+  battle could have overwritten by then.
+
+### Also fixed
+
+- **`draw_feedback_button()` crashed on a missing background image.** Every image-backed
+  button (Menu, Players, Resolve Remaining Battles) passes `base_color=None` and relies on
+  `bg_image`; a failed `pygame.image.load()` is caught at startup and leaves that image
+  `None`, so the solid-colour fallback was handed `None` for both and raised
+  "invalid color argument". A missing PNG now degrades to a plain button.
+
+### Tests
+
+- **Added** `tests/test_battle_reports.py` - capture rules, the tie path, Keep-only
+  defences, Champion of the People, the Aggressive Diplomacy guard, JSON round-tripping.
+- **Added** `tests/test_battle_report_popup.py` - line text, geometry, and the report-only
+  battle interface.
+- **Added** `tests/test_battle_report_integration.py` - promote/clear cycle, click routing
+  and the top-bar button against a real `Game`.
+- **Added** `tests/test_battle_report_network.py` - the defending-client path and wire safety.
+- **Added** `tests/test_drawing_helpers.py` - the missing-image button fallback.
+
 ## 2026-09-21 - Map Edge scrolling now waits 200ms before panning
 
 - **Why:** Map Edge mode puts its 20px trigger band *inside* the map viewport, directly

@@ -11,6 +11,7 @@ This guide provides module-specific guidance on when and how to modify different
 1. [Logging System](#logging-system) - Structured logging
 2. [game_state package](#game_state-package) - Core game logic
 3. [main.py](#mainpy) - Main game loop and UI
+   - [Battle Reports](#battle-reports) - Defender-side battle summaries
 4. [AI System](#ai-system) - AI decision making
 5. [Network System](#network-system) - Multiplayer
 6. [Simultaneous Mode](#simultaneous-mode) - Simultaneous turn mode
@@ -869,9 +870,9 @@ frozen at open time so they cannot flip while the menu is on screen.
 | `_get_unit_context_menu_rect()` | Sole source of geometry - both draw and hit-test derive from it, so they cannot desync |
 | `_close_stale_unit_context_menu()` | Drops a menu whose garrison/unit is gone |
 | `draw_unit_context_menu()` | Drawn late in `run()` (with the other popups) so it covers the bottom UI |
-| `handle_unit_context_menu_click(pos)` | **Priority 0** in `mouse_handler.handle_left_click()` |
+| `handle_unit_context_menu_click(pos)` | **Priority 0.5** in `mouse_handler.handle_left_click()` (Battle Reports took Priority 0) |
 
-**It is modal.** While open it is Priority 0 in the click chain and consumes *every*
+**It is modal.** While open it is near the top of the click chain and consumes *every*
 left-click: an item runs its action, anything else just closes it. Hover underneath is
 suppressed in two places - `draw_army_composition_ui()` swaps `self.mouse_pos` for a
 `hover_pos` that is voided inside the menu rect (this also gates the unit tooltip), and
@@ -887,6 +888,141 @@ a few points and the feedback is invisible. The menu uses literal `(82, 72, 55)`
 and `(150, 126, 76)` for the click flash. Use the helpers only on mid-brightness bases.
 
 Tests: `tests/test_unit_context_menu.py`
+
+---
+
+### Battle Reports
+
+On-map summaries shown to a **defender** on the turn after their territory was attacked.
+The attacker has always had the full battle result screen; the defender previously had
+nothing but the map changing colour.
+
+**Files**
+
+| File | Role |
+|---|---|
+| `game_state/military.py` | Capture: `_capture_battle_reports()`, `_capture_uncontested_report()`, `_split_structure_losses()`, `_should_report_to()` |
+| `game_state/__init__.py` | `last_battle_reports` (this battle only) and `battle_report_inbox` (append-only) |
+| `ui/battle_report_popup.py` | `BattleReportPopupRenderer` - geometry, drawing, hit rects |
+| `main.py` | Queues, per-frame update, click/hover/ESC, Detail screen, network send/receive |
+| `rendering/ui_renderer.py` | `_draw_close_all_battle_reports_button()` |
+| `input/mouse_handler.py` | Priority 0 (popups) and Priority 5.6 (Close All) |
+
+Tests: `test_battle_reports.py`, `test_battle_report_popup.py`,
+`test_battle_report_integration.py`, `test_battle_report_network.py`.
+
+#### When to modify
+
+**Adding a field to a report** — add it in `_make_battle_report()` and keep it
+JSON-safe. The snapshot crosses the network, so **no tuples** (JSON turns them into
+lists), no sets, no game objects. `_send_action_to_remote()` has no `try/except` around
+`encode_message()`, so an unencodable value crashes the game loop.
+
+**Changing what a popup says** — `build_report_lines()`. The panel height derives from
+`len(lines)`, so extra lines are safe.
+
+**Changing where the capture happens** — read this first:
+
+- **The hook must stay in `resolve_battle()`, not `_update_battle_results()`.** The
+  perfect-dice-tie path calls `destroy_buildings()` inside
+  `_handle_battle_tie_with_dice()` *before* `_update_battle_results()` runs, and that
+  method early-returns for a tie. A hook there silently misses ties.
+- It sits after `_enforce_army_limits()` and before `pending_battles.pop()`, the only
+  point where `winner`, `player_compositions` and the final garrison are all valid on
+  **all three** branches (Keep battle, normal battle, dice tie).
+
+#### Rules that are easy to break
+
+**Defender is `battle.original_owner` only.** Allied co-defenders are excluded on
+purpose: after resolution the garrison holds only the winner's units, so an ally would
+always read as "everything lost" even when the territory held.
+
+**Never read `player_compositions` for the report.** `resolve_battle()` substitutes a
+phantom `{'Swordsman': count}` when a player has no recorded composition — and for a
+**Keep or Fortress defending alone**, that count is the Keep bonus itself. Use
+`battle.army_compositions`, which is only ever populated from a real garrison, so an
+absent entry correctly means "no units, the Keep fought alone".
+
+**Structures split into destroyed vs captured.** Champion of the People (Seledra)
+preserves Farms/Mines *for the conqueror* — they survive and change owner.
+`structures_captured` is non-zero only when that ability fired.
+
+**Eligibility is judged pre-battle.** `check_victory()` runs inside the battle and can
+eliminate a defender who just lost their last territory; reading `eliminated_players`
+afterwards lets a battle retroactively suppress its own report.
+
+**Hero abilities must stay silent.** Aggressive Diplomacy (Halon Nextroy) takes territory
+in real time. It avoids both hooks only because it sets `territory_owners` directly and
+inlines its own building destruction instead of calling `destroy_buildings()`. That is an
+accident of structure, not a guarantee — `test_battle_reports.py` pins it.
+
+#### Visibility: two predicates, not one
+
+| Predicate | Governs |
+|---|---|
+| `_viewer_in_planning()` | **clearing** |
+| `_battle_reports_visible()` | **drawing and clicks** (adds the turn-announcement and cinematic guards) |
+
+They are separate for a reason. Reports are queued *before* the turn announcement that
+opens the turn they belong to. Keying the clear on visibility destroyed every report
+during that announcement, and the feature looked completely dead in play while every
+unit test passed.
+
+The `turn_announcement_active` guard is load-bearing, not cosmetic: the event loop
+`continue`s past every mouse and keyboard event while an announcement plays, so a popup
+drawn then would silently swallow clicks.
+
+`_get_report_viewer()` returns `local_player_index` in multiplayer, else
+`game_state.current_player` — **not** `get_local_player()`, which returns the first
+non-AI player and would be 0 for both humans in hotseat.
+
+#### Click priority
+
+Reports are **Priority 0** but **not modal**, unlike the unit context menu: a click that
+misses every popup returns `False` and falls through to the map. `_battle_reports_accept_clicks()`
+stands the handler down while the game menu, options menu, save dialog or battle popup is
+open — without that, a Priority 0 check would steal clicks from menus at Priority 3/4.
+Overlapping popups are hit-tested in **reverse** draw order, so the visible one wins.
+
+#### Detail screen
+
+`EnhancedBattleInterface(report_snapshot=...)` opens directly in the REPORT state.
+`_load_assets()` and `_calculate_layout()` still run (they are battle-data free, and the
+layout is the only producer of `report_panel_rect`, `close_button_rect` and the text
+metrics); `_extract_battle_data()` is skipped because the `Battle` is popped the instant
+it resolves. `current_player` is set to the defender so the totals line reads
+`defender_lost` / `defender_survivors`.
+
+**Do not route its close through `_finalize_enhanced_battle()`** — that would re-broadcast
+a `BATTLE_RESOLVE` message and re-create alliance markers for a battle finalised long ago.
+Use `close_battle_report_detail()`.
+
+#### Multiplayer
+
+**A client never runs `resolve_battle()`** — the `BATTLE_RESOLVE` handler applies the
+winner, garrison and ownership directly. The capture hook therefore never fires on the
+defending client, the one player who needs the report, so reports ride along on that
+message as a `battle_reports` key.
+
+- It is a key on the **existing** payload, not a new message type:
+  `validate_message_data()` has no `BATTLE_RESOLVE` branch, the server relays the original
+  bytes, and the receiver reads via `.get()`, so older builds ignore it.
+- **Do not bump `NETWORK_VERSION`** for an additive key. `server.py` compares versions by
+  exact string (despite the "MAJOR only" comment in `network_config.py`), so any bump locks
+  out every peer on the old build.
+- There are **four** send sites. Three read `game_state.last_battle_reports` live;
+  `_finalize_enhanced_battle()` must use the copy stashed in `_resolved_battle_info`,
+  because it broadcasts on the CLOSE click, arbitrary frames after `resolve_battle()` ran
+  on the FIGHT click, by which time another battle could have overwritten the live list.
+- `queue_battle_report()` keeps only the local slot in multiplayer. The resolver also
+  captures reports for remote defenders (it ran the battle); they reach their owner over
+  the wire, and keeping them would build queues this client can never display.
+
+#### Deliberately NOT wired in
+
+`save_manager.py`, `replay_recorder.py`, `calculate_state_checksum()` and
+`_send_full_state_sync()`. Reports are per-viewer UI state that legitimately differs
+between host and client — putting them in the checksum would cause **false desyncs**.
 
 ---
 

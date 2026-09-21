@@ -163,6 +163,21 @@ Winner = Higher total strength
 - SECONDARY: Counter tier ASC (countered → neutral → advantaged within same level)
 - High-level veterans survive battles over raw recruits, regardless of unit type
 
+**Battle Reports (defender feedback):**
+- After an enemy attacks one of your territories, a report appears **over that territory
+  on your next turn** showing **DEFENDED** or **LOST**
+- Shows units lost/remaining and structures destroyed/remaining
+- **Detail** replays the full battle result from your side; **Close** dismisses it.
+  **Close All Battle Reports** (top bar) clears them all
+- Reports vanish when your planning phase ends, whether or not you read them
+- Produced for battles **and** for territories taken without a fight; a Keep or Fortress
+  defending alone reports zero unit losses
+- If the conqueror has **Seledra Rennervail** (Champion of the People), the Farms and
+  Mines she saves are reported as **Captured** rather than Destroyed — they survive
+  intact under enemy ownership
+- **Not** produced for territories taken by **Aggressive Diplomacy** (Halon Nextroy),
+  which resolves in real time, nor for allied takeovers
+
 ---
 
 ## 🎖️ Veterancy System
@@ -569,7 +584,8 @@ Persistent player level that tracks progression across all game modes. XP is ear
 - Arrow keys: Pan camera
 - +/-: Zoom
 - Space: End Turn
-- Esc: Cancel/Close
+- Esc: Cancel/Close (closes a Battle Report detail screen first, then clears any
+  outstanding Battle Reports, before opening the menu)
 - C: Chat
 - M: Menu
 
