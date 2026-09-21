@@ -418,6 +418,9 @@ class UIRenderer:
                 # Shown during battle phase when local player has resolvable battles
                 self._draw_resolve_all_battles_button(scale)
 
+                # "Close All Battle Reports" button (same slot, planning phase instead)
+                self._draw_close_all_battle_reports_button(scale)
+
                 # Territorial Bonuses button (right of phase indicator)
                 # Scale button size with top panel height (80% of panel height, matching phase indicator scaling)
                 button_size = int(self.TOP_PANEL_HEIGHT * 0.8)  # 80% of panel height (32px at 40px panel, scales up)
@@ -686,6 +689,59 @@ class UIRenderer:
 
         # Store rect for click detection and hover tracking
         game.resolve_all_battles_button = btn_rect
+
+    def _draw_close_all_battle_reports_button(self, scale):
+        """
+        Draw "Close All Battle Reports" below the top panel during the planning phase.
+
+        Occupies the same slot as "Resolve Remaining Battles". The two can never
+        collide: this one is planning-phase only, that one is battles-phase only.
+
+        Mirrors _draw_resolve_all_battles_button()'s guard stack, including clearing
+        the rect first every frame so a stale rect cannot keep consuming clicks.
+        """
+        game = self.game
+
+        # Clear rect by default - only set when the button is visible
+        game.close_all_battle_reports_button = None
+
+        # Guard: the viewer must actually have reports on screen
+        if not getattr(game, 'battle_report_popups', None):
+            return
+        if not game._battle_reports_visible():
+            return
+
+        # Guard: not while the detail screen or another modal is open, or when paused
+        if game.battle_report_detail_ui is not None:
+            return
+        if game.enhanced_battle_ui is not None or game.battle_popup_visible:
+            return
+        if game.is_game_paused:
+            return
+        # Only hide for the actual tutorial mission (mission_1), not other campaigns
+        if (game.tutorial_mission and game.tutorial_mission.active
+                and getattr(game.tutorial_mission, 'mission_id', '') == 'mission_1'):
+            return
+
+        # Position: identical geometry to the Resolve button so they share the slot
+        btn_width = int(260 * scale)
+        btn_height = int(32 * scale)
+        btn_x = (self.WINDOW_WIDTH - btn_width) // 2
+        btn_y = self.TOP_PANEL_HEIGHT + int(4 * scale)
+        btn_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+
+        game.helpers.draw_feedback_button(
+            btn_rect, None,
+            game.mouse_pos, game.clicked_element,
+            'top_button', 'close_all_battle_reports',
+            text="Close All Battle Reports",
+            text_color=(255, 255, 255),
+            font=game.small_font_bold,
+            bg_image=game.menu_button_img
+        )
+
+        # Store rect for click detection and hover tracking
+        game.close_all_battle_reports_button = btn_rect
 
     def _draw_connection_status(self):
         """
