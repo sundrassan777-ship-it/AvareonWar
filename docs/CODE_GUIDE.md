@@ -3008,3 +3008,97 @@ close the dialog only), RETURN = open, and wheel scrolling via legacy buttons 4/
 | Rows | single line, `row_height = 64 * s` | two lines (+ `mode - victory` sub-line), `78 * s` |
 | Buttons | Return / Delete / **Load** | Back / Delete / **Watch** |
 | List source | `save_manager.scan_saves()` | `ReplayBrowser._scan_replays()` |
+
+## Replay Viewer HUD (playback screen)
+
+**File:** `replay_viewer.py` (`ReplayViewer`)
+**Launched from:** `main.py` under `action == 'replays'`, after `ReplayBrowser` returns
+`{'action': 'watch', 'path': ...}`. Returns `'main_menu'` or `'quit'`.
+
+This is the playback screen, **not** the Replays list — that is `replay_browser.py`, and it
+follows the "Browser Screens" section above instead.
+
+### Why it is skinned differently from the browsers
+
+The browsers are full-screen ornate panels. The viewer is a **HUD over the live game map**,
+so it wears the *in-game* chrome rather than the campaign frames:
+
+| Element | Asset / value |
+|---|---|
+| Top bar | `assets/TopPanel.jpg`, pre-scaled to `(width, top_bar_height)` |
+| Bottom bar | `assets/BottomBar.jpg`, pre-scaled to `(width, bottom_bar_height)` |
+| Info panel | `assets/RightPanel.jpg`, pre-scaled to `info_panel_rect.size` |
+| Wide buttons (Speed, Exit) | `assets/GMenuButton.png` + the house tint table |
+| Square buttons (playback) | drawn carved plate — `PLATE_BG (54,42,28)` + brass border |
+| Dividers | `BRASS_COLOR`, `max(1, int(2 * ui_scale))` |
+| Body / secondary text | `INFO_TEXT (226,216,190)` / `DIM_TEXT (168,156,128)` |
+| Fonts | `Cinzel-Regular` / `Cinzel-SemiBold` via direct `pygame.font.Font` |
+
+- **`CampaignBG.png` / `OptionsMenuBG.png` are deliberately not used here.** Framing the map
+  shrinks it; the map must stay edge to edge.
+- **The square playback buttons must not wear `GMenuButton.png`.** That art is 1317x417, so
+  squashing it square visibly distorts it. They use `_draw_plate()` instead, which takes the
+  same hover/press lift.
+- **Do not route fonts through `config/font_manager.py`** — same reason as the browsers: it
+  remaps every weight one step bolder.
+
+### Button state tint table
+
+Identical to `replay_browser._btn_surface()`, so the two screens match:
+
+| State | Operation |
+|---|---|
+| normal | `MULT (100,100,100,255)` |
+| hover | normal + `ADD (40,40,40,0)` |
+| click | normal + `ADD (80,80,80,0)` |
+
+`clicked_button` is set in `_handle_left_click()` and cleared at the end of `_render()`, so
+the press tint lasts exactly one frame.
+
+### The invariant that keeps input working
+
+Every rect is a **named instance attribute** built once in `_build_layout()`.
+`_handle_events()` and `_handle_left_click()` hit-test them *by attribute name* and map them
+to **hover-ID strings**: `'play_pause'`, `'step_back'`, `'step_forward'`, `'speed'`, `'exit'`,
+`f'pov_{id}'`. `_btn_state()` matches on those same strings.
+
+**Rename a rect or an ID on one side only and input breaks silently** — no exception, the
+button simply stops responding. Restyling is safe precisely because it only touches
+`_build_layout()` constants and the `_render_*` bodies.
+
+### Geometry contract
+
+- **`_build_layout()` must run before `_load_map_assets()`**, which derives `scale_factor`,
+  `min_zoom` and the scaled polygon/plot tables from `map_rect`. Changing a bar height after
+  the assets load leaves the map scaled to the old viewport.
+- **`_scrub_timeline()` derives its fraction from `timeline_rect.x / .width`**, so the drawn
+  track must be exactly the clickable rect. Draw the fill and handle *inside* it, never
+  around it.
+- **`info_content_rect` is the single source of truth for the info panel.** The y-cursor
+  flows through it *and* `max_info_scroll` is derived from it. Mixing it with the raw
+  `info_panel_rect` (which includes `RightPanel.jpg`'s carved border) makes scrolling stop
+  short or overrun — that is exactly what the padding rework had to fix.
+- Text in the panel is fitted with `_fit_text()` (ported from `replay_browser.py:460`).
+  The panel is only `320 * s` wide, so names and log lines must be measured in **pixels**,
+  not cut at a character count.
+
+### Rules that keep it correct
+
+- **Never allocate a `Surface` per frame.** `_render_map()` draws one polygon overlay per
+  *owned territory per frame*; those go through `_get_overlay()`, which caches by size and
+  wipes on reuse. Building icons go through `_get_scaled_icon()` (`smoothscale` is keyed to
+  `camera_zoom`, so uncached it re-ran for every building every frame).
+- Every texture load has a `None` fallback and every draw site handles it — `main.py` has no
+  `try` around `viewer.run()`, so an uncaught error takes down the campaign loop.
+- `_text_cache` and `_fit_cache` are bounded (512 entries). The action log and turn readout
+  produce fresh strings on most snapshots.
+- Preserve `_MUSIC_END_EVENT` forwarding, `sound_manager.play_ui_click()` on every actionable
+  click, and `draw_custom_cursor()` as the **last** blit before `flip()`.
+
+### Known non-goals
+
+- The window is never resizable (`pygame.RESIZABLE` appears nowhere in the codebase and
+  `display_utils.set_display_mode()` passes only `FULLSCREEN` or `0`), and the viewer has no
+  options menu, so it deliberately has **no `VIDEORESIZE` handling**. `_build_layout()` exists
+  to centralise geometry, not to support live resizing.
+- `camera_offset` is unclamped, so the map can be panned fully off-screen. Pre-existing.

@@ -466,7 +466,7 @@ After making code changes, ask yourself:
 - Player level profile UI → `main_menu.py` `_draw_profile_panel()`
 - Player level recap screen → `recap_screen.py` XP bar methods
 - Modify replay recording → `replay_recorder.py` `_serialize_state()`
-- Modify replay viewer UI → `replay_viewer.py`
+- Modify replay viewer UI → `replay_viewer.py` - in-game HUD style (TopPanel/BottomBar/RightPanel + GMenuButton), **not** the campaign frames; keep the rect attribute names and hover-ID strings or input breaks silently. See "Replay Viewer HUD" in CODE_GUIDE.md
 - Modify replay browser UI → `replay_browser.py` - **mirror any change into `save_browser.py`**; see "Browser Screens" in CODE_GUIDE.md
 - Modify campaign save/load → `save_manager.py` (serialize/deserialize + file I/O)
 - Modify save browser UI → `save_browser.py` - **mirror any change into `replay_browser.py`**; see "Browser Screens" in CODE_GUIDE.md
