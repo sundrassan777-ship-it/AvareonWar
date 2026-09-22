@@ -2,6 +2,68 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-22 - Saved Games and Replays rebuilt in the campaign UI style
+
+- **Why:** Both browsers were still in their original placeholder style - flat dark-blue
+  panels, rounded-rect buttons, a full-screen `(0,0,0,120)` dim and a brass title. Every
+  other full-screen menu (`MissionScreen`, `RecapScreen`, `achievement_panel`) uses one
+  house pattern, so these two were the last screens that looked unfinished.
+- **What:** Pure UI redesign of `save_browser.py` and `replay_browser.py`. Both now use
+  `CampaignBG.png` + the `OptionsMenuBG.png` ornate wooden frame + `CampaignBTN.png`
+  buttons + Cinzel text, with a dark brown `(80, 50, 20)` title on the parchment band -
+  the same value `CampaignScreen` uses, so the titles match. The delete confirmation was
+  restyled onto the same frame, and a brass scroll indicator was added. Behaviour, event
+  handling and the result dicts `main.py` consumes are unchanged.
+- The full-screen dim was **removed**, not restyled: the panel is opaque so it is no
+  longer needed, and it would mute the parchment band the brown title depends on.
+- The two files are deliberate near-duplicates and must be changed together. See the new
+  "Browser Screens (Saved Games / Replays)" section in `docs/CODE_GUIDE.md`.
+
+### Latent bugs fixed while the draw layer was open
+
+- **`max_scroll` was a render side effect.** It was assigned at the end of
+  `_render_list()`, so it lagged a frame and stayed `0` whenever the list was empty (that
+  branch never reached the assignment). Extracted into `_recompute_scroll_bounds()`,
+  called from `__init__` and after a delete; nothing in the render path touches it.
+- **Scrolled rows painted over the column header.** Rows were clipped only to the outer
+  panel. Clipping is now scoped to `rows_rect`, which starts below the header divider -
+  this also removed the one-row-height fudge in the hover hit-test.
+- **The confirm dialog's rects were duplicated verbatim** between `_handle_confirm_click()`
+  and `_render_confirm_dialog()` - six identical expressions in two places, so restyling
+  the dialog would have silently broken its hit-testing. Both now call
+  `_confirm_dialog_rects()`.
+- **Columns were absolute scaled pixels** (`300/550/780 * ui_scale`), so they bunched to
+  the left on ultrawide and a long save name overdrew the Date column. They are now
+  fractions of the content width, with `_fit_text()` ellipsis truncation per cell.
+- `_text_cache` was unbounded and kept stale entries after a delete; it is now bounded and
+  cleared alongside the truncation cache.
+
+### Performance
+
+- **`crop_to_opaque()` (`utils/surface_utils.py`) was a pure-Python `get_at` scan over
+  every pixel** - 1.57 M calls, measured at **276 ms** on `CampaignBTN.png`. Replaced with
+  `Surface.get_bounding_rect(min_alpha=threshold + 1)`, which returns the identical rect
+  `(15, 316, 1502, 297)` in **4 ms**. All six call sites pass the same image, so this also
+  speeds up `campaign_screen`, `recap_screen`, `achievement_panel`, `Campaign_Text_Tool`
+  and `battle_interface`.
+- Added `load_cached_image()` and `get_campaign_button_image()` to `utils/surface_utils.py`
+  so the large menu PNGs (35-70 ms each to decode) are decoded once per process. Both
+  browsers are reconstructed on every open, and `ReplayBrowser` is rebuilt every time the
+  viewer exits, so **re-opening either screen dropped from ~131 ms to ~29 ms**.
+- Panel, dialog, row-background and tinted-button surfaces are pre-built in `__init__` or
+  cached by size, rather than allocated per frame as before (and as `MissionScreen` still
+  does with its 1979x1503 panel). Rendering 200 rows while scrolling costs ~1.9 ms/frame.
+  Acceptance check: `smoothscale` appears only in `__init__` and `_btn_surface()`.
+
+### Verification
+
+No automated tests cover either screen. Verified with headless render and behaviour
+harnesses: geometry holds from 1280x720 to 3440x1440 ultrawide with no overlaps; 19
+behaviour assertions across the two screens cover the result dicts, click-to-select then
+click-again-to-open, disabled buttons, delete confirm/cancel, scroll clamping, ellipsis
+truncation and pre-render `max_scroll`. The 77 existing tests that exercise
+`crop_to_opaque` (battle interface, volley, drawing helpers, resolution caches) pass.
+
 ## 2026-09-22 - Battle Report anchoring, a multi-garrison crash, and two UI labels
 
 - **Battle Report popups are now anchored to the map, not the view.** They were clamped

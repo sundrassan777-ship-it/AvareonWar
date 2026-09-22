@@ -81,11 +81,11 @@ AvareonWar/
 **Replay System (3 files):**
 - [replay_recorder.py](replay_recorder.py) - Records game state snapshots in memory, saves gzip-compressed JSON to Replays/ folder
 - [replay_viewer.py](replay_viewer.py) - Standalone replay viewer with map rendering, timeline, POV switching, playback controls
-- [replay_browser.py](replay_browser.py) - File browser listing saved replays with metadata, watch/delete actions
+- [replay_browser.py](replay_browser.py) - File browser listing saved replays with metadata, watch/delete actions (campaign house style - shares its layout with save_browser.py)
 
 **Campaign Save System (2 files):**
 - [save_manager.py](save_manager.py) - Campaign save/load: serialize/deserialize GameState + mission state, file I/O, gzip JSON in Saves/
-- [save_browser.py](save_browser.py) - Saved games browser screen with scrollable list, load/delete actions
+- [save_browser.py](save_browser.py) - Saved games browser screen with scrollable list, load/delete actions (campaign house style - shares its layout with replay_browser.py)
 
 **Achievement System (2 files):**
 - [achievement_manager.py](achievement_manager.py) - Achievement definitions, stat tracking, persistence, checking
@@ -467,9 +467,10 @@ After making code changes, ask yourself:
 - Player level recap screen → `recap_screen.py` XP bar methods
 - Modify replay recording → `replay_recorder.py` `_serialize_state()`
 - Modify replay viewer UI → `replay_viewer.py`
-- Modify replay browser → `replay_browser.py`
+- Modify replay browser UI → `replay_browser.py` - **mirror any change into `save_browser.py`**; see "Browser Screens" in CODE_GUIDE.md
 - Modify campaign save/load → `save_manager.py` (serialize/deserialize + file I/O)
-- Modify save browser UI → `save_browser.py`
+- Modify save browser UI → `save_browser.py` - **mirror any change into `replay_browser.py`**; see "Browser Screens" in CODE_GUIDE.md
+- Load/cache the ornate menu art (CampaignBG / OptionsMenuBG / CampaignBTN) → `utils/surface_utils.py` (`load_cached_image`, `get_campaign_button_image`, `crop_to_opaque`)
 - Add save state to new mission → add `get_save_state()`/`restore_save_state()` + update `_SAVE_MISSION_REGISTRY` in main.py
 
 ## Notes
