@@ -2,6 +2,63 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-22 - Replay playback screen rebuilt in the in-game HUD style
+
+- **Why:** The Replays *list* was restyled earlier the same day, but the screen you land on
+  after pressing Watch was untouched and was then the last placeholder interface in the
+  game. Its own docstring notes it reuses nothing - no `MapRenderer`, no `CameraHandler`, no
+  shared button helper - so it had a cool-grey palette (`DARK_BG (20,20,30)`,
+  `BUTTON_BG (50,50,70)`), flat `fill((25,25,40,230))` bars, `border_radius=4` rectangles and
+  ASCII button labels (`<<`, `||`, `>`).
+- **What:** Pure UI redesign of `replay_viewer.py`. It now wears the *in-game* chrome rather
+  than the campaign frames - `TopPanel.jpg`, `BottomBar.jpg` and `RightPanel.jpg` for the
+  bars and info panel, `GMenuButton.png` for the wide Speed/Exit buttons, brass dividers at
+  the house line width, and Cinzel at house sizes with legibility floors.
+- **The campaign frames were deliberately not used.** `OptionsMenuBG.png` would have to
+  frame the map, and the map needs to stay edge to edge. The playback screen is a HUD over
+  the game, so it matches the game.
+- **Playback glyphs are drawn, not typed.** Play, pause and step are `gfxdraw.filled_polygon`
+  + `aapolygon` shapes, the same antialiased idiom as the campaign pagination arrows. Cinzel
+  ships no play or pause character, so they could not be text.
+- The three square playback buttons use a drawn carved plate rather than `GMenuButton.png`:
+  that art is 1317x417 and visibly distorts when squashed square. They take the same
+  hover/press lift as the art does.
+- Buttons gained a press state (`clicked_button`, cleared at the end of `_render()`), which
+  the screen never had.
+- **No behaviour changed.** Every rect attribute name and hover-ID string was kept
+  byte-identical, so `_handle_events()` and `_handle_left_click()` were untouched apart from
+  recording the press. See the new "Replay Viewer HUD (playback screen)" section in
+  `docs/CODE_GUIDE.md`.
+
+### Latent bugs and dead code fixed while the draw layer was open
+
+- **Info panel text overflowed the panel.** Log lines were cut at a fixed 50 characters,
+  which is blind to font size; with the larger house fonts they ran past the panel edge and
+  off the screen. Now fitted in pixels via `_fit_text()`, ported from `replay_browser.py`.
+- **The info panel could not be scrolled to the bottom in one drag.** The three item
+  loops broke out at the panel edge, but the same y-cursor also *measures* the content
+  for `max_info_scroll` - so the scroll bound depended on the current scroll position
+  and crept upward a little with each drag (2 -> 20 at 1280x720). The breaks are gone;
+  the per-item guards already skip drawing what is off-panel.
+- **`max_info_scroll` mixed two rects.** The y-cursor flowed from `info_panel_rect` with
+  ad-hoc `12/10/5` offsets while the scroll bound was derived from the raw panel height.
+  Both now use `info_content_rect`, which is the only source of the panel's inner geometry.
+- **A `Surface` was allocated per owned territory per frame** in `_render_map()`, plus one
+  for the hover highlight - the exact pattern CLAUDE.md forbids. Both now use `_get_overlay()`,
+  which caches by size and wipes on reuse.
+- **Every building icon was `smoothscale`d every frame** (the size is keyed to `camera_zoom`).
+  Now cached by `(name, size)` in `_get_scaled_icon()`.
+- **`_text_cache` was unbounded** - every distinct string rendered in the session was
+  retained. Now bounded at 512 alongside the new `_fit_cache`.
+- Dead code removed: `self.flag_icons` (four PNGs loaded, never drawn), `_cached_overlay` /
+  `_cached_overlay_index` (initialised, never used), an unused `BLACK` import, and a
+  duplicate `import os` inside `_load_map_assets()`. `self.title_font` was loaded but never
+  used - it now carries the turn number in the top bar.
+- The playback control row was centred using a **6**-slot width while only 4 buttons are
+  drawn, so it sat off-centre. Corrected in `_build_layout()`.
+- All geometry moved out of `__init__` into `_build_layout()`. This is centralisation, not
+  resize support: the window is never resizable, so there is still no `VIDEORESIZE` handler.
+
 ## 2026-09-22 - Saved Games and Replays rebuilt in the campaign UI style
 
 - **Why:** Both browsers were still in their original placeholder style - flat dark-blue

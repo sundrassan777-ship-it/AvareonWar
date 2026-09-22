@@ -4,6 +4,37 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Watching a Replay
+
+*22 September 2026*
+
+### The replay player now looks like the game
+
+The Replays list was rebuilt recently, but the screen you actually watch a replay on was
+still the old plain one - flat dark panels, grey rounded buttons, and `<<` / `||` / `>` typed
+out as text where the playback controls should be.
+
+It now matches the rest of the game. The bar across the top, the strip along the bottom and
+the panel down the right side all use the same carved wood you see while playing, with brass
+edging and proper golden buttons. The turn number sits in brass at the top right, so you can
+see at a glance where you are.
+
+The playback controls are real icons now - a play triangle, a pause, and step arrows -
+instead of typed characters. They light up when you point at them and press in when you
+click, the same as every other button in the game.
+
+### Easier to read
+
+- **Player names and the action log no longer run off the edge of the panel.** Anything too
+  long for the panel is trimmed with an ellipsis instead of spilling past it.
+- **Text is larger throughout.** The old sizes were noticeably smaller than every other
+  screen.
+- **The timeline is easier to grab**, with a larger brass handle and clearer turn marks.
+
+Nothing about how the viewer works has changed. Space still plays and pauses, the arrow keys
+still step through, `0`-`4` still switch whose stats you are looking at, and Escape still
+takes you back to your replays.
+
 ## Saved Games and Replays
 
 *22 September 2026*
