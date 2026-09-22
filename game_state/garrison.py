@@ -45,6 +45,25 @@ class GarrisonMixin:
         for garrison_player in players_to_remove:
             del self.garrison_positions[territory][garrison_player]
 
+        # Compact any index that now sits outside the ring.
+        # get_flag_positions_for_territory() returns exactly total_garrisons points, so
+        # an index >= total_garrisons is an IndexError at draw time. Removing a garrison
+        # leaves a hole rather than renumbering, so with 3 garrisons at 0/1/2 the
+        # departure of #0 leaves #2 pointing past the end of a now 2-point ring.
+        # Only out-of-range entries move, so positions stay stable for everyone else.
+        positions = self.garrison_positions[territory]
+        stale = sorted(p for p, idx in positions.items() if idx >= total_garrisons)
+        for garrison_player in stale:
+            used = set(positions.values())
+            for pos_idx in range(total_garrisons):
+                if pos_idx not in used:
+                    positions[garrison_player] = pos_idx
+                    break
+            else:
+                # More garrisons than ring positions: clamp into range so drawing is
+                # merely overlapped rather than crashing.
+                positions[garrison_player] = max(0, total_garrisons - 1)
+
         # If this garrison already has a position, keep it
         if player_index in self.garrison_positions[territory]:
             return self.garrison_positions[territory][player_index]
@@ -56,8 +75,10 @@ class GarrisonMixin:
                 self.garrison_positions[territory][player_index] = pos_idx
                 return pos_idx
 
-        # Fallback: assign next available position
-        next_pos = len(self.garrison_positions[territory])
+        # Fallback: assign next available position, clamped into the ring so it can
+        # never index past the point list returned for total_garrisons.
+        next_pos = min(len(self.garrison_positions[territory]),
+                       max(0, total_garrisons - 1))
         self.garrison_positions[territory][player_index] = next_pos
         return next_pos
 

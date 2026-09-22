@@ -1299,7 +1299,16 @@ class MapRenderer:
                     # Get assigned position index for this garrison
                     garrison_position_idx = self.game.game_state.assign_garrison_position(territory, player_index, num_garrisons)
 
-                    # Get flag position for this garrison (world coords)
+                    # Get flag position for this garrison (world coords).
+                    # Bounds-check like the selected-garrison path above does: the index
+                    # is stored per garrison and the ring shrinks when one leaves, so a
+                    # stale index would raise IndexError mid-frame and kill the game.
+                    if (not flag_positions
+                            or garrison_position_idx >= len(flag_positions)):
+                        logger.warning(
+                            "Garrison position %s out of range for %s (%s flag positions)",
+                            garrison_position_idx, territory, len(flag_positions or []))
+                        continue
                     flag_world_x, flag_world_y = flag_positions[garrison_position_idx]
                     flag_screen_x, flag_screen_y = self.game.world_to_screen((flag_world_x, flag_world_y))
 
