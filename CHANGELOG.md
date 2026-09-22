@@ -7,12 +7,13 @@ All notable changes to the AvareonWar project.
 - **Battle Report popups are now anchored to the map, not the view.** They were clamped
   into the map band, so panning away parked one against the screen edge — it read as a
   floating HUD element and misreported where the battle happened. Placement now derives
-  only from the territory centre; `draw()` culls popups that scroll out of the band and
-  clips the pass to it so nothing paints over the UI panels. Hit rects are clipped to the
+  only from the territory centre, **centred on it in both axes** so the report is visible
+  whenever its territory is; `draw()` culls popups that scroll out of the band and clips
+  the pass to it so nothing paints over the UI panels. Hit rects are clipped to the
   visible part too, so a button half hidden under a panel does not take clicks there.
-  - Trade-off: a territory within about one popup-height of the top of the map band has
-    its report culled while the territory is still visible, because the popup sits above
-    it.
+  - Residual trade-off: the buttons sit at the bottom of the board, so a territory centred
+    within half a popup of a band edge can have them clipped away — the report stays
+    readable, and "Close All Battle Reports" still clears it.
 
 - **Fixed `IndexError: list index out of range` in `draw_territories()`** (unrelated to
   Battle Reports; found during playtesting). `assign_garrison_position()` keeps each

@@ -996,9 +996,14 @@ applies a battle outcome without producing a report.
 
 #### Anchoring: the popup belongs to the map, not the view
 
-Placement derives **only** from the territory centre — horizontally centred on it, sitting
-just above it. It is deliberately **not clamped into the viewport**: a popup parked against
-the screen edge reads as a HUD element and lies about where the battle happened.
+Placement derives **only** from the territory centre, and is **centred on it in both
+axes**. It is deliberately **not clamped into the viewport**: a popup parked against the
+screen edge reads as a HUD element and lies about where the battle happened.
+
+Centred rather than sitting *above* the territory, so the popup is visible whenever its
+territory is. Placing it above meant a territory within one popup-height of the top of the
+map band had its report culled entirely while the territory was still in plain view, which
+looked like a missing report.
 
 `draw()` handles the consequences instead:
 - **culls** any popup whose rect no longer intersects the map band
@@ -1008,10 +1013,9 @@ the screen edge reads as a HUD element and lies about where the battle happened.
   must not take clicks there, or the Priority 0 handler would swallow them before the
   panel underneath ever sees them.
 
-Known trade-off: because the popup sits *above* its territory, a territory within roughly
-one popup-height of the top of the map band has its report culled entirely while the
-territory itself is still visible. Centring the popup on the territory would fix that at
-the cost of covering the army flags.
+Residual trade-off: the buttons sit at the bottom of the board, so a territory centred
+within half a popup of a band edge can have them clipped away, leaving the report readable
+but not clickable. Panning slightly, or "Close All Battle Reports", covers that.
 
 #### Readability: dark board, light text
 

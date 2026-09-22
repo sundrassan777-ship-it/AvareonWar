@@ -176,6 +176,50 @@ class TestPopupGeometry:
         assert moved.x == first.x - 300
         assert moved.y == first.y - 150
 
+    def test_is_centred_on_the_territory(self, renderer):
+        """
+        Centred on both axes, so the popup is visible whenever its territory is.
+        Placing it above the territory meant one near the top of the map band was
+        culled entirely while the territory itself was still in plain view.
+        """
+        bounds = self._bounds()
+        anchor = (800, 400)
+        panel = renderer.get_layout(_report(), anchor, bounds)['panel_rect']
+        assert abs(panel.centerx - anchor[0]) <= 1
+        assert abs(panel.centery - anchor[1]) <= 1
+
+    def test_visible_territory_always_has_a_visible_report(self, renderer):
+        """
+        Wherever the territory centre lands inside the band, some of its report is on
+        screen. This is the property centring buys: placing the popup above the
+        territory culled it entirely for anything near the top edge.
+        """
+        bounds = self._bounds()
+        band = pygame.Rect(0, TOP, SCREEN_W, BOTTOM - TOP)
+        for anchor in [(1, TOP + 1), (SCREEN_W - 1, TOP + 1), (1, BOTTOM - 1),
+                       (SCREEN_W - 1, BOTTOM - 1), (SCREEN_W // 2, TOP + 1),
+                       (SCREEN_W // 2, BOTTOM - 1), (800, 400)]:
+            panel = renderer.get_layout(_report(), anchor, bounds)['panel_rect']
+            assert panel.colliderect(band), (anchor, panel)
+
+    def test_buttons_are_clickable_away_from_the_band_edges(self, renderer, game):
+        """
+        The buttons sit at the bottom of the board, so a territory centred within
+        half a popup of an edge can have them clipped away entirely. They must be
+        reachable everywhere else; "Close All Battle Reports" covers the rest.
+        """
+        bounds = self._bounds()
+        layout = renderer.get_layout(_report(), (800, 400), bounds)
+        margin_x = layout['panel_rect'].width
+        margin_y = layout['panel_rect'].height
+
+        for anchor in [(margin_x, TOP + margin_y), (SCREEN_W - margin_x, TOP + margin_y),
+                       (margin_x, BOTTOM - margin_y),
+                       (SCREEN_W - margin_x, BOTTOM - margin_y), (800, 400)]:
+            rects = renderer.draw(
+                game.screen, [_report()], bounds, lambda r, a=anchor: a)
+            assert [entry[1] for entry in rects] == ['detail', 'close'], anchor
+
     def test_follows_the_territory_off_screen(self, renderer):
         """Panning far away must carry the popup out of the view entirely."""
         bounds = self._bounds()

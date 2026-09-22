@@ -45,7 +45,6 @@ BODY_LINE_REF = 13             # Body line height
 BUTTON_GAP_REF = 4             # Between the last body line and the button row
 BUTTON_HEIGHT_REF = 20
 BUTTON_SPACING_REF = 6         # Between the Detail and Close buttons
-ANCHOR_OFFSET_REF = 20         # Gap between the territory centre and the popup
 
 # The raw board art is a mid-tone wood that dark text sits poorly on at this size.
 # The board is darkened on blit (see BOARD_DARKEN) and the text is light, which gives
@@ -183,15 +182,18 @@ class BattleReportPopupRenderer:
         panel_h = int(round(board_h / BOARD_HEIGHT_FRAC))
 
         anchor_x, anchor_y = anchor
-        offset = scale(ANCHOR_OFFSET_REF)
 
-        # Position derives ONLY from the territory centre: horizontally centred on it,
-        # sitting just above it. The popup is deliberately NOT clamped into the view --
-        # it belongs to a place on the map, so panning away must carry it off screen
-        # rather than parking it against the edge, which reads as a floating HUD element
-        # and lies about where the battle happened. draw() culls and clips instead.
+        # Centred on the territory centre, both axes. Position derives ONLY from that
+        # point: the popup is deliberately NOT clamped into the view, because one parked
+        # against the screen edge reads as a floating HUD element and lies about where
+        # the battle happened. draw() culls and clips instead.
+        #
+        # Centred rather than sitting above the territory so that the popup is visible
+        # whenever its territory is -- placing it above meant a territory near the top of
+        # the map band had its report culled entirely while the territory was still in
+        # plain view, which looked like a missing report.
         panel_x = int(anchor_x - panel_w / 2)
-        panel_y = int(anchor_y - offset - panel_h)
+        panel_y = int(anchor_y - panel_h / 2)
 
         panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
         board_rect = pygame.Rect(
