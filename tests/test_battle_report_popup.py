@@ -162,17 +162,54 @@ class TestPopupGeometry:
     def _bounds(self):
         return (0, TOP, SCREEN_W, BOTTOM)
 
-    def test_stays_inside_map_band(self, renderer):
-        """Popups must never overlap the top or bottom panels."""
+    def test_stays_anchored_to_the_territory(self, renderer):
+        """
+        The popup belongs to a place on the map, so it must track the territory
+        exactly and NOT be clamped into view. Parking it against the screen edge
+        when you pan away would read as a HUD element and misreport where the
+        battle happened.
+        """
         bounds = self._bounds()
-        for anchor in [(0, 0), (SCREEN_W, SCREEN_H), (800, TOP), (800, BOTTOM),
-                       (-500, -500), (5000, 5000), (800, 400)]:
-            layout = renderer.get_layout(_report(), anchor, bounds)
-            panel = layout['panel_rect']
-            assert panel.top >= TOP, (anchor, panel)
-            assert panel.bottom <= BOTTOM, (anchor, panel)
-            assert panel.left >= 0, (anchor, panel)
-            assert panel.right <= SCREEN_W, (anchor, panel)
+        first = renderer.get_layout(_report(), (800, 400), bounds)['panel_rect']
+        moved = renderer.get_layout(_report(), (500, 250), bounds)['panel_rect']
+
+        assert moved.x == first.x - 300
+        assert moved.y == first.y - 150
+
+    def test_follows_the_territory_off_screen(self, renderer):
+        """Panning far away must carry the popup out of the view entirely."""
+        bounds = self._bounds()
+        for anchor in [(-4000, -4000), (9000, 9000), (-2000, 400)]:
+            panel = renderer.get_layout(_report(), anchor, bounds)['panel_rect']
+            band = pygame.Rect(0, TOP, SCREEN_W, BOTTOM - TOP)
+            assert not panel.colliderect(band), (anchor, panel)
+
+    def test_offscreen_popups_are_culled_and_produce_no_hit_rects(self, renderer, game):
+        rects = renderer.draw(
+            game.screen, [_report()], self._bounds(), lambda r: (-5000, -5000))
+        assert rects == []
+
+    def test_hit_rects_are_clipped_to_the_visible_band(self, renderer, game):
+        """
+        A button hanging below the map must not take clicks where it is hidden,
+        or Priority 0 would swallow them before the bottom panel sees them.
+        """
+        bounds = self._bounds()
+        # Anchor low enough that the popup straddles the bottom edge of the band.
+        anchor = (800, BOTTOM + 40)
+        layout = renderer.get_layout(_report(), anchor, bounds)
+        assert layout['panel_rect'].bottom > BOTTOM, "test anchor must straddle the edge"
+
+        rects = renderer.draw(game.screen, [_report()], bounds, lambda r: anchor)
+        for rect, _action, _report_obj in rects:
+            assert rect.bottom <= BOTTOM, rect
+            assert rect.top >= TOP, rect
+
+    def test_drawing_restores_the_previous_clip(self, renderer, game):
+        """The clip is shared state; leaking it would break later drawing."""
+        game.screen.set_clip(None)
+        renderer.draw(game.screen, [_report()], self._bounds(), lambda r: (800, 400))
+        assert game.screen.get_clip() == game.screen.get_rect()
 
     def test_buttons_sit_inside_the_board(self, renderer):
         layout = renderer.get_layout(_report(), (800, 400), self._bounds())

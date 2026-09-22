@@ -8773,12 +8773,14 @@ class Game:
                 # Greyed out cancel button during tutorial
                 self.draw_feedback_button(cancel_rect, (80, 80, 80),
                                           'cancel', 'construction',
-                                          text=f"Cancel {building_type} (100%)", font=self.small_font,
+                                          # Just "Cancel": the building name made long types overflow the
+                                          # button, and the plot panel above already names it.
+                                          text="Cancel", font=self.small_font,
                                           text_color=(120, 120, 120))
             else:
                 self.draw_feedback_button(cancel_rect, (150, 100, 100),
                                           'cancel', 'construction',
-                                          text=f"Cancel {building_type} (100%)", font=self.small_font)
+                                          text="Cancel", font=self.small_font)
             self.cancel_button = cancel_rect
 
         else:

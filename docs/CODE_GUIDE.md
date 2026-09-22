@@ -994,6 +994,25 @@ local slot in multiplayer, so the attacker's machine discards the defender's cop
 `resolve_current_battle()`, and the `SIM_BATTLE_RESULT` handler in `main.py`. Any of these
 applies a battle outcome without producing a report.
 
+#### Anchoring: the popup belongs to the map, not the view
+
+Placement derives **only** from the territory centre — horizontally centred on it, sitting
+just above it. It is deliberately **not clamped into the viewport**: a popup parked against
+the screen edge reads as a HUD element and lies about where the battle happened.
+
+`draw()` handles the consequences instead:
+- **culls** any popup whose rect no longer intersects the map band
+- **clips** the whole pass to that band, so a popup low on the map cannot paint over the
+  bottom UI panel (the clip is saved and restored — it is shared surface state)
+- **clips the hit rects too**, via `rect.clip(band)`. A button half hidden under a panel
+  must not take clicks there, or the Priority 0 handler would swallow them before the
+  panel underneath ever sees them.
+
+Known trade-off: because the popup sits *above* its territory, a territory within roughly
+one popup-height of the top of the map band has its report culled entirely while the
+territory itself is still visible. Centring the popup on the territory would fix that at
+the cost of covering the army flags.
+
 #### Readability: dark board, light text
 
 The raw board art is mid-tone wood. Dark text on it measured **2.58:1** contrast at the

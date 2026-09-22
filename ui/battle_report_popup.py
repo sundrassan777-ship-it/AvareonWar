@@ -157,7 +157,7 @@ class BattleReportPopupRenderer:
         Args:
             report: the snapshot dict
             anchor: (x, y) screen position of the territory centre
-            bounds: (left, top, right, bottom) the popup must stay inside (the map band)
+            bounds: the map band, kept for callers; placement does NOT clamp to it
 
         Returns:
             dict with panel_rect, board_rect, detail_rect, close_rect, lines, title
@@ -182,20 +182,16 @@ class BattleReportPopupRenderer:
         panel_w = int(round(board_w / BOARD_WIDTH_FRAC))
         panel_h = int(round(board_h / BOARD_HEIGHT_FRAC))
 
-        left, top, right, bottom = bounds
         anchor_x, anchor_y = anchor
         offset = scale(ANCHOR_OFFSET_REF)
 
-        # Prefer sitting above the territory; flip below when it would clear the top.
+        # Position derives ONLY from the territory centre: horizontally centred on it,
+        # sitting just above it. The popup is deliberately NOT clamped into the view --
+        # it belongs to a place on the map, so panning away must carry it off screen
+        # rather than parking it against the edge, which reads as a floating HUD element
+        # and lies about where the battle happened. draw() culls and clips instead.
         panel_x = int(anchor_x - panel_w / 2)
         panel_y = int(anchor_y - offset - panel_h)
-        if panel_y < top:
-            panel_y = int(anchor_y + offset)
-
-        # Clamp into the map band so a popup can never hide under the panels, whose
-        # clicks would otherwise be stolen by the Priority 0 handler.
-        panel_x = max(left, min(panel_x, right - panel_w))
-        panel_y = max(top, min(panel_y, bottom - panel_h))
 
         panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
         board_rect = pygame.Rect(
@@ -238,27 +234,51 @@ class BattleReportPopupRenderer:
         game = self.game
         rects = []
 
-        for report in reports:
-            anchor = anchor_for(report)
-            if anchor is None:
-                continue
+        left, top, right, bottom = bounds
+        band = pygame.Rect(left, top, right - left, bottom - top)
 
-            layout = self.get_layout(report, anchor, bounds)
-            panel_rect = layout['panel_rect']
+        # Popups are anchored to the map, not the view, so one can be partly or wholly
+        # off screen. Clip to the map band for the whole pass: a popup near the bottom
+        # of the map must not paint over the bottom UI panel.
+        previous_clip = screen.get_clip()
+        screen.set_clip(band)
+        try:
+            for report in reports:
+                anchor = anchor_for(report)
+                if anchor is None:
+                    continue
 
-            background = self._get_background((panel_rect.width, panel_rect.height))
-            if background is not None:
-                screen.blit(background, panel_rect.topleft)
-            else:
-                board = layout['board_rect']
-                fallback = pygame.Surface((board.width, board.height), pygame.SRCALPHA)
-                fallback.fill(FALLBACK_FILL)
-                screen.blit(fallback, board.topleft)
-                pygame.draw.rect(screen, FALLBACK_BORDER, board, 2)
+                layout = self.get_layout(report, anchor, bounds)
+                panel_rect = layout['panel_rect']
 
-            self._draw_contents(screen, layout)
-            rects.append((layout['detail_rect'], 'detail', report))
-            rects.append((layout['close_rect'], 'close', report))
+                # Cull anything scrolled entirely out of the map band.
+                if not panel_rect.colliderect(band):
+                    continue
+
+                background = self._get_background(
+                    (panel_rect.width, panel_rect.height))
+                if background is not None:
+                    screen.blit(background, panel_rect.topleft)
+                else:
+                    board = layout['board_rect']
+                    fallback = pygame.Surface((board.width, board.height),
+                                              pygame.SRCALPHA)
+                    fallback.fill(FALLBACK_FILL)
+                    screen.blit(fallback, board.topleft)
+                    pygame.draw.rect(screen, FALLBACK_BORDER, board, 2)
+
+                self._draw_contents(screen, layout)
+
+                # Hit areas are the VISIBLE part only. A button half hidden under a
+                # panel must not take clicks there, or Priority 0 would swallow them
+                # before the panel underneath ever sees them.
+                for key, action in (('detail_rect', 'detail'),
+                                    ('close_rect', 'close')):
+                    visible = layout[key].clip(band)
+                    if visible.width > 0 and visible.height > 0:
+                        rects.append((visible, action, report))
+        finally:
+            screen.set_clip(previous_clip)
 
         return rects
 

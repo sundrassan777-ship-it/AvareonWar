@@ -2,6 +2,35 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-22 - Battle Report anchoring, a multi-garrison crash, and two UI labels
+
+- **Battle Report popups are now anchored to the map, not the view.** They were clamped
+  into the map band, so panning away parked one against the screen edge — it read as a
+  floating HUD element and misreported where the battle happened. Placement now derives
+  only from the territory centre; `draw()` culls popups that scroll out of the band and
+  clips the pass to it so nothing paints over the UI panels. Hit rects are clipped to the
+  visible part too, so a button half hidden under a panel does not take clicks there.
+  - Trade-off: a territory within about one popup-height of the top of the map band has
+    its report culled while the territory is still visible, because the popup sits above
+    it.
+
+- **Fixed `IndexError: list index out of range` in `draw_territories()`** (unrelated to
+  Battle Reports; found during playtesting). `assign_garrison_position()` keeps each
+  garrison's ring index stable across frames and deletes entries for garrisons that leave,
+  but never renumbered the survivors. Three garrisons at 0/1/2 where #0 departs left #2
+  pointing at index 2 of a ring that is now only two points long, and the next frame
+  raised. Out-of-range entries are compacted into free slots (everyone else keeps their
+  position), the fallback path is clamped, and the draw site bounds-checks and logs
+  instead of raising — matching the guard the selected-garrison path above it already had.
+
+- **Cancel construction button now reads just "Cancel"** instead of
+  `Cancel {building_type} (100%)`, which overflowed the button for longer building names.
+  The plot panel directly above it already names the building.
+
+- **Hero training countdown now reads "3 turns remaining"** instead of
+  `Training: 3 turns remaining`, which overran its column in the Heroes tab. Also fixed
+  the singular case, which previously read "1 turns remaining".
+
 ## 2026-09-21 - Battle Reports: defenders finally see what happened to them
 
 - **Why:** When an enemy attacked you, the only feedback was the map changing colour.

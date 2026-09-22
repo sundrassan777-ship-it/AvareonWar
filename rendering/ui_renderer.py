@@ -2248,8 +2248,12 @@ class UIRenderer:
                     name_text = self.get_cached_text(hero_type, self.game.font, (200, 150, 100), "font")
                     self.game.screen.blit(name_text, (sidebar_x + 40, hero_y + 5))
 
-                    # Progress
-                    progress = f"Training: {turns_remaining} turns remaining"
+                    # Progress. No "Training:" prefix - the panel is already the
+                    # hero training list, and the full label overran its column.
+                    # Singular/plural so the last turn does not read "1 turns".
+                    progress = "%d %s remaining" % (
+                        turns_remaining,
+                        "turn" if turns_remaining == 1 else "turns")
                     progress_text = self.get_cached_text(progress, self.game.small_font, (150, 150, 150), "small")
                     self.game.screen.blit(progress_text, (sidebar_x + 40, hero_y + 28))
 
