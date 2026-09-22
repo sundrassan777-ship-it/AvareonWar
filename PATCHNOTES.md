@@ -4,6 +4,44 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Saved Games and Replays
+
+*22 September 2026*
+
+### The last two plain screens now match the rest of the game
+
+**Saved Games** and **Replays** were the only screens that still looked like placeholders.
+Plain dark boxes, plain grey buttons, and a wash of black over the background - they never
+looked like they belonged next to the campaign screens.
+
+Both have been rebuilt. Your saves and replays now sit on the same carved wooden table you
+see when you open a campaign chapter, under a brass heading, with the same golden buttons
+along the bottom. The delete confirmation got the same treatment, so nothing jumps back to
+the old look halfway through.
+
+Nothing about how they work has changed. Click a save to pick it, click it again to load
+it, or use the buttons. Everything is exactly where it was.
+
+### Longer save names, and a few rough edges gone
+
+- **Long save names no longer run into the Date column.** Anything too long for its column
+  is now trimmed with an ellipsis instead of overlapping what's next to it.
+- **A scroll bar shows you where you are** in a long list. Before, the only hint that there
+  was more below was the list moving.
+- **Scrolling no longer drags rows up over the column headings.**
+- **On ultrawide monitors the columns now spread across the full width** instead of
+  bunching up on the left-hand side.
+- **The mouse wheel works properly on an empty list**, and stops cleanly at the bottom of a
+  full one.
+
+### Both screens open faster
+
+Opening Saved Games or Replays used to stall for a moment before drawing. That pause is
+gone. It's most noticeable with Replays - every time you finish watching one and come back
+to the list, it now appears immediately instead of hitching first.
+
+---
+
 ## Battle Reports
 
 *22 September 2026*

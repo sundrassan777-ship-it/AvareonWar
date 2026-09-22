@@ -24,6 +24,9 @@ This guide provides module-specific guidance on when and how to modify different
 13. [Achievement System](#achievement-system) - Achievements, rewards, tracking
 14. [Recap Screen](#recap-screen) - Post-game statistics
 15. [Loading Screen](#loading-screen) - Deferred asset loading + multiplayer sync
+16. [Replay System](#replay-system) - Recording, viewer, browser
+17. [Campaign Save System](#campaign-save-system) - Save/load campaign progress
+18. [Browser Screens](#browser-screens-saved-games--replays) - Saved Games + Replays UI
 
 ---
 
@@ -2886,6 +2889,7 @@ The player level system tracks persistent XP across games. XP is accumulated dur
 - Change movement order format → update `_serialize_state()` movement_orders section
 - Add new event types → use `replay_recorder.buffer_event()` from the relevant game_state mixin
 - Change replay viewer UI → modify `replay_viewer.py` `_render_*()` methods
+- Change replay **browser** UI → see [Browser Screens](#browser-screens-saved-games--replays); `replay_browser.py` shares its layout with `save_browser.py`, so change both
 - Change replay file format → increment `version` field in `finalize_and_save()`, handle migration in `load_replay()`
 
 **Architecture notes:**
@@ -2904,7 +2908,7 @@ The player level system tracks persistent XP across games. XP is accumulated dur
 - Add new game state fields → update `save_manager.py` `serialize_game_state()` AND `deserialize_game_state()` (must handle both directions + type conversions)
 - Add new campaign mission → add `get_save_state()` / `restore_save_state()` methods, add entry to `_SAVE_MISSION_REGISTRY` in main.py and `_MISSION_TEXTS` in save_manager.py
 - Change mission-specific state → update the mission's `get_save_state()` / `restore_save_state()` methods
-- Change save browser UI → modify `save_browser.py` `_render_*()` methods
+- Change save browser UI → see [Browser Screens](#browser-screens-saved-games--replays); `save_browser.py` shares its layout with `replay_browser.py`, so change both
 - Change save file format → increment `SAVE_VERSION` in save_manager.py
 
 **Architecture notes:**
@@ -2915,3 +2919,92 @@ The player level system tracks persistent XP across games. XP is accumulated dur
 - Save disabled during: AI turns, intro sequences, victory/defeat sequences
 - Save files: gzip-compressed JSON in `Saves/` folder
 - Atomic writes via tempfile + os.replace()
+
+## Browser Screens (Saved Games / Replays)
+
+**Files:** `save_browser.py` (`SaveBrowser`), `replay_browser.py` (`ReplayBrowser`)
+**Shared helpers:** `utils/surface_utils.py` — `load_cached_image()`, `get_campaign_button_image()`, `crop_to_opaque()`
+**Integration:** `main.py` constructs each fresh on every open and blocks on `run()`
+
+These two screens are deliberate near-duplicates — the same list-inside-an-ornate-frame
+layout with different columns. **Change one, change the other.**
+
+### House style
+
+Both follow the campaign pattern shared with `campaign_screen.MissionScreen` and
+`recap_screen.RecapScreen`:
+
+| Element | Asset / value |
+|---|---|
+| Background | `assets/CampaignBG.png`, smoothscaled full screen, **no dim overlay** |
+| Panel | `assets/OptionsMenuBG.png`, darkened with `fill((100,100,100,255), BLEND_RGBA_MULT)` |
+| Buttons | `assets/CampaignBTN.png`, cropped to opaque bounds (1502x297, aspect ~0.1977) |
+| Title | `TITLE_BROWN = (80, 50, 20)` — matches `CampaignScreen`'s "Campaign" title |
+| Headers, primary label | `BRASS_COLOR = (181, 166, 66)` |
+| Fonts | `Cinzel-Regular` / `Cinzel-SemiBold` loaded directly via `pygame.font.Font` |
+
+- **Do not darken the background.** The title is dark brown because it sits on the light
+  parchment band of `CampaignBG.png`; a dim overlay makes it unreadable.
+- **Do not route fonts through `config/font_manager.py`.** It remaps weights one step
+  bolder (`regular`→SemiBold), which breaks the match with the campaign screens.
+- The primary action (Load / Watch) gets a brass label, mirroring "Launch Chapter"; the
+  other buttons are white, and disabled ones use `DIM_TEXT`.
+
+### Geometry contract
+
+`rows_rect` is the single source of truth for hit-testing, clipping and scroll bounds. It
+starts *below* the header divider, so hover mapping needs no header allowance.
+
+- `content_w = rows_rect.width - scroll_gutter`. Columns and row backgrounds use
+  `content_w`; only the scroll indicator may use the gutter.
+- Columns are `(label, start_fraction, end_fraction, alignment)` **fractions of
+  `content_w`**, never absolute pixels, so they stay proportional on ultrawide.
+- Inner panel padding is asymmetric (`215 / 230 / 150 / 145` x `ui_scale`, L/R/T/B)
+  because the carved border of `OptionsMenuBG.png` is wider on the left. These are tuned
+  by eye against a rendered frame — **if you change the panel rect, re-check them**, or
+  content will sit on the border.
+- The confirm dialog uses **fractional** padding, not `N * ui_scale`. The border's
+  on-screen thickness scales with the panel it is drawn into, so a 660-wide dialog needs
+  ~16% padding, not the panel's ~215 px. Its size keeps the frame's native 1979x1503
+  aspect so the border is not distorted.
+
+### Rules that keep it correct
+
+- **`max_scroll` is never assigned from the render path.** Call
+  `_recompute_scroll_bounds()` from `__init__` and after a delete. It used to be a render
+  side effect, so it lagged a frame and stayed `0` for an empty list.
+- **Clip rows to `rows_rect`**, or scrolled rows paint over the column header.
+- **`_confirm_dialog_rects()` is the only place dialog geometry is computed.** Both the
+  click handler and the renderer call it. Duplicating the maths silently breaks
+  hit-testing the next time the look changes — which is exactly what happened before.
+- **Never build surfaces per frame.** Panel, dialog, row backgrounds and tinted buttons
+  are pre-built in `__init__` or cached by size. `smoothscale` should appear only in
+  `__init__` and in `_btn_surface()`'s cache-miss branch — that is the acceptance check.
+- **Assets are decoded once per process** via `load_cached_image()`. Both browsers are
+  rebuilt on every open, and `ReplayBrowser` is rebuilt every time the viewer exits, so
+  re-opening must stay cheap (~29 ms). `crop_to_opaque()` uses
+  `Surface.get_bounding_rect()`, not a per-pixel scan — the old version cost 276 ms.
+- Every asset load has a `None` fallback path. `main.py` has no `try` around
+  `browser.run()`, so an uncaught error takes down the campaign loop, not just the screen.
+
+### Behaviour contract (do not break)
+
+`main.py` consumes these result dicts and nothing else:
+
+- `SaveBrowser` → `{'action': 'load', 'path': str, 'save_data': dict}` / `{'action': 'back'}` / `{'action': 'quit'}`
+- `ReplayBrowser` → `{'action': 'watch', 'path': str}` / `{'action': 'back'}` / `{'action': 'quit'}`
+
+Also preserve: `_MUSIC_END_EVENT` forwarding (menu music stops between tracks without it),
+`sound_manager.play_ui_click()` on every actionable click, `draw_custom_cursor()` as the
+**last** blit before `flip()`, click-to-select then click-again-to-open, ESC = back (or
+close the dialog only), RETURN = open, and wheel scrolling via legacy buttons 4/5.
+
+### Where the two differ
+
+| | `SaveBrowser` | `ReplayBrowser` |
+|---|---|---|
+| Title | "Saved Games" | "Replays" |
+| Columns | Mission, Save Name, Date, Turn | Date, Players, Turns, Winner, Duration |
+| Rows | single line, `row_height = 64 * s` | two lines (+ `mode - victory` sub-line), `78 * s` |
+| Buttons | Return / Delete / **Load** | Back / Delete / **Watch** |
+| List source | `save_manager.scan_saves()` | `ReplayBrowser._scan_replays()` |
