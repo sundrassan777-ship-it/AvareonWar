@@ -222,6 +222,9 @@ AvareonWar/
 
 **Project History:**
 - [CHANGELOG.md](CHANGELOG.md) - Version history, refactoring phases, major changes
+- [PATCHNOTES.md](PATCHNOTES.md) - **Player-facing** release notes. Written for players, not
+  developers: describe what changes in the game, never how it was implemented. Internal work
+  (tests, refactors, docs) belongs in CHANGELOG.md only.
 
 ### Architecture
 
