@@ -1259,6 +1259,21 @@ class Game:
         self.enhanced_battle_ui = None  # EnhancedBattleInterface instance when active
         self._resolved_battle_info = None  # Stores battle info after FIGHT click, before CLOSE
 
+        # Battle Reports (on-map summaries of battles the local player did not watch).
+        # Lives on Game, not GameState, following forced_defend_popup_queue above: this is
+        # per-viewer UI state, so keeping it here keeps it out of save files, the state
+        # checksum and full-state sync, where it would cause false desyncs.
+        # Keyed by player index rather than just the local player so hotseat works --
+        # get_local_player() returns the first non-AI player, which is 0 for both humans.
+        self.battle_report_queues = {}        # {player_index: [snapshot, ...]}
+        self.battle_report_popups = []        # The viewer's snapshots, currently on screen
+        self.battle_report_rects = []         # [(rect, action, snapshot)], rebuilt every draw
+        self.battle_report_detail_ui = None   # EnhancedBattleInterface in report-only mode
+        self.battle_report_renderer = None    # Lazily built BattleReportPopupRenderer
+        self._battle_report_detail_source = None  # Report the detail screen is showing
+        self._battle_report_planning_owner = None  # Whose planning phase is running
+        self.close_all_battle_reports_button = None
+
         # Victory/defeat cinematic sequence (custom & multiplayer games)
         # Waits for all animations to complete, then plays fade→image→hold→auto-recap
         self.victory_sequence_pending = False   # phase='ended' detected, waiting for animations
@@ -1781,6 +1796,7 @@ class Game:
             new_owner = data.get('new_owner')
             alliance_marker = data.get('alliance_marker')  # For simultaneous mode
             surviving_units = data.get('surviving_units')  # Unit composition from host
+            battle_reports = data.get('battle_reports') or []  # Defender summaries
 
             # VALIDATION: Verify battle exists in pending_battles
             battle_exists = False
@@ -1839,6 +1855,13 @@ class Game:
                             self.game_state.eliminate_player(player_index)
                             self.sim_state.eliminate_player(player_index)
                             logger.info(f"[NETWORK] Capital Assault: eliminated Player {player_index + 1} on client")
+
+                # Battle Reports: the resolver captured these, so queue any addressed to
+                # us. This client applied the result above rather than running
+                # resolve_battle(), so this message is its ONLY source for them.
+                for report in battle_reports:
+                    if isinstance(report, dict):
+                        self.queue_battle_report(report)
 
                 # Universal last-team-standing: check victory on client after territory change
                 # (host already checks via _update_battle_results; client needs this for sync)
@@ -4501,6 +4524,12 @@ class Game:
             # Close the unit context menu: its anchor rect belongs to the old layout
             self.unit_context_menu = None
             self.unit_context_menu_rects = []
+            # Battle Reports: drop the cached board (it was convert_alpha()'d against the
+            # old display surface) and the rects, which belong to the old layout. The
+            # popups themselves survive - their anchors re-derive from scaled_centers.
+            self.battle_report_rects = []
+            if self.battle_report_renderer is not None:
+                self.battle_report_renderer.invalidate()
             # Territory preview caches (border scaled size + preview images)
             self._territory_preview_cache = {}
             self._scaled_preview_border = None
@@ -8744,12 +8773,14 @@ class Game:
                 # Greyed out cancel button during tutorial
                 self.draw_feedback_button(cancel_rect, (80, 80, 80),
                                           'cancel', 'construction',
-                                          text=f"Cancel {building_type} (100%)", font=self.small_font,
+                                          # Just "Cancel": the building name made long types overflow the
+                                          # button, and the plot panel above already names it.
+                                          text="Cancel", font=self.small_font,
                                           text_color=(120, 120, 120))
             else:
                 self.draw_feedback_button(cancel_rect, (150, 100, 100),
                                           'cancel', 'construction',
-                                          text=f"Cancel {building_type} (100%)", font=self.small_font)
+                                          text="Cancel", font=self.small_font)
             self.cancel_button = cancel_rect
 
         else:
@@ -11052,6 +11083,10 @@ class Game:
                 # Update forced defend popup timer (auto-close after 10 seconds)
                 self.update_forced_defend_popup(delta_time)
 
+                # Battle Reports: promote newly captured reports and clear them once the
+                # viewer's planning phase ends (single owner of both transitions).
+                self._update_battle_reports(delta_time)
+
             # Victory/defeat cinematic sequence detection and update
             # Runs outside is_game_paused check so the cinematic plays even when paused
             # Skip for campaign missions (they have their own victory system)
@@ -11293,6 +11328,11 @@ class Game:
                                     ]
                             if alliance_marker:
                                 battle_data['alliance_marker'] = alliance_marker
+                            # Battle Reports ride along: a client APPLIES this result rather
+                            # than running resolve_battle(), so without this the defending
+                            # client would never learn what happened in its own territory.
+                            if self.game_state.last_battle_reports:
+                                battle_data['battle_reports'] = list(self.game_state.last_battle_reports)
                             self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
                             logger.info(f"[HOST] Broadcast AI battle result: {territory} -> player {new_owner}")
 
@@ -11899,8 +11939,14 @@ class Game:
             if self._is_tutorial_active():
                 self.tutorial_mission.render(self.screen)
 
+            # Battle Report popups: above the map, below the modal battle/menu layer
+            self.draw_battle_reports()
+
             # Draw battle popup (on top of everything)
             self.draw_battle_popup()
+
+            # Battle Report detail screen (full result panel, defender's point of view)
+            self.draw_battle_report_detail()
 
             # Draw alliance choice popup (simultaneous mode - territory ownership decision)
             self.draw_alliance_choice_popup()
@@ -12712,7 +12758,11 @@ class Game:
                     'territory': territory,
                     'winner': actual_winner,
                     'surviving_armies': actual_survivors,
-                    'new_owner': self.game_state.territory_owners.get(territory, -1)
+                    'new_owner': self.game_state.territory_owners.get(territory, -1),
+                    # Stash the Battle Reports now: resolve_battle() ran on THIS click but
+                    # the broadcast happens on the later CLOSE click, by which time another
+                    # battle could have overwritten game_state.last_battle_reports.
+                    'battle_reports': list(self.game_state.last_battle_reports),
                 }
                 return True
 
@@ -12788,6 +12838,11 @@ class Game:
                                     }
                                     battle_data['alliance_marker'] = alliance_marker
                                     self.sim_state.phase_manager.pending_alliance_markers.append(alliance_marker)
+                        # Battle Reports ride along: a client APPLIES this result rather
+                        # than running resolve_battle(), so without this the defending
+                        # client would never learn what happened in its own territory.
+                        if self.game_state.last_battle_reports:
+                            battle_data['battle_reports'] = list(self.game_state.last_battle_reports)
                         self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
 
                     # Transition to resolving animation
@@ -12892,6 +12947,7 @@ class Game:
         battle = self._resolved_battle_info['battle']
         territory = self._resolved_battle_info['territory']
         new_owner = self._resolved_battle_info['new_owner']
+        stashed_battle_reports = self._resolved_battle_info.get('battle_reports', [])
 
         # Clear stored battle info
         self._resolved_battle_info = None
@@ -12957,6 +13013,11 @@ class Game:
             # Include alliance marker info for simultaneous mode
             if alliance_marker:
                 battle_data['alliance_marker'] = alliance_marker
+            # Battle Reports ride along: a client APPLIES this result rather
+            # than running resolve_battle(), so without this the defending
+            # client would never learn what happened in its own territory.
+            if stashed_battle_reports:
+                battle_data['battle_reports'] = list(stashed_battle_reports)
             self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
 
         # Clean up the interface
@@ -13039,6 +13100,15 @@ class Game:
         # ESC dismisses the unit context menu first, so it doesn't also open the game menu
         if event.key == pygame.K_ESCAPE and self.unit_context_menu:
             self.unit_context_menu = None
+            return True
+
+        # ESC then closes the Battle Report detail screen, and failing that clears any
+        # outstanding report popups - in both cases instead of opening the game menu.
+        if event.key == pygame.K_ESCAPE and self.battle_report_detail_ui is not None:
+            self.close_battle_report_detail()
+            return True
+        if event.key == pygame.K_ESCAPE and self.battle_report_popups:
+            self.close_all_battle_reports()
             return True
 
         # Prepare UI state for handler
@@ -14073,6 +14143,11 @@ class Game:
                         ]
                 if alliance_marker:
                     battle_data['alliance_marker'] = alliance_marker
+                # Battle Reports ride along: a client APPLIES this result rather
+                # than running resolve_battle(), so without this the defending
+                # client would never learn what happened in its own territory.
+                if self.game_state.last_battle_reports:
+                    battle_data['battle_reports'] = list(self.game_state.last_battle_reports)
                 self._send_action_to_remote(MessageType.BATTLE_RESOLVE, battle_data)
 
             # Capital Assault: sync battle-based eliminations to sim_state
@@ -14317,6 +14392,308 @@ class Game:
         return True  # Consume clicks inside popup
 
     # ========== FORCED DEFEND POPUP ==========
+
+    # ==================================================================
+    # Battle Reports (on-map summaries for a defender)
+    # ==================================================================
+
+    MAX_BATTLE_REPORTS_SHOWN = 20  # Matches GameState.MAX_BATTLE_REPORTS_PER_PLAYER
+
+    def _get_report_viewer(self):
+        """
+        The player whose Battle Reports should currently be on screen.
+
+        In multiplayer that is always the local slot. In single-player it is the
+        player whose turn it is, so hotseat works: get_local_player() returns the
+        first non-AI player, which would be 0 for BOTH humans in a 2-human game.
+        """
+        if self.multiplayer_mode and self.local_player_index is not None:
+            return self.local_player_index
+        if self.sim_state is not None:
+            # Everyone plans at once, so "whose turn is it" is meaningless here, and
+            # sim code temporarily swaps current_player while running each player's
+            # orders -- reading it could hand back an AI slot.
+            return self.get_local_player()
+        return self.game_state.current_player
+
+    def _viewer_in_planning(self):
+        """
+        Whether the viewer's own planning phase is currently running.
+
+        This governs CLEARING, and is deliberately separate from
+        _battle_reports_visible(): reports are queued before a turn begins and the
+        turn announcement plays first, so keying the clear on visibility would
+        destroy every report during the very announcement that precedes the turn
+        they belong to.
+        """
+        gs = self.game_state
+        if gs.phase != 'playing':
+            return False
+
+        viewer = self._get_report_viewer()
+        if self.sim_state is not None:
+            if self.sim_state.sim_phase != 'planning':
+                return False
+            return not self.sim_state.players_ready.get(viewer, False)
+        return gs.current_player == viewer and gs.turn_phase == 'planning'
+
+    def _battle_reports_visible(self):
+        """
+        Whether reports may be drawn and may accept clicks right now.
+
+        Stricter than _viewer_in_planning(): the turn_announcement_active guard is
+        load-bearing, not cosmetic, because the event loop `continue`s past every
+        mouse and keyboard event while an announcement plays, so a popup drawn then
+        would silently swallow clicks.
+        """
+        if not self._viewer_in_planning():
+            return False
+        if self.game_state.turn_announcement_active:
+            return False
+        if self.victory_sequence_active or self.victory_sequence_pending:
+            return False
+        return True
+
+    def queue_battle_report(self, report):
+        """
+        Add one report snapshot to its defender's queue (bounded).
+
+        In multiplayer only the local slot is kept: the resolver also captures the
+        reports of REMOTE defenders (it is the machine that ran resolve_battle), and
+        those belong to the other player, who receives them over the network. Keeping
+        them here would pile up queues this client can never display.
+
+        In single-player every human is kept, so hotseat works -- each player sees
+        their own reports as their turn comes round.
+        """
+        defender = report.get('defender')
+        if defender is None or defender < 0:
+            return
+        if self.multiplayer_mode and self.local_player_index is not None:
+            if defender != self.local_player_index:
+                return
+        queue = self.battle_report_queues.setdefault(defender, [])
+        queue.append(report)
+        if len(queue) > self.MAX_BATTLE_REPORTS_SHOWN:
+            del queue[:len(queue) - self.MAX_BATTLE_REPORTS_SHOWN]
+
+    def _update_battle_reports(self, delta_time):
+        """
+        Single per-frame owner of Battle Report promotion AND clearing.
+
+        Clearing here rather than at each End Turn site means every way a planning
+        phase can end is covered by one place: the End Turn button, planning-timer
+        expiry, simultaneous-mode auto-ready and mark_ready(), a network TURN_END,
+        and AI takeover.
+        """
+        # Drain whatever resolve_battle() produced since the last frame. This is what
+        # catches AI-resolved battles, which have no main.py call site of their own.
+        inbox = getattr(self.game_state, 'battle_report_inbox', None)
+        if inbox:
+            for report in inbox:
+                self.queue_battle_report(report)
+            del inbox[:]
+
+        viewer = self._get_report_viewer()
+        in_planning = self._viewer_in_planning()
+        owner = self._battle_report_planning_owner
+
+        # Clear on the TRANSITION OUT of a planning phase, never merely because we are
+        # not in one. Battles resolve while nobody is planning -- in simultaneous mode
+        # that is the 'resolving' phase, where the viewer IS the defender -- so a
+        # "not in planning, therefore clear" rule wipes each report on the very frame
+        # it was captured, and the feature never shows anything.
+        if owner is not None and (not in_planning or owner != viewer):
+            self.battle_report_queues[owner] = []
+            self._battle_report_planning_owner = None
+            owner = None
+
+        if not in_planning:
+            self.battle_report_popups = []
+            self.battle_report_rects = []
+            return
+
+        # Their planning phase is running: remember whose, so we know what to clear
+        # when it ends.
+        self._battle_report_planning_owner = viewer
+
+        if not self._battle_reports_visible():
+            # Temporarily hidden (turn announcement, victory cinematic) but NOT over:
+            # keep the queue, since reports are captured before the announcement that
+            # opens the very turn they belong to.
+            if self.battle_report_popups:
+                self.battle_report_popups = []
+                self.battle_report_rects = []
+            return
+
+        self.battle_report_popups = self.battle_report_queues.get(viewer, [])
+
+    def _battle_report_anchor(self, report):
+        """
+        Screen position of a report's territory, or None when it cannot be placed.
+
+        Uses the same chain every territory-anchored visual uses: the pre-scaled world
+        centre, transformed by the camera, so the popup tracks pans and zooms.
+        """
+        territory = report.get('territory')
+        if territory not in self.scaled_centers:
+            return None
+        return self.world_to_screen(self.scaled_centers[territory])
+
+    def _get_battle_report_bounds(self):
+        """The map band a popup must stay inside (between the top and bottom panels)."""
+        return (0, TOP_PANEL_HEIGHT, WINDOW_WIDTH, BOTTOM_UI_Y)
+
+    def draw_battle_reports(self):
+        """Draw the viewer's Battle Report popups and rebuild their clickable rects."""
+        self.battle_report_rects = []
+        if not self.battle_report_popups or self.battle_report_detail_ui is not None:
+            return
+        if not self._battle_reports_visible():
+            return
+
+        if self.battle_report_renderer is None:
+            from ui.battle_report_popup import BattleReportPopupRenderer
+            self.battle_report_renderer = BattleReportPopupRenderer(self)
+
+        self.battle_report_rects = self.battle_report_renderer.draw(
+            self.screen, self.battle_report_popups,
+            self._get_battle_report_bounds(), self._battle_report_anchor)
+
+    def _battle_report_rect_at(self, pos):
+        """
+        The (rect, action, report) under `pos`, or None.
+
+        Iterated in REVERSE draw order so the popup rendered on top -- the one the
+        player can actually see -- is the one that wins an overlapping click.
+        """
+        for entry in reversed(self.battle_report_rects):
+            if entry[0].collidepoint(pos):
+                return entry
+        return None
+
+    def _battle_reports_accept_clicks(self):
+        """
+        Whether Battle Reports may consume clicks right now.
+
+        They sit at Priority 0, above everything, so they must stand down whenever a
+        higher modal is open -- otherwise they would steal clicks from the game menu
+        and options menu, which live at Priority 3/4.
+        """
+        if not self.battle_report_rects:
+            return False
+        if self.battle_report_detail_ui is not None:
+            return False
+        if (self.game_menu_visible or self.options_menu_visible
+                or self.save_dialog_active or self.battle_popup_visible):
+            return False
+        if getattr(self, 'alliance_choice_popup_visible', False):
+            return False
+        if self.game_state.phase == 'ended':
+            return False
+        return True
+
+    def handle_battle_report_click(self, pos):
+        """
+        Priority 0 click handling for Battle Reports.
+
+        Deliberately NOT modal: a click that misses every popup returns False and
+        falls through to normal play, so reports never block the map underneath.
+        """
+        if not self._battle_reports_accept_clicks():
+            return False
+
+        hit = self._battle_report_rect_at(pos)
+        if hit is None:
+            return False
+
+        _rect, action, report = hit
+        self.sound_manager.play_ui_click()
+        self.trigger_click_flash('battle_report', action)
+
+        if action == 'close':
+            self.dismiss_battle_report(report)
+        elif action == 'detail':
+            self.open_battle_report_detail(report)
+        return True
+
+    def dismiss_battle_report(self, report):
+        """Remove one report from the viewer's queue and from the screen."""
+        viewer = self._get_report_viewer()
+        queue = self.battle_report_queues.get(viewer)
+        if queue and report in queue:
+            queue.remove(report)
+        if report in self.battle_report_popups:
+            self.battle_report_popups.remove(report)
+        self.battle_report_rects = []
+
+    def close_all_battle_reports(self):
+        """Clear every outstanding report for the viewer (the top-bar button)."""
+        viewer = self._get_report_viewer()
+        self.battle_report_queues[viewer] = []
+        self.battle_report_popups = []
+        self.battle_report_rects = []
+        self.close_all_battle_reports_button = None
+
+    def _handle_close_all_battle_reports_click(self):
+        """Top-bar 'Close All Battle Reports' button."""
+        self.sound_manager.play_ui_click()
+        self.trigger_click_flash('top_button', 'close_all_battle_reports')
+        self.close_all_battle_reports()
+
+    def open_battle_report_detail(self, report):
+        """
+        Open the full battle result screen for a report, from the DEFENDER's side.
+
+        Built from the stored snapshot rather than a battle index: the Battle object
+        was popped from pending_battles the instant it resolved, so there is nothing
+        left to read.
+        """
+        from ui.effects.battle_interface import EnhancedBattleInterface
+        try:
+            self.battle_report_detail_ui = EnhancedBattleInterface(
+                screen=self.screen,
+                game_state=self.game_state,
+                battle_index=None,
+                font_manager=self.font_manager,
+                current_player_index=report.get('defender', 0),
+                report_snapshot=report,
+            )
+        except Exception as exc:  # pragma: no cover - defensive, never blocks play
+            logger.warning("Could not open battle report detail: %s", exc)
+            self.battle_report_detail_ui = None
+            return
+        self._battle_report_detail_source = report
+        # Clear hover state so nothing underneath keeps highlighting behind the modal.
+        self.battle_report_rects = []
+
+    def close_battle_report_detail(self):
+        """
+        Close the detail screen and drop the report it was showing.
+
+        Uses its own path rather than _finalize_enhanced_battle(), which would
+        re-broadcast a BATTLE_RESOLVE network message and re-create alliance markers
+        for a battle that was already resolved and finalised long ago.
+        """
+        self.battle_report_detail_ui = None
+        report = getattr(self, '_battle_report_detail_source', None)
+        self._battle_report_detail_source = None
+        if report is not None:
+            self.dismiss_battle_report(report)
+
+    def handle_battle_report_detail_click(self, pos):
+        """Route a click into the open detail screen. Modal: always consumes."""
+        ui = self.battle_report_detail_ui
+        if ui is None:
+            return False
+        if ui.handle_click(pos) == 'close' or ui.is_finished():
+            self.close_battle_report_detail()
+        return True
+
+    def draw_battle_report_detail(self):
+        """Render the detail screen, if one is open."""
+        if self.battle_report_detail_ui is not None:
+            self.battle_report_detail_ui.render()
 
     def _queue_forced_defend_popup(self, territory: str, intended_target: str):
         """
@@ -14733,8 +15110,12 @@ class Game:
         # beneath it may highlight while it is open.
         ctx_menu_rect = self._get_unit_context_menu_rect()
         in_context_menu = bool(ctx_menu_rect and ctx_menu_rect.collidepoint(pos))
+        # Battle Report popups float over the map, so territories beneath one must not
+        # highlight or show tooltips while the cursor is on it.
+        in_battle_report = bool(self._battle_report_rect_at(pos))
         in_map_area = (pos[1] >= TOP_PANEL_HEIGHT and pos[1] < MAP_HEIGHT
-                       and not in_sidebar and not in_tab_buttons and not in_context_menu)
+                       and not in_sidebar and not in_tab_buttons and not in_context_menu
+                       and not in_battle_report)
         if in_map_area:
             # Check if hovering over an army first (takes priority over territory)
             # NOTE: scaled_centers are in WORLD coordinates, so compare with world_pos!
@@ -14815,6 +15196,11 @@ class Game:
             # Check if hovering over "Resolve Remaining Battles" button (below top panel)
             hovering_resolve_btn = (getattr(self, 'resolve_all_battles_button', None) and
                                    self.resolve_all_battles_button.collidepoint(self.mouse_pos))
+            # "Close All Battle Reports" shares that slot during the planning phase, so
+            # it needs the same suppression or the territory under it would glow.
+            if (getattr(self, 'close_all_battle_reports_button', None)
+                    and self.close_all_battle_reports_button.collidepoint(self.mouse_pos)):
+                hovering_resolve_btn = True
 
             # INSTANT HIGHLIGHTS (no delay)
             # Suppress territory glow when hovering over map buttons OR plots OR alliance popup is open

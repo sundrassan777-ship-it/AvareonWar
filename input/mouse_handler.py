@@ -77,12 +77,26 @@ class MouseHandler:
             bool or tuple: True if handled, or (handled, should_quit) tuple
         """
         # L1: Click priority chain (highest to lowest). First match consumes the click.
-        # 0. Unit context menu  1. Victory screen  2. Battle popup
+        # 0. Battle reports  0.5. Unit context menu  1. Victory screen  2. Battle popup
         # 2.5. Alliance choice popup  3. Options menu  4. Game menu  5. Top panel
         # 6. Battle markers  6.5. Alliance markers  7. Order sidebar / tabs
         # 8. Bottom UI       9. Map area (territory selection, movement orders)
 
-        # Priority 0: Unit right-click context menu (bottom-UI army strip).
+        # Priority 0: Battle Report detail screen (modal while open).
+        if getattr(self.game, 'battle_report_detail_ui', None):
+            return self.game.handle_battle_report_detail_click(pos)
+
+        # Priority 0: On-map Battle Report popups.
+        # NOT modal, unlike the context menu below: a click that misses every popup
+        # returns False and falls through, so reports never block the map underneath.
+        # The handler itself stands down while a higher modal (game menu, options,
+        # save dialog, battle popup) is open, which is what stops a Priority 0 check
+        # from stealing clicks destined for Priority 3/4.
+        if getattr(self.game, 'battle_report_rects', None):
+            if self.game.handle_battle_report_click(pos):
+                return True
+
+        # Priority 0.5: Unit right-click context menu (bottom-UI army strip).
         # Modal while open: it consumes every click, so nothing underneath the
         # drop-down is clickable. Clicking outside it just closes it.
         if getattr(self.game, 'unit_context_menu', None):
@@ -123,6 +137,12 @@ class MouseHandler:
         if getattr(self.game, 'resolve_all_battles_button', None):
             if self.game.resolve_all_battles_button.collidepoint(pos):
                 self.game._handle_resolve_all_battles_click()
+                return True
+
+        # Priority 5.6: "Close All Battle Reports" button (shares the slot with 5.5)
+        if getattr(self.game, 'close_all_battle_reports_button', None):
+            if self.game.close_all_battle_reports_button.collidepoint(pos):
+                self.game._handle_close_all_battle_reports_click()
                 return True
 
         # Priority 6: Battle markers

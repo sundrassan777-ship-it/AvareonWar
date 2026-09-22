@@ -356,3 +356,78 @@ class TestMakeUnit:
         for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry']:
             unit = game._make_unit(unit_type, 0, 'ready')
             assert unit['type'] == unit_type
+
+
+# ============================================================================
+# TestGarrisonPositions
+# ============================================================================
+
+class TestGarrisonPositions:
+    """
+    assign_garrison_position() indexes into get_flag_positions_for_territory(),
+    which returns exactly total_garrisons points. An index at or past that length
+    raised IndexError in map_renderer.draw_territories() and killed the game loop.
+    """
+
+    @pytest.fixture
+    def four_player_game(self):
+        return GameState(num_players=4, player_is_ai=[False] * 4,
+                         player_ai_difficulty=[1] * 4, skip_setup_phase=True)
+
+    def _occupy(self, gs, territory, players):
+        for player in players:
+            gs.add_garrison(territory, player, unmoved=1, moved=0,
+                            units=[gs._make_unit('Swordsman', player)])
+
+    def _vacate(self, gs, territory, player):
+        gs.territory_garrisons[territory][player] = {
+            'unmoved': 0, 'moved': 0, 'units': []}
+
+    def test_positions_are_distinct(self, four_player_game):
+        gs = four_player_game
+        self._occupy(gs, 'Lobardia', [0, 1, 2])
+        indices = [gs.assign_garrison_position('Lobardia', p, 3) for p in (0, 1, 2)]
+        assert sorted(indices) == [0, 1, 2]
+
+    def test_position_is_stable_across_calls(self, four_player_game):
+        """Positions must not shuffle every frame while a garrison sits still."""
+        gs = four_player_game
+        self._occupy(gs, 'Lobardia', [0, 1])
+        first = [gs.assign_garrison_position('Lobardia', p, 2) for p in (0, 1)]
+        second = [gs.assign_garrison_position('Lobardia', p, 2) for p in (0, 1)]
+        assert first == second
+
+    def test_departure_compacts_stale_index(self, four_player_game):
+        """
+        Three garrisons at 0/1/2; #0 leaves. Without compaction #2 keeps index 2,
+        which is past the end of the now two-point ring -> IndexError while drawing.
+        """
+        gs = four_player_game
+        self._occupy(gs, 'Lobardia', [0, 1, 2])
+        for player in (0, 1, 2):
+            gs.assign_garrison_position('Lobardia', player, 3)
+
+        self._vacate(gs, 'Lobardia', 0)
+        indices = [gs.assign_garrison_position('Lobardia', p, 2) for p in (1, 2)]
+
+        ring = gs.get_flag_positions_for_territory('Lobardia', 100, 100, 2)
+        assert all(i < len(ring) for i in indices), indices
+        assert sorted(indices) == [0, 1]
+
+    def test_every_index_fits_its_ring(self, four_player_game):
+        """Shrink from 4 garrisons down to 1, checking the ring bound each step."""
+        gs = four_player_game
+        self._occupy(gs, 'Lobardia', [0, 1, 2, 3])
+        for player in range(4):
+            gs.assign_garrison_position('Lobardia', player, 4)
+
+        remaining = [0, 1, 2, 3]
+        for departing in (0, 1, 2):
+            self._vacate(gs, 'Lobardia', departing)
+            remaining.remove(departing)
+            total = len(remaining)
+            indices = [gs.assign_garrison_position('Lobardia', p, total)
+                       for p in remaining]
+            ring = gs.get_flag_positions_for_territory('Lobardia', 100, 100, total)
+            assert all(i < len(ring) for i in indices), (total, indices)
+            assert len(set(indices)) == len(indices), indices

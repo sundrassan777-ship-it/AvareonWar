@@ -65,6 +65,9 @@ AvareonWar/
 **Campaign Utilities:**
 - [campaign_utils.py](campaign_utils.py) - Shared campaign mission utility functions
 
+**Battle Reports:**
+- [ui/battle_report_popup.py](ui/battle_report_popup.py) - On-map defender-side battle summary popups (DEFENDED/LOST, Detail + Close buttons)
+
 **Players Window (Gold Transfer UI):**
 - [players_window.py](players_window.py) - Non-pausing modal listing all players (Name/Controller/Team/Color/Status columns) with ally gold-transfer input + Send button
 
@@ -135,6 +138,11 @@ AvareonWar/
 - [tests/test_battle_bar_volley.py](tests/test_battle_bar_volley.py) - Volley-based battle bar animation (chunk split, determinism, skip, mirrored geometry)
 - [tests/test_battle_interface_integration.py](tests/test_battle_interface_integration.py) - EnhancedBattleInterface wiring (state machine, derived duration, retarget, skip)
 - [tests/test_campaign_outro_cutscene.py](tests/test_campaign_outro_cutscene.py) - Campaign mission exit sentinels: outro cutscene plays on victory only
+- [tests/test_battle_reports.py](tests/test_battle_reports.py) - Battle Report capture rules (tie path, Keep-only defence, Champion of the People, hero-ability guard)
+- [tests/test_battle_report_popup.py](tests/test_battle_report_popup.py) - Popup text/geometry and the report-only battle interface
+- [tests/test_battle_report_integration.py](tests/test_battle_report_integration.py) - Battle Report wiring against a real `Game`
+- [tests/test_battle_report_network.py](tests/test_battle_report_network.py) - Battle Reports reaching a defending multiplayer client
+- [tests/test_drawing_helpers.py](tests/test_drawing_helpers.py) - `draw_feedback_button()` fallback when its background image is missing
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -214,6 +222,9 @@ AvareonWar/
 
 **Project History:**
 - [CHANGELOG.md](CHANGELOG.md) - Version history, refactoring phases, major changes
+- [PATCHNOTES.md](PATCHNOTES.md) - **Player-facing** release notes. Written for players, not
+  developers: describe what changes in the game, never how it was implemented. Internal work
+  (tests, refactors, docs) belongs in CHANGELOG.md only.
 
 ### Architecture
 
@@ -418,6 +429,11 @@ After making code changes, ask yourself:
 - Change internet play / UPnP → `network/upnp.py` and `network_config.py`
 - Modify simultaneous mode → `simultaneous/sim_state.py`, `sim_conflict_resolver.py`
 - Modify victory/elimination → `game_state/victory.py` (check_victory, eliminate_player, eliminate_player_disconnect)
+- Modify Battle Reports (capture) → `game_state/military.py` `_capture_battle_reports()` / `_capture_uncontested_report()` — hook lives in `resolve_battle()`, NOT `_update_battle_results()` (the tie path destroys buildings first and early-returns)
+- Modify Battle Report popup visuals → `ui/battle_report_popup.py`
+- Modify Battle Report show/hide rules → `main.py` `_viewer_in_planning()` (clearing) vs `_battle_reports_visible()` (drawing) — these are deliberately separate
+- Modify "Close All Battle Reports" button → `rendering/ui_renderer.py` `_draw_close_all_battle_reports_button()` + `main.py` `close_all_battle_reports()`
+- Modify Battle Report detail screen → `ui/effects/battle_interface.py` `report_snapshot` ctor path + `main.py` `open_battle_report_detail()`
 - Modify disconnect elimination → `network/server.py` (_cleanup_expired_reconnects), `main.py` (DISCONNECT_ELIMINATION handler)
 - Modify anti-win-farming XP → `player_level.py` (_is_disconnect_farming, DISCONNECT_FARMING_XP_THRESHOLD)
 - Add new achievement → `achievement_manager.py` ACHIEVEMENTS list

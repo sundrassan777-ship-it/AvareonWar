@@ -569,6 +569,19 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         self.turn_phase = 'planning' # 'planning', 'execution', 'battles'
         self.ready_to_advance_turn = False  # Flag to advance turn after battle popup closes
 
+        # Battle Reports: transient per-defender summaries of battles they did not watch.
+        # Purpose: a defender gets no feedback today beyond the map changing colour, so we
+        # snapshot the outcome at resolution time and surface it on their next turn.
+        # Both lists are deliberately EXCLUDED from save_manager, calculate_state_checksum()
+        # and _send_full_state_sync(): this is per-viewer UI state that legitimately differs
+        # between host and client, and including it would cause false desyncs.
+        # last_battle_reports - reset at the top of every resolve_battle(); holds only that
+        #   battle's snapshots so the network send sites can attach them to BATTLE_RESOLVE.
+        # battle_report_inbox - append-only; main.py drains it every frame. This is what
+        #   catches AI-resolved battles, which have no main.py call site at all.
+        self.last_battle_reports = []
+        self.battle_report_inbox = []
+
         # Army movement animations
         self.active_animations = []  # List of ArmyAnimation objects
         self.pending_arrivals = []   # Armies waiting to arrive after animations complete

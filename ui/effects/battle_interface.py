@@ -953,7 +953,8 @@ class EnhancedBattleInterface:
     """
 
     def __init__(self, screen, game_state, battle_index, font_manager,
-                 current_player_index, on_complete_callback=None):
+                 current_player_index, on_complete_callback=None,
+                 report_snapshot=None):
         """
         Initialize the enhanced battle interface.
 
@@ -964,6 +965,11 @@ class EnhancedBattleInterface:
             font_manager: FontManager for text rendering
             current_player_index: Index of the player viewing the battle
             on_complete_callback: Function to call when interface closes
+            report_snapshot: Battle Report dict. When given, the interface opens
+                directly in the REPORT state from that snapshot and never reads
+                pending_battles -- the Battle object is popped the instant it
+                resolves, so for a report there is nothing left to read. No
+                animation is played.
         """
         self.screen = screen
         self.game_state = game_state
@@ -999,9 +1005,47 @@ class EnhancedBattleInterface:
 
         # Calculate layout
         self._calculate_layout()
+        # Both of the above are battle-data free, and _calculate_layout() is the only
+        # producer of report_panel_rect / close_button_rect / _scaled_report_bg and the
+        # text metrics _render_report() needs, so report-only mode still runs them.
 
-        # Extract battle data for display
-        self._extract_battle_data()
+        if report_snapshot is not None:
+            self._apply_report_snapshot(report_snapshot)
+        else:
+            # Extract battle data for display
+            self._extract_battle_data()
+
+    def _apply_report_snapshot(self, report):
+        """
+        Open straight into the REPORT state from a stored Battle Report.
+
+        Sets every field _render_report() touches. current_player_won in particular is
+        otherwise first assigned in _pre_calculate_battle_result(), which a report never
+        reaches -- leaving it unset would be an AttributeError on the first frame.
+
+        current_player is the defender and attacker_player the attacker, so the totals
+        line reads defender_lost / defender_survivors: the attacker saw this battle as a
+        victory, the defender must see the same fight as a defeat.
+        """
+        self.report_snapshot = report
+        self.territory = report.get('territory', '')
+        self.current_player = report.get('defender', self.current_player)
+        self.attacker_player = report.get('attacker')
+        self.defender_players = [report.get('defender')]
+        self.current_player_won = bool(report.get('held'))
+        self.winner = report.get('defender') if report.get('held') else report.get('attacker')
+        self.battle_result = {
+            'winner': self.winner,
+            'unit_breakdown': report.get('unit_breakdown', {}),
+            'attacker_lost': report.get('attacker_lost', 0),
+            'attacker_survivors': report.get('attacker_survivors', 0),
+            'defender_lost': report.get('defender_lost', 0),
+            'defender_survivors': report.get('defender_survivors', 0),
+        }
+        # Straight to REPORT: no SETUP/ANIMATING/SPLASH, so update() is a no-op and the
+        # None sub-effects are never touched.
+        self.state = BattleInterfaceState.REPORT
+        self.elapsed = 0.0
 
     def _load_assets(self):
         """Load all required image assets."""
