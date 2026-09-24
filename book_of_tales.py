@@ -206,9 +206,24 @@ class BookOfTales:
         self._btn_cache = {}
         self._text_cache = {}
         self._outline_cache = {}   # size -> silhouette points for the selected outline
-        # Wrapped description lines, rebuilt only when the selection changes
+        # Description body geometry (fixed): heading + divider on top, then a
+        # scrollable, clipped body. A narrow gutter on the right holds the
+        # scroll indicator so text never runs under it.
+        self.desc_divider_y = (self.text_rect.top + self.heading_font.get_height()
+                               + int(12 * s))
+        body_top = self.desc_divider_y + int(20 * s)
+        self.desc_gutter = int(16 * s)
+        self.desc_body_rect = pygame.Rect(
+            self.text_rect.x, body_top,
+            max(1, self.text_rect.width - self.desc_gutter),
+            max(1, self.text_rect.bottom - body_top))
+        self.desc_line_h = self.body_font.get_linesize()
+
+        # Wrapped description lines + scroll state, rebuilt only on selection
+        # change (never from the render path)
         self._desc_lines = []
-        self._desc_for_index = None
+        self.desc_scroll = 0
+        self.desc_max_scroll = 0
 
     # ------------------------------------------------------------------
     # Main loop
@@ -282,8 +297,14 @@ class BookOfTales:
                 elif event.key == pygame.K_RETURN and self.selected_index >= 0:
                     self._launch_selected()
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                self._handle_left_click(mouse_pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:
+                    self._handle_left_click(mouse_pos)
+                # Wheel (legacy buttons 4/5, like the browsers) scrolls the
+                # description while the mouse is over its panel
+                elif event.button in (4, 5) and self.panel_rect.collidepoint(mouse_pos):
+                    step = self.desc_line_h * (-1 if event.button == 4 else 1)
+                    self.desc_scroll = max(0, min(self.desc_max_scroll, self.desc_scroll + step))
 
     def _handle_left_click(self, mouse_pos):
         """Handle a left click on any button."""
@@ -306,7 +327,18 @@ class BookOfTales:
             self._update_visible_tales()
         else:
             # ('tale', index) — select it; the description panel follows
-            self.selected_index = target[1]
+            self._select_tale(target[1])
+
+    def _select_tale(self, idx):
+        """Select a tale: re-wrap its description and reset/re-bound the scroll."""
+        if idx == self.selected_index:
+            return
+        self.selected_index = idx
+        text = self.scenarios[idx].get('description', '')
+        self._desc_lines = self._wrap_text(text, self.body_font, self.desc_body_rect.width)
+        self.desc_scroll = 0
+        total_h = len(self._desc_lines) * self.desc_line_h
+        self.desc_max_scroll = max(0, total_h - self.desc_body_rect.height)
 
     def _launch_selected(self):
         """Placeholder: tales are not playable yet, so Launch only flashes.
@@ -408,25 +440,47 @@ class BookOfTales:
         heading = self._cached_text(tale['name'], self.heading_font, BRASS_COLOR)
         self.screen.blit(heading, heading.get_rect(centerx=area.centerx, top=area.top))
 
-        divider_y = area.top + heading.get_height() + int(12 * self.ui_scale)
+        divider_y = self.desc_divider_y
         pygame.draw.line(self.screen, BRASS_COLOR, (area.left, divider_y), (area.right, divider_y),
                          max(1, int(2 * self.ui_scale)))
 
-        # Re-wrap only when the selection changes
-        if self._desc_for_index != self.selected_index:
-            self._desc_lines = self._wrap_text(tale.get('description', ''), self.body_font, area.width)
-            self._desc_for_index = self.selected_index
-
-        line_h = self.body_font.get_linesize()
-        y = divider_y + int(20 * self.ui_scale)
+        # Scrollable body, clipped so scrolled lines never paint over the
+        # heading or past the frame
+        body = self.desc_body_rect
+        line_h = self.desc_line_h
+        prev_clip = self.screen.get_clip()
+        self.screen.set_clip(body)
+        y = body.top - self.desc_scroll
         for line in self._desc_lines:
-            # Bounds check: never paint past the bottom of the panel's text area
-            if y + line_h > area.bottom:
+            if y + line_h <= body.top:
+                y += line_h
+                continue
+            if y >= body.bottom:
                 break
             if line:
                 surf = self._cached_text(line, self.body_font, INFO_TEXT)
-                self.screen.blit(surf, (area.x, y))
+                self.screen.blit(surf, (body.x, y))
             y += line_h
+        self.screen.set_clip(prev_clip)
+
+        self._draw_desc_scroll_indicator()
+
+    def _draw_desc_scroll_indicator(self):
+        """Slim brass scroll indicator (same look as SaveBrowser's). Visual only."""
+        if self.desc_max_scroll <= 0:
+            return
+        body = self.desc_body_rect
+        total_h = len(self._desc_lines) * self.desc_line_h
+        track_w = max(2, int(6 * self.ui_scale))
+        track_x = body.right + self.desc_gutter - track_w
+        radius = max(1, track_w // 2)
+        pygame.draw.rect(self.screen, (54, 42, 28),
+                         pygame.Rect(track_x, body.y, track_w, body.height), border_radius=radius)
+        thumb_h = max(int(20 * self.ui_scale), int(body.height * body.height / total_h))
+        thumb_h = min(thumb_h, body.height)
+        thumb_y = body.y + int((body.height - thumb_h) * (self.desc_scroll / self.desc_max_scroll))
+        pygame.draw.rect(self.screen, BRASS_COLOR,
+                         pygame.Rect(track_x, thumb_y, track_w, thumb_h), border_radius=radius)
 
     @staticmethod
     def _wrap_text(text, font, max_w):

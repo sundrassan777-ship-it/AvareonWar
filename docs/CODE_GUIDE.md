@@ -3025,6 +3025,10 @@ back to the Campaign screen.
   `self.result = {'action': 'launch', 'scenario_id': ...}` + `self.done = True` there, and
   handle that action in the `mission_id == 'book_of_tales'` branch of `main.py`.
 - **Results:** `{'action': 'back'}` / `{'action': 'quit'}` (and later `'launch'`).
+- **Description scrolling:** mouse wheel (buttons 4/5) over the panel scrolls the body by one
+  line; the heading and divider stay fixed. Wrapping and `desc_max_scroll` are computed in
+  `_select_tale()` only, never from render. Select tales through `_select_tale()`, not by
+  setting `selected_index` directly, or the description stays empty.
 - **Look:** background `BookOfTalesBG.png`; description panel `IGOptMenuBG.png` (not darkened;
   text padding is a *fraction* of the panel because the frame is stretched); tale buttons are
   the cropped `CampaignBTN.png` with the Campaign mission-button tints, plus MissionScreen's
