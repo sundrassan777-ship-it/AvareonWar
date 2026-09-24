@@ -3009,6 +3009,34 @@ close the dialog only), RETURN = open, and wheel scrolling via legacy buttons 4/
 | Buttons | Return / Delete / **Load** | Back / Delete / **Watch** |
 | List source | `save_manager.scan_saves()` | `ReplayBrowser._scan_replays()` |
 
+## Book of Tales Screen
+
+**File:** `book_of_tales.py` (`BookOfTales`)
+**Launched from:** the square icon button in the **bottom-right** corner of `CampaignScreen`
+(mirror of Saved Games in the bottom-left). `CampaignScreen.run()` returns the sentinel
+`'book_of_tales'`, and `main.py`'s campaign loop opens `BookOfTales` and then `continue`s
+back to the Campaign screen.
+
+- **Adding or editing tales:** edit the module-level `SCENARIOS` list (`id`, `name`,
+  `description`, optional `'hidden': True` to keep a tale off the list; `'\n'` in a
+  description starts a new paragraph). Buttons keep fixed slots from the top and paginate
+  automatically (triangle arrows under the column) once the list outgrows the column.
+- **Launch is a placeholder.** `_launch_selected()` only logs. To make tales playable, set
+  `self.result = {'action': 'launch', 'scenario_id': ...}` + `self.done = True` there, and
+  handle that action in the `mission_id == 'book_of_tales'` branch of `main.py`.
+- **Results:** `{'action': 'back'}` / `{'action': 'quit'}` (and later `'launch'`).
+- **Look:** background `BookOfTalesBG.png`; description panel `IGOptMenuBG.png` (not darkened;
+  text padding is a *fraction* of the panel because the frame is stretched); tale buttons are
+  the cropped `CampaignBTN.png` with the Campaign mission-button tints, plus MissionScreen's
+  brighter base (x140) and a brass outline traced from the art's alpha mask (cached per size
+  in `_outline_cache`) for the selected tale. The title is white (`TITLE_COLOR`), not the Campaign
+  title's brown: brown is unreadable on this background's dark vault. Return / Launch copy SaveBrowser's Return / Load
+  geometry and `_btn_surface` / `_render_btn` tint states; Launch is disabled (no hover, no
+  click, dim label) until a tale is selected.
+- **Campaign screen corner buttons** share `CampaignScreen._draw_icon_button(rect, icon,
+  btn_id, tooltip)`. Change hover/flash/border there so both stay identical.
+  `BTNBookOfTales.png` is 3:2, so it is centre-cropped to a square at load, not squashed.
+
 ## Replay Viewer HUD (playback screen)
 
 **File:** `replay_viewer.py` (`ReplayViewer`)

@@ -54,6 +54,7 @@ AvareonWar/
 - [main_menu.py](main_menu.py) - Main menu with game mode selection
 - [integrated_setup.py](integrated_setup.py) - Setup window with map preview, territory selection
 - [campaign_screen.py](campaign_screen.py) - Campaign screen with background and return button
+- [book_of_tales.py](book_of_tales.py) - Book of Tales scenario picker (opened from the Campaign screen's bottom-right icon; placeholder tales, Launch not wired yet)
 - [recap_screen.py](recap_screen.py) - Post-game recap/statistics screen (tabbed table UI)
 - [loading_screen.py](loading_screen.py) - Loading screen with progress bar for deferred asset loading + multiplayer sync
 
@@ -471,6 +472,8 @@ After making code changes, ask yourself:
 - Modify campaign save/load → `save_manager.py` (serialize/deserialize + file I/O)
 - Modify save browser UI → `save_browser.py` - **mirror any change into `replay_browser.py`**; see "Browser Screens" in CODE_GUIDE.md
 - Load/cache the ornate menu art (CampaignBG / OptionsMenuBG / CampaignBTN) → `utils/surface_utils.py` (`load_cached_image`, `get_campaign_button_image`, `crop_to_opaque`)
+- Add/edit Book of Tales scenarios → `book_of_tales.py` `SCENARIOS`; wire Launch in `_launch_selected()` + `main.py` `'book_of_tales'` branch. See "Book of Tales Screen" in CODE_GUIDE.md
+- Change Campaign screen corner icon buttons (Saved Games / Book of Tales) → `campaign_screen.py` `_draw_icon_button()`
 - Add save state to new mission → add `get_save_state()`/`restore_save_state()` + update `_SAVE_MISSION_REGISTRY` in main.py
 
 ## Notes

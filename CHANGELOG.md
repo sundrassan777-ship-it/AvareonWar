@@ -2,6 +2,19 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-24 - Book of Tales screen (scaffold)
+
+- **What:** New `book_of_tales.py` screen for standalone scenarios, opened from a new
+  square icon button in the bottom-right corner of the Campaign screen (mirror of Saved
+  Games). Left column of tale buttons (Campaign mission-button look, selected tint), right
+  description panel (`IGOptMenuBG.png`), Return (bottom-left) and Launch (bottom-right,
+  disabled until a tale is selected).
+- **Placeholders:** four tales ("Tale I"-"Tale IV") in `SCENARIOS`; II-IV are flagged
+  `hidden` for now, so only Tale I shows. Launch only logs for now.
+- `CampaignScreen._draw_saved_games_button()` generalised into `_draw_icon_button()` so both
+  corner buttons share hover, click flash, border and tooltip.
+- Wired in `main.py`'s campaign loop via the `'book_of_tales'` sentinel.
+
 ## 2026-09-22 - Replay playback screen rebuilt in the in-game HUD style
 
 - **Why:** The Replays *list* was restyled earlier the same day, but the screen you land on

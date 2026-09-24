@@ -16429,6 +16429,18 @@ if __name__ == "__main__":
                     # Return to campaign screen (regardless of load/back)
                     continue
 
+                if mission_id == 'book_of_tales':
+                    # Book of Tales scenario picker (bottom-right icon on the
+                    # Campaign screen). Launch is a placeholder for now, so every
+                    # non-quit result returns to the Campaign screen.
+                    from book_of_tales import BookOfTales
+                    screen = current_surface() or screen
+                    tales_result = BookOfTales(screen).run()
+                    if tales_result and tales_result.get('action') == 'quit':
+                        pygame.quit()
+                        sys.exit()
+                    continue
+
                 # User selected a mission - open mission screen
                 mission_data = MISSION_DATA.get(mission_id, {})
                 mission = MissionScreen(screen, mission_id, mission_data)
