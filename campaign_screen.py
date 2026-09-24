@@ -164,6 +164,25 @@ class CampaignScreen:
         except Exception as e:
             logger.warning(f"Could not load IconBorder.png: {e}")
 
+        # Book of Tales square button — mirrors Saved Games on the opposite
+        # (bottom-right) corner. Same size, margin, border and hover/click tints.
+        self.book_of_tales_button_rect = pygame.Rect(
+            self.width - save_btn_size - save_btn_margin,
+            self.height - save_btn_size - save_btn_margin,
+            save_btn_size, save_btn_size
+        )
+        self.book_of_tales_icon = None
+        try:
+            icon = pygame.image.load('assets/BTNBookOfTales.png').convert_alpha()
+            # The art is landscape (3:2); centre-crop it to a square so it is
+            # not squashed into the square button frame.
+            iw, ih = icon.get_size()
+            side = min(iw, ih)
+            icon = icon.subsurface(pygame.Rect((iw - side) // 2, (ih - side) // 2, side, side))
+            self.book_of_tales_icon = pygame.transform.smoothscale(icon, (save_btn_size, save_btn_size))
+        except Exception as e:
+            logger.warning(f"Could not load BTNBookOfTales.png: {e}")
+
     def _update_visible_buttons(self):
         """Recalculate which mission buttons are visible on the current page and assign rects"""
         start = self.current_page * self.MISSIONS_PER_PAGE
@@ -194,6 +213,8 @@ class CampaignScreen:
         self.hovered_button = None
         if self.save_games_button_rect.collidepoint(mouse_pos):
             self.hovered_button = 'saved_games'
+        elif self.book_of_tales_button_rect.collidepoint(mouse_pos):
+            self.hovered_button = 'book_of_tales'
         elif self.return_button_rect.collidepoint(mouse_pos):
             self.hovered_button = 'return'
         elif self.current_page > 0 and self.left_arrow_rect.collidepoint(mouse_pos):
@@ -228,6 +249,11 @@ class CampaignScreen:
                         sound_manager.play_ui_click()
                         self.clicked_button = 'saved_games'
                         self.selected_mission = 'saved_games'
+                    elif self.book_of_tales_button_rect.collidepoint(mouse_pos):
+                        # Opens the Book of Tales screen (dispatched in main.py)
+                        sound_manager.play_ui_click()
+                        self.clicked_button = 'book_of_tales'
+                        self.selected_mission = 'book_of_tales'
                     elif self.return_button_rect.collidepoint(mouse_pos):
                         sound_manager.play_ui_click()
                         self.clicked_button = 'return'
@@ -276,8 +302,11 @@ class CampaignScreen:
         # Draw return button (matching integrated_setup style)
         self._draw_return_button()
 
-        # Draw Saved Games square button (bottom-left)
-        self._draw_saved_games_button()
+        # Square icon buttons: Saved Games (bottom-left), Book of Tales (bottom-right)
+        self._draw_icon_button(self.save_games_button_rect, self.save_games_icon,
+                               'saved_games', "Saved Games")
+        self._draw_icon_button(self.book_of_tales_button_rect, self.book_of_tales_icon,
+                               'book_of_tales', "Book of Tales")
 
         # Reset clicked state after render
         self.clicked_button = None
@@ -408,15 +437,18 @@ class CampaignScreen:
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
 
-    def _draw_saved_games_button(self):
-        """Draw the Saved Games square button (bottom-left) with icon and border."""
-        rect = self.save_games_button_rect
-        is_hovered = (self.hovered_button == 'saved_games')
-        is_clicked = (self.clicked_button == 'saved_games')
+    def _draw_icon_button(self, rect, icon, btn_id, tooltip):
+        """Draw a square icon button (Saved Games / Book of Tales) with border.
+
+        Shared by both corner buttons so their hover, click flash, border and
+        tooltip always behave identically.
+        """
+        is_hovered = (self.hovered_button == btn_id)
+        is_clicked = (self.clicked_button == btn_id)
 
         # Draw icon or fallback
-        if self.save_games_icon:
-            btn_surf = self.save_games_icon.copy()
+        if icon:
+            btn_surf = icon.copy()
         else:
             # Fallback: dark square with text
             btn_surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
@@ -440,7 +472,7 @@ class CampaignScreen:
 
         # Tooltip on hover (matching main menu tooltip style)
         if is_hovered:
-            self._draw_tooltip("Saved Games", pygame.mouse.get_pos())
+            self._draw_tooltip(tooltip, pygame.mouse.get_pos())
 
 
 # Load mission data from JSON file (edited via Campaign_Text_Tool.py)
