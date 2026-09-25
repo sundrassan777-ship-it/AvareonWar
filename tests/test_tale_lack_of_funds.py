@@ -709,6 +709,22 @@ class TestEndgame:
         assert _run_until_exit(tale) == 'exit_campaign_defeat'
         assert 'campaign_tale_1' not in [a['id'] for a in manager.record_game_result(game)]
 
+    def test_quitting_mid_tale_does_not_award_the_achievement(self, game, tale, monkeypatch):
+        """
+        Quitting (game still 'playing') must neither set the completion stat nor award
+        Lack of Funds. A reported "awarded on quit" turned out to be a real earlier win
+        whose stat was saved before the achievement existed; the quit only ran the
+        pending check. This pins that quitting itself can never grant it.
+        """
+        import achievement_manager as am
+        manager = object.__new__(am.AchievementManager)
+        manager.stats, manager.earned = {}, {}
+        monkeypatch.setattr(manager, 'save', lambda: None)
+        assert game.game_state.phase == 'playing'
+        earned = manager.record_game_result(game)
+        assert 'campaign_tale_1' not in [a['id'] for a in earned]
+        assert 'campaign_tale_1_completed' not in manager.stats
+
     def test_outro_waits_for_queued_revolt_transmission(self, game, tale, voices):
         tale._queue_transmission(tale_mod.REVOLT_TRANSMISSION)
         tale.notify_event('territory_conquered', territory=CAPITAL, new_owner=YELLOW)
