@@ -307,6 +307,22 @@ class AIPlayer:
         self._thread_pool.submit(self._execute_turn_async, game_state)
         logger.debug(f"Async task submitted for player {self.player_index}")
 
+    def _pace(self, game_state, seconds):
+        """Sleep for a human-readability pause, scaled by the active mission.
+
+        Every deliberate AI pause (thinking time, gaps between actions, battle
+        resolution beats) goes through here. A campaign mission / Tale may set
+        ai_delay_scale (default 1.0) to speed the built-in AI up; Tale I uses
+        0.0 so AI turns pass as quickly as the scripted AI of missions 2-7.
+        Animation waits are NOT scaled — they track real on-screen movement.
+        """
+        mission = getattr(game_state, 'tutorial_mission', None)
+        scale = 1.0
+        if mission is not None and getattr(mission, 'active', False):
+            scale = getattr(mission, 'ai_delay_scale', 1.0)
+        if seconds * scale > 0:
+            time.sleep(seconds * scale)
+
     def _execute_turn_async(self, game_state):
         """
         Async turn execution with timing delays.
@@ -326,7 +342,7 @@ class AIPlayer:
             )
 
             logger.info(f"Player {self.player_index + 1} thinking... ({delay:.1f}s)")
-            time.sleep(delay)
+            self._pace(game_state, delay)
 
             # C2 fix: Planning is read-only — no lock needed here.
             # Lock is held only around actual game state mutations:
@@ -345,7 +361,7 @@ class AIPlayer:
                 if action_type == 'train' and command_limit_reached:
                     continue  # Silently skip to avoid log spam
 
-                time.sleep(0.5)  # Small delay between actions
+                self._pace(game_state, 0.5)  # Small delay between actions
 
                 try:
                     success = self._execute_action(game_state, action_type, action_data)
@@ -364,7 +380,7 @@ class AIPlayer:
                     logger.error(f"Failed to execute {action_type}: {e}")
 
             # Final pause before ending turn
-            time.sleep(1.0)
+            self._pace(game_state, 1.0)
 
             # End turn - this executes movement orders and starts animations
             # Thread-safe: Acquire lock before ending turn
@@ -405,7 +421,7 @@ class AIPlayer:
 
             # Auto-resolve any battles AFTER animations complete
             # (battles are created during _process_arrivals() when animations finish)
-            time.sleep(0.3)
+            self._pace(game_state, 0.3)
             self._auto_resolve_battles(game_state)
 
         except Exception as e:
@@ -602,6 +618,13 @@ class AIPlayer:
                 to_territory = action_data['to']
                 army_count = action_data.get('army_count')  # Specific army count to move
 
+                # Mission target rules (last-line guard: covers every planner path,
+                # not just AttackPlanner). Moves into own/allied land always pass.
+                from ai_military import mission_allows_ai_target
+                if not mission_allows_ai_target(game_state, self.player_index, to_territory):
+                    logger.debug(f"Mission forbids move {from_territory} -> {to_territory}")
+                    return False
+
                 # Get available units in the AI player's garrison (not owner's legacy units)
                 # IMPORTANT: AI can have garrisons in allied territories
                 garrison = game_state.territory_garrisons.get(from_territory, {}).get(self.player_index)
@@ -668,6 +691,14 @@ class AIPlayer:
                 hero_type = action_data['hero_type']
                 ability_name = action_data['ability_name']
                 target = action_data.get('target')
+
+                # Mission target rules: skip abilities aimed at a territory the
+                # mission forbids this AI from targeting (own territories always pass)
+                from ai_military import mission_allows_ai_target
+                if (target in game_state.territory_owners
+                        and not mission_allows_ai_target(game_state, self.player_index, target)):
+                    logger.debug(f"Mission forbids {ability_name} on {target}")
+                    return False
 
                 # M1+M2 fix: Route all abilities through proper game_state execute_* methods
                 # instead of duplicating logic inline. This ensures all abilities actually work.
@@ -840,7 +871,7 @@ class AIPlayer:
 
             # Resolve each battle (resolve in reverse order to maintain indices)
             for battle_idx in reversed(range(num_battles)):
-                time.sleep(0.3)  # Small delay for visual feedback
+                self._pace(game_state, 0.3)  # Small delay for visual feedback
 
                 # Thread-safe: Acquire lock for battle resolution
                 with self._game_state_lock:
@@ -862,7 +893,7 @@ class AIPlayer:
             with self._game_state_lock:
                 if game_state.ready_to_advance_turn:
                     logger.info("All battles resolved, advancing to next player")
-                    time.sleep(0.5)  # Brief pause before advancing
+                    self._pace(game_state, 0.5)  # Brief pause before advancing
                     game_state._advance_to_next_player()
 
         except Exception as e:

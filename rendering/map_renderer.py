@@ -52,6 +52,12 @@ class MapRenderer:
     - Methods access self.game for state
     - Logic organized in dedicated module
     """
+
+    # Thin ink outline around every territory on maps with "draw_borders" in the
+    # manifest (see map_data.current_map_draws_borders). RGBA; the width is
+    # camera_zoom * this factor, at least 1 px (1 px at the default zoom).
+    TERRITORY_BORDER_COLOR = (35, 25, 15, 170)
+    TERRITORY_BORDER_WIDTH_PER_ZOOM = 0.5
     
     def __init__(self, game_instance):
         """
@@ -891,6 +897,13 @@ class MapRenderer:
             # Cache miss — rebuild territory ownership overlay
             self.fullscreen_overlay.fill((0, 0, 0, 0))  # Clear once
 
+            # Maps whose art has faint borders (manifest "draw_borders") get a thin
+            # ink outline on every territory. Drawn into this cached overlay, so it
+            # costs nothing on static frames; width scales with zoom like the
+            # hover/selection outlines.
+            draw_borders = map_data.current_map_draws_borders()
+            border_polygons = []
+
             for territory in self.game.scaled_polygons.keys():
                 # Skip disabled territories (campaign mission filtering)
                 if not map_data.is_territory_enabled(territory):
@@ -924,7 +937,18 @@ class MapRenderer:
                 else:
                     # Unowned territory: fill + stronger border to distinguish from non-territory areas
                     pygame.draw.polygon(self.fullscreen_overlay, (200, 200, 200, 45), screen_polygon)
-                    pygame.draw.lines(self.fullscreen_overlay, (220, 220, 220, 120), True, screen_polygon, 1)
+                    if not draw_borders:  # Bordered maps outline every territory below instead
+                        pygame.draw.lines(self.fullscreen_overlay, (220, 220, 220, 120), True, screen_polygon, 1)
+
+                if draw_borders:
+                    border_polygons.append(screen_polygon)
+
+            # Borders after ALL fills, so a neighbour's fill never half-covers a shared edge
+            if border_polygons:
+                border_width = max(1, int(self.game.camera_zoom * self.TERRITORY_BORDER_WIDTH_PER_ZOOM))
+                for screen_polygon in border_polygons:
+                    pygame.draw.lines(self.fullscreen_overlay, self.TERRITORY_BORDER_COLOR, True,
+                                      screen_polygon, border_width)
 
             # Store cache state.
             # FPS OPT: reference, not .copy(). This used to copy the whole

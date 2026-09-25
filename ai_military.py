@@ -25,6 +25,25 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def mission_allows_ai_target(game_state, player_index, territory):
+    """
+    Campaign/Tale hook: may this AI player target `territory` with an attack,
+    a conquering move or an offensive hero ability?
+
+    Missions opt in by defining is_ai_target_allowed(player_index, territory).
+    Without it (custom games, missions 1-7) every target is allowed, so normal
+    AI behaviour is unchanged. Used by AttackPlanner.find_reachable_enemies()
+    (planning) and AIPlayer._execute_action_internal() (last-line guard).
+    """
+    mission = getattr(game_state, 'tutorial_mission', None)
+    if mission is None or not getattr(mission, 'active', False):
+        return True
+    hook = getattr(mission, 'is_ai_target_allowed', None)
+    if hook is None:
+        return True
+    return hook(player_index, territory)
+
+
 class ArmyComposer:
     """
     Calculates optimal unit composition based on the rock-paper-scissors counter system.
@@ -191,6 +210,10 @@ class AttackPlanner:
                     # Can pass through allied territory if within max distance
                     if distance + 1 < max_distance:
                         queue.append((neighbor, distance + 1))
+                elif not mission_allows_ai_target(game_state, player_index, neighbor):
+                    # Mission forbids this target (e.g. a Tale's truce rules):
+                    # neither a target nor passable, so the planner never scores it
+                    continue
                 else:
                     # Found an enemy/neutral territory - this is a potential target
                     if neighbor not in reachable or distance + 1 < reachable[neighbor]:

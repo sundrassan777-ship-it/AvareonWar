@@ -524,6 +524,20 @@ ACHIEVEMENTS = [
         'stat_key': 'campaign_mission_7_bonus',
         'stat_threshold': 1,
     },
+    # Book of Tales — Tale I: Lack of Funds — completion. The stat is set by the
+    # generic campaign path in record_game_result(): f'campaign_{mission.mission_id}_completed'
+    # with mission_id 'tale_1'. Steam: register the id 'campaign_tale_1' in Steamworks.
+    {
+        'id': 'campaign_tale_1',
+        'name': 'Lack of Funds',
+        'description': 'Win the Lack of Funds mission in the Book of Tales.',
+        'category': 'campaign',
+        'icon': 'assets/achievements/AchievementIcons/Tale1Achiev.png',
+        'reward_type': None,
+        'reward_id': None,
+        'stat_key': 'campaign_tale_1_completed',
+        'stat_threshold': 1,
+    },
 ]
 
 # Valid categories for filtering

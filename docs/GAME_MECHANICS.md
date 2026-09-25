@@ -149,6 +149,10 @@ Defender bonuses:
 Winner = Higher total strength
 ```
 
+A Keep (or Fortress) defending an empty territory fights alone with a flat strength of 2
+(no unit counters apply to it). The battle screen shows the defender as "No units" plus the
+Keep line; before 2026-09-25 it wrongly listed 2 Swordsmen and an inflated strength.
+
 **Casualties (Strength-Scaled):**
 - Winner casualties = `loser_count * (loser_strength / winner_strength)`
 - Dominant forces lose far fewer units (counters matter)
@@ -452,6 +456,45 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
 **Planned:**
 - Economic: Reach gold threshold
 - Quest: Complete quest chain
+
+---
+
+## 📖 Book of Tales
+
+Standalone scenarios, opened from the Book of Tales button (bottom-right of the Campaign
+screen). Each tale has its own map, factions and rules. Winning a tale awards an achievement
+and the first-win campaign XP bonus, like a campaign chapter; tales can be saved and loaded
+from Saved Games. After a tale ends the player returns to the Book of Tales.
+
+### Tale I: Lack of Funds
+
+**Map:** Azincournean Highlands. **Player:** the Londic Empire (Blue), capital Generax.
+
+| Faction | Colour | Capital | AI | Behaviour |
+|---------|--------|---------|----|-----------|
+| Aelatanaic Tribes | Yellow | Leyana | Medium | Attacks the player freely — but takes no territory for its first 3 turns and trains no units for its first 2 |
+| Heilonic Kingdoms | Green | Entaron | Hard | Only attacks the player after the player orders an attack on it |
+| Kingdom of Daurels | Red | Daurels | Hard | Only attacks the player after the player orders an attack on it |
+
+- The three AI factions never attack each other. Green and Red never take neutral land;
+  each turns hostile independently, the moment the player issues an attack order against it.
+- The 13 unassigned territories are neutral, guarded by 1 random unit each.
+- No technologies are pre-researched. The player **cannot train Heroes**.
+- **Victory:** the Aelatanaic Tribes hold no territory. **Defeat:** Generax is conquered.
+
+**Popularity** (unique to this tale, shown bottom-left of the map):
+- Starts at 100 (maximum). From the player's 2nd turn, at the start of each turn:
+  1. **Revolt roll** — chance = 2% per missing point (90 → 20%, 75 → 50%, 50 or lower →
+     certain). On success, **one** territory defects to the Aelatanaic Tribes with its
+     buildings and armies. The roll uses the popularity the player ended their last turn
+     with, so ending a turn at 100 means no revolt.
+  2. **Drop** — 6, then 11, 16, 21… (+5 more each turn).
+- **Invest** (button under the bar): +10 popularity (never above 100), resets the next drop
+  to 6, and raises the next investment's price by 10 gold (100, 110, 120…). Only on the
+  player's own planning phase.
+- **Which territories can revolt** depends on their income: 10-gold lands whenever
+  popularity is below 100, 15-gold lands at 75 or below, 20-gold lands at 50 or below.
+  **Generax never revolts.**
 
 ---
 

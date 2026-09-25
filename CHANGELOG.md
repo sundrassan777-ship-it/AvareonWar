@@ -2,6 +2,64 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-25 - Book of Tales: Tale I "Lack of Funds" (+ engine fixes found while building it)
+
+**The tale** (`tale_lack_of_funds.py`, class `TaleLackOfFunds`, `mission_id 'tale_1'`):
+- First playable Book of Tales scenario, on the **Azincournean Highlands** — the first mission
+  on a non-Avareon map. 4 factions: player (Blue, Generax), Aelatanaic Tribes (Yellow, Medium
+  AI), Heilonic Kingdoms (Green, Hard), Kingdom of Daurels (Red, Hard); 13 neutral territories
+  with 1 random unit each. Randomised starting buildings (Green/Red all plots filled by a
+  fixed mix, no Keeps; fixed + scattered buildings for player/Yellow) and armies.
+- **Built-in AI restricted by mission hooks** rather than a scripted AI: AI factions never
+  target each other; Green/Red never take neutral land and turn hostile (independently) only
+  when the player orders an attack on them; Yellow takes nothing for 3 turns and trains
+  nothing for 2. The player cannot train Heroes.
+- **Popularity** mechanic: drops 6, 11, 16, 21… per player turn from turn 2; revolt rolled
+  *before* the drop at 2% per missing point; revolts hand one territory (with buildings and
+  armies) to Yellow, gated by income tier (10g < 100, 15g ≤ 75, 20g ≤ 50; Generax immune).
+  "Invest N Gold" button: +10 (cap 100), resets the drop, +10g price per use. Widget =
+  label + `BattleBar.png` with an easing blue fill + `CampaignBTN.png` button, bottom-left
+  of the map. Tuned twice after playtesting (drop 4/+2 → 6/+5; revolt 1% → 2% per point).
+- Voiced intro (zoom to Generax + T1T1-T1T3, ESC skips), T1Revolt on each revolt, T1TWin /
+  T1TLoss before the shared victory/defeat screens. Victory = Yellow eliminated, defeat =
+  Generax lost. Save/load supported (never replays the intro).
+- Achievement `campaign_tale_1` "Lack of Funds" (no reward, icon `Tale1Achiev.png` — renamed
+  from the uploaded `Tale1Achiev.png.png`). Needs registering in Steamworks under that id.
+
+**Book of Tales / launching:**
+- `book_of_tales.py`: tale_1 is "Lack of Funds"; description markup (`\n` break, `\n\n`
+  empty line, leading `_` underline, `- ` hanging-indent list items); Launch returns
+  `{'action': 'launch', 'scenario_id': ...}`.
+- `main.py`: the campaign loop's inline launch code became `_run_registered_mission()`,
+  shared by campaign missions and the new `_TALE_REGISTRY`; the Book of Tales reopens after a
+  tale. `_launch_saved_game()` merges `_TALE_REGISTRY` and now passes `map_id`, so saves on
+  non-Avareon maps reload the right geometry. `save_manager` label "Tale: Lack of Funds".
+
+**New generic hooks:**
+- `ai_military.mission_allows_ai_target()` → mission `is_ai_target_allowed()`, used by
+  `AttackPlanner.find_reachable_enemies()` and as a guard on AI moves / targeted hero abilities.
+- `AIPlayer._pace()` → every AI readability pause, scaled by mission `ai_delay_scale`
+  (Tale I: 0.0, AI turns ~0.5-1.5 s instead of 6-15 s).
+- `input/mouse_handler.py` Priority 4.5 → mission `handle_click(pos)` for overlay widgets.
+
+**Map:** `"draw_borders": true` in `maps/manifest.json` (Azincournean Highlands) makes the
+map renderer outline every territory with a thin ink line inside the cached ownership
+overlay (`map_data.current_map_draws_borders()`, `MapRenderer.TERRITORY_BORDER_*`).
+
+**Engine bug fixes (all game modes):**
+- **Phantom "2 Swordsman" against a lone Keep.** In `_process_arrivals()` the Keep bonus
+  (added to the owner's army count) was turned into fake Swordsmen by the team-composition
+  fallback *and* by the attacker-garrison loop. The pre-battle screen listed 2 Swordsmen and
+  a wrong strength (the attacker even got counter bonuses against them); battle reports could
+  list them as losses. Outcomes were unaffected (`_resolve_keep_battle()` rescales to the real
+  garrison). Both sites now exclude the bonus.
+- **Demolish Keep unclickable at 1600x900.** `mouse_handler` Priority 7 treated the rightmost
+  250 px as sidebar at any height, swallowing bottom-panel clicks there; now only above the
+  bottom UI. The Keep panel also greyed the button for *any* active mission instead of asking
+  `is_action_allowed('demolish')` like the click does.
+
+**Tests:** `tests/test_tale_lack_of_funds.py` (77), `tests/test_map_borders.py` (3).
+
 ## 2026-09-24 - Book of Tales screen (scaffold)
 
 - **What:** New `book_of_tales.py` screen for standalone scenarios, opened from a new
