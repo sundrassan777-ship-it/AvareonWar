@@ -800,6 +800,7 @@ class MilitaryMixin:
         """
         # Reset the failure code first so a stale code is never reported for this attempt
         self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
 
         # Determine which player's garrison to use
         if player is None:

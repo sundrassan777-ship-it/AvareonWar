@@ -540,8 +540,11 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # read and cleared by main.py to show user-facing feedback (sound + floating notification).
         # Every action method resets it to None on entry, so a code left by an earlier call
         # (AI, remote order) can never be reported for a later, unrelated failure.
-        # Values: None, "gold", "command_limit", "army_limit", "queue_full", "hero_limit"
+        # Values: None or a code from config/action_error_messages.ACTION_ERROR_MESSAGES
+        # (the player-facing texts live there).
         self.last_action_error = None
+        # Optional dict of values for that message's {placeholders}, e.g. {'territory': 'X'}
+        self.last_action_error_args = None
         
         # Winner tracking
         self.winner = -1  # -1 = no winner, 0-3 = player index

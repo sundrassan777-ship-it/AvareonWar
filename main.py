@@ -1220,8 +1220,6 @@ class Game:
         self.ability_targeting_hero = None  # Which hero's ability is being targeted
         self.ability_targeting_ability_index = None  # Which ability index
         self.ability_targeting_ability_name = None  # Name of the ability being targeted
-        self.invalid_target_message = None  # Error message to display
-        self.invalid_target_message_time = 0  # Time when message was set (for auto-dismiss)
 
         # Master Negotiator particle system
         self.master_negotiator_particles = []  # List of particle dicts
@@ -5480,35 +5478,46 @@ class Game:
         return (self._is_tutorial_active()
                 and not self.tutorial_mission.is_action_allowed(action))
 
-    # Error code → user-facing floating notification message
-    _ACTION_ERROR_MESSAGES = {
-        'gold': "Not enough resources.",
-        'command_limit': "Cannot train more units \u2014 Command Limit reached.",
-        'army_limit': "Army limit reached in this territory.",
-        'queue_full': "Training queue is full.",
-        'hero_limit': "Hero limit reached.",
-    }
-
-    def _show_action_failure_feedback(self):
-        """Show visual + audio feedback when a player action fails.
-
-        Reads game_state.last_action_error (set by start_training, start_construction, etc.),
-        plays a denial sound, and shows a floating notification in the top-left corner.
+    def show_action_error(self, code=None, message=None, **fmt):
         """
-        error = self.game_state.last_action_error
-        if error is None:
-            return
-        self.game_state.last_action_error = None  # Clear after reading
+        The single "action refused" feedback: denial sound + red notification (toast)
+        in the top-left corner of the map.
 
-        msg = self._ACTION_ERROR_MESSAGES.get(error, "Action failed.")
+        Args:
+            code: key in config/action_error_messages.ACTION_ERROR_MESSAGES — all
+                player-facing texts live there so they can be edited in one place
+            message: literal text instead of a code (only for texts that don't come
+                from the table yet)
+            **fmt: values for the message's {placeholders}
+        """
+        from config.action_error_messages import format_action_error
+        msg = message if message is not None else format_action_error(code, **fmt)
 
         # Audio feedback (non-stacking)
         from global_sound import play_action_denied
         play_action_denied()
 
-        # Visual feedback — floating notification in chat area
+        # Visual feedback — floating notification in the chat notification area
         if self.chat_notification_effect:
             self.chat_notification_effect.add_system_notification(msg)
+
+    def _show_action_failure_feedback(self):
+        """Show the action error recorded by the last game_state action method.
+
+        Reads game_state.last_action_error (+ last_action_error_args for the
+        message's {placeholders}), set by start_training, start_construction, etc.
+        Does nothing when no code was recorded (a refusal without a player-facing
+        message, e.g. a tutorial block whose button is already greyed).
+        """
+        error = self.game_state.last_action_error
+        if error is None:
+            return
+        fmt = getattr(self.game_state, 'last_action_error_args', None) or {}
+        # Clear after reading
+        self.game_state.last_action_error = None
+        self.game_state.last_action_error_args = None
+
+        self.show_action_error(error, **fmt)
 
     def _is_sim_resolving(self):
         """True while simultaneous mode resolves battles/alliance markers (no new actions)."""
@@ -5861,61 +5870,6 @@ class Game:
             return False
         return True
 
-    def draw_invalid_target_popup(self):
-        """
-        Draw a popup message in the center of the screen showing invalid target error.
-        Auto-dismisses after 1 second.
-        """
-        # Check if message should be dismissed
-        current_time = pygame.time.get_ticks()
-        if current_time - self.invalid_target_message_time > 1000:  # 1 second
-            self.invalid_target_message = None
-            return
-
-        # Calculate popup position (center of map area)
-        map_center_x = WINDOW_WIDTH // 2
-        map_center_y = (TOP_PANEL_HEIGHT + BOTTOM_UI_Y) // 2
-
-        # Create popup box
-        padding = 30
-        line_height = 25
-
-        # Split message into lines
-        message_lines = self.invalid_target_message.split('\n')
-
-        # Calculate box size
-        max_text_width = 0
-        for line in message_lines:
-            text_surface = self._get_cached_text(line, self.font, WHITE)
-            max_text_width = max(max_text_width, text_surface.get_width())
-
-        box_width = max_text_width + padding * 2
-        box_height = len(message_lines) * line_height + padding * 2
-
-        box_rect = pygame.Rect(
-            map_center_x - box_width // 2,
-            map_center_y - box_height // 2,
-            box_width,
-            box_height
-        )
-
-        # Draw semi-transparent background
-        bg_surface = pygame.Surface((box_width, box_height), pygame.SRCALPHA)
-        pygame.draw.rect(bg_surface, (40, 40, 40, 230), bg_surface.get_rect(), border_radius=10)
-        self.screen.blit(bg_surface, box_rect)
-
-        # Draw border
-        pygame.draw.rect(self.screen, (200, 50, 50), box_rect, 3, border_radius=10)
-
-        # Draw text lines
-        text_y = box_rect.y + padding
-        for line in message_lines:
-            text_surface = self._get_cached_text(line, self.font, (255, 100, 100))
-            text_rect = text_surface.get_rect(center=(map_center_x, text_y + line_height // 2))
-            self.screen.blit(text_surface, text_rect)
-            text_y += line_height
-
-
     # ========================================
     # PHASE 4: EXTRACTED PLOT RENDERING METHODS
     # ========================================
@@ -6062,8 +6016,7 @@ class Game:
                             and self.tutorial_mission.active
                             and hasattr(self.tutorial_mission, 'is_attack_target_blocked')
                             and self.tutorial_mission.is_attack_target_blocked(clicked_territory)):
-                        self.invalid_target_message = "Cannot take over that territory yet."
-                        self.invalid_target_message_time = pygame.time.get_ticks()
+                        self.show_action_error('diplomacy_blocked')
                         return
 
                     success, error_msg = execute_fn(clicked_territory, current_player)
@@ -6135,9 +6088,10 @@ class Game:
                         self.ability_targeting_ability_index = None
                         self.ability_targeting_ability_name = None
                     else:
-                        # Invalid target - show error message
-                        self.invalid_target_message = error_msg
-                        self.invalid_target_message_time = pygame.time.get_ticks()
+                        # Invalid target - denial sound + toast (the centre-screen popup
+                        # was removed: every action error now uses the same toast).
+                        # Targeting stays on so the player can pick another territory.
+                        self.show_action_error(message=error_msg)
 
             return  # Don't process normal map clicks while targeting
 
@@ -7561,8 +7515,6 @@ class Game:
         self.ability_targeting_hero = None
         self.ability_targeting_ability_index = None
         self.ability_targeting_ability_name = None
-        self.invalid_target_message = None
-        self.invalid_target_message_time = 0
 
     def clear_ui_selections(self):
         """Clear all UI selections (called when turn changes)"""
@@ -12085,10 +12037,6 @@ class Game:
             if self.show_disconnect_dialog:
                 self.draw_disconnect_dialog()
 
-            # Draw invalid target message popup
-            if self.invalid_target_message:
-                self.draw_invalid_target_popup()
-
             # Update and render tooltips (Phase 2C: extracted to method)
             # MUST happen after all drawing, before display.flip()
             self.update_frame_tooltips()
@@ -13942,6 +13890,11 @@ class Game:
                                         # Trigger visual effect for immediate abilities
                                         self.map_renderer.trigger_ability_effect(
                                             ability_name, None, current_player)
+                                    elif isinstance(result, str):
+                                        # An immediate ability refused with a reason (Reinforce:
+                                        # "Territory has too many units!..."). This string used
+                                        # to be dropped silently — show it like any action error.
+                                        self.show_action_error(message=result)
 
                                     self.clear_button_tooltip()
                                     return True

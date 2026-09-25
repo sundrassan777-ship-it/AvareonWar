@@ -162,6 +162,7 @@ class BuildingMixin:
         # Reset the failure code first: a code left over from an earlier call (AI, remote
         # order, keyboard shortcut) must never be shown for this attempt's failure.
         self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
 
         # Tutorial hook: check if building action is allowed
         if self.tutorial_mission and not self.tutorial_mission.is_action_allowed(
@@ -550,6 +551,7 @@ class BuildingMixin:
         """Start training a unit at a specific Barracks"""
         # Reset the failure code first so a stale code is never reported for this attempt
         self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
 
         # Tutorial hook: check if training action is allowed
         if self.tutorial_mission and not self.tutorial_mission.is_action_allowed(
@@ -866,6 +868,7 @@ class BuildingMixin:
 
         # Reset the failure code first so a stale code is never reported for this attempt
         self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
 
         # 1. Check ownership
         if self.territory_owners.get(territory, -1) != self.current_player:
@@ -1033,6 +1036,7 @@ class BuildingMixin:
         """
         # Reset the failure code first so a stale code is never reported for this attempt
         self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
 
         # Find the technology
         tech = None

@@ -30,6 +30,7 @@ class HeroMixin:
         """
         # Reset the failure code first so a stale code is never reported for this attempt
         self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
 
         # 1. Validate hero type
         if hero_type not in self.HERO_TYPES:
@@ -292,6 +293,7 @@ class HeroMixin:
         """
         # Reset the failure code first so a stale code is never reported for this attempt
         self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
 
         current_player = self.current_player
 

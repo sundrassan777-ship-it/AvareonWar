@@ -122,8 +122,6 @@ class KeyboardHandler:
                 updates['ability_targeting_hero'] = None
                 updates['ability_targeting_ability_index'] = None
                 updates['ability_targeting_ability_name'] = None
-                updates['invalid_target_message'] = None
-                updates['invalid_target_message_time'] = 0
                 return (True, updates)
             # Block all other keyboard input when targeting
             return (True, {})
