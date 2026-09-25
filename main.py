@@ -1361,6 +1361,7 @@ class Game:
         self.save_name_cursor_visible = True  # Blinking cursor state
         self.save_name_cursor_timer = 0  # Cursor blink timer
         self.save_feedback_message = None  # "Saved!" or error message
+        self.save_feedback_is_error = False  # True -> drawn red (a failure used to be green)
         self.save_feedback_timer = 0  # Timer for feedback display
         self.save_dialog_save_button = None  # Rect for Save button in dialog
         self.save_dialog_cancel_button = None  # Rect for Cancel button in dialog
@@ -7004,7 +7005,11 @@ class Game:
                 order.player == self.order_sidebar_player for order in self.game_state.movement_orders):
             cancel_all_y = sidebar_y + sidebar_height - 50
             cancel_all_rect = pygame.Rect(sidebar_x + 20, cancel_all_y, sidebar_width - 40, 35)
-            pygame.draw.rect(self.screen, (150, 50, 50), cancel_all_rect, border_radius=5)
+            # Grey when the tutorial/mission blocks cancelling (it used to look clickable)
+            cancel_all_locked = bool(self.tutorial_mission and self.tutorial_mission.active
+                                     and not self.tutorial_mission.is_action_allowed('cancel_all_orders'))
+            cancel_all_color = (110, 110, 110) if cancel_all_locked else (150, 50, 50)
+            pygame.draw.rect(self.screen, cancel_all_color, cancel_all_rect, border_radius=5)
             cancel_all_text = self._get_cached_text("CANCEL ALL", self.font, WHITE)
             cancel_all_text_rect = cancel_all_text.get_rect(center=cancel_all_rect.center)
             self.screen.blit(cancel_all_text, cancel_all_text_rect)
@@ -8297,8 +8302,19 @@ class Game:
             if self._is_tutorial_active():
                 if self.tutorial_mission.should_highlight_button('end_turn'):
                     end_turn_color = (50, 255, 50)  # Bright green highlight
-                elif self.tutorial_mission.is_button_locked('end_turn'):
-                    end_turn_color = (120, 120, 120)  # Grey locked
+                elif (self.tutorial_mission.is_button_locked('end_turn')
+                        or not self.tutorial_mission.is_action_allowed('end_turn')):
+                    # Grey locked. is_action_allowed() is the check the click uses; campaign
+                    # missions and the Tale only block through it (intro, pause, endgame),
+                    # so is_button_locked() alone left the button looking clickable.
+                    end_turn_color = (120, 120, 120)
+
+            # SEQUENTIAL MODE: next_player() refuses while armies are still moving or
+            # battles are unresolved — grey the button instead of letting it look clickable
+            if self.sim_state is None and (
+                    self.game_state.turn_phase == 'execution'
+                    or (self.game_state.turn_phase == 'battles' and self.game_state.pending_battles)):
+                end_turn_color = (120, 120, 120)
 
             # SIMULTANEOUS MODE: Grey out End Turn button when player is ready or during resolution
             sim_player_ready = False
@@ -8862,35 +8878,10 @@ class Game:
                 can_afford = current_gold >= cost
                 
                 # Check one-per-territory restrictions (Keep, Training Grounds)
-                can_build_this_building = True
-                if building_name == 'Keep':
-                    # Check if already has a Keep (completed or under construction)
-                    if self.game_state.has_fortress(territory):
-                        can_build_this_building = False
-                    # Check if Keep is under construction
-                    if territory in self.game_state.under_construction:
-                        for plot_idx, entry in self.game_state.under_construction[territory].items():
-                            if entry[0] == 'Keep':  # entry is (building_type, turns_remaining, cost)
-                                can_build_this_building = False
-                                break
-                elif building_name == 'Training Grounds':
-                    # Check if already has Training Grounds (completed or under construction)
-                    if self.game_state.has_training_grounds(territory):
-                        can_build_this_building = False
-                    if territory in self.game_state.under_construction:
-                        for plot_idx, entry in self.game_state.under_construction[territory].items():
-                            if entry[0] == 'Training Grounds':
-                                can_build_this_building = False
-                                break
-                elif building_name == 'Square':
-                    # Check if already has Square (completed or under construction)
-                    if self.game_state.has_square(territory):
-                        can_build_this_building = False
-                    if territory in self.game_state.under_construction:
-                        for plot_idx, entry in self.game_state.under_construction[territory].items():
-                            if entry[0] == 'Square':
-                                can_build_this_building = False
-                                break
+                # Per-type rules — the same check start_construction() refuses with
+                # (also covers "no Keep in a Fortress territory", which this copy missed)
+                can_build_this_building = self.game_state.get_building_type_block_reason(
+                    territory, building_name) is None
 
                 # Button color - consider affordability, building limit, AND one-per-territory restriction
                 if can_build and can_afford and can_build_this_building:
@@ -8899,9 +8890,16 @@ class Game:
                     button_color = (200, 100, 100)  # Red
 
                 # Tutorial hook: override button color for locking/highlighting
+                building_locked = False
                 if self._is_tutorial_active():
                     btn_id = f'building_{building_name}'
-                    if self.tutorial_mission.is_button_locked(btn_id):
+                    # is_action_allowed('build') is what start_construction() checks (and what
+                    # the map icons use). Campaign missions/Tale only block through it (intro,
+                    # pause, endgame), so is_button_locked() alone left these looking normal.
+                    if (self.tutorial_mission.is_button_locked(btn_id)
+                            or not self.tutorial_mission.is_action_allowed(
+                                'build', building_type=building_name, territory=territory)):
+                        building_locked = True
                         button_color = (120, 120, 120)  # Grey (locked)
                         can_build_this_building = False  # Prevent click
                     elif self.tutorial_mission.should_highlight_button(btn_id):
@@ -8958,9 +8956,18 @@ class Game:
                             self._cached_building_overlays[icon_size] = {'red': red, 'bright': bright, 'light': light}
                         overlays = self._cached_building_overlays[icon_size]
 
-                        # Apply red tint overlay if building is unavailable
+                        # Apply tint overlay if building is unavailable: grey when locked by
+                        # the tutorial/mission, red when a game rule refuses it (the icon used
+                        # to turn red for both, so a mission lock looked like "can't afford")
                         if not (can_build and can_afford and can_build_this_building):
-                            display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)  # Match training UI
+                            if building_locked:
+                                if 'grey' not in overlays:
+                                    grey = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+                                    grey.fill((110, 110, 110, 255))
+                                    overlays['grey'] = grey
+                                display_icon.blit(overlays['grey'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                            else:
+                                display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)  # Match training UI
 
                         # Apply hover/click brightness effects
                         if is_clicking:
@@ -9399,7 +9406,7 @@ class Game:
         at_command_limit = self.game_state.get_player_army_count(self.game_state.current_player) >= self.game_state.player_command_limit[self.game_state.current_player]
 
         # Reuse queue_count from above
-        can_queue = queue_count < 4
+        can_queue = queue_count < self.game_state.MAX_TRAINING_QUEUE  # same limit as start_training()
         
         # Store training buttons for click detection
         self.train_buttons = {}
@@ -9418,9 +9425,14 @@ class Game:
             is_available = can_afford and can_queue and not at_army_limit and not at_command_limit
 
             # Tutorial hook: override training button availability
+            training_locked = False
             if self._is_tutorial_active():
                 btn_id = f'training_{unit_type}'
-                if self.tutorial_mission.is_button_locked(btn_id):
+                # Same check start_training() and the map icons use (see building buttons)
+                if (self.tutorial_mission.is_button_locked(btn_id)
+                        or not self.tutorial_mission.is_action_allowed(
+                            'train', unit_type=unit_type, territory=territory)):
+                    training_locked = True
                     is_available = False
 
             # Create button rect
@@ -9445,16 +9457,18 @@ class Game:
                 if not is_available or is_clicking or is_hovering:
                     display_icon = cached_icon.copy()  # Only copy when we need to apply effects
 
-                    # Apply red tint overlay if unavailable (cached by icon_size)
+                    # Apply tint overlay if unavailable (cached by icon_size): grey when
+                    # locked by the tutorial/mission, red when a game rule refuses it
                     if not is_available:
                         if icon_size not in self._cached_training_overlays:
                             self._cached_training_overlays[icon_size] = {}
                         overlays = self._cached_training_overlays[icon_size]
-                        if 'red' not in overlays:
+                        tint_key = 'grey' if training_locked else 'red'
+                        if tint_key not in overlays:
                             s = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                            s.fill((255, 100, 100, 128))
-                            overlays['red'] = s
-                        display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                            s.fill((110, 110, 110, 255) if training_locked else (255, 100, 100, 128))
+                            overlays[tint_key] = s
+                        display_icon.blit(overlays[tint_key], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
                     # Apply hover/click brightness effects (cached by icon_size)
                     if is_clicking:
@@ -9488,7 +9502,11 @@ class Game:
                     self.screen.blit(cached_border, border_rect)
             else:
                 # Fallback to letter button if icon not available
-                button_color = unit_colors[unit_type] if is_available else (200, 100, 100)
+                # Grey when locked by the tutorial/mission, red when a game rule refuses it
+                if is_available:
+                    button_color = unit_colors[unit_type]
+                else:
+                    button_color = (120, 120, 120) if training_locked else (200, 100, 100)
                 self.draw_letter_button(train_button_rect, unit_letter, button_color, letter_color=WHITE,
                                        button_type='training', button_id=unit_type)
 
@@ -9727,6 +9745,16 @@ class Game:
             self.game_state.tutorial_mission.should_hide_hero_training()
         )
 
+        # Keep is being upgraded to a Castle: start_hero_training() refuses, so the
+        # buttons must show it (they used to look available)
+        keep_upgrading = self.game_state.is_upgrading_to_castle(territory, keep_plot_index)
+
+        # A mission that forbids hero training but still shows the buttons (the base
+        # tutorial): grey them out, like other tutorial-locked controls
+        hero_training_locked = bool(
+            self.tutorial_mission and self.tutorial_mission.active
+            and not self.tutorial_mission.is_action_allowed('train_hero'))
+
         # Draw hero buttons (6 on first line, 2 on second line)
         # Filter out campaign-only heroes (trainable: False) from the training menu
         hero_types_list = [h for h in self.game_state.HERO_TYPES.keys()
@@ -9748,7 +9776,9 @@ class Game:
             already_owned = hero_type in self.game_state.hero_ownership[self.game_state.current_player]
 
             # Determine button state
-            if is_training or already_owned or keep_has_hero or hero_limit_reached:
+            if hero_training_locked:
+                button_color = (120, 120, 120)  # Locked by tutorial/mission (grey)
+            elif is_training or already_owned or keep_has_hero or hero_limit_reached or keep_upgrading:
                 button_color = (200, 100, 100)  # Disabled (red)
             elif can_afford:
                 button_color = hero_color_purple  # Enabled (purple)
@@ -9776,12 +9806,15 @@ class Game:
                               self.clicked_element[1] == hero_type)
 
                 # M17: Use cached scaling + icon overlay helpers instead of manual per-frame scale+tint
-                is_disabled = (is_training or already_owned or keep_has_hero or hero_limit_reached or not can_afford)
+                is_disabled = (is_training or already_owned or keep_has_hero or hero_limit_reached
+                               or not can_afford or keep_upgrading or hero_training_locked)
                 base_icon = self._get_cached_scaled_surface(
                     self.hero_images[hero_type], f'hero_{hero_type}', button_width, button_height)
+                # Grey when locked by the tutorial/mission, red when a game rule refuses it
                 hero_image_scaled = self._apply_icon_overlay(
                     base_icon, is_clicking, is_hovering,
-                    enabled=not is_disabled, disabled_tint=(200, 0, 0, 120))
+                    enabled=not is_disabled,
+                    disabled_tint=(110, 110, 110, 150) if hero_training_locked else (200, 0, 0, 120))
 
                 # Draw the image
                 self.screen.blit(hero_image_scaled, (button_x, button_y))
@@ -12255,10 +12288,12 @@ class Game:
         self.save_dialog_active = False
         if result:
             self.save_feedback_message = "Saved!"
+            self.save_feedback_is_error = False
             self.save_feedback_timer = 2000  # Show for 2 seconds
             self.game_menu_visible = True  # Return to game menu showing feedback
         else:
             self.save_feedback_message = "Save failed!"
+            self.save_feedback_is_error = True
             self.save_feedback_timer = 2000
             self.game_menu_visible = True
 

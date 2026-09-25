@@ -123,6 +123,8 @@ COLOR_EMPTY_PLOT_BORDER: Color4 = (100, 100, 100, 150)
 # --- Map Colors: Building/Training Icons ---
 COLOR_ICON_AVAILABLE: Color4 = (100, 200, 100, 200)
 COLOR_ICON_UNAVAILABLE: Color4 = (200, 100, 100, 200)
+# Locked by the tutorial/campaign mission (greyed) - distinct from red "a rule refuses it"
+COLOR_ICON_LOCKED: Color4 = (120, 120, 120, 200)
 COLOR_ICON_BORDER: Color4 = (50, 50, 50, 255)
 
 # --- Map Colors: Movement Arrows ---

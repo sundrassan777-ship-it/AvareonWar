@@ -1041,7 +1041,10 @@ class UIRenderer:
         # Fade out in the last 500ms
         alpha = min(255, int(self.game.save_feedback_timer * 255 / 500))
 
-        text_surf = font.render(self.game.save_feedback_message, True, (100, 255, 100))
+        # Red for a failure, green for success (a failed save used to be shown in green)
+        is_error = getattr(self.game, 'save_feedback_is_error', False)
+        text_color = (255, 100, 100) if is_error else (100, 255, 100)
+        text_surf = font.render(self.game.save_feedback_message, True, text_color)
         if alpha < 255:
             text_surf.set_alpha(alpha)
 
@@ -1683,6 +1686,10 @@ class UIRenderer:
             self.game.screen.blit(empty_text, empty_rect)
             return
 
+        # Tutorial/mission lock on cancelling: the click is refused, so grey the X buttons
+        mission = getattr(self.game, 'tutorial_mission', None)
+        cancel_locked = bool(mission and mission.active and not mission.is_action_allowed('cancel_order'))
+
         # Draw each order (LOCAL player only)
         order_y = header_y + UIConstants.HEADER_OFFSET
         order_height = 60
@@ -1730,7 +1737,9 @@ class UIRenderer:
             # Cancel button (X) - ASCII character for better font compatibility
             # FPS OPTIMIZATION 4.1: Use cached text for static button label
             cancel_button_rect = pygame.Rect(sidebar_x + sidebar_width - 45, order_y + 18, 30, 25)
-            pygame.draw.rect(self.game.screen, (200, 50, 50), cancel_button_rect, border_radius=3)
+            # Grey when the tutorial/mission blocks cancelling (it used to look clickable)
+            cancel_color = (110, 110, 110) if cancel_locked else (200, 50, 50)
+            pygame.draw.rect(self.game.screen, cancel_color, cancel_button_rect, border_radius=3)
             cancel_text = self.get_cached_text("X", self.game.font, WHITE, "font")
             cancel_text_rect = cancel_text.get_rect(center=cancel_button_rect.center)
             self.game.screen.blit(cancel_text, cancel_text_rect)
@@ -2384,11 +2393,25 @@ class UIRenderer:
 
                 # Check if player can afford the technology (LOCAL player)
                 can_afford = True
-                tech_cost = tech.get('cost', 0)
+                # Same cost formula start_research() charges (Silvyr +33% AND territorial
+                # tech discounts). The old local copy only applied Silvyr, so a discounted
+                # tech could look unaffordable while clicking it worked.
+                tech_cost = self.game.game_state.get_effective_tech_cost(tech.get('cost', 0), local_player)
 
-                # Apply Ruthless Ingenuity (Erec Silvyr): +33% cost
-                if self.game.game_state.player_has_silvyr(local_player):
-                    tech_cost = int(tech_cost * 1.33)
+                # Only one research at a time: while another tech is being researched,
+                # start_research() refuses every other tech, so they must not look available
+                active_research = self.game.game_state.research_in_progress.get(local_player)
+                other_research_active = bool(active_research) and active_research.get('tech_id') != tech_id
+
+                # Tutorial/mission lock (checked here so the icon tint can show it — the
+                # icon covers the red base colour that used to be the only hint)
+                # (is_action_allowed('research') is the check the click uses; missions that
+                # only block through it would otherwise still look available)
+                mission = getattr(self.game, 'tutorial_mission', None)
+                tutorial_locked = bool(
+                    mission and mission.active
+                    and (mission.is_button_locked(f'technology_{tech_id}')
+                         or not mission.is_action_allowed('research', tech_id=tech_id)))
 
                 if is_available and tech_cost > 0:
                     current_gold = self.game.game_state.player_gold[local_player]
@@ -2398,6 +2421,9 @@ class UIRenderer:
                 if is_researched:
                     # Already researched: green
                     base_color = (60, 120, 60)
+                elif is_available and requirements_met and other_research_active:
+                    # Available, but waiting for the current research to finish: grey
+                    base_color = (80, 80, 80)
                 elif is_available and requirements_met:
                     # Available to research: blue
                     base_color = (80, 120, 180)
@@ -2477,6 +2503,10 @@ class UIRenderer:
                         elif is_researching:
                             tint_color = (200, 200, 100)
                             blend_amount = 100
+                        elif tutorial_locked:
+                            # Locked by the tutorial/mission: greyed out (it used to look normal)
+                            tint_color = (110, 110, 110)
+                            blend_amount = 120
                         elif is_available and not requirements_met:
                             tint_color = (200, 100, 100)
                             blend_amount = 120
@@ -2485,6 +2515,10 @@ class UIRenderer:
                             blend_amount = 120
                         elif not is_available:
                             tint_color = (200, 100, 100)
+                            blend_amount = 120
+                        elif other_research_active:
+                            # Another tech is being researched: greyed out until it finishes
+                            tint_color = (110, 110, 110)
                             blend_amount = 120
                         else:
                             tint_color = None
@@ -2640,6 +2674,10 @@ class UIRenderer:
                     elif is_researching:
                         tooltip_lines.append([("small", f"Status: Researching ({turns_remaining} turn{'s' if turns_remaining != 1 else ''} left)", (200, 160, 0))])  # Darker gold for in-progress
                         tooltip_lines.append([("small", "Right-click to cancel (full refund)", (200, 200, 255))])
+                    elif is_available and other_research_active:
+                        # Clicking now would be refused — say why instead of "Available"
+                        tooltip_lines.append([("small", "Status: Waiting", (200, 200, 200))])
+                        tooltip_lines.append([("small", "Another technology is being researched", (200, 150, 150))])
                     elif is_available:
                         tooltip_lines.append([("small", "Status: Available", (100, 200, 255))])
                         tooltip_lines.append([("small", "Left-click to start research", (200, 200, 255))])
@@ -2956,6 +2994,7 @@ class UIRenderer:
             
             # Tutorial highlighting for sidebar tabs
             tutorial_tab_highlight = False
+            tab_locked = False
             if (hasattr(self.game, 'tutorial_mission') and self.game.tutorial_mission
                     and self.game.tutorial_mission.active):
                 btn_id = f'sidebar_{tab_id}'
@@ -2963,6 +3002,12 @@ class UIRenderer:
                     tutorial_tab_highlight = True
                     bg_color = (80, 180, 80)  # Green for highlighted
                     border_color = (120, 220, 120)
+                elif not is_active and not self.game.tutorial_mission.is_action_allowed('sidebar_tab', tab_name=tab_id):
+                    # Locked tab (the click is refused): greyed out with dimmed text —
+                    # it used to look exactly like any other inactive tab
+                    tab_locked = True
+                    bg_color = (30, 30, 30)
+                    border_color = (60, 60, 60)
 
             # Draw tab button
             pygame.draw.rect(self.game.screen, bg_color, tab_rect)
@@ -2978,10 +3023,13 @@ class UIRenderer:
                 self.game.screen.blit(glow_surface, glow_rect.topleft)
 
             # R3 fix: cache rotated tab text (font.render + rotate are expensive per-frame)
-            if tab_id not in self.game._rotated_tab_text_cache:
-                tab_text = self.game._get_cached_text(tab_names[tab_id], self.game.small_font, WHITE)
-                self.game._rotated_tab_text_cache[tab_id] = pygame.transform.rotate(tab_text, -90)
-            rotated_text = self.game._rotated_tab_text_cache[tab_id]
+            # Locked tabs use a dimmed text variant, cached under its own key
+            text_key = f"{tab_id}__locked" if tab_locked else tab_id
+            if text_key not in self.game._rotated_tab_text_cache:
+                text_color = (110, 110, 110) if tab_locked else WHITE
+                tab_text = self.game._get_cached_text(tab_names[tab_id], self.game.small_font, text_color)
+                self.game._rotated_tab_text_cache[text_key] = pygame.transform.rotate(tab_text, -90)
+            rotated_text = self.game._rotated_tab_text_cache[text_key]
             text_rect = rotated_text.get_rect(center=(tab_x + tab_width // 2, current_y + actual_tab_height // 2))
             self.game.screen.blit(rotated_text, text_rect)
 

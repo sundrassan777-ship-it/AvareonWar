@@ -51,6 +51,46 @@ class BuildingMixin:
                 return True
         return False
 
+    # Max units queued per Barracks. Shared by start_training() and both training UIs
+    # (map quick-icons used their own `< 5` and showed a 5th slot as available).
+    MAX_TRAINING_QUEUE = 4
+
+    # One-per-territory buildings: type -> (message if built, message if under construction)
+    _UNIQUE_BUILDING_MESSAGES = {
+        'Keep': ("Only one Fortress allowed per territory!",
+                 "Already building a Fortress in this territory!"),
+        'Training Grounds': ("Only one Training Grounds allowed per territory!",
+                             "Already building Training Grounds in this territory!"),
+        'Square': ("Only one Square allowed per territory!",
+                   "Already building a Square in this territory!"),
+    }
+
+    def get_building_type_block_reason(self, territory, building_type):
+        """
+        Why this building type can't be built in this territory, or None if it can.
+
+        Covers the per-type rules only: no Keep in a Fortress territory, and one Keep /
+        Training Grounds / Square per territory (built or under construction). Gold,
+        ownership, plot and once-per-turn checks stay in start_construction().
+
+        Single source of truth for start_construction() AND the red tint of the map
+        quick-icons and bottom-panel buttons — they used to keep their own copies and
+        drifted (the Square limit and the Fortress rule looked "available" on the map).
+        """
+        # Fortress territories have innate defense — cannot build Keeps
+        if building_type == 'Keep' and map_data.is_fortress_territory(territory):
+            return "Fortress territories already have innate defense!"
+
+        messages = self._UNIQUE_BUILDING_MESSAGES.get(building_type)
+        if messages:
+            if building_type in self.buildings.get(territory, {}).values():
+                return messages[0]
+            # under_construction entry is (building_type, turns_remaining, cost)
+            for entry in self.under_construction.get(territory, {}).values():
+                if entry[0] == building_type:
+                    return messages[1]
+        return None
+
     def is_castle(self, territory, plot_index):
         """Check if a Keep at this location has been upgraded to Castle"""
         if territory not in self.castle_upgrades:
@@ -146,46 +186,13 @@ class BuildingMixin:
             self.add_message("Only one building per territory per turn!")
             return False
 
-        # Fortress territories have innate defense — cannot build Keeps
-        if building_type == 'Keep' and map_data.is_fortress_territory(territory):
-            self.add_message("Fortress territories already have innate defense!")
+        # Per-type rules (no Keep in Fortress territories; one Keep / Training Grounds /
+        # Square per territory). Shared with the map icons and bottom-panel buttons so
+        # their red tint always matches what this method refuses.
+        block_reason = self.get_building_type_block_reason(territory, building_type)
+        if block_reason:
+            self.add_message(block_reason)
             return False
-
-        # Special rule: Only one Keep (Fortress) allowed per territory
-        if building_type == 'Keep':
-            # Check completed Keeps
-            if self.has_fortress(territory):
-                self.add_message("Only one Fortress allowed per territory!")
-                return False
-            # Check Keeps under construction
-            if territory in self.under_construction:
-                for plot_idx, entry in self.under_construction[territory].items():
-                    bldg_type = entry[0]  # under_construction entry is (building_type, turns_remaining, cost)
-                    if bldg_type == 'Keep':
-                        self.add_message("Already building a Fortress in this territory!")
-                        return False
-
-        # Special rule: Only one Training Grounds allowed per territory
-        if building_type == 'Training Grounds':
-            if self.has_training_grounds(territory):
-                self.add_message("Only one Training Grounds allowed per territory!")
-                return False
-            if territory in self.under_construction:
-                for plot_idx, entry in self.under_construction[territory].items():
-                    if entry[0] == 'Training Grounds':
-                        self.add_message("Already building Training Grounds in this territory!")
-                        return False
-
-        # Special rule: Only one Square allowed per territory
-        if building_type == 'Square':
-            if self.has_square(territory):
-                self.add_message("Only one Square allowed per territory!")
-                return False
-            if territory in self.under_construction:
-                for plot_idx, entry in self.under_construction[territory].items():
-                    if entry[0] == 'Square':
-                        self.add_message("Already building a Square in this territory!")
-                        return False
 
         # Check if plot is empty
         if territory in self.buildings and plot_index in self.buildings[territory]:
@@ -597,9 +604,9 @@ class BuildingMixin:
         if barracks_plot_index not in self.training_queue[territory]:
             self.training_queue[territory][barracks_plot_index] = []
 
-        # Check queue limit (4 units per Barracks)
-        if len(self.training_queue[territory][barracks_plot_index]) >= 4:
-            self.add_message("Training queue full! (Max 4 per Barracks)")
+        # Check queue limit (MAX_TRAINING_QUEUE units per Barracks)
+        if len(self.training_queue[territory][barracks_plot_index]) >= self.MAX_TRAINING_QUEUE:
+            self.add_message(f"Training queue full! (Max {self.MAX_TRAINING_QUEUE} per Barracks)")
             self.last_action_error = "queue_full"
             return False
 
