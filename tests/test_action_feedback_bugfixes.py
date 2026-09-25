@@ -279,6 +279,30 @@ class TestOrderCancelClick:
         game.handle_order_sidebar_click(game.cancel_all_button.center)
         assert gs.movement_orders == [ai_order]
 
+    def test_cancel_all_hidden_during_ai_turn(self, game):
+        """
+        Sequential: the AI places its orders one by one (with pauses) during its turn.
+        The button used to be drawn whenever ANY order existed, so CANCEL ALL showed up
+        on the human's sidebar during the AI's turn. It now follows the sidebar player.
+        """
+        from game_state import MovementOrder
+        gs = game.game_state
+        gs.sidebar_expanded = True
+        gs.active_sidebar_tab = 'action_queue'
+        gs.current_player = 1  # AI's turn
+        gs.movement_orders = [MovementOrder('Lobardia', 'Lentria', 3, 1, [0, 1, 2])]
+
+        game.draw_order_sidebar()
+        assert game.cancel_all_button is None
+        assert game.order_cancel_buttons == []
+
+        # Sanity: the human's own order still gets both buttons on their turn
+        gs.current_player = 0
+        gs.movement_orders = [MovementOrder('Lobardia', 'Lentria', 1, 0, [0])]
+        game.draw_order_sidebar()
+        assert game.cancel_all_button is not None
+        assert len(game.order_cancel_buttons) == 1
+
     def test_remote_cancel_uses_per_player_index(self, game):
         gs = game.game_state
         ai_order, remote_order = _order(0, "A", "B"), _order(1, "C", "D")
