@@ -791,6 +791,9 @@ class Game:
             self.sim_state = SimultaneousGameState(self.game_state)
             self.sim_state.phase_manager = SimPhaseManager(self.sim_state)
             self.sim_ai = SimultaneousAI(self.sim_state, ai_player)
+            # The local human's clicks execute immediately and are also queued as sim
+            # orders; the executor must skip those copies in single-player as well
+            self.sim_state.click_executed_player = self.get_local_player()
             # Set multiplayer flags for proper execution coordination
             # - Clients wait for SIM_ALL_READY from host
             # - Host sends SIM_ALL_READY when all ready via callback
@@ -3856,6 +3859,11 @@ class Game:
         bboxes = self.map_renderer.territory_bounding_boxes
         # Check from end to start to handle overlaps better
         for territory in reversed(list(self.scaled_polygons.keys())):
+            # Territories hidden by a campaign mission (enabled-territories filter) are not
+            # drawn, so they must not be hoverable/clickable/targetable either — and can
+            # therefore never produce an action error. Mirrors map_renderer's draw filter.
+            if not map_data.is_territory_enabled(territory):
+                continue
             # FPS OPT: AABB pre-check (4 comparisons) before O(n) ray-casting
             bbox = bboxes.get(territory)
             if bbox:
@@ -5501,6 +5509,90 @@ class Game:
         if self.chat_notification_effect:
             self.chat_notification_effect.add_system_notification(msg)
 
+    def _is_sim_resolving(self):
+        """True while simultaneous mode resolves battles/alliance markers (no new actions)."""
+        return self.sim_state is not None and self.sim_state.sim_phase == 'resolving'
+
+    def _try_start_construction(self, territory, plot_index, building_name):
+        """
+        Shared build path for the map quick-icons, the bottom-panel buttons and the
+        keyboard shortcuts. Each used to carry its own copy with different sync rules
+        (the bottom panel never queued a simultaneous-mode order, the keyboard never
+        synced at all), so the same action behaved differently per input.
+
+        Runs the build locally, then syncs it: simultaneous mode queues a sim order,
+        sequential multiplayer sends BUILDING_ORDER. On refusal it shows the failure
+        feedback. UI deselection stays with the caller.
+
+        Returns:
+            bool: True if construction started
+        """
+        # No new actions while simultaneous mode resolves battles (the map icons already
+        # enforced this; the bottom panel and keyboard did not)
+        if self._is_sim_resolving():
+            return False
+
+        if not self.game_state.start_construction(territory, plot_index, building_name):
+            self._show_action_failure_feedback()
+            return False
+
+        if self.sim_state is not None:
+            # Executed locally for immediate feedback; the executor skips it for the
+            # clicking player (sim_state.click_executed_player) but syncs it to others
+            self.sim_state.add_order(self.get_local_player(), {
+                'type': 'build',
+                'player_id': self.game_state.current_player,
+                'territory': territory,
+                'plot_index': plot_index,
+                'building_type': building_name
+            })
+            logger.debug(f"[SIM] Queued build order: {building_name} in {territory}")
+        elif self.multiplayer_mode:
+            self._send_action_to_remote(MessageType.BUILDING_ORDER, {
+                'territory': territory,
+                'plot_index': plot_index,
+                'building_type': building_name,
+                'player_index': self.local_player_index  # 4-player support
+            })
+        return True
+
+    def _try_start_training(self, territory, barracks_plot_index, unit_type):
+        """
+        Shared unit-training path for the map quick-icons, the bottom-panel buttons and
+        the keyboard shortcuts (same reasons as _try_start_construction: the map icon
+        never sent TRAINING_ORDER in sequential multiplayer, the bottom panel never queued
+        a simultaneous-mode order, and the keyboard did neither).
+
+        Returns:
+            bool: True if training started
+        """
+        if self._is_sim_resolving():
+            return False
+
+        if not self.game_state.start_training(territory, barracks_plot_index, unit_type):
+            self._show_action_failure_feedback()
+            return False
+
+        if self.sim_state is not None:
+            self.sim_state.add_order(self.get_local_player(), {
+                'type': 'train',
+                'player_id': self.game_state.current_player,
+                'territory': territory,
+                'barracks_plot': barracks_plot_index,
+                'unit_type': unit_type
+            })
+            logger.debug(f"[SIM] Queued train order: {unit_type} in {territory}")
+        elif self.multiplayer_mode:
+            # Sync fix: remote players must see the training queue in sequential mode
+            self._send_action_to_remote(MessageType.TRAINING_ORDER, {
+                'territory': territory,
+                'barracks_plot': barracks_plot_index,
+                'unit_type': unit_type,
+                'player_index': self.game_state.current_player
+            })
+        self.clear_button_tooltip()
+        return True
+
     def _get_territory_preview(self, territory, width, height):
         """Get cached territory preview image, loading from disk on first access.
         Returns pygame.Surface scaled to (width, height), or None if no image exists."""
@@ -5936,12 +6028,15 @@ class Game:
             # Convert screen position to world position
             world_pos = self.screen_to_world(pos)
 
-            # Find which territory was clicked
-            clicked_territory = None
-            for territory, polygon in self.scaled_polygons.items():
-                if self._point_in_polygon(world_pos[0], world_pos[1], polygon):
-                    clicked_territory = territory
-                    break
+            # Find which territory was clicked. Uses the shared lookup (skips territories a
+            # mission hides) plus the same non-interactive filter as left/right-click —
+            # the old private polygon loop let abilities hit hidden territories, even
+            # succeeding (Aggressive Diplomacy on a hidden neutral territory).
+            clicked_territory = self.get_territory_at_pos(world_pos)
+            if (clicked_territory and self.tutorial_mission
+                    and self.tutorial_mission.active
+                    and not self.tutorial_mission.is_territory_interactive(clicked_territory)):
+                clicked_territory = None
 
             if clicked_territory:
                 # Dispatch table: maps ability names to their execute functions on GameState
@@ -6097,43 +6192,11 @@ class Game:
                             # Clicked on building icon - trigger flash and start construction
                             self.trigger_click_flash('map_building', building_name)
 
-                            # SIMULTANEOUS MODE: Queue build order instead of executing immediately
-                            # Execute locally for visual feedback, queue for sync
-                            if self.sim_state is not None:
-                                if self.game_state.start_construction(territory, plot_index, building_name):
-                                    # Queue order for sync - will NOT be re-executed locally
-                                    build_order = {
-                                        'type': 'build',
-                                        'player_id': self.game_state.current_player,
-                                        'territory': territory,
-                                        'plot_index': plot_index,
-                                        'building_type': building_name
-                                    }
-                                    local_player = self.get_local_player()
-                                    self.sim_state.add_order(local_player, build_order)
-                                    logger.debug(f"[SIM] Queued build order: {building_name} in {territory}")
-                                    self.selected_plot = None
-                                    self.selected_territory_info = None
-                                    self.clear_button_tooltip()
-                                else:
-                                    self._show_action_failure_feedback()
-                            else:
-                                # SEQUENTIAL MODE: Execute immediately and sync
-                                if self.game_state.start_construction(territory, plot_index, building_name):
-                                    # MULTIPLAYER: Send building start notification
-                                    if self.multiplayer_mode:
-
-                                        self._send_action_to_remote(MessageType.BUILDING_ORDER, {
-                                            'territory': territory,
-                                            'plot_index': plot_index,
-                                            'building_type': building_name,
-                                            'player_index': self.local_player_index  # 4-player support
-                                        })
-                                    self.selected_plot = None
-                                    self.selected_territory_info = None
-                                    self.clear_button_tooltip()
-                                else:
-                                    self._show_action_failure_feedback()
+                            # Shared build path (local execute + sim/network sync + feedback)
+                            if self._try_start_construction(territory, plot_index, building_name):
+                                self.selected_plot = None
+                                self.selected_territory_info = None
+                                self.clear_button_tooltip()
                             return
         
         # PRIORITY 2: Check if clicking on a quick-access training icon (around Barracks)
@@ -6171,34 +6234,8 @@ class Game:
                         # Clicked on training icon - trigger flash and try to train
                         self.trigger_click_flash('map_training', unit_type)
 
-                        # SIMULTANEOUS MODE: Queue train order instead of executing immediately
-                        # Orders are synced via SIM_PLAYER_READY and executed during execution phase
-                        # We execute locally too for visual feedback (barracks shows training)
-                        if self.sim_state is not None:
-                            # Check if training would succeed, then execute AND queue
-                            if self.game_state.start_training(territory, barracks_plot_index, unit_type):
-                                # Queue order for sync - will NOT be re-executed locally
-                                # (sim_phase_manager skips train orders for local player since already executed)
-                                train_order = {
-                                    'type': 'train',
-                                    'player_id': self.game_state.current_player,
-                                    'territory': territory,
-                                    'barracks_plot': barracks_plot_index,
-                                    'unit_type': unit_type
-                                }
-                                local_player = self.get_local_player()
-                                self.sim_state.add_order(local_player, train_order)
-                                logger.debug(f"[SIM] Queued train order: {unit_type} in {territory}")
-                                self.clear_button_tooltip()
-                            else:
-                                self._show_action_failure_feedback()
-                        else:
-                            # SEQUENTIAL MODE: Execute immediately
-                            if self.game_state.start_training(territory, barracks_plot_index, unit_type):
-                                # Training started successfully
-                                self.clear_button_tooltip()
-                            else:
-                                self._show_action_failure_feedback()
+                        # Shared training path (local execute + sim/network sync + feedback)
+                        self._try_start_training(territory, barracks_plot_index, unit_type)
                         # Stay on Barracks (don't deselect)
                         return
 
@@ -13340,19 +13377,8 @@ class Game:
                 if button_rect.collidepoint(pos):
                     self.trigger_click_flash('training', unit_type)
                     territory, barracks_plot_index = self.selected_barracks
-                    if self.game_state.start_training(territory, barracks_plot_index, unit_type):
-                        # Sync fix: send training order to remote in sequential mode
-                        # so they see the training queue and can track progress
-                        if self.multiplayer_mode and self.sim_state is None:
-                            self._send_action_to_remote(MessageType.TRAINING_ORDER, {
-                                'territory': territory,
-                                'barracks_plot': barracks_plot_index,
-                                'unit_type': unit_type,
-                                'player_index': self.game_state.current_player
-                            })
-                        self.clear_button_tooltip()
-                    else:
-                        self._show_action_failure_feedback()
+                    # Shared training path (local execute + sim/network sync + feedback)
+                    self._try_start_training(territory, barracks_plot_index, unit_type)
                     return True
 
         # Queue cancel buttons (only when Barracks is actually selected)
@@ -13405,6 +13431,10 @@ class Game:
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('demolish')):
                     return True  # Silently block
+                # No new actions while simultaneous mode resolves battles (the map
+                # quick-icons already enforced this; the bottom panel did not)
+                if self._is_sim_resolving():
+                    return True
                 self.trigger_click_flash('demolish', 'barracks')
                 territory = self.demolish_barracks_territory
                 barracks_plot_index = self.demolish_barracks_plot_index
@@ -13440,6 +13470,10 @@ class Game:
         # Castle upgrade button (only when Keep is actually selected)
         if self.selected_keep and self.castle_upgrade_button:
             if self.castle_upgrade_button.collidepoint(pos):
+                # No new actions while simultaneous mode resolves battles (the map
+                # quick-icons already enforced this; the bottom panel did not)
+                if self._is_sim_resolving():
+                    return True
                 self.trigger_click_flash('upgrade_castle', None)
                 territory, keep_plot_index = self.selected_keep
 
@@ -13549,6 +13583,10 @@ class Game:
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('train_hero')):
                         return True  # Silently block
+                    # No new actions while simultaneous mode resolves battles (the map
+                    # quick-icons already enforced this; the bottom panel did not)
+                    if self._is_sim_resolving():
+                        return True
                     self.trigger_click_flash('hero_training', hero_type)
                     territory, keep_plot_index = self.selected_keep
 
@@ -13594,6 +13632,10 @@ class Game:
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('demolish')):
                     return True  # Silently block
+                # No new actions while simultaneous mode resolves battles (the map
+                # quick-icons already enforced this; the bottom panel did not)
+                if self._is_sim_resolving():
+                    return True
                 self.trigger_click_flash('demolish', 'keep')
                 territory = self.demolish_keep_territory
                 keep_plot_index = self.demolish_keep_plot_index
@@ -13739,20 +13781,10 @@ class Game:
                             if button_rect.collidepoint(pos):
                                 self.trigger_click_flash('building', building_name)
                                 territory, plot_index = self.selected_plot
-                                if self.game_state.start_construction(territory, plot_index, building_name):
-                                    # MULTIPLAYER: Send building start notification
-                                    if self.multiplayer_mode:
-
-                                        self._send_action_to_remote(MessageType.BUILDING_ORDER, {
-                                            'territory': territory,
-                                            'plot_index': plot_index,
-                                            'building_type': building_name,
-                                            'player_index': self.local_player_index  # 4-player support
-                                        })
+                                # Shared build path (local execute + sim/network sync + feedback)
+                                if self._try_start_construction(territory, plot_index, building_name):
                                     self.selected_plot = None
                                     self.clear_button_tooltip()
-                                else:
-                                    self._show_action_failure_feedback()
                                 return True
                 except Exception as e:
                     logger.error(f"Error in building buttons: {e}")
@@ -13797,6 +13829,10 @@ class Game:
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('demolish')):
                         return True  # Silently block
+                    # No new actions while simultaneous mode resolves battles (the map
+                    # quick-icons already enforced this; the bottom panel did not)
+                    if self._is_sim_resolving():
+                        return True
                     self.trigger_click_flash('demolish', 'building')
                     territory, plot_index = self.selected_plot
                     result = self.game_state.destroy_building(territory, plot_index)

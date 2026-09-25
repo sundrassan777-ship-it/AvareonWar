@@ -168,6 +168,21 @@ class SimPhaseManager:
 
         return merged
 
+    def _executed_at_click(self, player_id) -> bool:
+        """
+        True if this player's build/train/research/castle/hero-training orders were
+        already executed locally when clicked, so the executor must not apply them again.
+
+        Uses sim_state.click_executed_player (the local human, set in both single-player
+        and multiplayer). The old check used local_player_index, which is only set in
+        multiplayer — in single-player simultaneous mode every map-icon training order
+        was applied twice (two units queued, gold charged twice).
+        """
+        clicker = getattr(self.sim_state, 'click_executed_player', None)
+        if clicker is None:
+            clicker = self.sim_state.local_player_index
+        return clicker is not None and player_id == clicker
+
     def _validate_orders(self, orders: List[dict]) -> List[dict]:
         """
         Validate orders and remove invalid ones.
@@ -382,8 +397,7 @@ class SimPhaseManager:
         # In multiplayer, skip execution for local player's orders
         # Local player already executed when they clicked (for visual feedback)
         # Only execute remote player orders
-        local_player = self.sim_state.local_player_index
-        if local_player is not None and player_id == local_player:
+        if self._executed_at_click(player_id):
             sim_log.detail(f"Skipping build order for local player {player_id} (already executed)")
             return
 
@@ -410,8 +424,7 @@ class SimPhaseManager:
         # In multiplayer, skip execution for local player's orders
         # Local player already executed when they clicked (for visual feedback)
         # Only execute remote player orders
-        local_player = self.sim_state.local_player_index
-        if local_player is not None and player_id == local_player:
+        if self._executed_at_click(player_id):
             sim_log.detail(f"Skipping train order for local player {player_id} (already executed)")
             return
 
@@ -435,8 +448,7 @@ class SimPhaseManager:
 
         # In multiplayer, skip execution for local player's orders
         # Local player already executed when they clicked (for visual feedback)
-        local_player = self.sim_state.local_player_index
-        if local_player is not None and player_id == local_player:
+        if self._executed_at_click(player_id):
             sim_log.detail(f"Skipping research order for local player {player_id} (already executed)")
             return
 
@@ -462,8 +474,7 @@ class SimPhaseManager:
         # In multiplayer, skip execution for local player's orders
         # Local player already executed when they clicked (for visual feedback)
         # Only execute remote player orders
-        local_player = self.sim_state.local_player_index
-        if local_player is not None and player_id == local_player:
+        if self._executed_at_click(player_id):
             sim_log.detail(f"Skipping upgrade_castle order for local player {player_id} (already executed)")
             return
 
@@ -583,8 +594,7 @@ class SimPhaseManager:
         # In multiplayer, skip execution for local player's orders
         # Local player already executed when they clicked (for visual feedback)
         # Only execute remote player orders
-        local_player = self.sim_state.local_player_index
-        if local_player is not None and player_id == local_player:
+        if self._executed_at_click(player_id):
             sim_log.detail(f"Skipping train_hero order for local player {player_id} (already executed)")
             return
 

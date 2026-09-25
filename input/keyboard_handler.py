@@ -229,11 +229,11 @@ class KeyboardHandler:
             game_state.turn_phase == 'planning' and
             not game_state.is_ai_player()):
 
-            # MULTIPLAYER: Block shortcuts if spectating
-            if ui_state.get('multiplayer_mode'):
-                game_instance = ui_state.get('game_instance')
-                if game_instance and not game_instance.is_local_player_active():
-                    return (False, {})
+            # Block shortcuts if spectating / already marked Ready (multiplayer and
+            # simultaneous mode) — same gate as the bottom-panel buttons
+            game_instance = ui_state.get('game_instance')
+            if game_instance and not game_instance.is_local_player_active():
+                return (False, {})
 
             territory, plot_index = selected_plot
 
@@ -241,7 +241,14 @@ class KeyboardHandler:
             building_name = _BUILDING_SHORTCUTS.get(event.key)
 
             if building_name:
-                if game_state.start_construction(territory, plot_index, building_name):
+                # Route through the same path as a click: sim-resolving gate, sim order /
+                # network sync and failure feedback. Calling game_state directly skipped
+                # all of that, so a shortcut build never reached other players.
+                if game_instance:
+                    started = game_instance._try_start_construction(territory, plot_index, building_name)
+                else:
+                    started = game_state.start_construction(territory, plot_index, building_name)
+                if started:
                     updates['selected_plot'] = None
                     updates['clear_button_tooltip'] = True
                 return (True, updates)
@@ -255,11 +262,10 @@ class KeyboardHandler:
             game_state.turn_phase == 'planning' and
             not game_state.is_ai_player()):
 
-            # MULTIPLAYER: Block shortcuts if spectating
-            if ui_state.get('multiplayer_mode'):
-                game_instance = ui_state.get('game_instance')
-                if game_instance and not game_instance.is_local_player_active():
-                    return (False, {})
+            # Block shortcuts if spectating / already marked Ready (see building shortcuts)
+            game_instance = ui_state.get('game_instance')
+            if game_instance and not game_instance.is_local_player_active():
+                return (False, {})
 
             territory, barracks_plot_index = selected_barracks
 
@@ -267,7 +273,11 @@ class KeyboardHandler:
             unit_type = _TRAINING_SHORTCUTS.get(event.key)
 
             if unit_type:
-                game_state.start_training(territory, barracks_plot_index, unit_type)
+                # Same path as a click (sim-resolving gate, sync, failure feedback)
+                if game_instance:
+                    game_instance._try_start_training(territory, barracks_plot_index, unit_type)
+                else:
+                    game_state.start_training(territory, barracks_plot_index, unit_type)
                 updates['clear_button_tooltip'] = True
                 return (True, updates)
 
