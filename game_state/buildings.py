@@ -119,6 +119,10 @@ class BuildingMixin:
 
     def start_construction(self, territory, plot_index, building_type):
         """Start construction of a building"""
+        # Reset the failure code first: a code left over from an earlier call (AI, remote
+        # order, keyboard shortcut) must never be shown for this attempt's failure.
+        self.last_action_error = None
+
         # Tutorial hook: check if building action is allowed
         if self.tutorial_mission and not self.tutorial_mission.is_action_allowed(
                 'build', building_type=building_type, territory=territory):
@@ -537,6 +541,9 @@ class BuildingMixin:
 
     def start_training(self, territory, barracks_plot_index, unit_type='Swordsman'):
         """Start training a unit at a specific Barracks"""
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+
         # Tutorial hook: check if training action is allowed
         if self.tutorial_mission and not self.tutorial_mission.is_action_allowed(
                 'train', unit_type=unit_type, territory=territory):
@@ -850,6 +857,9 @@ class BuildingMixin:
         UPGRADE_COST = 150
         UPGRADE_TIME = 2
 
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+
         # 1. Check ownership
         if self.territory_owners.get(territory, -1) != self.current_player:
             self.add_message("You don't own this territory!")
@@ -1014,6 +1024,9 @@ class BuildingMixin:
         Returns:
             bool: True if research started successfully, False otherwise
         """
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+
         # Find the technology
         tech = None
         for t in self.technologies:

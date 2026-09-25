@@ -1668,6 +1668,12 @@ class UIRenderer:
         # Filter orders to show only LOCAL player's orders
         local_orders = [order for order in self.game.game_state.movement_orders if order.player == local_player]
 
+        # Reset every frame, BEFORE the empty-list early return: otherwise the X of the
+        # last cancelled order stayed clickable and hit whatever order came next.
+        self.game.order_cancel_buttons = []
+        # Player whose orders this sidebar shows — the CANCEL ALL button cancels only these
+        self.game.order_sidebar_player = local_player
+
         # Check if there are any orders
         if len(local_orders) == 0:
             # Show empty message
@@ -1680,7 +1686,6 @@ class UIRenderer:
         # Draw each order (LOCAL player only)
         order_y = header_y + UIConstants.HEADER_OFFSET
         order_height = 60
-        self.game.order_cancel_buttons = []  # Store button rects for click detection
 
         for i, order in enumerate(local_orders):
             if order_y + order_height > sidebar_y + sidebar_height - 10:
@@ -1730,8 +1735,12 @@ class UIRenderer:
             cancel_text_rect = cancel_text.get_rect(center=cancel_button_rect.center)
             self.game.screen.blit(cancel_text, cancel_text_rect)
 
-            # Store button rect with order index for click detection
-            self.game.order_cancel_buttons.append((cancel_button_rect, i))
+            # Store (rect, order object, per-player index) for click detection.
+            # Format: (rect, order, player_order_index). The order object identifies the
+            # order to cancel locally; i (its index among this player's orders) is what the
+            # ORDER_REMOVE network message carries. The old format stored only i and used
+            # it on the full movement_orders list, cancelling the wrong order.
+            self.game.order_cancel_buttons.append((cancel_button_rect, order, i))
 
             order_y += order_height
     

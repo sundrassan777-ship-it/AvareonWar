@@ -28,6 +28,9 @@ class HeroMixin:
         - Training time is in player turns (not game turns)
         - 100% refund on cancellation
         """
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+
         # 1. Validate hero type
         if hero_type not in self.HERO_TYPES:
             self.add_message(f"Invalid hero type: {hero_type}")
@@ -287,6 +290,9 @@ class HeroMixin:
         Returns:
             bool: True if ability was activated, False otherwise
         """
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+
         current_player = self.current_player
 
         # Validate hero exists and belongs to current player

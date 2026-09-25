@@ -538,6 +538,8 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
         # Last action error category — set by start_training/start_construction/etc. on failure,
         # read and cleared by main.py to show user-facing feedback (sound + floating notification).
+        # Every action method resets it to None on entry, so a code left by an earlier call
+        # (AI, remote order) can never be reported for a later, unrelated failure.
         # Values: None, "gold", "command_limit", "army_limit", "queue_full", "hero_limit"
         self.last_action_error = None
         

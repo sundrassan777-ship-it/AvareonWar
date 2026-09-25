@@ -1226,7 +1226,8 @@ class Game:
 
         self.hovered_plot = None  # (territory, plot_index) tuple
         self.action_log_visible = False  # Toggle for action log overlay
-        self.order_cancel_buttons = []  # List of (rect, order_index) for click detection
+        self.order_cancel_buttons = []  # List of (rect, order, player_order_index) for click detection
+        self.order_sidebar_player = 0  # Player whose orders the Action Queue shows (set by ui_renderer)
         self.cancel_all_button = None  # Rect for cancel all button
         self.sidebar_toggle_button = None  # Rect for sidebar expand/collapse button
         self.resolve_battle_button = None  # Rect for battle resolution button
@@ -2997,7 +2998,8 @@ class Game:
         Data fields:
             player_index (int): Which player cancelled the order(s).
             cancel_all (bool): If True, cancel all orders for that player.
-            order_index (int): Index into movement_orders to cancel (when cancel_all is False).
+            player_order_index (int): Index among that player's own orders (current format).
+            order_index (int): Legacy — raw index into movement_orders.
         """
         cancel_all = data.get('cancel_all', False)
         order_index = data.get('order_index')
@@ -3059,9 +3061,20 @@ class Game:
                 else:
                     logger.warning(f"[NETWORK] ORDER_REMOVE demolish missing fields")
             elif cancel_all:
-                count = self.game_state.cancel_all_orders()
+                # Only the sender's orders — cancelling every order here wiped the
+                # receiver's own orders too
+                count = self.game_state.cancel_all_orders(player=remote_player_index)
                 logger.info(f"[NETWORK] Player {remote_player_index} cancelled all orders ({count} removed)")
+            elif data.get('player_order_index') is not None:
+                # Per-player index (the sender's Action Queue position) → full-list index
+                full_index = self.game_state.get_full_order_index(
+                    remote_player_index, data.get('player_order_index'))
+                if full_index is not None and self.game_state.cancel_movement_order(full_index):
+                    logger.info(f"[NETWORK] Player {remote_player_index} cancelled their order #{data.get('player_order_index')}")
+                else:
+                    logger.warning(f"[NETWORK] Player {remote_player_index} cancel order failed: invalid player_order_index {data.get('player_order_index')}")
             elif order_index is not None:
+                # Legacy format: raw index into movement_orders
                 if self.game_state.cancel_movement_order(order_index):
                     logger.info(f"[NETWORK] Player {remote_player_index} cancelled order at index {order_index}")
                 else:
@@ -6948,8 +6961,10 @@ class Game:
         elif active_tab == 'chat':
             self.ui_renderer._draw_chat_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
 
-        # Cancel All button at bottom (only show in Action Queue tab)
-        if active_tab == 'action_queue' and len(self.game_state.movement_orders) > 0:
+        # Cancel All button at bottom (only show in Action Queue tab, and only when the
+        # sidebar's player has orders — it cancels only that player's orders)
+        if active_tab == 'action_queue' and any(
+                order.player == self.order_sidebar_player for order in self.game_state.movement_orders):
             cancel_all_y = sidebar_y + sidebar_height - 50
             cancel_all_rect = pygame.Rect(sidebar_x + 20, cancel_all_y, sidebar_width - 40, 35)
             pygame.draw.rect(self.screen, (150, 50, 50), cancel_all_rect, border_radius=5)
@@ -13525,13 +13540,15 @@ class Game:
 
         # Hero training buttons (only when Keep is actually selected)
         if self.selected_keep and self.hero_train_buttons:
-            # Campaign mission hook: block hero training when mission disallows it
-            if (self.tutorial_mission
-                    and self.tutorial_mission.active
-                    and not self.tutorial_mission.is_action_allowed('train_hero')):
-                return True  # Silently block
             for hero_type, button_rect in self.hero_train_buttons.items():
                 if button_rect.collidepoint(pos):
+                    # Campaign mission hook: block hero training when mission disallows it.
+                    # Checked only once a hero button is actually hit — checking it before
+                    # the hit-test swallowed every other bottom-panel click (e.g. Demolish Keep).
+                    if (self.tutorial_mission
+                            and self.tutorial_mission.active
+                            and not self.tutorial_mission.is_action_allowed('train_hero')):
+                        return True  # Silently block
                     self.trigger_click_flash('hero_training', hero_type)
                     territory, keep_plot_index = self.selected_keep
 
@@ -13916,20 +13933,28 @@ class Game:
         
         # Check individual order cancel buttons (only if expanded)
         if self.game_state.sidebar_expanded and self.order_cancel_buttons:
-            for button_rect, order_index in self.order_cancel_buttons:
-                if button_rect.collidepoint(pos):
+            # Format: (rect, order, player_order_index) — index access, see ui_renderer
+            for button in self.order_cancel_buttons:
+                if button[0].collidepoint(pos):
                     # Tutorial hook: block order cancellation during tutorial unless allowed
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('cancel_order')):
                         return True  # Silently block
-                    self.game_state.cancel_movement_order(order_index)
-                    # MULTIPLAYER: Notify remote players about cancelled order
-                    if self.multiplayer_mode:
-                        self._send_action_to_remote(MessageType.ORDER_REMOVE, {
-                            'order_index': order_index,
-                            'player_index': self.local_player_index
-                        })
+                    # Find the clicked order by identity: its position in the full list can
+                    # differ from its position among this player's orders
+                    order = button[1]
+                    full_index = next((i for i, o in enumerate(self.game_state.movement_orders)
+                                       if o is order), None)
+                    if full_index is not None and self.game_state.cancel_movement_order(full_index):
+                        # MULTIPLAYER: Notify remote players about cancelled order.
+                        # Sent only on success, with the per-player index (the receiver
+                        # maps it back through get_full_order_index()).
+                        if self.multiplayer_mode:
+                            self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                                'player_order_index': button[2],
+                                'player_index': self.local_player_index
+                            })
                     return True
 
         # Check cancel all button (only if expanded)
@@ -13940,7 +13965,9 @@ class Game:
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('cancel_all_orders')):
                     return True  # Silently block
-                self.game_state.cancel_all_orders()
+                # Cancel only the orders the sidebar shows — other players' orders
+                # (e.g. AI orders in the same planning phase) must survive
+                self.game_state.cancel_all_orders(player=self.order_sidebar_player)
                 # MULTIPLAYER: Notify remote players about cancel-all
                 if self.multiplayer_mode:
                     self._send_action_to_remote(MessageType.ORDER_REMOVE, {

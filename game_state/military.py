@@ -761,7 +761,10 @@ class MilitaryMixin:
             3. Create new order â†’ SUCCESS
         
         Wrong order would fail validation before auto-cancel could run!
-        
+
+        If any validation then fails, the auto-cancel is rolled back, so a refused
+        order never destroys the units' previous orders.
+
         Args:
             from_territory: Source territory name (e.g., "France")
             to_territory: Destination territory name (e.g., "Spain")
@@ -795,6 +798,9 @@ class MilitaryMixin:
             - cancel_movement_order() - Manual order cancellation
             - execute_all_orders() - Executes these orders
         """
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+
         # Determine which player's garrison to use
         if player is None:
             player = self.current_player
@@ -822,6 +828,14 @@ class MilitaryMixin:
         orders_to_remove = []
         units_to_reset = []
 
+        # Rollback snapshot: the auto-cancel below mutates orders and unit statuses before
+        # validation runs. If the new order is then refused (not adjacent, over the army
+        # limit, ...), the player's previous orders must survive untouched, so everything
+        # the auto-cancel changes is recorded here and restored by _rollback_auto_cancel().
+        orders_snapshot = list(self.movement_orders)
+        partial_snapshot = []  # (order, original unit_ids, original army_count)
+        unit_snapshot = []  # (unit, original status, original order)
+
         for i, order in enumerate(self.movement_orders):
             # Only check orders from the same player's garrison in this territory
             if order.from_territory == from_territory and order.player == player and order.unit_ids:
@@ -841,26 +855,36 @@ class MilitaryMixin:
                         orders_to_remove.append(i)
                     else:
                         # Partial overlap - remove overlapping units from order
+                        partial_snapshot.append((order, list(order.unit_ids), order.army_count))
                         order.unit_ids = [uid for uid in order.unit_ids if uid not in overlap]
                         order.army_count = len(order.unit_ids)
 
         # Reset status of overlapping units (makes them 'ready' again)
         for unit in units_to_reset:
+            unit_snapshot.append((unit, unit['status'], unit.get('order')))
             unit['status'] = 'ready'
             unit['order'] = None
-        
+
         # Remove orders that were fully cancelled (in reverse to maintain indices)
         for i in reversed(orders_to_remove):
             self.movement_orders.pop(i)
-        
-        if units_to_reset:
-            self.add_message(f"Previous orders for selected armies cancelled")
-        
+
+        def _rollback_auto_cancel():
+            """Undo the auto-cancel above when the new order is refused."""
+            self.movement_orders[:] = orders_snapshot
+            for snap_order, snap_ids, snap_count in partial_snapshot:
+                snap_order.unit_ids = snap_ids
+                snap_order.army_count = snap_count
+            for snap_unit, snap_status, snap_unit_order in unit_snapshot:
+                snap_unit['status'] = snap_status
+                snap_unit['order'] = snap_unit_order
+
         # NOW: Validate that all units are 'ready' status
         # (After auto-cancel, previously 'ordered' units are now 'ready')
         ready_units = [u['id'] for u in units if u['status'] == 'ready']
         invalid_units = [uid for uid in unit_ids if uid not in ready_units]
         if invalid_units:
+            _rollback_auto_cancel()
             self.add_message("Some selected armies are not ready to move")
             return False
 
@@ -876,9 +900,11 @@ class MilitaryMixin:
                 if has_captain_in_selection:
                     intermediate_territory = self.find_2hop_path(from_territory, to_territory, player)
                 if not intermediate_territory:
+                    _rollback_auto_cancel()
                     self.add_message("Territories are not adjacent!")
                     return False
         except Exception as e:
+            _rollback_auto_cancel()
             self.log_error(f"Failed to check adjacency between {from_territory} and {to_territory}", e)
             self.add_message("Error checking territory adjacency")
             return False
@@ -897,8 +923,14 @@ class MilitaryMixin:
             # Uses projected capacity: current + incoming - outgoing orders
             projected, _ = self._get_effective_capacity(to_territory)
             if projected + len(unit_ids) > self.MAX_ARMIES_PER_TERRITORY:
+                _rollback_auto_cancel()
                 self.add_message(f"Cannot reinforce {to_territory}: would exceed army limit of {self.MAX_ARMIES_PER_TERRITORY}!")
                 return False
+
+        # Validation passed: the auto-cancel is now final, so report it (it used to be
+        # reported before validation, even when the new order was then refused)
+        if units_to_reset:
+            self.add_message(f"Previous orders for selected armies cancelled")
 
         # Create the order with unit IDs
         # Deferred import to avoid circular import (MovementOrder defined in game_state/__init__.py)
@@ -967,12 +999,43 @@ class MilitaryMixin:
             return True
         return False
 
-    def cancel_all_orders(self):
-        """Cancel all movement orders"""
-        count = len(self.movement_orders)
-        
+    def get_full_order_index(self, player, player_order_index):
+        """
+        Translate a per-player order index into an index into self.movement_orders.
+
+        The Action Queue sidebar and the ORDER_REMOVE network message count only one
+        player's orders ("this player's 2nd order"). movement_orders holds every
+        player's orders, so using that per-player index directly on the full list
+        cancelled the wrong order whenever another player's order came first.
+
+        Returns:
+            int or None: index into movement_orders, or None if out of range
+        """
+        player_indices = [i for i, order in enumerate(self.movement_orders) if order.player == player]
+        if 0 <= player_order_index < len(player_indices):
+            return player_indices[player_order_index]
+        return None
+
+    def cancel_all_orders(self, player=None):
+        """
+        Cancel movement orders.
+
+        Args:
+            player: If given, cancel only this player's orders (the Action Queue
+                "CANCEL ALL" button and its network message). None cancels every
+                order (legacy behaviour).
+
+        Returns:
+            int: number of orders cancelled
+        """
+        if player is None:
+            to_cancel = list(self.movement_orders)
+        else:
+            to_cancel = [order for order in self.movement_orders if order.player == player]
+        count = len(to_cancel)
+
         # Reset all unit statuses (use multi-garrison system)
-        for order in self.movement_orders:
+        for order in to_cancel:
             if order.unit_ids:
                 garrison = self.territory_garrisons.get(order.from_territory, {}).get(order.player)
                 if garrison:
@@ -980,10 +1043,23 @@ class MilitaryMixin:
                         if unit.get('order') == order:
                             unit['status'] = 'ready'
                             unit['order'] = None
-        
-        self.movement_orders = []
+
+        if player is None:
+            self.movement_orders = []
+        else:
+            # Keep other players' orders (e.g. AI orders queued in the same planning phase)
+            self.movement_orders = [order for order in self.movement_orders if order.player != player]
         if count > 0:
             self.add_message(f"Cancelled {count} orders")
+            if player is not None:
+                # Same rule as cancel_movement_order(): the cancelled armies stay home, so
+                # other players' (allied) orders into those territories may now overflow
+                for from_territory in {order.from_territory for order in to_cancel}:
+                    cancelled = self._revalidate_incoming_orders(from_territory)
+                    if cancelled:
+                        self.add_message(f"Auto-cancelled incoming to {from_territory} (capacity exceeded):")
+                        for desc in cancelled:
+                            self.add_message(f"  - {desc}")
         return count
 
     def execute_all_orders(self):
