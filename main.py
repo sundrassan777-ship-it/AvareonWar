@@ -15005,8 +15005,12 @@ class Game:
         Side Effects:
             - May start or cancel research
         """
-        # Block research during simultaneous mode resolution phase
-        if self.sim_state is not None and self.sim_state.sim_phase == 'resolving':
+        # Block research during simultaneous mode resolution phase. The tree still looks
+        # normal then, so a click on a technology explains why nothing happens.
+        if self._is_sim_resolving():
+            if any(rect.collidepoint(pos) for rect in (self.technology_buttons or {}).values()):
+                self.show_action_error('wrong_phase')
+                return True
             return False
 
         # Check if we have technology buttons stored

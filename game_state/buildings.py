@@ -195,13 +195,16 @@ class BuildingMixin:
             self.add_message(block_reason)
             return False
 
-        # Check if plot is empty
+        # Check if plot is empty. Only a build shortcut key can get here (the build
+        # buttons are hidden for occupied plots), so explain the refusal with a toast.
         if territory in self.buildings and plot_index in self.buildings[territory]:
             if self.buildings[territory][plot_index] is not None:
+                self.last_action_error = "plot_occupied"
                 return False  # Plot occupied
 
         # Check if already under construction
         if territory in self.under_construction and plot_index in self.under_construction[territory]:
+            self.last_action_error = "plot_occupied"
             return False  # Already building something
 
         # Check if player has enough gold (with error handling)
