@@ -6019,6 +6019,10 @@ class Game:
                         self.show_action_error('diplomacy_blocked')
                         return
 
+                    # execute_* record their refusal code (config/action_error_messages.py);
+                    # clear any stale code first (the AI/network call the same methods)
+                    self.game_state.last_action_error = None
+                    self.game_state.last_action_error_args = None
                     success, error_msg = execute_fn(clicked_territory, current_player)
 
                     if success:
@@ -6087,11 +6091,18 @@ class Game:
                         self.ability_targeting_hero = None
                         self.ability_targeting_ability_index = None
                         self.ability_targeting_ability_name = None
+
+                        # A cast that went through but missed (Regicide with no hero in
+                        # the Keep: cooldown spent by design) records a notice — show it
+                        self._show_action_failure_feedback()
                     else:
                         # Invalid target - denial sound + toast (the centre-screen popup
                         # was removed: every action error now uses the same toast).
                         # Targeting stays on so the player can pick another territory.
-                        self.show_action_error(message=error_msg)
+                        if self.game_state.last_action_error:
+                            self._show_action_failure_feedback()
+                        else:
+                            self.show_action_error(message=error_msg)
 
             return  # Don't process normal map clicks while targeting
 
@@ -13896,9 +13907,12 @@ class Game:
                                             ability_name, None, current_player)
                                     elif isinstance(result, str):
                                         # An immediate ability refused with a reason (Reinforce:
-                                        # "Territory has too many units!..."). This string used
-                                        # to be dropped silently — show it like any action error.
-                                        self.show_action_error(message=result)
+                                        # its Keep territory is full). This used to be dropped
+                                        # silently. The refusal recorded its message code.
+                                        if self.game_state.last_action_error:
+                                            self._show_action_failure_feedback()
+                                        else:
+                                            self.show_action_error(message=result)
 
                                     self.clear_button_tooltip()
                                     return True
