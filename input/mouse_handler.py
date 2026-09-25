@@ -78,7 +78,8 @@ class MouseHandler:
         """
         # L1: Click priority chain (highest to lowest). First match consumes the click.
         # 0. Battle reports  0.5. Unit context menu  1. Victory screen  2. Battle popup
-        # 2.5. Alliance choice popup  3. Options menu  4. Game menu  5. Top panel
+        # 2.5. Alliance choice popup  3. Options menu  4. Game menu
+        # 4.5. Mission overlay widgets (mission.handle_click)  5. Top panel
         # 6. Battle markers  6.5. Alliance markers  7. Order sidebar / tabs
         # 8. Bottom UI       9. Map area (territory selection, movement orders)
 
@@ -128,7 +129,16 @@ class MouseHandler:
         # Priority 4: Game menu (if visible)
         if self.game.game_menu_visible:
             return self.game.handle_game_menu_click(pos)  # Returns (handled, should_quit)
-        
+
+        # Priority 4.5: Campaign/Tale overlay widgets drawn in mission.render()
+        # (e.g. Tale I's Popularity "Invest" button). Below every modal above, so
+        # an open menu or popup still blocks them; above the map and HUD panels,
+        # which they are drawn over. Missions opt in by defining handle_click().
+        mission = getattr(self.game, 'tutorial_mission', None)
+        if (mission is not None and getattr(mission, 'active', False)
+                and hasattr(mission, 'handle_click') and mission.handle_click(pos)):
+            return True
+
         # Priority 5: Top panel
         if pos[1] < self.top_panel_height:
             return self.game.handle_top_panel_click(pos)
@@ -169,7 +179,11 @@ class MouseHandler:
                 self.game.game_state.sidebar_expanded = not self.game.game_state.sidebar_expanded
                 return True
 
-        if self.game.game_state.sidebar_expanded:
+        # The sidebar sits beside the MAP only — it ends at the bottom UI panel.
+        # Without the y check, every bottom-UI button in the rightmost 250 px
+        # (e.g. "Demolish Keep" at 1600x900) was swallowed here as a sidebar click.
+        # (get_click_area() below already tests bottom_ui before the sidebar.)
+        if self.game.game_state.sidebar_expanded and pos[1] < self.bottom_ui_y:
             sidebar_x = self.window_width - 250
             if pos[0] >= sidebar_x:
                 # Always check tab buttons first (they're on the left edge, outside sidebar_x)

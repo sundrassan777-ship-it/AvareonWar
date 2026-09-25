@@ -12,6 +12,7 @@
       "display_name": "Azincournean Highlands",
       "directory": "maps/azincournean_highlands",
       "has_background": true,
+      "draw_borders": true,
       "enabled": true
     },
     {

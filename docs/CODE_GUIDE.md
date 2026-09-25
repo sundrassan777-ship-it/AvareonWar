@@ -27,6 +27,8 @@ This guide provides module-specific guidance on when and how to modify different
 16. [Replay System](#replay-system) - Recording, viewer, browser
 17. [Campaign Save System](#campaign-save-system) - Save/load campaign progress
 18. [Browser Screens](#browser-screens-saved-games--replays) - Saved Games + Replays UI
+19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
+20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 
 ---
 
@@ -238,6 +240,11 @@ def resolve_battle(self, battle):
 **Keep defense bonus:**
 - Currently: +2 effective units for defender
 - Change in `resolve_battle()` where Keep bonus applied (`game_state/military.py`)
+- ⚠️ In `_process_arrivals()` the bonus is added to `player_armies[owner]` but is **not
+  units**: it travels as `battle.keep_bonus`. The two places that fabricate default
+  Swordsmen for a participant without units (the team-composition fallback and the
+  attacker-garrison loop) must exclude it. When they didn't, a Keep defending alone showed
+  "2 Swordsman" on the pre-battle screen with a wrong strength (fixed 2026-09-25).
 
 **Casualty calculation:**
 - Modify casualty formula in `_apply_battle_casualties_simple()` (`game_state/military.py`, line ~1657)
@@ -982,6 +989,7 @@ change hands, add it here and decide which column it belongs in.
 | `sim_alliance_handler.assign_territory()`, `SIM_ALLIANCE_CHOICE` | no | ally-to-ally; the capture itself already reported |
 | `victory.py` elimination redistribution | no | the loser is already out of the game |
 | `campaign_mission_6.py:1356` | no | scripted faction handover, keeps armies and buildings |
+| `tale_lack_of_funds.py _revolt_territory()` | no | Popularity revolt (scripted handover); announced by the T1Revolt transmission |
 | `SIM_ROUND_COMPLETE` / `FULL_STATE_SYNC` bulk sync | no | desync correction, not a fresh loss |
 | `keyboard_handler.py`, setup phase | no | debug cheats and game setup |
 
@@ -1147,8 +1155,24 @@ between host and client — putting them in the checksum would cause **false des
 4. Test at all difficulty levels
 
 ✅ **Change AI turn timing:**
-- Modify decision delays in `make_decisions()`
+- Readability pauses (thinking `decision_delay_*`, 0.5 s between actions, the final 1.0 s,
+  battle-resolution beats) all go through **`AIPlayer._pace(game_state, seconds)`** — never
+  call `time.sleep()` for pacing directly, or missions cannot speed it up.
+- `_pace()` multiplies by the active mission's optional **`ai_delay_scale`** (default 1.0).
+  Tale I sets 0.0 for fast AI turns. Animation waits are deliberately not scaled.
 - Adjust threading/locking as needed
+
+✅ **Mission hooks the built-in AI respects** (for missions that use `ai_player` instead of a
+scripted AI, i.e. `block_ai` is `False`):
+- `is_ai_target_allowed(attacker, territory)` — read through
+  `ai_military.mission_allows_ai_target()` in `AttackPlanner.find_reachable_enemies()`
+  (disallowed = neither a target nor passable) and as a last-line guard in
+  `_execute_action_internal()` for `'move'` and targeted `'hero_ability'` actions.
+  Without the hook (custom games, missions 1-7) everything is allowed.
+- `is_action_allowed('train' | 'build', ...)` — already queried by `start_training()` /
+  `start_construction()` for every player, so a mission can gate the AI by checking
+  `game_state.current_player`.
+- `ai_delay_scale` — see above.
 
 ✅ **Integrate notify_animation_complete():**
 - Call `ai_player.notify_animation_complete()` from game loop when animations finish
@@ -1184,6 +1208,10 @@ between host and client — putting them in the checksum would cause **false des
 ### ai_military.py (~1060 lines)
 
 **What it does:** Combat decisions, army movement, attack planning
+
+**Mission target hook:** module-level `mission_allows_ai_target(game_state, player_index,
+territory)` returns the active mission's `is_ai_target_allowed()` verdict (True when no
+mission / no hook). Any new AI code path that picks an attack or conquest target must call it.
 
 **Key classes:**
 - `ArmyComposer` - Calculates optimal unit composition (counter system)
@@ -1769,6 +1797,16 @@ if self.sim_state is not None:
 - Capital territories are darkened by 30% (0.7× RGB) to distinguish them
 - Removed: Previously territories with moved units had dark overlay (50,50,50,40) - removed to avoid confusion with capital highlighting
 
+✅ **Territory borders (per map):**
+- Maps with `"draw_borders": true` in `maps/manifest.json` (currently Azincournean
+  Highlands) get a thin ink outline on every territory, drawn in `draw_territories()`
+  inside the cached ownership-overlay rebuild — after all fills, so neighbours never
+  half-cover a shared edge. Zero cost on static frames; ~1 ms per rebuild while panning.
+- Colour / thickness: `MapRenderer.TERRITORY_BORDER_COLOR` and
+  `TERRITORY_BORDER_WIDTH_PER_ZOOM` (width = zoom × factor, min 1 px).
+- Avareon leaves the flag off (its art has painted borders). The setup-screen preview and
+  the replay viewer render maps separately and do not draw these borders.
+
 ### rendering/ui_renderer.py (~2,553 lines)
 
 **What it does:** UI panels, buttons, info displays
@@ -1923,8 +1961,18 @@ The codebase uses several performance patterns. Follow these when adding new ren
 3. Return True if handled (prevents lower priority)
 
 ✅ **Change click priorities:**
-- Modify priority order in `handle_click()`
+- Modify priority order in `handle_left_click()` (the numbered chain in its comment)
 - Current: Popups → UI elements → Map territories
+
+✅ **Clickable mission overlay (drawn in `mission.render()`):**
+- Define `handle_click(pos) -> bool` on the mission. Priority 4.5 calls it for an active
+  mission — below every modal (battle popup, options, save dialog, game menu), above the
+  top panel, sidebar, bottom UI and map. Return True to consume the click (Tale I swallows
+  every click on its widget so the map beneath never gets selected).
+
+⚠️ **The sidebar region only exists above the bottom UI.** Priority 7 checks
+`pos[1] < self.bottom_ui_y` before treating the rightmost 250 px as sidebar. Without it,
+bottom-panel buttons in that strip (e.g. "Demolish Keep" at 1600x900) were swallowed.
 
 ### input/keyboard_handler.py (~530 lines)
 
@@ -1994,13 +2042,16 @@ outside `("map_edge", "window_edge")` to the default, `window_edge`.
 
 ### Multi-Map Architecture
 
-- `maps/manifest.json` — Registry of all available maps (id, display_name, has_background)
+- `maps/manifest.json` — Registry of all available maps (id, display_name, has_background,
+  optional `draw_borders` → `current_map_draws_borders()`, used by the map renderer)
 - `maps/<map_id>/` — Per-map data directory containing:
   - `territory_polygons.json`, `plots.json`, `economic_data.json`
   - `territory_bonuses.json`, `adjacencies.json`, `fortress_territories.json`
 - `load_map(map_id)` — Primary entry point: loads all data from map directory into globals
 - `load_polygons()` — Legacy backward-compat entry point (loads Avareon from root-level files)
-- Campaign missions always use the Avareon map via `load_polygons()`
+- Campaign missions 1-7 use the Avareon map via `load_polygons()`; a registry `config` with
+  `'map_id'` (Book of Tales, e.g. Tale I on `azincournean_highlands`) makes
+  `Game.initialize_game()` call `load_map(map_id)` instead
 
 ### When to Modify
 
@@ -2064,6 +2115,18 @@ outside `("map_edge", "window_edge")` to the default, `window_edge`.
 ## Quick Navigation
 
 ### "I want to..."
+
+**...add a new Book of Tales scenario**
+→ `book_of_tales.py` `SCENARIOS` + `main.py` `_TALE_REGISTRY` + a mission module (template: `tale_lack_of_funds.py`)
+
+**...tune Tale I's Popularity / revolts / AI rules**
+→ constants at the top of `tale_lack_of_funds.py`
+
+**...restrict or speed up the built-in AI from a mission**
+→ mission `is_ai_target_allowed()` / `ai_delay_scale` (see AI System → mission hooks)
+
+**...outline territories on a map**
+→ `"draw_borders": true` in `maps/manifest.json`; style in `MapRenderer.TERRITORY_BORDER_*`
 
 **...add a new unit type**
 → `game_state/__init__.py` line ~204, add to `UNIT_TYPES`
@@ -2484,7 +2547,9 @@ Campaign missions are self-contained modules that:
 **Key Systems:**
 - **Territory Filtering:** `map_data.set_enabled_territories()` limits visible territories
 - **Display Names:** `map_data.set_territory_display_names()` renames territories for the mission
-- **AI Control:** `block_ai` property prevents normal AI, mission handles turns
+- **AI Control:** `block_ai` property prevents normal AI, mission handles turns (missions 2-7).
+  Alternative (Tale I): leave `block_ai` False and restrict the built-in AI with
+  `is_ai_target_allowed()` / `is_action_allowed()` / `ai_delay_scale` — see AI System.
 - **Shared Utilities:** `campaign_utils.py` contains shared classes used by missions 2-4+:
   - `TransmissionOverlay` - narrative text overlay with speaker header
   - `CameraPanAnimation` - smooth camera pan between territories
@@ -2531,6 +2596,8 @@ the victory sentinel.
 - [campaign_mission_4.py](../campaign_mission_4.py) - Domination (21 territories, 4 factions, hybrid custom AI)
 - [campaign_mission_5.py](../campaign_mission_5.py) - The First War (17 territories, 3 factions, allied team vs empire)
 - [campaign_mission_6.py](../campaign_mission_6.py) - The Second War (33 territories, 3 factions, 4 sequential quests, dynamic AI)
+- [campaign_mission_7.py](../campaign_mission_7.py) - The Fall (41 territories, 2 factions, garrison-enforced AI)
+- [tale_lack_of_funds.py](../tale_lack_of_funds.py) - Book of Tales, Tale I (Azincournean Highlands, built-in AI + Popularity) — see "Tale I: Lack of Funds"
 - `campaign_data.json` - Mission text data (edit with `Campaign_Text_Tool.py`)
 - [cutscene_player.py](../cutscene_player.py) - Cutscene player (Ken Burns camera + crossfade + audio + subtitles)
 - [Cutscene_Tool.py](../Cutscene_Tool.py) - Cutscene editor tool
@@ -2727,7 +2794,10 @@ def is_action_allowed(self, action_type, **kwargs):
 
 ### Campaign Transmission Voice Lines
 
-**Naming:** `T{N}.mp3` for Mission 1, `M{X}T{N}.mp3` for Mission 2+. Placed in `assets/sounds/transmissions/`. Loaded by `global_sound.load_transmission_sounds()` using filename stem as key.
+**Naming:** `T{N}.mp3` for Mission 1, `M{X}T{N}.mp3` for Mission 2+, and for Book of Tales
+`T{tale}T{N}.mp3` plus named lines (Tale I: `T1T1`-`T1T3`, `T1Revolt`, `T1TWin`, `T1TLoss`).
+Placed in `assets/sounds/transmissions/`. Loaded by `global_sound.load_transmission_sounds()`
+using filename stem as key (only for games with a `campaign_map`, which tales have).
 
 **Global features (main.py / global_sound.py — no per-mission work needed):**
 - `play_transmission_sound(key)` auto-stops any previous voice before playing new one
@@ -2752,7 +2822,7 @@ def is_action_allowed(self, action_type, **kwargs):
 12. **`_cleanup()`** — call `stop_transmission_sound()` to stop voice on mission exit.
 13. **`skip_transmission()`** — ESC-to-skip method. Hides overlay, stops voice, advances to next step (intro) or resets timer (gameplay). For tutorial event-driven steps (duration=0), only hides overlay without advancing. Returns True if skipped, False otherwise. Called from `main.py` ESC handlers.
 
-**Implemented in:** All 4 missions — Mission 1 (`tutorial_mission.py`), Mission 2 (`campaign_mission_2.py`), Mission 3 (`campaign_mission_3.py`), Mission 4 (`campaign_mission_4.py`).
+**Implemented in:** All 4 missions — Mission 1 (`tutorial_mission.py`), Mission 2 (`campaign_mission_2.py`), Mission 3 (`campaign_mission_3.py`), Mission 4 (`campaign_mission_4.py`). Tale I (`tale_lack_of_funds.py`) follows the same checklist with a data-driven variant: `INTRO_SEQUENCE` entries carry their own `(speaker, text, voice_key, duration)` and queued lines are `(speaker, text, voice_key, duration)` tuples.
 
 ### Testing Checklist
 
@@ -3014,17 +3084,30 @@ close the dialog only), RETURN = open, and wheel scrolling via legacy buttons 4/
 **File:** `book_of_tales.py` (`BookOfTales`)
 **Launched from:** the square icon button in the **bottom-right** corner of `CampaignScreen`
 (mirror of Saved Games in the bottom-left). `CampaignScreen.run()` returns the sentinel
-`'book_of_tales'`, and `main.py`'s campaign loop opens `BookOfTales` and then `continue`s
-back to the Campaign screen.
+`'book_of_tales'`, and `main.py`'s campaign loop runs a small loop: open `BookOfTales`,
+run the launched tale, reopen `BookOfTales`; Return/ESC goes back to the Campaign screen.
 
 - **Adding or editing tales:** edit the module-level `SCENARIOS` list (`id`, `name`,
-  `description`, optional `'hidden': True` to keep a tale off the list; `'\n'` in a
-  description starts a new paragraph). Buttons keep fixed slots from the top and paginate
-  automatically (triangle arrows under the column) once the list outgrows the column.
-- **Launch is a placeholder.** `_launch_selected()` only logs. To make tales playable, set
-  `self.result = {'action': 'launch', 'scenario_id': ...}` + `self.done = True` there, and
-  handle that action in the `mission_id == 'book_of_tales'` branch of `main.py`.
-- **Results:** `{'action': 'back'}` / `{'action': 'quit'}` (and later `'launch'`).
+  `description`, optional `'hidden': True` to keep a tale off the list). Buttons keep fixed
+  slots from the top and paginate automatically (triangle arrows under the column) once the
+  list outgrows the column.
+- **Description markup** (parsed by the static `_wrap_text()`, which returns
+  `(text, underlined, indent_px)` tuples — use index access, the format may grow):
+  - `'\n'` is a line break, `'\n\n'` an empty line;
+  - a leading `'_'` draws the line underlined (headings like "Objectives:"), via a separate
+    `body_font_underline` instance — `set_underline()` mutates the Font, so never call it on
+    the shared `body_font`;
+  - a line starting with `'- '` is a list item whose wrapped lines get a hanging indent.
+- **Launching:** `_launch_selected()` sets `{'action': 'launch', 'scenario_id': id}` and closes
+  the screen. `main.py` looks the id up in **`_TALE_REGISTRY`** (defined next to
+  `_launch_saved_game()`, same shape as the campaign `_MISSION_REGISTRY`: `import`, `map`,
+  `config`, plus `map_id`) and runs it through **`_run_registered_mission()`** — the helper the
+  campaign loop also uses (intro cutscene → `LoadingScreen` → mission → `game.run()` → outro on
+  victory → recap → cleanup). To add a tale: a `SCENARIOS` entry + a `_TALE_REGISTRY` entry +
+  its mission module; saves work automatically because `_launch_saved_game()` merges
+  `_TALE_REGISTRY` into its registry (and passes `map_id` through — non-Avareon geometry).
+  Add a `save_manager._MISSION_TEXTS` label too.
+- **Results:** `{'action': 'back'}` / `{'action': 'quit'}` / `{'action': 'launch', 'scenario_id': ...}`.
 - **Description scrolling:** mouse wheel (buttons 4/5) over the panel scrolls the body by one
   line; the heading and divider stay fixed. Wrapping and `desc_max_scroll` are computed in
   `_select_tale()` only, never from render. Select tales through `_select_tale()`, not by
@@ -3040,6 +3123,59 @@ back to the Campaign screen.
 - **Campaign screen corner buttons** share `CampaignScreen._draw_icon_button(rect, icon,
   btn_id, tooltip)`. Change hover/flash/border there so both stay identical.
   `BTNBookOfTales.png` is 3:2, so it is centre-cropped to a square at load, not squashed.
+
+## Tale I: Lack of Funds (`tale_lack_of_funds.py`)
+
+**First Book of Tales scenario** (`mission_id = 'tale_1'`, class `TaleLackOfFunds`). It follows
+the campaign mission interface (update / render / notify_event / is_action_allowed /
+get_quest_log / get_save_state / restore_save_state), but differs from missions 2-7 in three
+ways worth knowing before copying it:
+
+1. **Non-Avareon map.** It plays on the Azincournean Highlands. The map is chosen by
+   `'map_id': 'azincournean_highlands'` in the `_TALE_REGISTRY` config (read by
+   `Game.initialize_game()`), with `'map': 'maps/azincournean_highlands/map.png'` as the
+   `campaign_map` image. All 55 territories stay enabled; the 13 unassigned ones are neutral
+   with one random unit each (`gs.set_garrison_armies(t, -1, ...)`).
+2. **Built-in AI, restricted by hooks** instead of a scripted AI. `block_ai` is `False` and
+   `update_ai_turn()` does nothing, so `ai_player` plays (and resolves its own battles) at the
+   registry difficulties (Yellow Medium, Green/Red Hard). The rules live in
+   **`is_ai_target_allowed(attacker, territory)`** (see AI System → mission hooks):
+   AI factions never target each other; Red/Green never take neutral land and attack the
+   player only after `hostile[faction]` flips (on an `order_created` notify from the player
+   against that faction); Yellow targets nothing for its first `YELLOW_NO_ATTACK_TURNS` (3).
+   Yellow's Barracks training is blocked for `YELLOW_NO_TRAINING_TURNS` (2) through
+   `is_action_allowed('train')`, which `start_training()` queries for every player.
+   `faction_turns` counts AI turns on `turn_announcement_done`. `ai_delay_scale = 0.0` removes
+   the AI's readability pauses, and `update()` completes AI turn announcements instantly
+   (as missions 5-7 do), so AI turns take ~0.5-1.5 s.
+3. **Popularity** — a Tale-only mechanic (rules in GAME_MECHANICS.md, numbers in
+   QUICK_REFERENCE.md). All tuning is in the `POPULARITY` / `REVOLT_*` constants at the top.
+   - `_on_player_turn_start()` (from `turn_announcement_done` for player 0) rolls the revolt
+     **before** applying the drop, guarded by `_last_decay_turn` (one roll + drop per
+     `gs.turn_number`; turn 0 skipped).
+   - `_revolt_territory()` hands a territory to Yellow with its units and buildings: cancels
+     the player's orders touching it, moves the garrison unit-for-unit, bumps
+     `_territory_owners_version` and invalidates income / army-count / bonus caches (the same
+     set a conquest does). It does **not** fire `territory_conquered` or create a Battle Report.
+   - The widget (label + `BattleBar.png` frame + `CampaignBTN.png` "Invest N Gold" button) is
+     drawn in `render()`; its layout is rebuilt only when the screen size, `ui_scale`, map
+     bottom or chat-box state changes (`_widget_key`). The bar value eases
+     (`_display_popularity`) so drops visibly drain. Clicks arrive through the generic
+     `handle_click()` hook (mouse_handler Priority 4.5); the flash uses
+     `main.trigger_click_flash('tale_button', 'invest')`.
+- **No Hero training for the player:** `should_hide_hero_training()` + `is_action_allowed('train_hero')`
+  for player 0 only.
+- **Intro / transmissions:** `INTRO_SEQUENCE` (zoom to Generax, then T1T1-T1T3) runs in
+  `_update_intro()` with gameplay paused; `transmission_queue` holds gameplay lines (T1Revolt)
+  until `_is_gameplay_idle()`. Victory/defeat play T1TWin / T1TLoss, then the shared
+  `campaign_utils` endgame sequence. `restore_save_state()` never replays the intro.
+- **Randomised setup** (buildings, scattered units, neutral guards) uses `self.rng`; tests pass
+  a seeded `random.Random`.
+- **Victory** = Yellow owns nothing (`'exit_campaign'`); **defeat** = Generax conquered
+  (`'exit_campaign_defeat'`). The achievement `campaign_tale_1` comes from the generic
+  `campaign_{mission_id}_completed` stat.
+- **Tests:** `tests/test_tale_lack_of_funds.py` (a real Game on the Highlands; conftest reloads
+  Avareon before every test, so the module re-loads its map in an autouse fixture).
 
 ## Replay Viewer HUD (playback screen)
 

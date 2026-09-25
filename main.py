@@ -10062,9 +10062,12 @@ class Game:
         # Demolish button
         demolish_rect = pygame.Rect(tips_x, tips_y, 180, 30)
         _, display_name = self.game_state.get_keep_display_info(territory, keep_plot_index)
-        # Tutorial hook: grey out demolish during tutorial
+        # Mission hook: grey out demolish only when the mission disallows it — the
+        # same test the click handler uses. (It used to grey out for ANY active
+        # mission, so Keeps looked undemolishable in missions that allow it.)
         _tutorial_demolish_locked = (self.tutorial_mission
-                                     and self.tutorial_mission.active)
+                                     and self.tutorial_mission.active
+                                     and not self.tutorial_mission.is_action_allowed('demolish'))
         if _tutorial_demolish_locked:
             self.draw_feedback_button(demolish_rect, (80, 80, 80),
                                       'demolish', 'keep',
@@ -16213,6 +16216,104 @@ if __name__ == "__main__":
         logger.info(f"Steam invite detected: will auto-connect to {_steam_connect_target}")
 
     # Main menu loop
+    # Book of Tales scenarios: id (book_of_tales.SCENARIOS 'id') -> launch info, in
+    # the same shape as the campaign loop's _MISSION_REGISTRY. Defined at this level
+    # (not inside the loop) because _launch_saved_game also reads it to reload a
+    # saved Tale. 'map_id' is the map_data map whose geometry the Tale plays on;
+    # the config copy of it is what Game.initialize_game() actually reads.
+    _TALE_REGISTRY = {
+        'tale_1': {
+            'import': ('tale_lack_of_funds', 'TaleLackOfFunds'),
+            'map': 'maps/azincournean_highlands/map.png',
+            'map_id': 'azincournean_highlands',
+            'config': {
+                'map_id': 'azincournean_highlands',
+                'num_players': 4,
+                # 0 = player (Londic Empire), 1 = Aelatanaic Tribes (Medium AI),
+                # 2 = Heilonic Kingdoms (Hard AI), 3 = Kingdom of Daurels (Hard AI)
+                'player_is_ai': [False, True, True, True],
+                'player_ai_difficulty': [0, 1, 2, 2],
+                'player_teams': [0, 1, 2, 3],
+                'win_condition': 'Total Conquest',
+                'taxation_level': 0,
+                'player1_territory': 'Generax',
+                'player2_territory': 'Leyana',
+                'player3_territory': 'Entaron',
+                'player4_territory': 'Daurels',
+            },
+        },
+    }
+
+    def _run_registered_mission(screen, mission_id, mission_info, music_manager):
+        """
+        Run one campaign mission or Book of Tales scenario from its registry entry.
+
+        Flow: intro cutscene -> LoadingScreen (fresh game) -> mission object ->
+        game.run() -> outro cutscene (victory only) -> recap -> cleanup.
+        Shared by the campaign loop (_MISSION_REGISTRY) and the Book of Tales
+        branch (_TALE_REGISTRY), so both launch paths stay identical.
+
+        Returns (game_result, screen). The caller decides what to do with
+        'quit'; a recap-screen quit exits here, as it always has.
+        """
+        import importlib
+        import map_data as _map_data
+        from cutscene_player import CutscenePlayer
+
+        # Stop menu music before cutscene/loading
+        music_manager.stop()
+
+        # Play pre-mission cutscene if one exists for this mission
+        intro_cutscene = CutscenePlayer(screen, f"{mission_id}_intro")
+        if intro_cutscene.has_cutscene:
+            intro_cutscene.run()
+
+        # Dynamic import of mission class
+        module = importlib.import_module(mission_info['import'][0])
+        MissionClass = getattr(module, mission_info['import'][1])
+
+        # Create game with campaign map, load assets via loading screen.
+        # A 'map_id' in the config makes initialize_game() load that map's
+        # geometry; without one it defaults to Avareon.
+        game = Game(existing_screen=screen, campaign_map=mission_info['map'])
+        screen = game.screen
+        # Pass mission_id so loading screen shows mission-specific tips
+        # (unknown ids, e.g. tales, fall back to a generic tip)
+        loading = LoadingScreen(screen, game, mission_info['config'], mission_id=mission_id)
+        loading.run()
+
+        # Start game music after loading completes
+        music_manager.start_game_music()
+
+        mission_obj = MissionClass(game.game_state, game)
+        game.tutorial_mission = mission_obj
+        game.game_state.tutorial_mission = mission_obj
+        _map_data.set_tutorial_mission(mission_obj)
+
+        game_result = game.run()
+
+        # Stop game music before outro cutscene / recap
+        music_manager.stop()
+
+        # Post-mission outro cutscene — victory only. A defeat returns
+        # 'campaign_defeat' from Game.run(), failing this check on purpose.
+        if game_result == 'campaign':
+            outro_cutscene = CutscenePlayer(screen, f"{mission_id}_outro")
+            if outro_cutscene.has_cutscene:
+                outro_cutscene.run()
+
+        if show_recap_if_ended(game) == 'quit':
+            pygame.quit()
+            sys.exit()
+
+        # Clean up mission reference and territory filtering
+        _map_data.set_tutorial_mission(None)
+        if mission_info.get('cleanup_territories', True):
+            _map_data.clear_enabled_territories()
+            _map_data.clear_territory_display_names()
+
+        return game_result, screen
+
     def _launch_saved_game(screen, save_data, music_manager):
         """
         Load a saved campaign game from save_data and run it.
@@ -16240,6 +16341,9 @@ if __name__ == "__main__":
             'mission_6': {'import': ('campaign_mission_6', 'Mission6'), 'map': 'assets/CampaignMaps/Campaign6Map.png'},
             'mission_7': {'import': ('campaign_mission_7', 'Mission7'), 'map': 'assets/CampaignMaps/Campaign6Map.png'},
         }
+        # Book of Tales scenarios save through the same path; their entries also
+        # carry 'map_id' (e.g. Azincournean Highlands), which must be reloaded.
+        _SAVE_MISSION_REGISTRY.update(_TALE_REGISTRY)
 
         mission_info = _SAVE_MISSION_REGISTRY.get(mission_id)
         if not mission_info:
@@ -16255,6 +16359,10 @@ if __name__ == "__main__":
             'win_condition': game_config.get('victory_condition', 'Total Conquest'),
             'taxation_level': game_config.get('taxation_level', 0),
         }
+        # Non-Avareon missions (Book of Tales) must load their own map geometry,
+        # or the saved territory names would be applied to Avareon's polygons.
+        if mission_info.get('map_id'):
+            setup_config['map_id'] = mission_info['map_id']
 
         # Dynamic import of mission class
         module = importlib.import_module(mission_info['import'][0])
@@ -16431,14 +16539,31 @@ if __name__ == "__main__":
 
                 if mission_id == 'book_of_tales':
                     # Book of Tales scenario picker (bottom-right icon on the
-                    # Campaign screen). Launch is a placeholder for now, so every
-                    # non-quit result returns to the Campaign screen.
+                    # Campaign screen). Launching a tale runs it, then reopens the
+                    # Book of Tales; Return (or ESC) goes back to the Campaign screen.
                     from book_of_tales import BookOfTales
-                    screen = current_surface() or screen
-                    tales_result = BookOfTales(screen).run()
-                    if tales_result and tales_result.get('action') == 'quit':
-                        pygame.quit()
-                        sys.exit()
+                    while True:
+                        screen = current_surface() or screen
+                        # Menu music stops for a tale; restart it on the way back
+                        if not music_manager.is_playing():
+                            music_manager.start_menu_music()
+                        tales_result = BookOfTales(screen).run()
+                        action = tales_result.get('action') if tales_result else None
+                        if action == 'quit':
+                            pygame.quit()
+                            sys.exit()
+                        if action != 'launch':
+                            break
+                        tale_id = tales_result.get('scenario_id')
+                        tale_info = _TALE_REGISTRY.get(tale_id)
+                        if not tale_info:
+                            logger.error(f"Book of Tales: no registry entry for '{tale_id}'")
+                            continue
+                        game_result, screen = _run_registered_mission(
+                            screen, tale_id, tale_info, music_manager)
+                        if game_result == 'quit':
+                            pygame.quit()
+                            sys.exit()
                     continue
 
                 # User selected a mission - open mission screen
@@ -16454,15 +16579,6 @@ if __name__ == "__main__":
                 # Check if user launched a mission
                 if result and result.startswith('launch_'):
                     launched_mission = result[len('launch_'):]
-
-                    # Stop menu music before cutscene/loading
-                    music_manager.stop()
-
-                    # Play pre-mission cutscene if one exists for this mission
-                    from cutscene_player import CutscenePlayer
-                    intro_cutscene = CutscenePlayer(screen, f"{launched_mission}_intro")
-                    if intro_cutscene.has_cutscene:
-                        intro_cutscene.run()
 
                     # Phase 2D: Unified campaign mission launcher
                     # All missions share the same launch/run/cleanup pattern, differing only in
@@ -16581,50 +16697,8 @@ if __name__ == "__main__":
 
                     mission_info = _MISSION_REGISTRY.get(launched_mission)
                     if mission_info:
-                        import map_data as _map_data
-                        # Dynamic import of mission class
-                        import importlib
-                        module = importlib.import_module(mission_info['import'][0])
-                        MissionClass = getattr(module, mission_info['import'][1])
-
-                        # Create game with campaign map, load assets via loading screen
-                        game = Game(existing_screen=screen, campaign_map=mission_info['map'])
-                        screen = game.screen
-                        # Pass mission_id so loading screen shows mission-specific tips
-                        loading = LoadingScreen(screen, game, mission_info['config'],
-                                                mission_id=launched_mission)
-                        loading.run()
-
-                        # Start game music after loading completes
-                        music_manager.start_game_music()
-
-                        mission_obj = MissionClass(game.game_state, game)
-                        game.tutorial_mission = mission_obj
-                        game.game_state.tutorial_mission = mission_obj
-                        _map_data.set_tutorial_mission(mission_obj)
-
-                        game_result = game.run()
-
-                        # Stop game music before outro cutscene / recap
-                        music_manager.stop()
-
-                        # Post-mission outro cutscene — victory only. A defeat returns
-                        # 'campaign_defeat' from Game.run(), failing this check on purpose.
-                        if game_result == 'campaign':
-                            outro_cutscene = CutscenePlayer(screen, f"{launched_mission}_outro")
-                            if outro_cutscene.has_cutscene:
-                                outro_cutscene.run()
-
-                        if show_recap_if_ended(game) == 'quit':
-                            pygame.quit()
-                            sys.exit()
-
-                        # Clean up mission reference and territory filtering
-                        _map_data.set_tutorial_mission(None)
-                        if mission_info.get('cleanup_territories', True):
-                            _map_data.clear_enabled_territories()
-                            _map_data.clear_territory_display_names()
-
+                        game_result, screen = _run_registered_mission(
+                            screen, launched_mission, mission_info, music_manager)
                         if game_result == 'quit':
                             pygame.quit()
                             sys.exit()

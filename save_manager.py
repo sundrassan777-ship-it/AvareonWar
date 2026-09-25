@@ -516,6 +516,8 @@ _MISSION_TEXTS = {
     'mission_5': 'Chapter 5: The First War',
     'mission_6': 'Chapter 6: The Second War',
     'mission_7': 'Chapter 7: The Fall',
+    # Book of Tales scenarios (ids from book_of_tales.SCENARIOS)
+    'tale_1': 'Tale: Lack of Funds',
 }
 
 

@@ -228,6 +228,45 @@ Max level: 10,000.
 
 ---
 
+## 📖 Tale I: Lack of Funds Quick Reference
+
+Book of Tales, map Azincournean Highlands (55 territories; income tiers 10/15/20g =
+32/17/6 territories). Tuning constants: top of `tale_lack_of_funds.py`.
+
+| Faction | Idx | Colour | Capital | Gold | AI | Territories | Starting armies |
+|---------|-----|--------|---------|------|----|-------------|-----------------|
+| Londic Empire (player) | 0 | Blue | Generax | 750 | — | 10 | Generax: 2 Pike, 1 Archer, 1 Sword, 1 Captain; +2 Sword, 2 Cav, 2 Archer scattered |
+| Aelatanaic Tribes | 1 | Yellow | Leyana | 1500 | Medium | 14 | 1-2 random / territory |
+| Heilonic Kingdoms | 2 | Green | Entaron | 2500 | Hard | 10 | 2-6 random / territory |
+| Kingdom of Daurels | 3 | Red | Daurels | 2000 | Hard | 8 | 2-6 random / territory |
+| Neutral | -1 | — | — | — | — | 13 | 1 random / territory |
+
+**Buildings:** Green/Red every plot filled — 25% Mine, 25% Farm, 30% Barracks, 10% Training
+Grounds, 10% Square, no Keeps. Player: Barracks (Generax), Square (Lires) + 4 Farms, 2 Mines.
+Yellow: Barracks (Atoney, Leyana) + 4 Farms, 2 Mines.
+
+**AI rules:** AIs never target each other · Green/Red never take neutral land and attack the
+player only after an attack order against them · Yellow: no conquest turns 1-3, no training
+turns 1-2 · AI pauses removed (`AI_DELAY_SCALE = 0.0`).
+
+| Popularity | Value |
+|------------|-------|
+| Start / max | 100 |
+| Drop per player turn (from turn 2) | 6, 11, 16, 21… (`DECAY_START` 6, `DECAY_STEP` +5) |
+| Invest | +10 pop, drop resets to 6, cost 100g +10g per use |
+| Revolt chance (rolled before the drop) | 2% per missing point (`REVOLT_CHANCE_PER_POINT`), max 1 territory/turn |
+| Revolt eligibility | 10g lands < 100 · 15g lands ≤ 75 · 20g lands ≤ 50 · Generax never |
+
+| Popularity | 94 | 83 | 75 | 67 | 50 |
+|------------|----|----|----|----|----|
+| Revolt chance | 12% | 34% | 50% | 66% | 100% |
+
+**Transmissions** (`assets/sounds/transmissions/`): intro T1T1 (8s), T1T2 (7s), T1T3 (6s) ·
+revolt T1Revolt (3s) · victory T1TWin (7s) · defeat T1TLoss (4s).
+**Achievement:** `campaign_tale_1` "Lack of Funds" (stat `campaign_tale_1_completed`, no reward).
+
+---
+
 ## 🗺️ Terrain Effects
 
 *Terrain system not yet implemented. Combat uses counter system and Keep bonus only.*
@@ -362,6 +401,11 @@ server.send_to_player(player_idx, msg)
 **Input:**
 - input/mouse_handler.py
 - input/keyboard_handler.py
+
+**Book of Tales:**
+- book_of_tales.py (picker, `SCENARIOS`)
+- tale_lack_of_funds.py (Tale I)
+- main.py `_TALE_REGISTRY` + `_run_registered_mission()`
 
 **Data (root directory):**
 - economic_data.json

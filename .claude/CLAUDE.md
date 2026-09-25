@@ -25,7 +25,7 @@ AvareonWar/
 ├── tools/                       # Development utilities
 ├── ui/                          # UI scaling and effects (12 effect modules)
 ├── maps/                        # Multi-map data (manifest + per-map directories)
-│   ├── manifest.json            # Map registry (id, display_name, has_background)
+│   ├── manifest.json            # Map registry (id, display_name, has_background, draw_borders)
 │   ├── avareon/                 # Original map data (polygons, plots, economy, bonuses, adjacencies)
 │   ├── azincournean_highlands/  # Placeholder map
 │   ├── naragonthid/             # Placeholder map
@@ -54,7 +54,7 @@ AvareonWar/
 - [main_menu.py](main_menu.py) - Main menu with game mode selection
 - [integrated_setup.py](integrated_setup.py) - Setup window with map preview, territory selection
 - [campaign_screen.py](campaign_screen.py) - Campaign screen with background and return button
-- [book_of_tales.py](book_of_tales.py) - Book of Tales scenario picker (opened from the Campaign screen's bottom-right icon; placeholder tales, Launch not wired yet)
+- [book_of_tales.py](book_of_tales.py) - Book of Tales scenario picker (opened from the Campaign screen's bottom-right icon; description markup; Launch runs the tale via `main.py` `_TALE_REGISTRY`)
 - [recap_screen.py](recap_screen.py) - Post-game recap/statistics screen (tabbed table UI)
 - [loading_screen.py](loading_screen.py) - Loading screen with progress bar for deferred asset loading + multiplayer sync
 
@@ -101,6 +101,9 @@ AvareonWar/
 - [campaign_mission_6.py](campaign_mission_6.py) - The Second War (33 territories, 3 factions, 4 sequential quests, dynamic AI)
 - [campaign_mission_7.py](campaign_mission_7.py) - The Fall (41 territories, 2 factions, garrison-enforced AI)
 
+**Book of Tales Scenarios:**
+- [tale_lack_of_funds.py](tale_lack_of_funds.py) - Tale I: Lack of Funds (Azincournean Highlands, 4 factions, built-in AI restricted by mission hooks, Popularity/revolt mechanic, voiced intro/outro)
+
 **AI System (5 files):**
 - [ai_player.py](ai_player.py) - Main AI controller
 - [ai_strategy.py](ai_strategy.py) - Strategic evaluation, threat detection
@@ -144,6 +147,8 @@ AvareonWar/
 - [tests/test_battle_report_integration.py](tests/test_battle_report_integration.py) - Battle Report wiring against a real `Game`
 - [tests/test_battle_report_network.py](tests/test_battle_report_network.py) - Battle Reports reaching a defending multiplayer client
 - [tests/test_drawing_helpers.py](tests/test_drawing_helpers.py) - `draw_feedback_button()` fallback when its background image is missing
+- [tests/test_tale_lack_of_funds.py](tests/test_tale_lack_of_funds.py) - Tale I: setup, AI rules/hooks, Popularity, widget click, transmissions, endgame + achievement, save/restore, Keep-only battle + Demolish Keep regressions
+- [tests/test_map_borders.py](tests/test_map_borders.py) - Per-map territory borders flag (`draw_borders` in the manifest)
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -187,7 +192,7 @@ AvareonWar/
 - `territory_polygons.json` (~1.6 MB) - Map geometry (root-level = Avareon, backward compat)
 - `plots.json` - Building location coordinates (root-level = Avareon, backward compat)
 - `territory_bonuses.json` - Territory bonus assignments (root-level = Avareon, backward compat)
-- `maps/manifest.json` - Map registry (all available maps)
+- `maps/manifest.json` - Map registry (all available maps; `"draw_borders": true` outlines every territory, e.g. Azincournean Highlands)
 - `maps/<map_id>/` - Per-map data: territory_polygons.json, plots.json, economic_data.json, territory_bonuses.json, adjacencies.json, fortress_territories.json
 - `campaign_data.json` - Campaign mission text data (edit with Campaign_Text_Tool.py)
 - `cutscene_data.json` - Cutscene definitions per mission (edit with Cutscene_Tool.py)
@@ -472,7 +477,11 @@ After making code changes, ask yourself:
 - Modify campaign save/load → `save_manager.py` (serialize/deserialize + file I/O)
 - Modify save browser UI → `save_browser.py` - **mirror any change into `replay_browser.py`**; see "Browser Screens" in CODE_GUIDE.md
 - Load/cache the ornate menu art (CampaignBG / OptionsMenuBG / CampaignBTN) → `utils/surface_utils.py` (`load_cached_image`, `get_campaign_button_image`, `crop_to_opaque`)
-- Add/edit Book of Tales scenarios → `book_of_tales.py` `SCENARIOS`; wire Launch in `_launch_selected()` + `main.py` `'book_of_tales'` branch. See "Book of Tales Screen" in CODE_GUIDE.md
+- Add/edit Book of Tales scenarios → `book_of_tales.py` `SCENARIOS` + `main.py` `_TALE_REGISTRY` (launched via `_run_registered_mission()`) + a mission module. See "Book of Tales Screen" in CODE_GUIDE.md
+- Tune Tale I (Popularity, revolts, AI rules, transmissions) → constants at the top of `tale_lack_of_funds.py`. See "Tale I: Lack of Funds" in CODE_GUIDE.md
+- Restrict / speed up the built-in AI from a mission → mission `is_ai_target_allowed()` (read by `ai_military.mission_allows_ai_target()`), `is_action_allowed('train')`, `ai_delay_scale` (read by `ai_player._pace()`)
+- Clickable mission overlay → mission `handle_click(pos)` (`input/mouse_handler.py` Priority 4.5) + draw in `render()`
+- Territory border outlines → `maps/manifest.json` `draw_borders` + `rendering/map_renderer.py` `draw_territories()` / `TERRITORY_BORDER_*`
 - Change Campaign screen corner icon buttons (Saved Games / Book of Tales) → `campaign_screen.py` `_draw_icon_button()`
 - Add save state to new mission → add `get_save_state()`/`restore_save_state()` + update `_SAVE_MISSION_REGISTRY` in main.py
 

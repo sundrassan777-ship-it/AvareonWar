@@ -4,6 +4,58 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## The Book of Tales Opens: Lack of Funds
+
+*25 September 2026*
+
+### A new tale to play
+
+The Book of Tales - the button in the bottom-right corner of the Campaign screen - now holds
+its first playable story. **Lack of Funds** takes you to the **Azincournean Highlands** at the
+dawn of the Age of Empires, as the guiding hand behind Emperor Kondaron of the young Londic
+Empire. The primitive Aelatanaic Tribes are gathering on your borders, and the Emperor wants
+their lands. His people, however, are running out of patience.
+
+- **Conquer the Aelatanaic Tribes** and **hold the city of Generax** - lose it and the tale is
+  over.
+- **The Heilonic Kingdoms and the Kingdom of Daurels** watch from the sidelines. They leave
+  you alone... until you attack them. Strike one, and that kingdom will strike back.
+- **The Tribes** start slowly, but once they get moving they will march on your lands, and
+  on the unclaimed territories between you.
+- You cannot train Heroes in this tale.
+- The story is fully voiced, with an opening scene, a warning whenever your land rises up,
+  and its own victory and defeat lines.
+
+Winning earns the new **Lack of Funds** achievement. Tales can be saved and loaded from
+Saved Games like any campaign chapter, and when a tale ends you return to the Book of Tales.
+
+### Popularity
+
+This tale introduces **Popularity**, shown as a blue bar in the bottom-left corner of the map.
+
+- Your people's patience drains a little faster every turn you ignore them.
+- Press **Invest** beneath the bar to spend gold on your own people: popularity rises, the
+  drain slows back down, and the next investment costs a little more.
+- At the start of each turn, the lower your popularity, the more likely one of your
+  territories **revolts and joins the Tribes** - armies, buildings and all. Your poorest lands
+  turn first; your richest only when things get truly bad. Generax will never betray you.
+- End a turn at full popularity and your people stay loyal.
+
+### Clearer borders on the Azincournean Highlands
+
+Every territory on the Azincournean Highlands now has a thin outline, so you can see where
+one ends and the next begins without hovering over it. This applies wherever you play the
+map, including custom and multiplayer games.
+
+### Fixes
+
+- **Attacking an empty territory defended only by a Keep** no longer shows two phantom
+  Swordsmen on the battle screen. The screen now shows "No units" with the Keep's defence and
+  the correct strengths. Who wins was never affected - only what the screen showed.
+- **Demolish Keep can be clicked again.** At some screen sizes the button sat under an area
+  that ignored clicks, and during campaign chapters it was shown greyed out even where
+  demolishing was allowed.
+
 ## Watching a Replay
 
 *22 September 2026*

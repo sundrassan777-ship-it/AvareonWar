@@ -2915,8 +2915,16 @@ class MilitaryMixin:
                             garrison_composition[unit_type] = garrison_composition.get(unit_type, 0) + 1
                         composition = garrison_composition
                     elif not composition and player in player_armies:
-                        # Default to Swordsmen if no composition found
-                        composition = {'Swordsman': player_armies[player]}
+                        # Default to Swordsmen if no composition found — but never for
+                        # the Keep/Fortress bonus: for an owner defending with a Keep
+                        # alone, player_armies[owner] IS the bonus (no units), and
+                        # counting it as Swordsmen put phantom units on the pre-battle
+                        # screen and skewed its displayed strengths. The bonus stays in
+                        # battle.keep_bonus.
+                        unit_count = player_armies[player]
+                        if player == current_owner and has_keep:
+                            unit_count -= keep_bonus
+                        composition = {'Swordsman': unit_count} if unit_count > 0 else {}
 
                     # Merge composition into team composition
                     for unit_type, count in composition.items():
@@ -3121,6 +3129,14 @@ class MilitaryMixin:
                     for player in player_armies.keys():
                         # Skip players who already have a garrison (defenders)
                         if player in self.territory_garrisons.get(territory, {}):
+                            continue
+                        # Skip the owner: a Keep/Fortress defending ALONE leaves the
+                        # owner with no garrison entry, and player_armies[owner] is
+                        # then just the Keep bonus. Treating them as an "arriving
+                        # attacker" fabricated that many phantom Swordsmen (2 per
+                        # Keep) that showed up on the pre-battle screen. The bonus
+                        # is carried by battle.keep_bonus, not by units.
+                        if player == current_owner:
                             continue
                         # Get actual unit dicts from animation pipeline
                         comp_key = (territory, player)

@@ -14,8 +14,8 @@ Follows the SaveBrowser / ReplayBrowser standalone screen pattern with its
 own event loop, and reuses their bottom-button geometry and tint states so
 Return / Launch look and behave identically to Return / Load there.
 
-Scenarios are placeholders for now — edit SCENARIOS below to add real ones.
-Launch is deliberately a no-op until scenarios are playable.
+Edit SCENARIOS below to add tales. Launch returns the selected tale's id to
+main.py, which starts it through its _TALE_REGISTRY.
 """
 
 import pygame
@@ -41,16 +41,40 @@ FALLBACK_BG = (20, 20, 30)    # Only if BookOfTalesBG.png fails to load
 # Aspect ratio of CampaignBTN.png once cropped to its opaque bounds (1502x297).
 _BTN_ASPECT_FALLBACK = 0.1977
 
-# Placeholder tales. Each entry: id (returned on launch), name (button and
-# description heading), description (free text; '\n' starts a new paragraph).
-# Optional 'hidden': True keeps a tale off the list until it is ready.
+# Tales. Each entry: id (returned on launch, and the key main.py's
+# _TALE_REGISTRY uses to start it), name (button and description heading),
+# description (see markup below). Optional 'hidden': True keeps a tale off the
+# list until it is ready.
+#
+# Description markup (parsed by BookOfTales._wrap_text):
+#   '\n'   line break                '\n\n'  empty line
+#   '_'    at the start of a line draws that line underlined (headings)
+#   '- '   at the start of a line is a list item; its wrapped lines are indented
 SCENARIOS = [
     {
         'id': 'tale_1',
-        'name': 'Tale I',
+        'name': 'Lack of Funds',
         'description': (
-            "A placeholder tale. The story of this scenario has not yet been written.\n"
-            "When it is, its setting, factions and goals will be described here."
+            "At the very beginning of the Age of Empires, the nascent Londic Empire was in "
+            "a state of internal turmoil. Undergoing a deeply reformative period, its emperor "
+            "was eager to spend the imperial funds on containing external threats at bay - "
+            "often forgetting, that the true danger lay within its borders. Emperor Kondaron "
+            "was, therefore, often called The Lacking.\n"
+            "\n"
+            "The Emperor needed a strong, guiding hand to balance the amount of funds spent on "
+            "external and internal affairs. However, his obsession with what was out of the "
+            "imperial borders soon turned into a thirst for conquest.\n"
+            "\n"
+            "_Objectives:\n"
+            "- conquer the territories of the Aelatanaic Tribes\n"
+            "- do not lose control over the city of Generax\n"
+            "\n"
+            "_Notes:\n"
+            "- keep your popularity high by spending funds on internal investments\n"
+            "- the lower your popularity, the higher risk of your armies and population "
+            "revolting against you\n"
+            "- Kingdom of Daurels and Heilonic Kingdoms will turn hostile if you issue an "
+            "attack against them"
         ),
     },
     {
@@ -89,8 +113,8 @@ class BookOfTales:
     Usage:
         screen_obj = BookOfTales(screen)
         result = screen_obj.run()
-        # result = {'action': 'back'} or {'action': 'quit'}
-        # Reserved for later: {'action': 'launch', 'scenario_id': '...'}
+        # result = {'action': 'back'}, {'action': 'quit'}
+        #          or {'action': 'launch', 'scenario_id': '...'}
     """
 
     def __init__(self, screen):
@@ -140,6 +164,10 @@ class BookOfTales:
         self.tale_font = pygame.font.Font(font_path, max(14, int(24 * s)))
         self.heading_font = pygame.font.Font(bold_path, max(18, int(36 * s)))
         self.body_font = pygame.font.Font(font_path, max(13, int(24 * s)))
+        # Separate instance for '_' heading lines: set_underline() mutates the
+        # Font object, so the shared body_font must never be touched.
+        self.body_font_underline = pygame.font.Font(font_path, max(13, int(24 * s)))
+        self.body_font_underline.set_underline(True)
 
         # --- Layout ---
         self.title_surface = self.title_font.render("Book of Tales", True, TITLE_COLOR)
@@ -335,20 +363,23 @@ class BookOfTales:
             return
         self.selected_index = idx
         text = self.scenarios[idx].get('description', '')
-        self._desc_lines = self._wrap_text(text, self.body_font, self.desc_body_rect.width)
+        self._desc_lines = self._wrap_text(text, self.body_font, self.desc_body_rect.width,
+                                           self.body_font_underline)
         self.desc_scroll = 0
         total_h = len(self._desc_lines) * self.desc_line_h
         self.desc_max_scroll = max(0, total_h - self.desc_body_rect.height)
 
     def _launch_selected(self):
-        """Placeholder: tales are not playable yet, so Launch only flashes.
+        """Close the screen and hand the selected tale's id to main.py.
 
-        When they are, set self.result = {'action': 'launch', 'scenario_id': ...}
-        and self.done = True, and handle it in main.py's campaign loop.
+        main.py's campaign loop looks the id up in _TALE_REGISTRY, runs the
+        tale, then reopens this screen.
         """
         if 0 <= self.selected_index < len(self.scenarios):
-            logger.info(f"BookOfTales: launch requested for "
-                        f"{self.scenarios[self.selected_index]['id']} (not implemented yet)")
+            scenario_id = self.scenarios[self.selected_index]['id']
+            logger.info(f"BookOfTales: launching {scenario_id}")
+            self.result = {'action': 'launch', 'scenario_id': scenario_id}
+            self.done = True
 
     # ------------------------------------------------------------------
     # Rendering
@@ -452,14 +483,16 @@ class BookOfTales:
         self.screen.set_clip(body)
         y = body.top - self.desc_scroll
         for line in self._desc_lines:
+            # line = (text, underlined, indent_px) — see _wrap_text
             if y + line_h <= body.top:
                 y += line_h
                 continue
             if y >= body.bottom:
                 break
-            if line:
-                surf = self._cached_text(line, self.body_font, INFO_TEXT)
-                self.screen.blit(surf, (body.x, y))
+            if line[0]:
+                font = self.body_font_underline if line[1] else self.body_font
+                surf = self._cached_text(line[0], font, INFO_TEXT)
+                self.screen.blit(surf, (body.x + line[2], y))
             y += line_h
         self.screen.set_clip(prev_clip)
 
@@ -483,22 +516,38 @@ class BookOfTales:
                          pygame.Rect(track_x, thumb_y, track_w, thumb_h), border_radius=radius)
 
     @staticmethod
-    def _wrap_text(text, font, max_w):
-        """Word-wrap text to max_w pixels. '\n' starts a new paragraph (blank line between)."""
+    def _wrap_text(text, font, max_w, underline_font=None):
+        """Word-wrap description text to max_w pixels, applying the SCENARIOS markup.
+
+        Returns a list of (text, underlined, indent_px) tuples, one per drawn line:
+          - each '\n'-separated source line starts a new line; an empty source
+            line (i.e. '\n\n') becomes an empty drawn line
+          - a leading '_' is stripped and marks the line underlined
+          - a line starting with '- ' is a list item: its wrapped continuation
+            lines are indented by the width of '- ' (hanging indent)
+        """
         lines = []
-        for p_i, paragraph in enumerate(text.split('\n')):
-            if p_i > 0:
-                lines.append('')
+        for raw in text.split('\n'):
+            underlined = raw.startswith('_')
+            if underlined:
+                raw = raw[1:]
+            words = raw.split()
+            if not words:
+                lines.append(('', False, 0))
+                continue
+            line_font = underline_font if (underlined and underline_font) else font
+            hang = font.size('- ')[0] if raw.startswith('- ') else 0
             current = ''
-            for word in paragraph.split():
+            indent = 0   # First line is flush left; continuations get the hang
+            for word in words:
                 candidate = f"{current} {word}" if current else word
-                if font.size(candidate)[0] <= max_w or not current:
+                if line_font.size(candidate)[0] <= max_w - indent or not current:
                     current = candidate
                 else:
-                    lines.append(current)
+                    lines.append((current, underlined, indent))
                     current = word
-            if current:
-                lines.append(current)
+                    indent = hang
+            lines.append((current, underlined, indent))
         return lines
 
     def _draw_page_arrow(self, rect, direction, btn_id):

@@ -173,6 +173,17 @@ def get_current_map_id():
     """Get the ID of the currently loaded map."""
     return _current_map_id
 
+def current_map_draws_borders():
+    """True if the loaded map asks the renderer to outline every territory.
+
+    Set per map with "draw_borders": true in maps/manifest.json. Maps whose
+    background art already has visible borders painted in (Avareon) leave it
+    off; maps with faint painted borders (Azincournean Highlands) turn it on.
+    The legacy load_polygons() path leaves _current_map_id unset (Avareon).
+    """
+    info = get_map_info(_current_map_id) if _current_map_id else None
+    return bool(info and info.get('draw_borders', False))
+
 def get_map_ids():
     """Get ordered list of enabled map IDs from manifest."""
     manifest = get_map_manifest()
