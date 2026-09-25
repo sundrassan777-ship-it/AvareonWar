@@ -105,7 +105,8 @@ class TestStaleErrorCodeReset:
     def test_movement_order_clears_stale_code(self, gs):
         gs.last_action_error = "army_limit"
         _give_garrison(gs, FROM, 0, 2)
-        assert gs.add_movement_order_for_units(FROM, FAR_AWAY, [0], player=0) is False
+        # Empty selection: a refusal with no player-facing code
+        assert gs.add_movement_order_for_units(FROM, NEIGHBOUR, [], player=0) is False
         assert gs.last_action_error is None
 
     def test_hero_ability_clears_stale_code(self, gs):

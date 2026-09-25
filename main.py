@@ -6343,9 +6343,9 @@ class Game:
     
     def handle_right_click(self, pos):
         """Handle right-click for creating movement orders and canceling research (Phase 2D: camera-aware)"""
-        # Block movement orders during simultaneous mode resolution phase
-        if self.sim_state is not None and self.sim_state.sim_phase == 'resolving':
-            return
+        # (The simultaneous-mode 'resolving' block is further down, once we know the
+        # player actually tried to send units — only then does it earn an error toast.
+        # The sidebar's research right-click has its own resolving check.)
 
         # Block right-clicks on top panel
         if pos[1] < TOP_PANEL_HEIGHT:
@@ -6385,6 +6385,17 @@ class Game:
         if not territory:
             return
 
+        # Is the player trying to send armies? Only then do the refusals below earn an
+        # error toast — a plain right-click on the map stays silent.
+        sending_units = bool((self.show_army_composition and self.selected_army_units)
+                             or self.game_state.selected_army)
+
+        # Block movement orders during simultaneous mode resolution phase
+        if self._is_sim_resolving():
+            if sending_units:
+                self.show_action_error('wrong_phase')
+            return
+
         # Mission hook: block army orders to territories restricted by campaign mission
         # (e.g., Mission 6 blocks Red from attacking certain territories until quests unlock them)
         if (territory and self.tutorial_mission
@@ -6392,34 +6403,23 @@ class Game:
                 and hasattr(self.tutorial_mission, 'is_attack_target_blocked')
                 and self.tutorial_mission.is_attack_target_blocked(territory)):
             # Only block if player is trying to send armies (has units selected)
-            if ((self.show_army_composition and self.selected_army_units)
-                    or self.game_state.selected_army):
+            if sending_units:
                 self.game_state.add_message(f"Cannot target {territory} yet!")
+                self.show_action_error('target_blocked', territory=territory)
                 return
 
         # CASE 1: Composition UI is open with selected units
         if self.show_army_composition and self.army_composition_territory and self.selected_army_units:
             from_territory = self.army_composition_territory
 
-            # Can't move to same territory
+            # Can't move to same territory (silent: not a meaningful order attempt)
             if from_territory == territory:
                 return
 
-            # Check if this would exceed army limit (for reinforcements or allied reinforcements)
-            owner_from = self.game_state.territory_owners.get(from_territory, -1)
-            owner_to = self.game_state.territory_owners.get(territory, -1)
-
-            # Check for reinforcement (same owner) OR allied reinforcement
-            is_friendly_move = (owner_from == owner_to or
-                              (owner_to >= 0 and self.game_state.are_allies(self.game_state.current_player, owner_to)))
-
-            if is_friendly_move:
-                # This is a reinforcement - check projected capacity (accounts for outgoing orders)
-                projected, _ = self.game_state._get_effective_capacity(territory)
-                reinforcing_count = len(self.selected_army_units)
-                if projected + reinforcing_count > self.game_state.MAX_ARMIES_PER_TERRITORY:
-                    self.game_state.add_message(f"Cannot reinforce {territory}: would exceed army limit of {self.game_state.MAX_ARMIES_PER_TERRITORY}!")
-                    return
+            # The army-limit check for reinforcements happens inside
+            # add_movement_order_for_units(). A separate pre-check here counted the
+            # selected units' existing order to the same destination twice (they are
+            # auto-cancelled only inside that method) and could refuse a valid order.
 
             # Create movement order for selected units
             # Pass the garrison player (for multi-garrison support)
@@ -6428,6 +6428,10 @@ class Game:
                 # Don't send to remote - they'll see the movement when orders execute
                 # Clear selection after issuing order
                 self.selected_army_units = []
+            else:
+                # Refused (army limit, not reachable, units already moved): sound + toast.
+                # Refusals without a player-facing code (tutorial block) stay silent.
+                self._show_action_failure_feedback()
             return
         
         # CASE 2: Legacy - army selected (old system compatibility)

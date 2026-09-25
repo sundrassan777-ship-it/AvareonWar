@@ -887,6 +887,7 @@ class MilitaryMixin:
         if invalid_units:
             _rollback_auto_cancel()
             self.add_message("Some selected armies are not ready to move")
+            self.last_action_error = "unit_not_ready"  # player-facing toast (see main.py)
             return False
 
         # Validate: territories must be adjacent (or reachable via Captain 2-hop)
@@ -903,6 +904,7 @@ class MilitaryMixin:
                 if not intermediate_territory:
                     _rollback_auto_cancel()
                     self.add_message("Territories are not adjacent!")
+                    self.last_action_error = "not_adjacent"
                     return False
         except Exception as e:
             _rollback_auto_cancel()
@@ -926,6 +928,9 @@ class MilitaryMixin:
             if projected + len(unit_ids) > self.MAX_ARMIES_PER_TERRITORY:
                 _rollback_auto_cancel()
                 self.add_message(f"Cannot reinforce {to_territory}: would exceed army limit of {self.MAX_ARMIES_PER_TERRITORY}!")
+                self.last_action_error = "reinforce_limit"
+                self.last_action_error_args = {'territory': to_territory,
+                                               'limit': self.MAX_ARMIES_PER_TERRITORY}
                 return False
 
         # Validation passed: the auto-cancel is now final, so report it (it used to be
