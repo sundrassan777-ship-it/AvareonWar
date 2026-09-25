@@ -70,7 +70,7 @@ ACTION_ERROR_MESSAGES = {
 
     # The target territory doesn't border the units' territory (and there is
     # no valid 2-step route for a Captain).
-    'not_adjacent': "Territories are not adjacent!",
+    'not_adjacent': "Cannot reach target territory!",
 
     # At least one selected unit has already moved this turn (its icon is
     # greyed out in the army strip).
