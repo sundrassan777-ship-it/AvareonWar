@@ -149,6 +149,8 @@ AvareonWar/
 - [tests/test_drawing_helpers.py](tests/test_drawing_helpers.py) - `draw_feedback_button()` fallback when its background image is missing
 - [tests/test_tale_lack_of_funds.py](tests/test_tale_lack_of_funds.py) - Tale I: setup, AI rules/hooks, Popularity, widget click, transmissions, endgame + achievement, save/restore, Keep-only battle + Demolish Keep regressions
 - [tests/test_map_borders.py](tests/test_map_borders.py) - Per-map territory borders flag (`draw_borders` in the manifest)
+- [tests/test_action_feedback_bugfixes.py](tests/test_action_feedback_bugfixes.py) + `test_action_feedback_phase2.py`…`phase7.py` - Action error toasts: stale-code reset, re-order rollback, order cancel by identity, hidden territories, shared build/train path, tints, message table, army-order/hero-ability/other refusals
+- [tests/test_hero_slain_notification.py](tests/test_hero_slain_notification.py) - "Our Hero, X, has been slain in Y!" toast (battle, Regicide, multiplayer defender via Battle Report)
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -185,6 +187,7 @@ AvareonWar/
 **Configuration:**
 - [config/constants.py](config/constants.py) - All game constants (window, colors, timing, camera)
 - [config/font_manager.py](config/font_manager.py) - Font loading and caching
+- [config/action_error_messages.py](config/action_error_messages.py) - Every player-facing "action refused" toast text (+ `hero_slain`), edited by the owner — each entry commented with when it shows
 
 ### Data Files (JSON)
 
@@ -484,6 +487,9 @@ After making code changes, ask yourself:
 - Territory border outlines → `maps/manifest.json` `draw_borders` + `rendering/map_renderer.py` `draw_territories()` / `TERRITORY_BORDER_*`
 - Change Campaign screen corner icon buttons (Saved Games / Book of Tales) → `campaign_screen.py` `_draw_icon_button()`
 - Add save state to new mission → add `get_save_state()`/`restore_save_state()` + update `_SAVE_MISSION_REGISTRY` in main.py
+- Add / reword an action error toast → `config/action_error_messages.py` (text) + set `last_action_error` in the game-state method + `_show_action_failure_feedback()` at the call site. Red/grey/hidden controls need no toast (fix the tint instead). See "Action Failure Feedback Pattern" in CODE_GUIDE.md
+- Build/train from any input (map icon, bottom panel, keyboard) → `main.py` `_try_start_construction()` / `_try_start_training()` — never a separate copy
+- Hero death toast → `HeroMixin._record_hero_death()` + `main.py` `_show_hero_death_notifications()` (+ Battle Report `heroes_slain` for multiplayer defenders)
 
 ## Notes
 <!-- Any additional notes or context for Claude Code -->

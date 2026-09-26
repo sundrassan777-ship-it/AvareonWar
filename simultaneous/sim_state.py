@@ -124,6 +124,12 @@ class SimultaneousGameState:
         # None for single-player, 0 for host, 1+ for clients
         self.local_player_index = None
 
+        # The human whose build/train/research/castle/hero-training clicks are executed
+        # immediately (for visual feedback) AND queued as sim orders. The executor skips
+        # that player's queued copies. Set in single-player too, unlike local_player_index
+        # (which also switches off garrison validation for other players' orders).
+        self.click_executed_player = None
+
         # Callback for multiplayer host when all players ready
         # Set by main.py to handle SIM_ALL_READY broadcasting
         self.on_all_ready_callback = None

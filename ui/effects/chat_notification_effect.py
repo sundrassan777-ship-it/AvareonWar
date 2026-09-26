@@ -203,8 +203,31 @@ class ChatNotificationEffect:
             'height': bg_height,
         }
 
+    def _wrap_system_text(self, text):
+        """Split `text` into display lines: on '\n', then word-wrapped to the max width."""
+        lines = []
+        for paragraph in text.split('\n'):
+            words = paragraph.split(' ')
+            current = ''
+            for word in words:
+                candidate = word if not current else f"{current} {word}"
+                if current and self.font_bold.size(candidate)[0] > self._max_text_width:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = candidate
+            lines.append(current)
+        return lines
+
     def add_system_notification(self, text, color=None):
         """Add a system notification (no player name). Used for action failure feedback.
+
+        Multi-line: '\n' starts a new line and long lines are word-wrapped (they used to
+        be cut off with "..."), so longer action error messages stay readable.
+
+        Repeats: if the newest notification shows the same text, its timer restarts
+        instead of stacking a copy (clicking a refused button repeatedly would otherwise
+        fill all five slots with the same message).
 
         Args:
             text: Message text to display
@@ -213,17 +236,21 @@ class ChatNotificationEffect:
         if color is None:
             color = ERROR_MSG_COLOR
 
-        msg_surface = self.font_bold.render(text, True, color)
+        if self._notifications and self._notifications[-1].get('system_text') == text:
+            self._notifications[-1]['elapsed'] = 0.0
+            return
 
-        # Truncate if message exceeds max width
-        if msg_surface.get_width() > self._max_text_width:
-            truncated = text
-            while len(truncated) > 4:
-                truncated = truncated[:-1]
-                test_surface = self.font_bold.render(truncated + "...", True, color)
-                if test_surface.get_width() <= self._max_text_width:
-                    msg_surface = test_surface
-                    break
+        # Render each line, then stack them into one surface (the renderer blits a
+        # single msg_surface per notification)
+        line_surfaces = [self.font_bold.render(line, True, color)
+                         for line in self._wrap_system_text(text)]
+        msg_width = max(s.get_width() for s in line_surfaces)
+        msg_height = sum(s.get_height() for s in line_surfaces)
+        msg_surface = pygame.Surface((msg_width, msg_height), pygame.SRCALPHA)
+        line_y = 0
+        for line_surface in line_surfaces:
+            msg_surface.blit(line_surface, (0, line_y))
+            line_y += line_surface.get_height()
 
         # Build notification with same structure as chat notifications
         content_width = msg_surface.get_width()
@@ -243,6 +270,7 @@ class ChatNotificationEffect:
             'msg_surface': msg_surface,
             'bg_surface': bg_surface,
             'height': bg_height,
+            'system_text': text,    # Lets an identical repeat refresh this one
         })
 
         # Enforce max visible

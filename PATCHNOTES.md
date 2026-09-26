@@ -4,6 +4,70 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## The Game Tells You Why
+
+*26 September 2026*
+
+### No more silent clicks
+
+When the game refuses something you try, it now tells you why: you hear the refusal sound
+and a red message appears in the top-left corner of the map. Before, many of these clicks
+simply did nothing, or left a line in the Action Log that you only saw if that tab was open.
+
+- **Army orders:** "Cannot reach target territory!", "Cannot reinforce X: would exceed army
+  limit of 15!", "Some selected armies are not ready to move!", a territory the campaign
+  hasn't unlocked yet, or giving orders while battles are being resolved.
+- **Hero abilities:** every reason an ability can't hit the territory you picked - your own
+  land, neutral land, Defiance, too many units, no Keep, and so on. You stay in targeting
+  mode, so you can simply pick another territory.
+- **Reinforce** now tells you when its Keep territory is too full, instead of doing nothing.
+- **Regicide** on a Keep with no hero inside now tells you it missed. It still goes on
+  cooldown - Regicide has to find its mark.
+- **Build shortcut keys** on a plot that is already in use, **research** while battles are
+  being resolved, and **sending 0 Gold** to an ally in the Players window.
+- The message that used to pop up in the middle of the screen for a wrong ability target is
+  gone - every message now appears in the same place.
+- Clicking the same refused button again refreshes the message instead of piling up copies,
+  and longer messages wrap onto a second line instead of being cut off.
+
+### Heroes fall - and you hear about it
+
+When an enemy captures the Keep one of your heroes lives in, or kills it with Regicide, you
+now see **"Our Hero, X, has been slain in Y!"** - even when it happens during an opponent's
+turn in multiplayer.
+
+### Buttons show what you can really do
+
+- **Red** means a rule prevents it right now; **grey** means the tutorial or the current
+  campaign chapter has locked it.
+- Map build icons now show a second Square and a Keep in a Fortress territory as
+  unavailable; map training icons show a full training queue (4 units).
+- While a technology is being researched, the others are greyed out and their tooltip says
+  why. The "can't afford" colour now includes your territory research discounts.
+- Hero training buttons turn red while their Keep is being upgraded to a Castle.
+- End Turn is greyed out while armies are still marching, while battles wait to be resolved,
+  and during a campaign intro.
+- Battle markers are grey on every turn that isn't yours, including other players' turns in
+  multiplayer.
+- Locked tabs, order cancel buttons and build buttons during tutorials and campaign intros
+  are greyed out instead of looking clickable.
+- "Save failed!" is now shown in red.
+
+### Fixes
+
+- **Units were trained twice in single-player Simultaneous games.** Training from the icons
+  around a Barracks queued two units and charged you twice.
+- **A refused order no longer cancels your armies' previous orders.** Re-ordering units to a
+  territory they couldn't reach used to wipe their existing order anyway.
+- **Cancelling an order cancels that order.** In games with AI opponents, the X next to an
+  order could remove a different one, and Cancel All removed other players' orders too.
+- **Demolish Keep works in campaign chapters that forbid hero training.**
+- **Hero abilities can no longer target territories hidden by a campaign chapter.**
+- **Keyboard build and training shortcuts** now behave exactly like clicking the buttons,
+  including in multiplayer.
+- Re-ordering some of your units to the territory they were already heading for is no longer
+  refused as "over the army limit".
+
 ## The Book of Tales Opens: Lack of Funds
 
 *25 September 2026*

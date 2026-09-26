@@ -33,6 +33,7 @@ SEND_BTN_BG = (80, 70, 45)
 SEND_BTN_BG_HOVER = (110, 95, 60)
 SEND_BTN_DISABLED = (60, 50, 35)
 SUCCESS_COLOR = (170, 255, 170)
+ERROR_COLOR = (255, 100, 100)  # Refused send (same red as the in-game error toast)
 
 MAX_INPUT_DIGITS = 7  # Per product spec — cap typed amount at 7 digits
 FEEDBACK_DURATION_MS = 1800  # How long "Transfer successful." stays onscreen
@@ -70,6 +71,7 @@ class PlayersWindow:
 
         # Transient feedback toast
         self.feedback_message = None
+        self.feedback_is_error = False  # True -> drawn red (a refused send)
         self.feedback_timer_ms = 0
         self._last_tick_ms = pygame.time.get_ticks()
 
@@ -246,7 +248,10 @@ class PlayersWindow:
             self.input_texts[recipient_idx] = current_text[:-1]
             return True
         if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-            self._attempt_send(sender_idx, recipient_idx)
+            # Same guard as the Send button: a row that became disabled after it was
+            # focused (greyed, with a tooltip reason) must not attempt a send
+            if self._row_disabled_reason.get(recipient_idx) is None:
+                self._attempt_send(sender_idx, recipient_idx)
             return True
         if event.key == pygame.K_TAB:
             # Move focus to the next enabled row (if any)
@@ -392,15 +397,30 @@ class PlayersWindow:
     # Send / feedback
     # ------------------------------------------------------------------
 
+    def _show_send_error(self, code):
+        """
+        Refused send: denial sound + the message in this window's own feedback line.
+
+        The in-game error toast draws underneath this modal (behind its dark overlay),
+        so it would not be seen here. The text still comes from the shared table in
+        config/action_error_messages.py.
+        """
+        from config.action_error_messages import format_action_error
+        from global_sound import play_action_denied
+        play_action_denied()
+        self.feedback_message = format_action_error(code)
+        self.feedback_is_error = True
+        self.feedback_timer_ms = FEEDBACK_DURATION_MS
+
     def _attempt_send(self, sender_idx, recipient_idx):
+        # Empty / zero amount: Send used to do nothing at all — say why
         text = self.input_texts.get(recipient_idx, '').strip()
-        if not text:
-            return
         try:
-            amount = int(text)
+            amount = int(text) if text else 0
         except ValueError:
-            return
+            amount = 0  # non-digit keys are filtered on input, so this is a safeguard
         if amount <= 0:
+            self._show_send_error('transfer_no_amount')
             return
 
         # Route through the game-level wrapper so multiplayer networking can
@@ -413,6 +433,7 @@ class PlayersWindow:
 
         if sent > 0:
             self.feedback_message = "Transfer successful."
+            self.feedback_is_error = False
             self.feedback_timer_ms = FEEDBACK_DURATION_MS
             self.input_texts[recipient_idx] = ''
             self.focused_recipient = None
@@ -428,7 +449,8 @@ class PlayersWindow:
 
     def _draw_feedback(self, screen, y, scale):
         font = self._font(max(14, int(20 * scale)), bold=True)
-        surf = font.render(self.feedback_message, True, SUCCESS_COLOR)
+        color = ERROR_COLOR if self.feedback_is_error else SUCCESS_COLOR
+        surf = font.render(self.feedback_message, True, color)
         rect = surf.get_rect(midtop=(self.panel_rect.centerx, y))
         screen.blit(surf, rect)
 

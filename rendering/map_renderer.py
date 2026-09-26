@@ -2015,27 +2015,30 @@ class MapRenderer:
             screen_x = int(screen_x)
             screen_y = int(screen_y)
 
+            # Check if this battle is clickable by the local player — evaluated every
+            # frame (it used to be decided once when the marker appeared, so a stale
+            # colour survived turn changes).
+            # Red = your battle to resolve (click it), Gray = AI/other player resolves
+            greyed_out = False
+            if hasattr(self.game, 'sim_state') and self.game.sim_state is not None:
+                # Simultaneous mode: only the resolver can click
+                resolver = getattr(battle, 'resolver', None)
+                local_player = self.game.get_local_player()
+                if resolver is not None and resolver != local_player:
+                    greyed_out = True
+            else:
+                # Sequential mode: only the player whose turn it is resolves battles.
+                # Comparing with the local player covers AI turns AND a remote human's
+                # turn in multiplayer (only AI turns were greyed before).
+                if self.game.game_state.current_player != self.game.get_local_player():
+                    greyed_out = True
+
             # Create or get existing battle effect for this battle
             # FIX: Key by territory name (stable identity) instead of list index
             # to prevent stale colors when battles resolve and indices shift
-            if territory not in self.battle_effects:
-                # Check if this battle is clickable by the local player
-                # In simultaneous mode, only the resolver can click
-                # Red = your battle to resolve (click it), Gray = AI/other player resolves
-                greyed_out = False
-                if hasattr(self.game, 'sim_state') and self.game.sim_state is not None:
-                    resolver = getattr(battle, 'resolver', None)
-                    local_player = self.game.get_local_player()
-                    if resolver is not None and resolver != local_player:
-                        greyed_out = True
-                else:
-                    # Sequential mode: grey out battles during AI turns
-                    # (player can't click to resolve these)
-                    current = self.game.game_state.current_player
-                    if self.game.game_state.player_is_ai[current]:
-                        greyed_out = True
-
-                # Create new hurricane effect at battle location
+            if territory not in self.battle_effects or self.battle_effects[territory].greyed_out != greyed_out:
+                # Create new hurricane effect at battle location (or recreate it with
+                # the new colour scheme when clickability changed, like alliance markers)
                 self.battle_effects[territory] = BattleHurricaneEffect(
                     center_pos=(screen_x, screen_y),
                     num_particles=1000,
@@ -4053,36 +4056,22 @@ class MapRenderer:
                         can_afford = current_gold >= cost
                         can_build_this_turn = territory not in self.game.game_state.buildings_started_this_turn
                         
-                        # Check one-per-territory restrictions (Keep, Training Grounds)
-                        can_build_keep = True
-                        if building_name == 'Keep':
-                            # Check if already has a Keep (completed or under construction)
-                            if self.game.game_state.has_fortress(territory):
-                                can_build_keep = False
-                            # Check if Keep is under construction
-                            if territory in self.game.game_state.under_construction:
-                                for plot_idx, entry in self.game.game_state.under_construction[territory].items():
-                                    if entry[0] == 'Keep':  # entry is (building_type, turns_remaining, cost)
-                                        can_build_keep = False
-                                        break
-                        elif building_name == 'Training Grounds':
-                            # Check if already has Training Grounds (completed or under construction)
-                            if self.game.game_state.has_training_grounds(territory):
-                                can_build_keep = False
-                            if territory in self.game.game_state.under_construction:
-                                for plot_idx, entry in self.game.game_state.under_construction[territory].items():
-                                    if entry[0] == 'Training Grounds':
-                                        can_build_keep = False
-                                        break
+                        # Per-type rules (Fortress territory has no Keep; one Keep / Training
+                        # Grounds / Square per territory) — the same check start_construction()
+                        # refuses with. The old local copy missed the Square and Fortress rules,
+                        # so those icons showed green for a build that would be refused.
+                        can_build_keep = self.game.game_state.get_building_type_block_reason(
+                            territory, building_name) is None
                         
                         # Tutorial lock: force red if building type not allowed
                         _tutorial_locked = False
                         if hasattr(self.game, 'tutorial_mission') and self.game.tutorial_mission and self.game.tutorial_mission.active:
-                            _tutorial_locked = not self.game.tutorial_mission.is_action_allowed('build', building_type=building_name)
+                            _tutorial_locked = not self.game.tutorial_mission.is_action_allowed(
+                                'build', building_type=building_name, territory=territory)
 
                         # Base color - consider affordability, building limit, and one-per-territory restriction
                         if _tutorial_locked:
-                            icon_color = COLOR_ICON_UNAVAILABLE  # Red (tutorial locked)
+                            icon_color = COLOR_ICON_LOCKED  # Grey (tutorial/mission locked)
                         elif can_afford and can_build_this_turn and can_build_keep:
                             icon_color = COLOR_ICON_AVAILABLE  # Green
                         else:
@@ -4129,10 +4118,11 @@ class MapRenderer:
                             temp_icon.fill((0, 0, 0, 0))
                             temp_icon.blit(cached_icon, (0, 0))
 
-                            # Apply red tint if building is unavailable (including tutorial lock)
+                            # Tint if building is unavailable: grey when locked by the
+                            # tutorial/mission, red when a game rule refuses it
                             if _tutorial_locked or not (can_afford and can_build_this_turn and can_build_keep):
                                 red_overlay = self.get_reusable_surface(icon_size, icon_size)
-                                red_overlay.fill((255, 100, 100, 100))
+                                red_overlay.fill((140, 140, 140, 255) if _tutorial_locked else (255, 100, 100, 100))
                                 temp_icon.blit(red_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
                                 self.return_surface_to_pool(red_overlay)
 
@@ -4202,7 +4192,8 @@ class MapRenderer:
                 if (territory in self.game.game_state.training_queue and 
                     barracks_plot_index in self.game.game_state.training_queue[territory]):
                     queue_count = len(self.game.game_state.training_queue[territory][barracks_plot_index])
-                can_queue = queue_count < 5
+                # Same limit start_training() enforces (was `< 5`: a full queue looked available)
+                can_queue = queue_count < self.game.game_state.MAX_TRAINING_QUEUE
                 
                 # Track hover for map training icons
                 mouse_pos = pygame.mouse.get_pos()
@@ -4229,7 +4220,8 @@ class MapRenderer:
                     # Tutorial lock: force unavailable if unit type not allowed
                     _tutorial_locked = False
                     if hasattr(self.game, 'tutorial_mission') and self.game.tutorial_mission and self.game.tutorial_mission.active:
-                        _tutorial_locked = not self.game.tutorial_mission.is_action_allowed('train', unit_type=unit_type)
+                        _tutorial_locked = not self.game.tutorial_mission.is_action_allowed(
+                            'train', unit_type=unit_type, territory=territory)
 
                     # Check if player can afford and can train
                     can_afford = current_gold >= cost
@@ -4262,11 +4254,12 @@ class MapRenderer:
                         needs_effects = (not can_train) or is_clicking or is_hovering
                         scaled_icon = cached_cropped.copy() if needs_effects else cached_cropped
 
-                        # Apply red tint if cannot train (only affects RGB, not alpha)
+                        # Tint if cannot train (only affects RGB, not alpha): grey when
+                        # locked by the tutorial/mission, red when a game rule refuses it
                         if not can_train:
                             # PERFORMANCE: Use reusable surface from pool
                             red_overlay = self.get_reusable_surface(icon_size, icon_size)
-                            red_overlay.fill((255, 100, 100, 128))
+                            red_overlay.fill((140, 140, 140, 255) if _tutorial_locked else (255, 100, 100, 128))
                             scaled_icon.blit(red_overlay, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
                             self.return_surface_to_pool(red_overlay)
 
@@ -4296,7 +4289,10 @@ class MapRenderer:
                             self.game.screen.blit(scaled_border, border_rect)
                     else:
                         # Fallback to letter with circle background if icon not available
-                        icon_color = COLOR_ICON_AVAILABLE if can_train else COLOR_ICON_UNAVAILABLE
+                        if can_train:
+                            icon_color = COLOR_ICON_AVAILABLE
+                        else:
+                            icon_color = COLOR_ICON_LOCKED if _tutorial_locked else COLOR_ICON_UNAVAILABLE
                         if is_clicking:
                             icon_color = brighten_color(icon_color, 0.4)
                         elif is_hovering:

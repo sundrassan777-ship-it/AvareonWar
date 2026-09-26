@@ -10,6 +10,7 @@ hero presence queries, and cooldown management.
 
 import random
 import map_data
+from config.action_error_messages import format_action_error
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -17,6 +18,19 @@ logger = get_logger(__name__)
 
 class HeroMixin:
     """Mixin providing hero management methods for GameState."""
+
+    def _ability_refusal(self, code, **fmt):
+        """
+        Record why a hero ability was refused and return the usual (False, text) result.
+
+        Sets last_action_error / last_action_error_args so main.py shows the denial
+        sound + toast, and builds the text from config/action_error_messages.py (the
+        texts used to be written inline here). The (False, text) shape is unchanged
+        for the AI and network callers, which read result[0] or log the text.
+        """
+        self.last_action_error = code
+        self.last_action_error_args = fmt or None
+        return (False, format_action_error(code, **fmt))
 
     def start_hero_training(self, territory, keep_plot_index, hero_type):
         """
@@ -28,6 +42,10 @@ class HeroMixin:
         - Training time is in player turns (not game turns)
         - 100% refund on cancellation
         """
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
+
         # 1. Validate hero type
         if hero_type not in self.HERO_TYPES:
             self.add_message(f"Invalid hero type: {hero_type}")
@@ -243,7 +261,15 @@ class HeroMixin:
         # FPS OPT: Always bump version — called once per turn, negligible cost
         self._training_version += 1
 
-    def kill_heroes_in_keep(self, territory, keep_plot_index, previous_owner):
+    def _record_hero_death(self, owner, hero_type, territory):
+        """
+        Queue a hero death for main.py, which tells the hero's owner with a toast
+        ("Our Hero, X, has been slain in Y!"). main.py drains hero_death_events every
+        frame, so deaths during AI turns or simultaneous execution are shown too.
+        """
+        self.hero_death_events.append((owner, hero_type, territory))
+
+    def kill_heroes_in_keep(self, territory, keep_plot_index, previous_owner, slain=True):
         """
         Kill all heroes residing in a destroyed Keep.
 
@@ -251,6 +277,8 @@ class HeroMixin:
             territory: Territory name
             keep_plot_index: Keep plot index
             previous_owner: Player who owned the Keep
+            slain: True when an enemy destroyed the Keep (battle) — the owner gets a
+                "hero slain" toast. False when the owner demolished it themselves.
 
         Returns:
             int: Number of heroes killed
@@ -273,6 +301,10 @@ class HeroMixin:
             del self.heroes[previous_owner][hero_type]
             self.hero_ownership[previous_owner].discard(hero_type)
             self.add_message(f"Player {previous_owner + 1}: {hero_type} has died!")
+            if slain:
+                self._record_hero_death(previous_owner, hero_type, territory)
+                # Also remember it for this battle's report (see _capture_battle_reports)
+                self._battle_hero_deaths.append((previous_owner, hero_type, territory))
 
         return len(heroes_to_remove)
 
@@ -287,6 +319,10 @@ class HeroMixin:
         Returns:
             bool: True if ability was activated, False otherwise
         """
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+        self.last_action_error_args = None  # values for the message's {placeholders}
+
         current_player = self.current_player
 
         # Validate hero exists and belongs to current player
@@ -502,13 +538,13 @@ class HeroMixin:
         """
         # Validate territory is owned by player
         if self.territory_owners.get(target_territory) != owner:
-            return (False, "Territory not owned by you!")
+            return self._ability_refusal('ability_not_own_territory')
 
         # Check army limit (need room for 4 cavalry)
         # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
         current_armies = self.get_territory_total_armies(target_territory)
         if current_armies > 11:
-            return (False, f"Territory has too many units! ({current_armies}/15)\nNeed 11 or fewer to summon 4 Cavalry.")
+            return self._ability_refusal('charge_too_many', current=current_armies)
 
         # Check if territory has Haste effect
         haste_affected_territories = self.get_haste_affected_territories(owner)
@@ -583,7 +619,7 @@ class HeroMixin:
         """
         # Find Brennhen/Regnus Keep territory
         if owner not in self.heroes:
-            return (False, "Hero not found!")
+            return self._ability_refusal('hero_not_found')
 
         # Check for either Darius Brennhen or Regnus Aevencourne (campaign clone)
         hero_name = None
@@ -592,7 +628,7 @@ class HeroMixin:
         elif 'Regnus Aevencourne' in self.heroes[owner]:
             hero_name = 'Regnus Aevencourne'
         else:
-            return (False, "Hero with Reinforce not found!")
+            return self._ability_refusal('hero_not_found')
 
         hero_data = self.heroes[owner][hero_name]
         keep_territory = hero_data['keep_territory']
@@ -601,7 +637,7 @@ class HeroMixin:
         # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
         current_armies = self.get_territory_total_armies(keep_territory)
         if current_armies > 13:
-            return (False, f"Territory has too many units! ({current_armies}/15)\nNeed 13 or fewer to summon 2 Swordsmen.")
+            return self._ability_refusal('reinforce_too_many', current=current_armies)
 
         # Check if territory has Haste effect
         haste_affected_territories = self.get_haste_affected_territories(owner)
@@ -682,23 +718,23 @@ class HeroMixin:
         # Validate territory is NOT owned by player (must be neutral or enemy)
         current_owner = self.territory_owners.get(target_territory, -1)
         if current_owner == owner:
-            return (False, "Cannot target your own territory!")
+            return self._ability_refusal('ability_own_territory')
 
         # Check if territory is protected by Defiance
         if self.is_territory_protected_by_defiance(target_territory, owner):
-            return (False, "Territory is protected by Defiance!")
+            return self._ability_refusal('ability_defiance')
 
         # Check army count (must have 1 or fewer)
         # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
         current_armies = self.get_territory_total_armies(target_territory)
         if current_armies > 1:
-            return (False, f"Territory has too many armies! ({current_armies})\nNeed 1 or fewer to target.")
+            return self._ability_refusal('diplomacy_too_many', current=current_armies)
 
         # Check if territory has a Keep
         if target_territory in self.buildings:
             for plot_index, building_type in self.buildings[target_territory].items():
                 if building_type == 'Keep':
-                    return (False, "Cannot target territories with Keeps!")
+                    return self._ability_refusal('diplomacy_keep')
 
         # Check if Seledra's Champion of the People is active for Nextroy's owner
         has_seledra = self.player_has_seledra(owner)
@@ -815,7 +851,7 @@ class HeroMixin:
         # Validate territory is owned by player
         current_owner = self.territory_owners.get(target_territory, -1)
         if current_owner != owner:
-            return (False, "You can only levy your own territories!")
+            return self._ability_refusal('ability_not_own_territory')
 
         # Calculate territory income
         income = self.calculate_territory_income(target_territory)
@@ -886,39 +922,39 @@ class HeroMixin:
         """
         # Validate territory exists
         if target_territory not in self.territory_owners:
-            return (False, "Invalid territory!")
+            return self._ability_refusal('ability_invalid_territory')
 
         # Get territory owner
         territory_owner = self.territory_owners.get(target_territory, -1)
 
         # Check that it's an enemy territory (not owned by current player)
         if territory_owner == owner:
-            return (False, "Cannot target your own territory!")
+            return self._ability_refusal('ability_own_territory')
 
         # Check that it's not neutral
         if territory_owner == -1:
-            return (False, "Cannot target neutral territory!")
+            return self._ability_refusal('ability_neutral')
 
         # Check if territory is protected by Defiance
         if self.is_territory_protected_by_defiance(target_territory, owner):
-            return (False, "Territory is protected by Defiance!")
+            return self._ability_refusal('ability_defiance')
 
         # Check that territory has at least 2 armies
         # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
         army_count = self.get_territory_total_armies(target_territory)
         if army_count < 2:
-            return (False, f"Territory must have at least 2 units! (has {army_count})")
+            return self._ability_refusal('strike_min_units', count=army_count)
 
         # Calculate how many armies to remove (half, rounded down)
         armies_to_remove = army_count // 2
 
         # Get all units from all garrisons in the territory
         if target_territory not in self.territory_garrisons:
-            return (False, "No armies found in territory!")
+            return self._ability_refusal('strike_no_armies')
 
         all_garrisons = self.territory_garrisons[target_territory]
         if not all_garrisons:
-            return (False, "No armies found in territory!")
+            return self._ability_refusal('strike_no_armies')
 
         # Collect all units from all garrisons
         all_units = []
@@ -929,7 +965,7 @@ class HeroMixin:
                 garrison_owners.append(garrison_owner)
 
         if len(all_units) < armies_to_remove:
-            return (False, "Not enough units in territory!")
+            return self._ability_refusal('strike_not_enough')
 
         # Randomly select units to remove from all garrisons combined
         units_to_remove = random.sample(all_units, armies_to_remove)
@@ -969,7 +1005,7 @@ class HeroMixin:
         """
         # Find hero's Keep territory (works for Neil Hevilneu or Serthus Diarcess)
         if owner not in self.heroes:
-            return (False, "Hero not found!")
+            return self._ability_refusal('hero_not_found')
 
         # Check for either Neil Hevilneu or Serthus Diarcess (both have Valorous Charge)
         hero_name = None
@@ -978,28 +1014,28 @@ class HeroMixin:
         elif 'Serthus Diarcess' in self.heroes[owner]:
             hero_name = 'Serthus Diarcess'
         else:
-            return (False, "No hero with Valorous Charge found!")
+            return self._ability_refusal('hero_not_found')
 
         hero_data = self.heroes[owner][hero_name]
         keep_territory = hero_data['keep_territory']
 
         # Validate target territory is owned by player
         if self.territory_owners.get(target_territory, -1) != owner:
-            return (False, "Can only target your own territories!")
+            return self._ability_refusal('ability_not_own_territory')
 
         # Can't target the same territory
         if target_territory == keep_territory:
-            return (False, "Cannot target hero's own Keep territory!")
+            return self._ability_refusal('valorous_own_keep')
 
         # Check if origin territory has owner's garrison with units
         if keep_territory not in self.territory_garrisons or owner not in self.territory_garrisons[keep_territory]:
-            return (False, f"No units in {keep_territory} to move!")
+            return self._ability_refusal('valorous_no_units', keep=keep_territory)
 
         origin_garrison = self.territory_garrisons[keep_territory][owner]
         origin_units = origin_garrison['units']
 
         if not origin_units:
-            return (False, f"No units in {keep_territory} to move!")
+            return self._ability_refusal('valorous_no_units', keep=keep_territory)
 
         # Calculate how many units can be moved
         origin_count = len(origin_units)
@@ -1014,13 +1050,13 @@ class HeroMixin:
         space_available = self.MAX_ARMIES_PER_TERRITORY - target_count
 
         if space_available <= 0:
-            return (False, f"{target_territory} is full! ({target_count}/15)")
+            return self._ability_refusal('valorous_full', territory=target_territory, count=target_count)
 
         # Actual number to move is the minimum of these constraints
         units_to_move = min(max_can_move, space_available)
 
         if units_to_move == 0:
-            return (False, "No units can be moved!")
+            return self._ability_refusal('valorous_none_movable')
 
         # Check if target has Haste effect
         haste_affected_territories = self.get_haste_affected_territories(owner)
@@ -1111,53 +1147,53 @@ class HeroMixin:
         """
         # Validate territory exists and is enemy-owned
         if target_territory not in self.territory_owners:
-            return (False, "Invalid territory!")
+            return self._ability_refusal('ability_invalid_territory')
 
         territory_owner = self.territory_owners.get(target_territory, -1)
 
         # Check that it's an enemy territory
         if territory_owner == owner:
-            return (False, "Cannot target your own territory!")
+            return self._ability_refusal('ability_own_territory')
 
         # Check that it's not neutral
         if territory_owner == -1:
-            return (False, "Cannot target neutral territory!")
+            return self._ability_refusal('ability_neutral')
 
         # Check if territory is protected by Defiance
         if self.is_territory_protected_by_defiance(target_territory, owner):
-            return (False, "Territory is protected by Defiance!")
+            return self._ability_refusal('ability_defiance')
 
         # Get Narn's Keep territory
         if owner not in self.heroes or 'Aidam Narn' not in self.heroes[owner]:
-            return (False, "Aidam Narn not found!")
+            return self._ability_refusal('hero_not_found')
 
         narn_data = self.heroes[owner]['Aidam Narn']
         narn_keep_territory = narn_data.get('keep_territory')
 
         if not narn_keep_territory:
-            return (False, "Narn's Keep territory not found!")
+            return self._ability_refusal('hero_not_found')
 
         # Check if Narn's Keep territory still belongs to the player
         if self.territory_owners.get(narn_keep_territory, -1) != owner:
-            return (False, "You no longer own Narn's Keep territory!")
+            return self._ability_refusal('charisma_keep_lost')
 
         # Legacy counter fix: use get_territory_total_armies to account for allied garrisons
         narn_keep_units = self.get_territory_total_armies(narn_keep_territory)
 
         # Check if Narn's Keep already has 15 units (cannot use ability)
         if narn_keep_units >= 15:
-            return (False, "Narn's Keep already has 15 units! Cannot use Royal Charisma.")
+            return self._ability_refusal('charisma_keep_full')
 
         # Calculate how many units can be stolen (respects 15 unit limit)
         max_units_to_steal = min(5, 15 - narn_keep_units)
 
         # Get all units from all garrisons in target territory
         if target_territory not in self.territory_garrisons:
-            return (False, "Target territory has no units!")
+            return self._ability_refusal('charisma_no_units')
 
         all_garrisons = self.territory_garrisons[target_territory]
         if not all_garrisons:
-            return (False, "Target territory has no units!")
+            return self._ability_refusal('charisma_no_units')
 
         # Collect all units from all garrisons
         all_units = []
@@ -1166,7 +1202,7 @@ class HeroMixin:
                 all_units.append((garrison_owner, unit))
 
         if len(all_units) == 0:
-            return (False, "Target territory has no units!")
+            return self._ability_refusal('charisma_no_units')
 
         # Calculate actual number of units to steal (minimum of max allowed and available)
         units_to_steal = min(max_units_to_steal, len(all_units))
@@ -1274,21 +1310,21 @@ class HeroMixin:
         """
         # Validate territory exists and is enemy-owned
         if target_territory not in self.territory_owners:
-            return (False, "Invalid territory!")
+            return self._ability_refusal('ability_invalid_territory')
 
         territory_owner = self.territory_owners.get(target_territory, -1)
 
         # Check that it's an enemy territory
         if territory_owner == owner:
-            return (False, "Cannot target your own territory!")
+            return self._ability_refusal('ability_own_territory')
 
         # Check that it's not neutral
         if territory_owner == -1:
-            return (False, "Cannot target neutral territory!")
+            return self._ability_refusal('ability_neutral')
 
         # Check if territory is protected by Defiance
         if self.is_territory_protected_by_defiance(target_territory, owner):
-            return (False, "Territory is protected by Defiance!")
+            return self._ability_refusal('ability_defiance')
 
         # Check if territory has a Keep
         has_keep = False
@@ -1301,7 +1337,7 @@ class HeroMixin:
                     break
 
         if not has_keep:
-            return (False, "Target territory must have a Keep!")
+            return self._ability_refusal('regicide_no_keep')
 
         # Check if there's a hero in this Keep
         hero_found = None
@@ -1319,6 +1355,7 @@ class HeroMixin:
             self.hero_ownership[territory_owner].discard(hero_found)
             self.add_message(f"Player {owner + 1}: Regicide killed {hero_found} ({target_territory})!")
             self.add_message(f"Player {territory_owner + 1}: {hero_found} has died!")
+            self._record_hero_death(territory_owner, hero_found, target_territory)
             # Notify campaign mission so it can show a transmission for hero death
             if self.tutorial_mission:
                 self.tutorial_mission.notify_event(
@@ -1326,8 +1363,10 @@ class HeroMixin:
                     territory=target_territory, owner=territory_owner,
                     killer=owner, cause='regicide')
         else:
-            # No hero found - ability is wasted
+            # No hero found - ability is wasted (still a success: the cooldown is spent,
+            # by design). Record a notice so the caster gets the toast explaining the miss.
             self.add_message(f"Player {owner + 1}: Regicide failed in {target_territory} - no hero present!")
+            self.last_action_error = 'regicide_no_hero'
 
         # Player Level: award XP for using active hero ability (targeted)
         self._track_stat(owner, 'xp_earned', 2)

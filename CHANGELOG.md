@@ -2,6 +2,68 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-09-26 - Action error feedback (+ the bugs underneath it)
+
+Every refused player action now either gives the denial sound + a red toast (top-left of
+the map) or is visibly unavailable (red = a rule refuses it, grey = tutorial/mission lock).
+See "Action Failure Feedback Pattern" in `docs/CODE_GUIDE.md`.
+
+**Infrastructure:**
+- New `config/action_error_messages.py`: one editable table of every player-facing error
+  text, each with a "when does the player see this" comment; `format_action_error()` never
+  raises. The old `Game._ACTION_ERROR_MESSAGES` dict is gone.
+- `Game.show_action_error(code | message, **fmt)` is the single sound + toast; the
+  `_show_action_failure_feedback()` wrapper reads the new `last_action_error_args`.
+- **Removed the centre-screen invalid-target popup** (1 s, no sound); hero-ability target
+  errors use the toast and targeting stays on.
+- Toast: multi-line / word-wrapped (long texts were cut off with "..."); an identical repeat
+  refreshes the newest toast instead of stacking five copies.
+
+**New toasts:** army orders (`reinforce_limit`, `not_adjacent`, `unit_not_ready`,
+`target_blocked`, `wrong_phase`), every hero-ability refusal (texts moved out of
+`heroes.py` via `HeroMixin._ability_refusal()`; `(False, text)` shape unchanged), Reinforce
+on a full Keep (was dropped silently), Regicide on a hero-less Keep (still spends the
+cooldown), research while simultaneous battles resolve, build key on an occupied plot, and
+a zero gold transfer (shown inside the Players window — the toast is hidden behind modals).
+**Hero deaths:** "Our Hero, X, has been slain in Y!" (`hero_slain`, no denial sound) via
+`hero_death_events`; multiplayer defenders get it through the Battle Report's new
+`heroes_slain` field.
+
+**Tint fixes (buttons that looked available but were refused):** shared
+`get_building_type_block_reason()` (map icons missed the Square limit and "no Keep in a
+Fortress territory"), shared `MAX_TRAINING_QUEUE` (map icons used `< 5`), techs greyed while
+another is researched (tooltip "Waiting"), tech affordability via `get_effective_tech_cost()`,
+hero buttons red during a Castle upgrade, End Turn grey while armies move / battles are
+pending / a mission blocks it, battle markers grey on every turn that isn't yours (remote
+humans too, re-evaluated per frame), mission-locked tabs / order X / CANCEL ALL / build &
+train buttons grey (`is_action_allowed`, not only the tutorial-only `is_button_locked`),
+"Save failed!" drawn red.
+
+**Bug fixes found underneath:**
+- Stale `last_action_error`: only cleared when read, so AI/network/keyboard leftovers were
+  shown for unrelated failures. Every action method now resets it on entry.
+- A refused re-order destroyed the units' previous orders (auto-cancel ran before
+  validation) — now rolled back.
+- Action Queue X cancelled by the local-player index on the full order list (wrong order);
+  `ORDER_REMOVE` now carries `player_order_index`; CANCEL ALL (local and remote) cancels only
+  that player's orders; stale X buttons cleared when the queue empties.
+- The mission `train_hero` gate swallowed every bottom-panel click (e.g. Demolish Keep).
+- Hidden (mission-disabled) territories were targetable by hero abilities —
+  Aggressive Diplomacy could even take one. `get_territory_at_pos()` now skips them.
+- **Single-player simultaneous mode trained map-icon units twice** (two units, double gold):
+  the executor's "already executed at click" skip only worked in multiplayer. New
+  `sim_state.click_executed_player`.
+- Map icons, bottom panel and keyboard had three different build/train paths: keyboard
+  builds never synced, map-icon training never sent `TRAINING_ORDER`, bottom-panel
+  build/train never queued a sim order. Unified in `_try_start_construction/_training()`;
+  bottom-panel actions are now also blocked while simultaneous battles resolve.
+- `main.py`'s own reinforcement pre-check double-counted the selected units' existing order
+  and refused valid re-orders — removed (the game-state rule decides).
+- Players window: Enter skipped the disabled-row guard the Send button has.
+
+Tests: `tests/test_action_feedback_bugfixes.py`, `test_action_feedback_phase2..7.py`,
+`test_hero_slain_notification.py` (134 tests).
+
 ## 2026-09-25 - Book of Tales: Tale I "Lack of Funds" (+ engine fixes found while building it)
 
 **The tale** (`tale_lack_of_funds.py`, class `TaleLackOfFunds`, `mission_id 'tale_1'`):

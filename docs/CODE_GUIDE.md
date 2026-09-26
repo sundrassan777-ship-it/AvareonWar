@@ -923,6 +923,11 @@ Tests: `test_battle_reports.py`, `test_battle_report_popup.py`,
 
 #### When to modify
 
+**`heroes_slain`** — names of the defender's heroes killed in that battle (their Keep fell),
+taken from `_battle_hero_deaths` (reset per `resolve_battle()`). A defending multiplayer client
+never runs the battle, so the `BATTLE_RESOLVE` receiver turns these into
+`hero_death_events` for the "Our Hero, X, has been slain in Y!" toast.
+
 **Adding a field to a report** — add it in `_make_battle_report()` and keep it
 JSON-safe. The snapshot crosses the network, so **no tuples** (JSON turns them into
 lists), no sets, no game objects. `_send_action_to_remote()` has no `try/except` around
@@ -1655,6 +1660,21 @@ The simultaneous mode is a separate turn system where all players plan their mov
 | `sim_alliance_handler.py` | Allied territory capture, overflow |
 | `sim_ai.py` | AI adapter with simulated delay |
 
+### Clicked Orders Run Twice Unless Skipped
+
+The local human's build / train / research / castle / hero-training clicks are **executed
+immediately** (visual feedback) **and** queued with `sim_state.add_order()` (sync). The
+executor must skip that player's queued copies: `SimPhaseManager._executed_at_click()` checks
+`sim_state.click_executed_player`, which `main.py` sets to the local human in single-player
+**and** multiplayer. Don't use `local_player_index` for this — it is multiplayer-only (and
+also switches off garrison validation for other players' orders); using it applied every
+map-icon training twice in single-player (two units, double gold).
+
+All three build/train inputs (map quick-icons, bottom panel, keyboard shortcuts) go through
+`Game._try_start_construction()` / `_try_start_training()`: local execute + sim order *or*
+sequential-multiplayer `BUILDING_ORDER`/`TRAINING_ORDER` + sim-resolving gate + failure
+toast. Don't add a fourth copy.
+
 ### When to Modify
 
 ✅ **Change timer settings:**
@@ -2259,15 +2279,60 @@ All screens must distinguish Alt+F4 (exit app) from Escape (go back). Callers mu
 
 #### ✅ Action Failure Feedback Pattern
 
-When a player action fails (e.g., not enough gold, command limit), the game shows a floating notification + plays a denial sound. The pattern:
+When the game refuses something the player tried, it plays the denial sound and shows a
+red **toast** (top-left of the map, `chat_notification_effect.add_system_notification()`).
+There is exactly one way to do this — **never add a new popup or ad-hoc message.**
 
-1. **Game state method** (e.g., `start_training()`) sets `self.last_action_error = "gold"` before `return False`
-2. **main.py call site** calls `self._show_action_failure_feedback()` in the `else` branch
-3. The helper reads `last_action_error`, maps it to a user-facing message, plays `play_action_denied()`, and calls `chat_notification_effect.add_system_notification(msg)`
+**Where the text lives:** `config/action_error_messages.py` → `ACTION_ERROR_MESSAGES`
+(`code → text`, `{placeholders}`, `\n` for a line break). Every entry has a comment saying
+when the player sees it — the owner edits these texts directly, so keep that comment
+accurate and never hard-code a player-facing error text anywhere else.
+`format_action_error(code, **fmt)` never raises (unknown code → `DEFAULT_ACTION_ERROR`,
+mismatched placeholder → raw text + log warning).
 
-**Error codes:** `"gold"`, `"command_limit"`, `"army_limit"`, `"queue_full"`, `"hero_limit"`
+**The flow:**
+1. The game-state method records `self.last_action_error = "<code>"` (and optionally
+   `self.last_action_error_args = {...}` for placeholders) before `return False`.
+2. The `main.py` call site calls `self._show_action_failure_feedback()` in its failure branch.
+3. That reads + clears both fields and calls `Game.show_action_error(code, **fmt)`
+   (sound + toast). Call `show_action_error()` directly for UI-only refusals
+   (e.g. `'wrong_phase'`, `'target_blocked'`).
 
-**To add a new failure type:** Set `self.last_action_error = "new_code"` in the game state method, add the code→message mapping in `Game._ACTION_ERROR_MESSAGES`.
+**Rules:**
+- **Every action method resets both fields on entry** (`start_construction/training/
+  research/castle_upgrade/hero_training`, `add_movement_order_for_units`,
+  `activate_hero_ability`). The AI, network handlers and the sim executor call the same
+  methods and never read the code — without the reset their leftovers were shown for a later,
+  unrelated failure. Code-less refusals (tutorial blocks) must stay code-less → silent.
+- **Hero abilities:** `execute_*` refusals go through `HeroMixin._ability_refusal(code, **fmt)`,
+  which records the code and still returns `(False, text)` — the AI reads `result[0]`, the
+  network code logs the text. `main.py` clears the code before a targeted cast.
+- **R1 — tint instead of toast:** if a control is **red** (a rule refuses it), **grey** (tutorial/
+  mission lock) or hidden when the action would be refused, it needs no toast. A button
+  that *looks* available but is refused is a bug: fix its tint. The tint must use the same
+  check as the action (`get_building_type_block_reason()`, `MAX_TRAINING_QUEUE`,
+  `get_effective_tech_cost()`, `tutorial_mission.is_action_allowed()` — campaign missions
+  and the Tale only block through `is_action_allowed`, `is_button_locked` is tutorial-only).
+- **Hidden territories never produce errors:** `get_territory_at_pos()` skips territories a
+  mission hides (`map_data.is_territory_enabled`); map clicks and ability targeting use it.
+- **Stay silent:** right-click without selected units, destination == source, modal/AI-turn
+  input blocks. **Inside a modal** (Players window) the toast is hidden behind the overlay —
+  show the table text in the modal's own feedback line (`PlayersWindow._show_send_error`).
+- **Repeats merge:** an identical consecutive toast refreshes the newest one instead of
+  stacking; long / `\n` texts wrap onto several lines.
+
+**Adding a new failure:** add a `'code': "Text!"` entry (with its "when" comment) to the
+table, set the code in the game-state method (or call `show_action_error` from the UI), and
+make sure the call site calls `_show_action_failure_feedback()`. Test it like
+`tests/test_action_feedback_phase5.py` (code set by the method + one toast at the call site).
+
+**Hero deaths (news, not an error):** `HeroMixin._record_hero_death()` appends
+`(owner, hero, territory)` to `game_state.hero_death_events` (battle capture of the Keep, and
+Regicide — not a self-demolished Keep). `Game._show_hero_death_notifications()` drains it
+every frame and shows the local player's own deaths as `'hero_slain'` **without** the denial
+sound. A defending multiplayer client gets them via the Battle Report's `heroes_slain`.
+
+Tests: `tests/test_action_feedback_*.py`, `tests/test_hero_slain_notification.py`.
 
 #### ⚠️ Adding Files to `general` Category
 Adding/removing files from `assets/sounds/general/` shifts alphabetical indices used by `play_ui_click()`, `play_castle_complete_sound()`, `play_research_complete_sound()`, and `play_battle_sound()`. Update ALL index references in `global_sound.py` and `sound_manager.py`.

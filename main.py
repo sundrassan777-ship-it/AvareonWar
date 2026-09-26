@@ -791,6 +791,9 @@ class Game:
             self.sim_state = SimultaneousGameState(self.game_state)
             self.sim_state.phase_manager = SimPhaseManager(self.sim_state)
             self.sim_ai = SimultaneousAI(self.sim_state, ai_player)
+            # The local human's clicks execute immediately and are also queued as sim
+            # orders; the executor must skip those copies in single-player as well
+            self.sim_state.click_executed_player = self.get_local_player()
             # Set multiplayer flags for proper execution coordination
             # - Clients wait for SIM_ALL_READY from host
             # - Host sends SIM_ALL_READY when all ready via callback
@@ -1217,8 +1220,6 @@ class Game:
         self.ability_targeting_hero = None  # Which hero's ability is being targeted
         self.ability_targeting_ability_index = None  # Which ability index
         self.ability_targeting_ability_name = None  # Name of the ability being targeted
-        self.invalid_target_message = None  # Error message to display
-        self.invalid_target_message_time = 0  # Time when message was set (for auto-dismiss)
 
         # Master Negotiator particle system
         self.master_negotiator_particles = []  # List of particle dicts
@@ -1226,7 +1227,8 @@ class Game:
 
         self.hovered_plot = None  # (territory, plot_index) tuple
         self.action_log_visible = False  # Toggle for action log overlay
-        self.order_cancel_buttons = []  # List of (rect, order_index) for click detection
+        self.order_cancel_buttons = []  # List of (rect, order, player_order_index) for click detection
+        self.order_sidebar_player = 0  # Player whose orders the Action Queue shows (set by ui_renderer)
         self.cancel_all_button = None  # Rect for cancel all button
         self.sidebar_toggle_button = None  # Rect for sidebar expand/collapse button
         self.resolve_battle_button = None  # Rect for battle resolution button
@@ -1357,6 +1359,7 @@ class Game:
         self.save_name_cursor_visible = True  # Blinking cursor state
         self.save_name_cursor_timer = 0  # Cursor blink timer
         self.save_feedback_message = None  # "Saved!" or error message
+        self.save_feedback_is_error = False  # True -> drawn red (a failure used to be green)
         self.save_feedback_timer = 0  # Timer for feedback display
         self.save_dialog_save_button = None  # Rect for Save button in dialog
         self.save_dialog_cancel_button = None  # Rect for Cancel button in dialog
@@ -1862,6 +1865,13 @@ class Game:
                 for report in battle_reports:
                     if isinstance(report, dict):
                         self.queue_battle_report(report)
+                        # Heroes that died in this battle: this client never ran the
+                        # battle, so the report is its only source for them. Queue them
+                        # for the "Our Hero, X, has been slain in Y!" toast (the drain
+                        # shows only the local player's own heroes).
+                        for hero in report.get('heroes_slain') or []:
+                            self.game_state.hero_death_events.append(
+                                (report.get('defender'), hero, report.get('territory')))
 
                 # Universal last-team-standing: check victory on client after territory change
                 # (host already checks via _update_battle_results; client needs this for sync)
@@ -2997,7 +3007,8 @@ class Game:
         Data fields:
             player_index (int): Which player cancelled the order(s).
             cancel_all (bool): If True, cancel all orders for that player.
-            order_index (int): Index into movement_orders to cancel (when cancel_all is False).
+            player_order_index (int): Index among that player's own orders (current format).
+            order_index (int): Legacy — raw index into movement_orders.
         """
         cancel_all = data.get('cancel_all', False)
         order_index = data.get('order_index')
@@ -3059,9 +3070,20 @@ class Game:
                 else:
                     logger.warning(f"[NETWORK] ORDER_REMOVE demolish missing fields")
             elif cancel_all:
-                count = self.game_state.cancel_all_orders()
+                # Only the sender's orders — cancelling every order here wiped the
+                # receiver's own orders too
+                count = self.game_state.cancel_all_orders(player=remote_player_index)
                 logger.info(f"[NETWORK] Player {remote_player_index} cancelled all orders ({count} removed)")
+            elif data.get('player_order_index') is not None:
+                # Per-player index (the sender's Action Queue position) → full-list index
+                full_index = self.game_state.get_full_order_index(
+                    remote_player_index, data.get('player_order_index'))
+                if full_index is not None and self.game_state.cancel_movement_order(full_index):
+                    logger.info(f"[NETWORK] Player {remote_player_index} cancelled their order #{data.get('player_order_index')}")
+                else:
+                    logger.warning(f"[NETWORK] Player {remote_player_index} cancel order failed: invalid player_order_index {data.get('player_order_index')}")
             elif order_index is not None:
+                # Legacy format: raw index into movement_orders
                 if self.game_state.cancel_movement_order(order_index):
                     logger.info(f"[NETWORK] Player {remote_player_index} cancelled order at index {order_index}")
                 else:
@@ -3843,6 +3865,11 @@ class Game:
         bboxes = self.map_renderer.territory_bounding_boxes
         # Check from end to start to handle overlaps better
         for territory in reversed(list(self.scaled_polygons.keys())):
+            # Territories hidden by a campaign mission (enabled-territories filter) are not
+            # drawn, so they must not be hoverable/clickable/targetable either — and can
+            # therefore never produce an action error. Mirrors map_renderer's draw filter.
+            if not map_data.is_territory_enabled(territory):
+                continue
             # FPS OPT: AABB pre-check (4 comparisons) before O(n) ray-casting
             bbox = bboxes.get(territory)
             if bbox:
@@ -5458,35 +5485,155 @@ class Game:
         return (self._is_tutorial_active()
                 and not self.tutorial_mission.is_action_allowed(action))
 
-    # Error code → user-facing floating notification message
-    _ACTION_ERROR_MESSAGES = {
-        'gold': "Not enough resources.",
-        'command_limit': "Cannot train more units \u2014 Command Limit reached.",
-        'army_limit': "Army limit reached in this territory.",
-        'queue_full': "Training queue is full.",
-        'hero_limit': "Hero limit reached.",
-    }
-
-    def _show_action_failure_feedback(self):
-        """Show visual + audio feedback when a player action fails.
-
-        Reads game_state.last_action_error (set by start_training, start_construction, etc.),
-        plays a denial sound, and shows a floating notification in the top-left corner.
+    def show_action_error(self, code=None, message=None, **fmt):
         """
-        error = self.game_state.last_action_error
-        if error is None:
-            return
-        self.game_state.last_action_error = None  # Clear after reading
+        The single "action refused" feedback: denial sound + red notification (toast)
+        in the top-left corner of the map.
 
-        msg = self._ACTION_ERROR_MESSAGES.get(error, "Action failed.")
+        Args:
+            code: key in config/action_error_messages.ACTION_ERROR_MESSAGES — all
+                player-facing texts live there so they can be edited in one place
+            message: literal text instead of a code (only for texts that don't come
+                from the table yet)
+            **fmt: values for the message's {placeholders}
+        """
+        from config.action_error_messages import format_action_error
+        msg = message if message is not None else format_action_error(code, **fmt)
 
         # Audio feedback (non-stacking)
         from global_sound import play_action_denied
         play_action_denied()
 
-        # Visual feedback — floating notification in chat area
+        # Visual feedback — floating notification in the chat notification area
         if self.chat_notification_effect:
             self.chat_notification_effect.add_system_notification(msg)
+
+    def _show_hero_death_notifications(self):
+        """
+        Drain game_state.hero_death_events and tell the local player about their own
+        heroes dying: "Our Hero, X, has been slain in Y!" (text: 'hero_slain' in
+        config/action_error_messages.py).
+
+        Same red toast as action errors but WITHOUT the denial sound — it's news, not
+        a refused action. Other players' hero deaths are dropped (the Action Log still
+        records every death).
+        """
+        events = getattr(self.game_state, 'hero_death_events', None)
+        if not events:
+            return
+        # Swap the list out first so a death recorded while we iterate isn't lost
+        self.game_state.hero_death_events = []
+
+        local_player = self.get_local_player()
+        from config.action_error_messages import format_action_error
+        for event in events:
+            # Format: (owner, hero_type, territory) — index access survives format changes
+            if event[0] != local_player or not self.chat_notification_effect:
+                continue
+            self.chat_notification_effect.add_system_notification(
+                format_action_error('hero_slain', hero=event[1], territory=event[2]))
+
+    def _show_action_failure_feedback(self):
+        """Show the action error recorded by the last game_state action method.
+
+        Reads game_state.last_action_error (+ last_action_error_args for the
+        message's {placeholders}), set by start_training, start_construction, etc.
+        Does nothing when no code was recorded (a refusal without a player-facing
+        message, e.g. a tutorial block whose button is already greyed).
+        """
+        error = self.game_state.last_action_error
+        if error is None:
+            return
+        fmt = getattr(self.game_state, 'last_action_error_args', None) or {}
+        # Clear after reading
+        self.game_state.last_action_error = None
+        self.game_state.last_action_error_args = None
+
+        self.show_action_error(error, **fmt)
+
+    def _is_sim_resolving(self):
+        """True while simultaneous mode resolves battles/alliance markers (no new actions)."""
+        return self.sim_state is not None and self.sim_state.sim_phase == 'resolving'
+
+    def _try_start_construction(self, territory, plot_index, building_name):
+        """
+        Shared build path for the map quick-icons, the bottom-panel buttons and the
+        keyboard shortcuts. Each used to carry its own copy with different sync rules
+        (the bottom panel never queued a simultaneous-mode order, the keyboard never
+        synced at all), so the same action behaved differently per input.
+
+        Runs the build locally, then syncs it: simultaneous mode queues a sim order,
+        sequential multiplayer sends BUILDING_ORDER. On refusal it shows the failure
+        feedback. UI deselection stays with the caller.
+
+        Returns:
+            bool: True if construction started
+        """
+        # No new actions while simultaneous mode resolves battles (the map icons already
+        # enforced this; the bottom panel and keyboard did not)
+        if self._is_sim_resolving():
+            return False
+
+        if not self.game_state.start_construction(territory, plot_index, building_name):
+            self._show_action_failure_feedback()
+            return False
+
+        if self.sim_state is not None:
+            # Executed locally for immediate feedback; the executor skips it for the
+            # clicking player (sim_state.click_executed_player) but syncs it to others
+            self.sim_state.add_order(self.get_local_player(), {
+                'type': 'build',
+                'player_id': self.game_state.current_player,
+                'territory': territory,
+                'plot_index': plot_index,
+                'building_type': building_name
+            })
+            logger.debug(f"[SIM] Queued build order: {building_name} in {territory}")
+        elif self.multiplayer_mode:
+            self._send_action_to_remote(MessageType.BUILDING_ORDER, {
+                'territory': territory,
+                'plot_index': plot_index,
+                'building_type': building_name,
+                'player_index': self.local_player_index  # 4-player support
+            })
+        return True
+
+    def _try_start_training(self, territory, barracks_plot_index, unit_type):
+        """
+        Shared unit-training path for the map quick-icons, the bottom-panel buttons and
+        the keyboard shortcuts (same reasons as _try_start_construction: the map icon
+        never sent TRAINING_ORDER in sequential multiplayer, the bottom panel never queued
+        a simultaneous-mode order, and the keyboard did neither).
+
+        Returns:
+            bool: True if training started
+        """
+        if self._is_sim_resolving():
+            return False
+
+        if not self.game_state.start_training(territory, barracks_plot_index, unit_type):
+            self._show_action_failure_feedback()
+            return False
+
+        if self.sim_state is not None:
+            self.sim_state.add_order(self.get_local_player(), {
+                'type': 'train',
+                'player_id': self.game_state.current_player,
+                'territory': territory,
+                'barracks_plot': barracks_plot_index,
+                'unit_type': unit_type
+            })
+            logger.debug(f"[SIM] Queued train order: {unit_type} in {territory}")
+        elif self.multiplayer_mode:
+            # Sync fix: remote players must see the training queue in sequential mode
+            self._send_action_to_remote(MessageType.TRAINING_ORDER, {
+                'territory': territory,
+                'barracks_plot': barracks_plot_index,
+                'unit_type': unit_type,
+                'player_index': self.game_state.current_player
+            })
+        self.clear_button_tooltip()
+        return True
 
     def _get_territory_preview(self, territory, width, height):
         """Get cached territory preview image, loading from disk on first access.
@@ -5755,61 +5902,6 @@ class Game:
             return False
         return True
 
-    def draw_invalid_target_popup(self):
-        """
-        Draw a popup message in the center of the screen showing invalid target error.
-        Auto-dismisses after 1 second.
-        """
-        # Check if message should be dismissed
-        current_time = pygame.time.get_ticks()
-        if current_time - self.invalid_target_message_time > 1000:  # 1 second
-            self.invalid_target_message = None
-            return
-
-        # Calculate popup position (center of map area)
-        map_center_x = WINDOW_WIDTH // 2
-        map_center_y = (TOP_PANEL_HEIGHT + BOTTOM_UI_Y) // 2
-
-        # Create popup box
-        padding = 30
-        line_height = 25
-
-        # Split message into lines
-        message_lines = self.invalid_target_message.split('\n')
-
-        # Calculate box size
-        max_text_width = 0
-        for line in message_lines:
-            text_surface = self._get_cached_text(line, self.font, WHITE)
-            max_text_width = max(max_text_width, text_surface.get_width())
-
-        box_width = max_text_width + padding * 2
-        box_height = len(message_lines) * line_height + padding * 2
-
-        box_rect = pygame.Rect(
-            map_center_x - box_width // 2,
-            map_center_y - box_height // 2,
-            box_width,
-            box_height
-        )
-
-        # Draw semi-transparent background
-        bg_surface = pygame.Surface((box_width, box_height), pygame.SRCALPHA)
-        pygame.draw.rect(bg_surface, (40, 40, 40, 230), bg_surface.get_rect(), border_radius=10)
-        self.screen.blit(bg_surface, box_rect)
-
-        # Draw border
-        pygame.draw.rect(self.screen, (200, 50, 50), box_rect, 3, border_radius=10)
-
-        # Draw text lines
-        text_y = box_rect.y + padding
-        for line in message_lines:
-            text_surface = self._get_cached_text(line, self.font, (255, 100, 100))
-            text_rect = text_surface.get_rect(center=(map_center_x, text_y + line_height // 2))
-            self.screen.blit(text_surface, text_rect)
-            text_y += line_height
-
-
     # ========================================
     # PHASE 4: EXTRACTED PLOT RENDERING METHODS
     # ========================================
@@ -5923,12 +6015,15 @@ class Game:
             # Convert screen position to world position
             world_pos = self.screen_to_world(pos)
 
-            # Find which territory was clicked
-            clicked_territory = None
-            for territory, polygon in self.scaled_polygons.items():
-                if self._point_in_polygon(world_pos[0], world_pos[1], polygon):
-                    clicked_territory = territory
-                    break
+            # Find which territory was clicked. Uses the shared lookup (skips territories a
+            # mission hides) plus the same non-interactive filter as left/right-click —
+            # the old private polygon loop let abilities hit hidden territories, even
+            # succeeding (Aggressive Diplomacy on a hidden neutral territory).
+            clicked_territory = self.get_territory_at_pos(world_pos)
+            if (clicked_territory and self.tutorial_mission
+                    and self.tutorial_mission.active
+                    and not self.tutorial_mission.is_territory_interactive(clicked_territory)):
+                clicked_territory = None
 
             if clicked_territory:
                 # Dispatch table: maps ability names to their execute functions on GameState
@@ -5953,10 +6048,13 @@ class Game:
                             and self.tutorial_mission.active
                             and hasattr(self.tutorial_mission, 'is_attack_target_blocked')
                             and self.tutorial_mission.is_attack_target_blocked(clicked_territory)):
-                        self.invalid_target_message = "Cannot take over that territory yet."
-                        self.invalid_target_message_time = pygame.time.get_ticks()
+                        self.show_action_error('diplomacy_blocked')
                         return
 
+                    # execute_* record their refusal code (config/action_error_messages.py);
+                    # clear any stale code first (the AI/network call the same methods)
+                    self.game_state.last_action_error = None
+                    self.game_state.last_action_error_args = None
                     success, error_msg = execute_fn(clicked_territory, current_player)
 
                     if success:
@@ -6025,10 +6123,18 @@ class Game:
                         self.ability_targeting_hero = None
                         self.ability_targeting_ability_index = None
                         self.ability_targeting_ability_name = None
+
+                        # A cast that went through but missed (Regicide with no hero in
+                        # the Keep: cooldown spent by design) records a notice — show it
+                        self._show_action_failure_feedback()
                     else:
-                        # Invalid target - show error message
-                        self.invalid_target_message = error_msg
-                        self.invalid_target_message_time = pygame.time.get_ticks()
+                        # Invalid target - denial sound + toast (the centre-screen popup
+                        # was removed: every action error now uses the same toast).
+                        # Targeting stays on so the player can pick another territory.
+                        if self.game_state.last_action_error:
+                            self._show_action_failure_feedback()
+                        else:
+                            self.show_action_error(message=error_msg)
 
             return  # Don't process normal map clicks while targeting
 
@@ -6084,43 +6190,11 @@ class Game:
                             # Clicked on building icon - trigger flash and start construction
                             self.trigger_click_flash('map_building', building_name)
 
-                            # SIMULTANEOUS MODE: Queue build order instead of executing immediately
-                            # Execute locally for visual feedback, queue for sync
-                            if self.sim_state is not None:
-                                if self.game_state.start_construction(territory, plot_index, building_name):
-                                    # Queue order for sync - will NOT be re-executed locally
-                                    build_order = {
-                                        'type': 'build',
-                                        'player_id': self.game_state.current_player,
-                                        'territory': territory,
-                                        'plot_index': plot_index,
-                                        'building_type': building_name
-                                    }
-                                    local_player = self.get_local_player()
-                                    self.sim_state.add_order(local_player, build_order)
-                                    logger.debug(f"[SIM] Queued build order: {building_name} in {territory}")
-                                    self.selected_plot = None
-                                    self.selected_territory_info = None
-                                    self.clear_button_tooltip()
-                                else:
-                                    self._show_action_failure_feedback()
-                            else:
-                                # SEQUENTIAL MODE: Execute immediately and sync
-                                if self.game_state.start_construction(territory, plot_index, building_name):
-                                    # MULTIPLAYER: Send building start notification
-                                    if self.multiplayer_mode:
-
-                                        self._send_action_to_remote(MessageType.BUILDING_ORDER, {
-                                            'territory': territory,
-                                            'plot_index': plot_index,
-                                            'building_type': building_name,
-                                            'player_index': self.local_player_index  # 4-player support
-                                        })
-                                    self.selected_plot = None
-                                    self.selected_territory_info = None
-                                    self.clear_button_tooltip()
-                                else:
-                                    self._show_action_failure_feedback()
+                            # Shared build path (local execute + sim/network sync + feedback)
+                            if self._try_start_construction(territory, plot_index, building_name):
+                                self.selected_plot = None
+                                self.selected_territory_info = None
+                                self.clear_button_tooltip()
                             return
         
         # PRIORITY 2: Check if clicking on a quick-access training icon (around Barracks)
@@ -6158,34 +6232,8 @@ class Game:
                         # Clicked on training icon - trigger flash and try to train
                         self.trigger_click_flash('map_training', unit_type)
 
-                        # SIMULTANEOUS MODE: Queue train order instead of executing immediately
-                        # Orders are synced via SIM_PLAYER_READY and executed during execution phase
-                        # We execute locally too for visual feedback (barracks shows training)
-                        if self.sim_state is not None:
-                            # Check if training would succeed, then execute AND queue
-                            if self.game_state.start_training(territory, barracks_plot_index, unit_type):
-                                # Queue order for sync - will NOT be re-executed locally
-                                # (sim_phase_manager skips train orders for local player since already executed)
-                                train_order = {
-                                    'type': 'train',
-                                    'player_id': self.game_state.current_player,
-                                    'territory': territory,
-                                    'barracks_plot': barracks_plot_index,
-                                    'unit_type': unit_type
-                                }
-                                local_player = self.get_local_player()
-                                self.sim_state.add_order(local_player, train_order)
-                                logger.debug(f"[SIM] Queued train order: {unit_type} in {territory}")
-                                self.clear_button_tooltip()
-                            else:
-                                self._show_action_failure_feedback()
-                        else:
-                            # SEQUENTIAL MODE: Execute immediately
-                            if self.game_state.start_training(territory, barracks_plot_index, unit_type):
-                                # Training started successfully
-                                self.clear_button_tooltip()
-                            else:
-                                self._show_action_failure_feedback()
+                        # Shared training path (local execute + sim/network sync + feedback)
+                        self._try_start_training(territory, barracks_plot_index, unit_type)
                         # Stay on Barracks (don't deselect)
                         return
 
@@ -6338,9 +6386,9 @@ class Game:
     
     def handle_right_click(self, pos):
         """Handle right-click for creating movement orders and canceling research (Phase 2D: camera-aware)"""
-        # Block movement orders during simultaneous mode resolution phase
-        if self.sim_state is not None and self.sim_state.sim_phase == 'resolving':
-            return
+        # (The simultaneous-mode 'resolving' block is further down, once we know the
+        # player actually tried to send units — only then does it earn an error toast.
+        # The sidebar's research right-click has its own resolving check.)
 
         # Block right-clicks on top panel
         if pos[1] < TOP_PANEL_HEIGHT:
@@ -6380,6 +6428,17 @@ class Game:
         if not territory:
             return
 
+        # Is the player trying to send armies? Only then do the refusals below earn an
+        # error toast — a plain right-click on the map stays silent.
+        sending_units = bool((self.show_army_composition and self.selected_army_units)
+                             or self.game_state.selected_army)
+
+        # Block movement orders during simultaneous mode resolution phase
+        if self._is_sim_resolving():
+            if sending_units:
+                self.show_action_error('wrong_phase')
+            return
+
         # Mission hook: block army orders to territories restricted by campaign mission
         # (e.g., Mission 6 blocks Red from attacking certain territories until quests unlock them)
         if (territory and self.tutorial_mission
@@ -6387,34 +6446,23 @@ class Game:
                 and hasattr(self.tutorial_mission, 'is_attack_target_blocked')
                 and self.tutorial_mission.is_attack_target_blocked(territory)):
             # Only block if player is trying to send armies (has units selected)
-            if ((self.show_army_composition and self.selected_army_units)
-                    or self.game_state.selected_army):
+            if sending_units:
                 self.game_state.add_message(f"Cannot target {territory} yet!")
+                self.show_action_error('target_blocked', territory=territory)
                 return
 
         # CASE 1: Composition UI is open with selected units
         if self.show_army_composition and self.army_composition_territory and self.selected_army_units:
             from_territory = self.army_composition_territory
 
-            # Can't move to same territory
+            # Can't move to same territory (silent: not a meaningful order attempt)
             if from_territory == territory:
                 return
 
-            # Check if this would exceed army limit (for reinforcements or allied reinforcements)
-            owner_from = self.game_state.territory_owners.get(from_territory, -1)
-            owner_to = self.game_state.territory_owners.get(territory, -1)
-
-            # Check for reinforcement (same owner) OR allied reinforcement
-            is_friendly_move = (owner_from == owner_to or
-                              (owner_to >= 0 and self.game_state.are_allies(self.game_state.current_player, owner_to)))
-
-            if is_friendly_move:
-                # This is a reinforcement - check projected capacity (accounts for outgoing orders)
-                projected, _ = self.game_state._get_effective_capacity(territory)
-                reinforcing_count = len(self.selected_army_units)
-                if projected + reinforcing_count > self.game_state.MAX_ARMIES_PER_TERRITORY:
-                    self.game_state.add_message(f"Cannot reinforce {territory}: would exceed army limit of {self.game_state.MAX_ARMIES_PER_TERRITORY}!")
-                    return
+            # The army-limit check for reinforcements happens inside
+            # add_movement_order_for_units(). A separate pre-check here counted the
+            # selected units' existing order to the same destination twice (they are
+            # auto-cancelled only inside that method) and could refuse a valid order.
 
             # Create movement order for selected units
             # Pass the garrison player (for multi-garrison support)
@@ -6423,6 +6471,10 @@ class Game:
                 # Don't send to remote - they'll see the movement when orders execute
                 # Clear selection after issuing order
                 self.selected_army_units = []
+            else:
+                # Refused (army limit, not reachable, units already moved): sound + toast.
+                # Refusals without a player-facing code (tutorial block) stay silent.
+                self._show_action_failure_feedback()
             return
         
         # CASE 2: Legacy - army selected (old system compatibility)
@@ -6948,11 +7000,17 @@ class Game:
         elif active_tab == 'chat':
             self.ui_renderer._draw_chat_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
 
-        # Cancel All button at bottom (only show in Action Queue tab)
-        if active_tab == 'action_queue' and len(self.game_state.movement_orders) > 0:
+        # Cancel All button at bottom (only show in Action Queue tab, and only when the
+        # sidebar's player has orders — it cancels only that player's orders)
+        if active_tab == 'action_queue' and any(
+                order.player == self.order_sidebar_player for order in self.game_state.movement_orders):
             cancel_all_y = sidebar_y + sidebar_height - 50
             cancel_all_rect = pygame.Rect(sidebar_x + 20, cancel_all_y, sidebar_width - 40, 35)
-            pygame.draw.rect(self.screen, (150, 50, 50), cancel_all_rect, border_radius=5)
+            # Grey when the tutorial/mission blocks cancelling (it used to look clickable)
+            cancel_all_locked = bool(self.tutorial_mission and self.tutorial_mission.active
+                                     and not self.tutorial_mission.is_action_allowed('cancel_all_orders'))
+            cancel_all_color = (110, 110, 110) if cancel_all_locked else (150, 50, 50)
+            pygame.draw.rect(self.screen, cancel_all_color, cancel_all_rect, border_radius=5)
             cancel_all_text = self._get_cached_text("CANCEL ALL", self.font, WHITE)
             cancel_all_text_rect = cancel_all_text.get_rect(center=cancel_all_rect.center)
             self.screen.blit(cancel_all_text, cancel_all_text_rect)
@@ -7504,8 +7562,6 @@ class Game:
         self.ability_targeting_hero = None
         self.ability_targeting_ability_index = None
         self.ability_targeting_ability_name = None
-        self.invalid_target_message = None
-        self.invalid_target_message_time = 0
 
     def clear_ui_selections(self):
         """Clear all UI selections (called when turn changes)"""
@@ -8245,8 +8301,19 @@ class Game:
             if self._is_tutorial_active():
                 if self.tutorial_mission.should_highlight_button('end_turn'):
                     end_turn_color = (50, 255, 50)  # Bright green highlight
-                elif self.tutorial_mission.is_button_locked('end_turn'):
-                    end_turn_color = (120, 120, 120)  # Grey locked
+                elif (self.tutorial_mission.is_button_locked('end_turn')
+                        or not self.tutorial_mission.is_action_allowed('end_turn')):
+                    # Grey locked. is_action_allowed() is the check the click uses; campaign
+                    # missions and the Tale only block through it (intro, pause, endgame),
+                    # so is_button_locked() alone left the button looking clickable.
+                    end_turn_color = (120, 120, 120)
+
+            # SEQUENTIAL MODE: next_player() refuses while armies are still moving or
+            # battles are unresolved — grey the button instead of letting it look clickable
+            if self.sim_state is None and (
+                    self.game_state.turn_phase == 'execution'
+                    or (self.game_state.turn_phase == 'battles' and self.game_state.pending_battles)):
+                end_turn_color = (120, 120, 120)
 
             # SIMULTANEOUS MODE: Grey out End Turn button when player is ready or during resolution
             sim_player_ready = False
@@ -8810,35 +8877,10 @@ class Game:
                 can_afford = current_gold >= cost
                 
                 # Check one-per-territory restrictions (Keep, Training Grounds)
-                can_build_this_building = True
-                if building_name == 'Keep':
-                    # Check if already has a Keep (completed or under construction)
-                    if self.game_state.has_fortress(territory):
-                        can_build_this_building = False
-                    # Check if Keep is under construction
-                    if territory in self.game_state.under_construction:
-                        for plot_idx, entry in self.game_state.under_construction[territory].items():
-                            if entry[0] == 'Keep':  # entry is (building_type, turns_remaining, cost)
-                                can_build_this_building = False
-                                break
-                elif building_name == 'Training Grounds':
-                    # Check if already has Training Grounds (completed or under construction)
-                    if self.game_state.has_training_grounds(territory):
-                        can_build_this_building = False
-                    if territory in self.game_state.under_construction:
-                        for plot_idx, entry in self.game_state.under_construction[territory].items():
-                            if entry[0] == 'Training Grounds':
-                                can_build_this_building = False
-                                break
-                elif building_name == 'Square':
-                    # Check if already has Square (completed or under construction)
-                    if self.game_state.has_square(territory):
-                        can_build_this_building = False
-                    if territory in self.game_state.under_construction:
-                        for plot_idx, entry in self.game_state.under_construction[territory].items():
-                            if entry[0] == 'Square':
-                                can_build_this_building = False
-                                break
+                # Per-type rules — the same check start_construction() refuses with
+                # (also covers "no Keep in a Fortress territory", which this copy missed)
+                can_build_this_building = self.game_state.get_building_type_block_reason(
+                    territory, building_name) is None
 
                 # Button color - consider affordability, building limit, AND one-per-territory restriction
                 if can_build and can_afford and can_build_this_building:
@@ -8847,9 +8889,16 @@ class Game:
                     button_color = (200, 100, 100)  # Red
 
                 # Tutorial hook: override button color for locking/highlighting
+                building_locked = False
                 if self._is_tutorial_active():
                     btn_id = f'building_{building_name}'
-                    if self.tutorial_mission.is_button_locked(btn_id):
+                    # is_action_allowed('build') is what start_construction() checks (and what
+                    # the map icons use). Campaign missions/Tale only block through it (intro,
+                    # pause, endgame), so is_button_locked() alone left these looking normal.
+                    if (self.tutorial_mission.is_button_locked(btn_id)
+                            or not self.tutorial_mission.is_action_allowed(
+                                'build', building_type=building_name, territory=territory)):
+                        building_locked = True
                         button_color = (120, 120, 120)  # Grey (locked)
                         can_build_this_building = False  # Prevent click
                     elif self.tutorial_mission.should_highlight_button(btn_id):
@@ -8906,9 +8955,18 @@ class Game:
                             self._cached_building_overlays[icon_size] = {'red': red, 'bright': bright, 'light': light}
                         overlays = self._cached_building_overlays[icon_size]
 
-                        # Apply red tint overlay if building is unavailable
+                        # Apply tint overlay if building is unavailable: grey when locked by
+                        # the tutorial/mission, red when a game rule refuses it (the icon used
+                        # to turn red for both, so a mission lock looked like "can't afford")
                         if not (can_build and can_afford and can_build_this_building):
-                            display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)  # Match training UI
+                            if building_locked:
+                                if 'grey' not in overlays:
+                                    grey = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+                                    grey.fill((110, 110, 110, 255))
+                                    overlays['grey'] = grey
+                                display_icon.blit(overlays['grey'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                            else:
+                                display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)  # Match training UI
 
                         # Apply hover/click brightness effects
                         if is_clicking:
@@ -9347,7 +9405,7 @@ class Game:
         at_command_limit = self.game_state.get_player_army_count(self.game_state.current_player) >= self.game_state.player_command_limit[self.game_state.current_player]
 
         # Reuse queue_count from above
-        can_queue = queue_count < 4
+        can_queue = queue_count < self.game_state.MAX_TRAINING_QUEUE  # same limit as start_training()
         
         # Store training buttons for click detection
         self.train_buttons = {}
@@ -9366,9 +9424,14 @@ class Game:
             is_available = can_afford and can_queue and not at_army_limit and not at_command_limit
 
             # Tutorial hook: override training button availability
+            training_locked = False
             if self._is_tutorial_active():
                 btn_id = f'training_{unit_type}'
-                if self.tutorial_mission.is_button_locked(btn_id):
+                # Same check start_training() and the map icons use (see building buttons)
+                if (self.tutorial_mission.is_button_locked(btn_id)
+                        or not self.tutorial_mission.is_action_allowed(
+                            'train', unit_type=unit_type, territory=territory)):
+                    training_locked = True
                     is_available = False
 
             # Create button rect
@@ -9393,16 +9456,18 @@ class Game:
                 if not is_available or is_clicking or is_hovering:
                     display_icon = cached_icon.copy()  # Only copy when we need to apply effects
 
-                    # Apply red tint overlay if unavailable (cached by icon_size)
+                    # Apply tint overlay if unavailable (cached by icon_size): grey when
+                    # locked by the tutorial/mission, red when a game rule refuses it
                     if not is_available:
                         if icon_size not in self._cached_training_overlays:
                             self._cached_training_overlays[icon_size] = {}
                         overlays = self._cached_training_overlays[icon_size]
-                        if 'red' not in overlays:
+                        tint_key = 'grey' if training_locked else 'red'
+                        if tint_key not in overlays:
                             s = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                            s.fill((255, 100, 100, 128))
-                            overlays['red'] = s
-                        display_icon.blit(overlays['red'], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                            s.fill((110, 110, 110, 255) if training_locked else (255, 100, 100, 128))
+                            overlays[tint_key] = s
+                        display_icon.blit(overlays[tint_key], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
                     # Apply hover/click brightness effects (cached by icon_size)
                     if is_clicking:
@@ -9436,7 +9501,11 @@ class Game:
                     self.screen.blit(cached_border, border_rect)
             else:
                 # Fallback to letter button if icon not available
-                button_color = unit_colors[unit_type] if is_available else (200, 100, 100)
+                # Grey when locked by the tutorial/mission, red when a game rule refuses it
+                if is_available:
+                    button_color = unit_colors[unit_type]
+                else:
+                    button_color = (120, 120, 120) if training_locked else (200, 100, 100)
                 self.draw_letter_button(train_button_rect, unit_letter, button_color, letter_color=WHITE,
                                        button_type='training', button_id=unit_type)
 
@@ -9675,6 +9744,16 @@ class Game:
             self.game_state.tutorial_mission.should_hide_hero_training()
         )
 
+        # Keep is being upgraded to a Castle: start_hero_training() refuses, so the
+        # buttons must show it (they used to look available)
+        keep_upgrading = self.game_state.is_upgrading_to_castle(territory, keep_plot_index)
+
+        # A mission that forbids hero training but still shows the buttons (the base
+        # tutorial): grey them out, like other tutorial-locked controls
+        hero_training_locked = bool(
+            self.tutorial_mission and self.tutorial_mission.active
+            and not self.tutorial_mission.is_action_allowed('train_hero'))
+
         # Draw hero buttons (6 on first line, 2 on second line)
         # Filter out campaign-only heroes (trainable: False) from the training menu
         hero_types_list = [h for h in self.game_state.HERO_TYPES.keys()
@@ -9696,7 +9775,9 @@ class Game:
             already_owned = hero_type in self.game_state.hero_ownership[self.game_state.current_player]
 
             # Determine button state
-            if is_training or already_owned or keep_has_hero or hero_limit_reached:
+            if hero_training_locked:
+                button_color = (120, 120, 120)  # Locked by tutorial/mission (grey)
+            elif is_training or already_owned or keep_has_hero or hero_limit_reached or keep_upgrading:
                 button_color = (200, 100, 100)  # Disabled (red)
             elif can_afford:
                 button_color = hero_color_purple  # Enabled (purple)
@@ -9724,12 +9805,15 @@ class Game:
                               self.clicked_element[1] == hero_type)
 
                 # M17: Use cached scaling + icon overlay helpers instead of manual per-frame scale+tint
-                is_disabled = (is_training or already_owned or keep_has_hero or hero_limit_reached or not can_afford)
+                is_disabled = (is_training or already_owned or keep_has_hero or hero_limit_reached
+                               or not can_afford or keep_upgrading or hero_training_locked)
                 base_icon = self._get_cached_scaled_surface(
                     self.hero_images[hero_type], f'hero_{hero_type}', button_width, button_height)
+                # Grey when locked by the tutorial/mission, red when a game rule refuses it
                 hero_image_scaled = self._apply_icon_overlay(
                     base_icon, is_clicking, is_hovering,
-                    enabled=not is_disabled, disabled_tint=(200, 0, 0, 120))
+                    enabled=not is_disabled,
+                    disabled_tint=(110, 110, 110, 150) if hero_training_locked else (200, 0, 0, 120))
 
                 # Draw the image
                 self.screen.blit(hero_image_scaled, (button_x, button_y))
@@ -11058,6 +11142,9 @@ class Game:
                 if self.chat_notification_effect:
                     self.chat_notification_effect.update(delta_time)
 
+                # Announce the local player's hero deaths (battles, Regicide)
+                self._show_hero_death_notifications()
+
                 # Check and trigger turn announcement effect if needed
                 if self.game_state.turn_announcement_active and self.turn_announcement_effect is None:
                     # Trigger new turn announcement
@@ -12000,10 +12087,6 @@ class Game:
             if self.show_disconnect_dialog:
                 self.draw_disconnect_dialog()
 
-            # Draw invalid target message popup
-            if self.invalid_target_message:
-                self.draw_invalid_target_popup()
-
             # Update and render tooltips (Phase 2C: extracted to method)
             # MUST happen after all drawing, before display.flip()
             self.update_frame_tooltips()
@@ -12203,10 +12286,12 @@ class Game:
         self.save_dialog_active = False
         if result:
             self.save_feedback_message = "Saved!"
+            self.save_feedback_is_error = False
             self.save_feedback_timer = 2000  # Show for 2 seconds
             self.game_menu_visible = True  # Return to game menu showing feedback
         else:
             self.save_feedback_message = "Save failed!"
+            self.save_feedback_is_error = True
             self.save_feedback_timer = 2000
             self.game_menu_visible = True
 
@@ -13325,19 +13410,8 @@ class Game:
                 if button_rect.collidepoint(pos):
                     self.trigger_click_flash('training', unit_type)
                     territory, barracks_plot_index = self.selected_barracks
-                    if self.game_state.start_training(territory, barracks_plot_index, unit_type):
-                        # Sync fix: send training order to remote in sequential mode
-                        # so they see the training queue and can track progress
-                        if self.multiplayer_mode and self.sim_state is None:
-                            self._send_action_to_remote(MessageType.TRAINING_ORDER, {
-                                'territory': territory,
-                                'barracks_plot': barracks_plot_index,
-                                'unit_type': unit_type,
-                                'player_index': self.game_state.current_player
-                            })
-                        self.clear_button_tooltip()
-                    else:
-                        self._show_action_failure_feedback()
+                    # Shared training path (local execute + sim/network sync + feedback)
+                    self._try_start_training(territory, barracks_plot_index, unit_type)
                     return True
 
         # Queue cancel buttons (only when Barracks is actually selected)
@@ -13390,6 +13464,10 @@ class Game:
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('demolish')):
                     return True  # Silently block
+                # No new actions while simultaneous mode resolves battles (the map
+                # quick-icons already enforced this; the bottom panel did not)
+                if self._is_sim_resolving():
+                    return True
                 self.trigger_click_flash('demolish', 'barracks')
                 territory = self.demolish_barracks_territory
                 barracks_plot_index = self.demolish_barracks_plot_index
@@ -13425,6 +13503,10 @@ class Game:
         # Castle upgrade button (only when Keep is actually selected)
         if self.selected_keep and self.castle_upgrade_button:
             if self.castle_upgrade_button.collidepoint(pos):
+                # No new actions while simultaneous mode resolves battles (the map
+                # quick-icons already enforced this; the bottom panel did not)
+                if self._is_sim_resolving():
+                    return True
                 self.trigger_click_flash('upgrade_castle', None)
                 territory, keep_plot_index = self.selected_keep
 
@@ -13525,13 +13607,19 @@ class Game:
 
         # Hero training buttons (only when Keep is actually selected)
         if self.selected_keep and self.hero_train_buttons:
-            # Campaign mission hook: block hero training when mission disallows it
-            if (self.tutorial_mission
-                    and self.tutorial_mission.active
-                    and not self.tutorial_mission.is_action_allowed('train_hero')):
-                return True  # Silently block
             for hero_type, button_rect in self.hero_train_buttons.items():
                 if button_rect.collidepoint(pos):
+                    # Campaign mission hook: block hero training when mission disallows it.
+                    # Checked only once a hero button is actually hit — checking it before
+                    # the hit-test swallowed every other bottom-panel click (e.g. Demolish Keep).
+                    if (self.tutorial_mission
+                            and self.tutorial_mission.active
+                            and not self.tutorial_mission.is_action_allowed('train_hero')):
+                        return True  # Silently block
+                    # No new actions while simultaneous mode resolves battles (the map
+                    # quick-icons already enforced this; the bottom panel did not)
+                    if self._is_sim_resolving():
+                        return True
                     self.trigger_click_flash('hero_training', hero_type)
                     territory, keep_plot_index = self.selected_keep
 
@@ -13577,6 +13665,10 @@ class Game:
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('demolish')):
                     return True  # Silently block
+                # No new actions while simultaneous mode resolves battles (the map
+                # quick-icons already enforced this; the bottom panel did not)
+                if self._is_sim_resolving():
+                    return True
                 self.trigger_click_flash('demolish', 'keep')
                 territory = self.demolish_keep_territory
                 keep_plot_index = self.demolish_keep_plot_index
@@ -13722,20 +13814,10 @@ class Game:
                             if button_rect.collidepoint(pos):
                                 self.trigger_click_flash('building', building_name)
                                 territory, plot_index = self.selected_plot
-                                if self.game_state.start_construction(territory, plot_index, building_name):
-                                    # MULTIPLAYER: Send building start notification
-                                    if self.multiplayer_mode:
-
-                                        self._send_action_to_remote(MessageType.BUILDING_ORDER, {
-                                            'territory': territory,
-                                            'plot_index': plot_index,
-                                            'building_type': building_name,
-                                            'player_index': self.local_player_index  # 4-player support
-                                        })
+                                # Shared build path (local execute + sim/network sync + feedback)
+                                if self._try_start_construction(territory, plot_index, building_name):
                                     self.selected_plot = None
                                     self.clear_button_tooltip()
-                                else:
-                                    self._show_action_failure_feedback()
                                 return True
                 except Exception as e:
                     logger.error(f"Error in building buttons: {e}")
@@ -13780,6 +13862,10 @@ class Game:
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('demolish')):
                         return True  # Silently block
+                    # No new actions while simultaneous mode resolves battles (the map
+                    # quick-icons already enforced this; the bottom panel did not)
+                    if self._is_sim_resolving():
+                        return True
                     self.trigger_click_flash('demolish', 'building')
                     territory, plot_index = self.selected_plot
                     result = self.game_state.destroy_building(territory, plot_index)
@@ -13854,6 +13940,14 @@ class Game:
                                         # Trigger visual effect for immediate abilities
                                         self.map_renderer.trigger_ability_effect(
                                             ability_name, None, current_player)
+                                    elif isinstance(result, str):
+                                        # An immediate ability refused with a reason (Reinforce:
+                                        # its Keep territory is full). This used to be dropped
+                                        # silently. The refusal recorded its message code.
+                                        if self.game_state.last_action_error:
+                                            self._show_action_failure_feedback()
+                                        else:
+                                            self.show_action_error(message=result)
 
                                     self.clear_button_tooltip()
                                     return True
@@ -13916,20 +14010,28 @@ class Game:
         
         # Check individual order cancel buttons (only if expanded)
         if self.game_state.sidebar_expanded and self.order_cancel_buttons:
-            for button_rect, order_index in self.order_cancel_buttons:
-                if button_rect.collidepoint(pos):
+            # Format: (rect, order, player_order_index) — index access, see ui_renderer
+            for button in self.order_cancel_buttons:
+                if button[0].collidepoint(pos):
                     # Tutorial hook: block order cancellation during tutorial unless allowed
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('cancel_order')):
                         return True  # Silently block
-                    self.game_state.cancel_movement_order(order_index)
-                    # MULTIPLAYER: Notify remote players about cancelled order
-                    if self.multiplayer_mode:
-                        self._send_action_to_remote(MessageType.ORDER_REMOVE, {
-                            'order_index': order_index,
-                            'player_index': self.local_player_index
-                        })
+                    # Find the clicked order by identity: its position in the full list can
+                    # differ from its position among this player's orders
+                    order = button[1]
+                    full_index = next((i for i, o in enumerate(self.game_state.movement_orders)
+                                       if o is order), None)
+                    if full_index is not None and self.game_state.cancel_movement_order(full_index):
+                        # MULTIPLAYER: Notify remote players about cancelled order.
+                        # Sent only on success, with the per-player index (the receiver
+                        # maps it back through get_full_order_index()).
+                        if self.multiplayer_mode:
+                            self._send_action_to_remote(MessageType.ORDER_REMOVE, {
+                                'player_order_index': button[2],
+                                'player_index': self.local_player_index
+                            })
                     return True
 
         # Check cancel all button (only if expanded)
@@ -13940,7 +14042,9 @@ class Game:
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('cancel_all_orders')):
                     return True  # Silently block
-                self.game_state.cancel_all_orders()
+                # Cancel only the orders the sidebar shows — other players' orders
+                # (e.g. AI orders in the same planning phase) must survive
+                self.game_state.cancel_all_orders(player=self.order_sidebar_player)
                 # MULTIPLAYER: Notify remote players about cancel-all
                 if self.multiplayer_mode:
                     self._send_action_to_remote(MessageType.ORDER_REMOVE, {
@@ -14936,8 +15040,12 @@ class Game:
         Side Effects:
             - May start or cancel research
         """
-        # Block research during simultaneous mode resolution phase
-        if self.sim_state is not None and self.sim_state.sim_phase == 'resolving':
+        # Block research during simultaneous mode resolution phase. The tree still looks
+        # normal then, so a click on a technology explains why nothing happens.
+        if self._is_sim_resolving():
+            if any(rect.collidepoint(pos) for rect in (self.technology_buttons or {}).values()):
+                self.show_action_error('wrong_phase')
+                return True
             return False
 
         # Check if we have technology buttons stored
