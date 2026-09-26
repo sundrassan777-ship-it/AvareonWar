@@ -545,6 +545,16 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         self.last_action_error = None
         # Optional dict of values for that message's {placeholders}, e.g. {'territory': 'X'}
         self.last_action_error_args = None
+
+        # Hero deaths not yet announced: (owner, hero_type, territory). Filled by battles and
+        # Regicide (HeroMixin._record_hero_death), drained every frame by main.py, which
+        # shows the local player a "hero slain" toast. Not saved (transient UI news).
+        self.hero_death_events = []
+        # Heroes killed by the battle currently being resolved: (owner, hero_type, territory).
+        # Reset at the top of every resolve_battle(); copied into that battle's Battle Report
+        # ('heroes_slain') so a defending multiplayer client — which applies BATTLE_RESOLVE
+        # instead of running the battle — still learns its hero died.
+        self._battle_hero_deaths = []
         
         # Winner tracking
         self.winner = -1  # -1 = no winner, 0-3 = player index

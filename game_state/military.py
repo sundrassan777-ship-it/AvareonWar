@@ -2296,7 +2296,7 @@ class MilitaryMixin:
     def _make_battle_report(self, territory, defender, attacker, held, units_lost,
                             units_remaining, structures_destroyed, structures_captured,
                             structures_remaining, unit_breakdown, attacker_lost,
-                            attacker_survivors):
+                            attacker_survivors, heroes_slain=None):
         """
         Build the report dict. Plain and JSON-safe: it rides along on the BATTLE_RESOLVE
         network message, so no tuples (JSON turns them into lists), no sets, no objects.
@@ -2322,6 +2322,9 @@ class MilitaryMixin:
             'defender_survivors': units_remaining,
             'attacker_lost': attacker_lost,
             'attacker_survivors': attacker_survivors,
+            # Names of the defender's heroes killed here (their Keep fell). A defending
+            # multiplayer client turns these into "Our Hero, X, has been slain" toasts.
+            'heroes_slain': list(heroes_slain or []),
         }
 
     def _capture_battle_reports(self, battle, winner, territory):
@@ -2392,7 +2395,9 @@ class MilitaryMixin:
             structures_destroyed=destroyed, structures_captured=captured,
             structures_remaining=remaining, unit_breakdown=unit_breakdown,
             attacker_lost=max(0, attacker_original - attacker_survivors),
-            attacker_survivors=attacker_survivors))
+            attacker_survivors=attacker_survivors,
+            heroes_slain=[event[1] for event in self._battle_hero_deaths
+                          if event[0] == defender and event[2] == territory]))
 
     def _capture_uncontested_report(self, territory, previous_owner, new_owner,
                                     buildings_before):
@@ -2490,6 +2495,8 @@ class MilitaryMixin:
         # Reset the per-resolution report list so network send sites can only ever pick up
         # reports belonging to THIS battle.
         self.last_battle_reports = []
+        # Same for the heroes this battle kills (copied into its Battle Report)
+        self._battle_hero_deaths = []
         
         # Get army counts and compositions
         player_armies = list(battle.armies.items())

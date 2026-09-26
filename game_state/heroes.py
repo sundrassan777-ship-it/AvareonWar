@@ -261,7 +261,15 @@ class HeroMixin:
         # FPS OPT: Always bump version — called once per turn, negligible cost
         self._training_version += 1
 
-    def kill_heroes_in_keep(self, territory, keep_plot_index, previous_owner):
+    def _record_hero_death(self, owner, hero_type, territory):
+        """
+        Queue a hero death for main.py, which tells the hero's owner with a toast
+        ("Our Hero, X, has been slain in Y!"). main.py drains hero_death_events every
+        frame, so deaths during AI turns or simultaneous execution are shown too.
+        """
+        self.hero_death_events.append((owner, hero_type, territory))
+
+    def kill_heroes_in_keep(self, territory, keep_plot_index, previous_owner, slain=True):
         """
         Kill all heroes residing in a destroyed Keep.
 
@@ -269,6 +277,8 @@ class HeroMixin:
             territory: Territory name
             keep_plot_index: Keep plot index
             previous_owner: Player who owned the Keep
+            slain: True when an enemy destroyed the Keep (battle) — the owner gets a
+                "hero slain" toast. False when the owner demolished it themselves.
 
         Returns:
             int: Number of heroes killed
@@ -291,6 +301,10 @@ class HeroMixin:
             del self.heroes[previous_owner][hero_type]
             self.hero_ownership[previous_owner].discard(hero_type)
             self.add_message(f"Player {previous_owner + 1}: {hero_type} has died!")
+            if slain:
+                self._record_hero_death(previous_owner, hero_type, territory)
+                # Also remember it for this battle's report (see _capture_battle_reports)
+                self._battle_hero_deaths.append((previous_owner, hero_type, territory))
 
         return len(heroes_to_remove)
 
@@ -1341,6 +1355,7 @@ class HeroMixin:
             self.hero_ownership[territory_owner].discard(hero_found)
             self.add_message(f"Player {owner + 1}: Regicide killed {hero_found} ({target_territory})!")
             self.add_message(f"Player {territory_owner + 1}: {hero_found} has died!")
+            self._record_hero_death(territory_owner, hero_found, target_territory)
             # Notify campaign mission so it can show a transmission for hero death
             if self.tutorial_mission:
                 self.tutorial_mission.notify_event(

@@ -504,8 +504,8 @@ class BuildingMixin:
 
         # If this was a Keep, kill heroes and cancel training (no refund)
         if building_type == 'Keep':
-            # Kill heroes in this Keep
-            self.kill_heroes_in_keep(territory, plot_index, owner)
+            # Kill heroes in this Keep (demolished by its owner: no "hero slain" toast)
+            self.kill_heroes_in_keep(territory, plot_index, owner, slain=False)
 
             # Cancel hero training (no refund on demolish)
             if (territory in self.hero_training_queue and

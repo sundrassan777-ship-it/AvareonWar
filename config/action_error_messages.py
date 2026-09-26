@@ -170,6 +170,13 @@ ACTION_ERROR_MESSAGES = {
     # empty or 0.
     'transfer_no_amount': "Enter an amount of Gold to send!",
 
+    # One of YOUR heroes died because an enemy captured its Keep or hit it with
+    # Regicide. This one is news, not a refused action: it shows the same red
+    # notification but without the error sound. (Demolishing your own Keep
+    # shows nothing — you chose that.)
+    # {hero} = the hero's name, {territory} = where its Keep stood.
+    'hero_slain': "Our Hero, {hero}, has been slain in {territory}!",
+
     # =====================================================================
     # F. RARE SAFETY MESSAGES (practically never shown - only if the game's
     #    data is out of sync). You can leave these alone.

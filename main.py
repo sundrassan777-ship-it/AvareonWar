@@ -1865,6 +1865,13 @@ class Game:
                 for report in battle_reports:
                     if isinstance(report, dict):
                         self.queue_battle_report(report)
+                        # Heroes that died in this battle: this client never ran the
+                        # battle, so the report is its only source for them. Queue them
+                        # for the "Our Hero, X, has been slain in Y!" toast (the drain
+                        # shows only the local player's own heroes).
+                        for hero in report.get('heroes_slain') or []:
+                            self.game_state.hero_death_events.append(
+                                (report.get('defender'), hero, report.get('territory')))
 
                 # Universal last-team-standing: check victory on client after territory change
                 # (host already checks via _update_battle_results; client needs this for sync)
@@ -5500,6 +5507,31 @@ class Game:
         # Visual feedback — floating notification in the chat notification area
         if self.chat_notification_effect:
             self.chat_notification_effect.add_system_notification(msg)
+
+    def _show_hero_death_notifications(self):
+        """
+        Drain game_state.hero_death_events and tell the local player about their own
+        heroes dying: "Our Hero, X, has been slain in Y!" (text: 'hero_slain' in
+        config/action_error_messages.py).
+
+        Same red toast as action errors but WITHOUT the denial sound — it's news, not
+        a refused action. Other players' hero deaths are dropped (the Action Log still
+        records every death).
+        """
+        events = getattr(self.game_state, 'hero_death_events', None)
+        if not events:
+            return
+        # Swap the list out first so a death recorded while we iterate isn't lost
+        self.game_state.hero_death_events = []
+
+        local_player = self.get_local_player()
+        from config.action_error_messages import format_action_error
+        for event in events:
+            # Format: (owner, hero_type, territory) — index access survives format changes
+            if event[0] != local_player or not self.chat_notification_effect:
+                continue
+            self.chat_notification_effect.add_system_notification(
+                format_action_error('hero_slain', hero=event[1], territory=event[2]))
 
     def _show_action_failure_feedback(self):
         """Show the action error recorded by the last game_state action method.
@@ -11109,6 +11141,9 @@ class Game:
                 # Update floating chat notifications (polls for new messages)
                 if self.chat_notification_effect:
                     self.chat_notification_effect.update(delta_time)
+
+                # Announce the local player's hero deaths (battles, Regicide)
+                self._show_hero_death_notifications()
 
                 # Check and trigger turn announcement effect if needed
                 if self.game_state.turn_announcement_active and self.turn_announcement_effect is None:
