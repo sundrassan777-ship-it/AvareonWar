@@ -499,7 +499,8 @@ from Saved Games. After a tale ends the player returns to the Book of Tales.
 ### Tale II: Final Breaths
 
 **Map:** Avareon, Campaign Chapter 3's territories and map art. **Player:** the Zjoal Empire
-(Blue). No alliances — every faction for itself. No achievement yet.
+(Blue). No alliances — every faction for itself. Winning earns the **Final Breaths**
+achievement (no reward beyond the achievement itself).
 
 | Faction | Colour | Start | AI | Behaviour |
 |---------|--------|-------|----|-----------|

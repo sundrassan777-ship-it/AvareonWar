@@ -590,6 +590,58 @@ class TestEndgame:
 
 
 # ============================================================================
+# ACHIEVEMENT
+# ============================================================================
+
+def _fresh_achievements(monkeypatch):
+    """Achievement manager with empty progress; never writes the player's real profile."""
+    import achievement_manager as am
+    manager = object.__new__(am.AchievementManager)
+    manager.stats, manager.earned = {}, {}
+    monkeypatch.setattr(manager, 'save', lambda: None)
+    return manager
+
+
+def _earned_ids(manager, game):
+    return [a['id'] for a in manager.record_game_result(game)]
+
+
+class TestAchievement:
+
+    def test_definition(self):
+        import achievement_manager as am
+        ach = next(a for a in am.ACHIEVEMENTS if a['id'] == 'campaign_tale_2')
+        assert ach['name'] == 'Final Breaths'
+        assert ach['description'] == 'Win the Final Breaths mission in the Book of Tales.'
+        assert ach['category'] == 'campaign'
+        assert ach['stat_key'] == 'campaign_tale_2_completed' and ach['stat_threshold'] == 1
+        assert ach['reward_type'] is None and ach['reward_id'] is None    # no reward
+        assert os.path.exists(ach['icon'])
+
+    def test_victory_awards_final_breaths(self, game, tale, monkeypatch):
+        manager = _fresh_achievements(monkeypatch)
+        _player_turn(game, tale, HOLD_TURNS)
+        assert _run_until_exit(tale) == 'exit_campaign'
+        earned = _earned_ids(manager, game)
+        assert 'campaign_tale_2' in earned
+        assert 'campaign_tale_1' not in earned                            # not Tale I's
+        assert manager.stats['campaign_tale_2_completed'] == 1
+
+    def test_defeat_does_not_award_it(self, game, tale, monkeypatch):
+        manager = _fresh_achievements(monkeypatch)
+        game.game_state.territory_owners['Lunedale'] = RED
+        assert _run_until_exit(tale) == 'exit_campaign_defeat'
+        assert 'campaign_tale_2' not in _earned_ids(manager, game)
+        assert 'campaign_tale_2_completed' not in manager.stats
+
+    def test_quitting_mid_tale_does_not_award_it(self, game, tale, monkeypatch):
+        manager = _fresh_achievements(monkeypatch)
+        assert game.game_state.phase == 'playing'
+        assert 'campaign_tale_2' not in _earned_ids(manager, game)
+        assert 'campaign_tale_2_completed' not in manager.stats
+
+
+# ============================================================================
 # WIDGET / SAVE / BOOK OF TALES
 # ============================================================================
 

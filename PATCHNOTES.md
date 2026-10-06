@@ -29,6 +29,8 @@ Empire is marching up from the south while the eastern provinces slip away in re
 - The tale plays on the lands of Campaign Chapter 3. Tales can be saved and loaded from Saved
   Games.
 
+Winning earns the new **Final Breaths** achievement.
+
 ### Fixes
 
 - **Computer opponents no longer waste training orders** when the enemy armies next to them

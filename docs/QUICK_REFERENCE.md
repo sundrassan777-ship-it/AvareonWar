@@ -293,7 +293,8 @@ Zjoal 20 Barracks / 3 Mine / 3 Farm / 1 empty; Kerunian 14 Barracks / 2 Mine / 2
 | Kerunian reinforcements | off (`KERUNIAN_REINFORCEMENTS` (min, max) per territory per turn) |
 | Heroes | nobody can train them |
 
-**Achievement:** none yet. **Cutscenes:** `tale_2_intro` / `tale_2_outro` (optional).
+**Achievement:** `campaign_tale_2` "Final Breaths" (stat `campaign_tale_2_completed`, no reward).
+**Cutscenes:** `tale_2_intro` / `tale_2_outro` (optional).
 
 ---
 

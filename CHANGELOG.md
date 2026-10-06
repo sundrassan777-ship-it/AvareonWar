@@ -2,6 +2,15 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-06 - Tale II achievement: "Final Breaths"
+
+- `achievement_manager.py`: `campaign_tale_2` "Final Breaths" — "Win the Final Breaths
+  mission in the Book of Tales." Campaign category, icon `Tale2Achiev.png`, no reward. Earned
+  through the generic `campaign_tale_2_completed` stat (Tale II sets `gs.winner` on victory).
+  Steam: register the id `campaign_tale_2` in Steamworks.
+- Tests: definition, awarded on victory, not on defeat or on quitting mid-tale
+  (`tests/test_tale_final_breaths.py`, now 52).
+
 ## 2026-10-06 - Book of Tales: Tale II "Final Breaths" (+ engine hooks and an AI fix)
 
 **The tale** (`tale_final_breaths.py`, class `TaleFinalBreaths`, `mission_id 'tale_2'`):

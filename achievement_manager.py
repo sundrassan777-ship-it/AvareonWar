@@ -538,6 +538,20 @@ ACHIEVEMENTS = [
         'stat_key': 'campaign_tale_1_completed',
         'stat_threshold': 1,
     },
+    # Book of Tales — Tale II: Final Breaths — completion (holding Lunedale and Free
+    # Cities for 15 turns). Same generic stat path as Tale I, mission_id 'tale_2'.
+    # No reward beyond the achievement. Steam: register 'campaign_tale_2' in Steamworks.
+    {
+        'id': 'campaign_tale_2',
+        'name': 'Final Breaths',
+        'description': 'Win the Final Breaths mission in the Book of Tales.',
+        'category': 'campaign',
+        'icon': 'assets/achievements/AchievementIcons/Tale2Achiev.png',
+        'reward_type': None,
+        'reward_id': None,
+        'stat_key': 'campaign_tale_2_completed',
+        'stat_threshold': 1,
+    },
 ]
 
 # Valid categories for filtering

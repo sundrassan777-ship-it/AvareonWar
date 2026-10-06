@@ -3336,6 +3336,8 @@ interface and structure as Tale I (copy from either); what is different:
   (`_check_objectives()` on `territory_conquered` and every `update()`, so any capture path
   counts). An engine-ended game with `gs.winner == PLAYER` (Kerunians wiped out) is a
   victory too. Exits through the shared endgame sequence (no transmission to wait for).
+  The achievement `campaign_tale_2` ("Final Breaths", no reward) comes from the generic
+  `campaign_{mission_id}_completed` stat, so victory must set `gs.winner = PLAYER` (it does).
 - **Turns widget:** Tale I's Popularity widget without the button — "Turns to Hold: N" over a
   `BattleBar.png` frame (crop constants imported from `tale_lack_of_funds.py`), bar =
   `_display_remaining / HOLD_TURNS`, eased. `handle_click()` only swallows clicks on it.
