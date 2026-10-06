@@ -26,8 +26,12 @@ Empire is marching up from the south while the eastern provinces slip away in re
   frees the plot for a Mine or a Farm.
 - You start with the whole Combat branch and parts of the Economy and Leadership branches
   already researched, and a Castle in Lunedale. Nobody can train Heroes in this tale.
+- The story is fully voiced by your advisor, Valcerque: an opening briefing, a warning each
+  time the Nordians rise up, and lines for victory and defeat.
 - The tale plays on the lands of Campaign Chapter 3. Tales can be saved and loaded from Saved
   Games.
+
+Winning earns the new **Final Breaths** achievement.
 
 ### Fixes
 

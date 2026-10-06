@@ -103,7 +103,7 @@ AvareonWar/
 
 **Book of Tales Scenarios:**
 - [tale_lack_of_funds.py](tale_lack_of_funds.py) - Tale I: Lack of Funds (Azincournean Highlands, 4 factions, built-in AI restricted by mission hooks, Popularity/revolt mechanic, voiced intro/outro)
-- [tale_final_breaths.py](tale_final_breaths.py) - Tale II: Final Breaths (Avareon + Campaign Mission 3 territories/map, 3 factions, hold Lunedale + Free Cities 15 turns, capped + forced Kerunian attacks, passive Nordian Rebels taking land by rebellion, 100% player-only taxation, no Heroes)
+- [tale_final_breaths.py](tale_final_breaths.py) - Tale II: Final Breaths (Avareon + Campaign Mission 3 territories/map, 3 factions, hold Lunedale + Free Cities 15 turns, capped + forced Kerunian attacks, passive Nordian Rebels taking land by rebellion, 100% player-only taxation, no Heroes, voiced intro/rebellion/outro lines)
 
 **AI System (5 files):**
 - [ai_player.py](ai_player.py) - Main AI controller
@@ -149,7 +149,7 @@ AvareonWar/
 - [tests/test_battle_report_network.py](tests/test_battle_report_network.py) - Battle Reports reaching a defending multiplayer client
 - [tests/test_drawing_helpers.py](tests/test_drawing_helpers.py) - `draw_feedback_button()` fallback when its background image is missing
 - [tests/test_tale_lack_of_funds.py](tests/test_tale_lack_of_funds.py) - Tale I: setup, AI rules/hooks, Popularity, widget click, transmissions, endgame + achievement, save/restore, Keep-only battle + Demolish Keep regressions
-- [tests/test_tale_final_breaths.py](tests/test_tale_final_breaths.py) - Tale II: setup (plots, armies, techs, taxation), per-target attack cap (planner + move guard), forced attacks, Heroes ban incl. AI gate, rebellions + Rebels never eliminated, endgame, widget, save/restore, Captain counter-composition regression
+- [tests/test_tale_final_breaths.py](tests/test_tale_final_breaths.py) - Tale II: setup (plots, armies, techs, taxation), per-target attack cap (planner + move guard), forced attacks, Heroes ban incl. AI gate, rebellions + Rebels never eliminated, transmissions, endgame + achievement, widget, save/restore, Captain counter-composition regression
 - [tests/test_map_borders.py](tests/test_map_borders.py) - Per-map territory borders flag (`draw_borders` in the manifest)
 - [tests/test_action_feedback_bugfixes.py](tests/test_action_feedback_bugfixes.py) + `test_action_feedback_phase2.py`…`phase7.py` - Action error toasts: stale-code reset, re-order rollback, order cancel by identity, hidden territories, shared build/train path, tints, message table, army-order/hero-ability/other refusals
 - [tests/test_hero_slain_notification.py](tests/test_hero_slain_notification.py) - "Our Hero, X, has been slain in Y!" toast (battle, Regicide, multiplayer defender via Battle Report)
