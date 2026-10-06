@@ -16350,6 +16350,27 @@ if __name__ == "__main__":
                 'player4_territory': 'Daurels',
             },
         },
+        'tale_2': {
+            # Final Breaths: Avareon geometry with Campaign Mission 3's territories
+            # and background (the Tale enables Mission 3's territory set itself)
+            'import': ('tale_final_breaths', 'TaleFinalBreaths'),
+            'map': 'assets/CampaignMaps/Campaign3Map.png',
+            'map_id': 'avareon',
+            'config': {
+                'map_id': 'avareon',
+                'num_players': 3,
+                # 0 = player (Zjoal Empire), 1 = Kerunian Empire (Hard AI),
+                # 2 = Nordian Rebels (never acts — the Tale ends its turns)
+                'player_is_ai': [False, True, True],
+                'player_ai_difficulty': [0, 2, 0],
+                'player_teams': [0, 1, 2],
+                'win_condition': 'Total Conquest',
+                'taxation_level': 0,
+                # The Rebels start with no land, so they get no start territory
+                'player1_territory': 'Lunedale',
+                'player2_territory': 'Affrancian Uplands',
+            },
+        },
     }
 
     def _run_registered_mission(screen, mission_id, mission_info, music_manager):

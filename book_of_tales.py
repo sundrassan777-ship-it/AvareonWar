@@ -78,12 +78,28 @@ SCENARIOS = [
         ),
     },
     {
-        'id': 'tale_2',
-        'hidden': True,  # Not shown yet — remove to reveal
-        'name': 'Tale II',
+        'id': 'tale_2',   # tale_final_breaths.py
+        'name': 'Final Breaths',
         'description': (
-            "A placeholder tale. Somewhere in the long history of Avareon, "
-            "another story waits to be told."
+            "In final years of the Age of Kings, the Zjoal Empire, once the most majestic "
+            "and powerful entity of the world, was all but spent. Being a victim of a "
+            "horrendous civil war, the empire was split into the Zjoal Empire proper, "
+            "centered on Avinon, and the Kerunian Empire, covering vast coasts of the south, "
+            "centered around Délaen. Now, as the Empire draws its last breaths, the war "
+            "between Kerunians and Zjoals rages ever stronger and the eastern stretches of "
+            "land are subject to rebellion, the only hope is to defend the glory of the "
+            "olden Empire for as long as possible.\n"
+            "\n"
+            "_Objectives:\n"
+            "- Defend territories of Lunedale and Free Cities for at least 15 turns\n"
+            "\n"
+            "_Notes:\n"
+            "- While the primary attacks will come from Kerunian Empire in the south, do not "
+            "neglect defenses in the east.\n"
+            "- Economic situation within the Empire is worse than ever. Disassembling "
+            "existing infrastructure to support the economy will work wonders.\n"
+            "- The imperial treasury is taxed at 100%: all gold left unspent at the end "
+            "of your turn is lost."
         ),
     },
     {

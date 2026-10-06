@@ -44,6 +44,48 @@ def mission_allows_ai_target(game_state, player_index, territory):
     return hook(player_index, territory)
 
 
+def mission_ai_attack_cap(game_state, player_index, territory):
+    """
+    Campaign/Tale hook: the most units this AI player may send against
+    `territory` in one turn, or None for no limit.
+
+    Missions opt in by defining get_ai_attack_cap(player_index, territory)
+    (Tale II caps the Kerunian Empire's attacks per target as the turns go by).
+    The cap is a per-target, per-turn total: callers subtract the units already
+    ordered at that target. Moves into the AI's own land are never capped.
+    Used by AttackPlanner.select_attack_targets() (planning) and
+    AIPlayer._execute_action_internal() (last-line guard).
+    """
+    if game_state.territory_owners.get(territory, -1) == player_index:
+        return None
+    mission = getattr(game_state, 'tutorial_mission', None)
+    if mission is None or not getattr(mission, 'active', False):
+        return None
+    hook = getattr(mission, 'get_ai_attack_cap', None)
+    if hook is None:
+        return None
+    return hook(player_index, territory)
+
+
+def mission_allows_ai_action(game_state, action_type, **kwargs):
+    """
+    Campaign/Tale hook: may the built-in AI take this action at all?
+
+    Reads the mission's is_action_allowed(action_type, **kwargs), the same gate
+    the UI asks for the human player. game_state already enforces it for
+    'build' and 'train'; the built-in AI checks it itself for actions the engine
+    leaves to the UI (e.g. 'train_hero' — Tale II forbids Heroes for everyone).
+    Without an active mission everything is allowed.
+    """
+    mission = getattr(game_state, 'tutorial_mission', None)
+    if mission is None or not getattr(mission, 'active', False):
+        return True
+    hook = getattr(mission, 'is_action_allowed', None)
+    if hook is None:
+        return True
+    return hook(action_type, **kwargs)
+
+
 class ArmyComposer:
     """
     Calculates optimal unit composition based on the rock-paper-scissors counter system.
@@ -85,7 +127,13 @@ class ArmyComposer:
         Returns:
             dict: {unit_type: percentage} - composition ratios
         """
-        if not enemy_composition or sum(enemy_composition.values()) == 0:
+        # Only combat units can be countered: a Captain has no counter
+        # (COUNTERED_BY['Captain'] is None). Picking it as the "strongest" type
+        # used to make the AI train unit type None whenever Captains were the
+        # most common enemy unit (e.g. Tale II's small 1-Captain garrisons).
+        combat_composition = {unit: count for unit, count in (enemy_composition or {}).items()
+                              if self.COUNTERED_BY.get(unit) and count > 0}
+        if not combat_composition:
             # Default balanced composition
             return {
                 'Swordsman': 0.25,
@@ -95,8 +143,7 @@ class ArmyComposer:
             }
 
         # Find enemy's strongest unit type
-        total_enemy = sum(enemy_composition.values())
-        strongest_type = max(enemy_composition.items(), key=lambda x: x[1])[0]
+        strongest_type = max(combat_composition.items(), key=lambda x: x[1])[0]
 
         # Get counter unit: use COUNTERED_BY to find what beats the enemy's strongest
         # (COUNTERS maps unit -> what_it_beats, COUNTERED_BY maps unit -> what_beats_it)
@@ -319,6 +366,10 @@ class AttackPlanner:
         )
         is_early_game = territory_count < 16  # Changed from 10 to 16 for extended aggressive early expansion
 
+        # Units planned against each target so far — for a mission's per-target
+        # cap (mission_ai_attack_cap); several sources may hit the same target
+        units_per_target = {}  # {target_territory: units_planned}
+
         for i in range(min(max_attacks, len(attack_candidates))):
             from_terr, to_terr, army_count, score = attack_candidates[i]
 
@@ -368,6 +419,15 @@ class AttackPlanner:
                     # Send remaining armies beyond garrison requirement
                     can_send = remaining_armies - garrison_needed
                     attack_with = max(1, can_send)
+
+            # Mission per-target cap: trim to the room left at this target (skip if none)
+            cap = mission_ai_attack_cap(game_state, player_index, to_terr)
+            if cap is not None:
+                room = cap - units_per_target.get(to_terr, 0)
+                if room <= 0:
+                    continue
+                attack_with = min(attack_with, room)
+            units_per_target[to_terr] = units_per_target.get(to_terr, 0) + attack_with
 
             attacks.append((from_terr, to_terr, attack_with))
 

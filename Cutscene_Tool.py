@@ -72,7 +72,8 @@ ASPECT_RATIO = 16.0 / 9.0
 # Corner handle size for rect resizing (in screen pixels)
 HANDLE_SIZE = 8
 
-# All possible cutscene IDs (7 missions x intro/outro)
+# All possible cutscene IDs (7 missions + Book of Tales scenarios, x intro/outro).
+# main.py plays f"{mission_id}_intro" / "_outro" for tales too, when one exists.
 CUTSCENE_IDS = [
     'mission_1_intro', 'mission_1_outro',
     'mission_2_intro', 'mission_2_outro',
@@ -81,6 +82,8 @@ CUTSCENE_IDS = [
     'mission_5_intro', 'mission_5_outro',
     'mission_6_intro', 'mission_6_outro',
     'mission_7_intro', 'mission_7_outro',
+    'tale_1_intro', 'tale_1_outro',
+    'tale_2_intro', 'tale_2_outro',
 ]
 
 # Easing options
@@ -1252,9 +1255,10 @@ class CutsceneTool:
         self.cutscene_btn_rects = []
 
         for i, cid in enumerate(CUTSCENE_IDS):
-            # Short label: "M1 Intro", "M1 Outro", etc.
+            # Short label: "M1 In", "M1 Out" for missions, "T1 In" for Book of Tales
             parts = cid.split('_')
-            label = f"M{parts[1][0]} {'In' if parts[2] == 'intro' else 'Out'}"
+            prefix = 'T' if parts[0] == 'tale' else 'M'
+            label = f"{prefix}{parts[1][0]} {'In' if parts[2] == 'intro' else 'Out'}"
 
             text_surf = self.font_small.render(label, True, WHITE)
             btn_w = text_surf.get_width() + 16

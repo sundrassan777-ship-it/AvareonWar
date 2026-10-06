@@ -4,6 +4,38 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## A New Tale: Final Breaths
+
+*6 October 2026*
+
+### The last stand of the Zjoal Empire
+
+The Book of Tales has a second story. **Final Breaths** takes you to the final years of the Age
+of Kings. A civil war has split the once-mighty Zjoal Empire in two, and the wealthy Kerunian
+Empire is marching up from the south while the eastern provinces slip away in rebellion.
+
+- **Hold Lunedale and Free Cities for 15 turns.** Lose either one and the tale is over. A
+  counter in the bottom-left corner of the map shows how many turns remain.
+- **The Kerunian Empire** starts with a full treasury and attacks every single turn. How many
+  troops it can throw at one territory grows as the turns go by.
+- **The Nordian Rebels** take one of your territories every other turn - and every turn from
+  turn 6 - along with its armies and buildings. They never attack, but they never give land
+  back on their own either. Lunedale, Free Cities, Damlére and Oucine stay loyal.
+- **Your treasury is taxed at 100%:** any gold you haven't spent when you end your turn is
+  lost. Your provinces are full of Barracks - demolishing them refunds their full cost and
+  frees the plot for a Mine or a Farm.
+- You start with the whole Combat branch and parts of the Economy and Leadership branches
+  already researched, and a Castle in Lunedale. Nobody can train Heroes in this tale.
+- The tale plays on the lands of Campaign Chapter 3. Tales can be saved and loaded from Saved
+  Games.
+
+### Fixes
+
+- **Computer opponents no longer waste training orders** when the enemy armies next to them
+  are mostly Captains.
+
+---
+
 ## The Game Tells You Why
 
 *26 September 2026*

@@ -304,15 +304,22 @@ class EconomyMixin:
             else:
                 self.add_message(f"Player {player_index + 1} earned {income} gold from {territory_count} territories")
 
+    def get_taxation_level(self, player_index):
+        """Taxation level (0-4) for one player: a mission's per-player override,
+        else the game-wide taxation_level."""
+        overrides = getattr(self, 'player_taxation_override', None) or {}
+        return overrides.get(player_index, self.taxation_level)
+
     def apply_taxation(self, player_index):
         """Apply taxation deduction to player's gold at turn end (before income collection)"""
+        level = self.get_taxation_level(player_index)
         # No taxation if level is 0
-        if self.taxation_level == 0:
+        if level == 0:
             return
 
         # Tax rates for each level — M13 fix: clamp index to valid range
         tax_rates = [0.0, 0.25, 0.5, 0.75, 1.0]
-        clamped_level = max(0, min(self.taxation_level, len(tax_rates) - 1))
+        clamped_level = max(0, min(level, len(tax_rates) - 1))
         rate = tax_rates[clamped_level]
 
         current_gold = self.player_gold[player_index]

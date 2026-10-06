@@ -661,6 +661,21 @@ class AIPlayer:
                         # Move specific number of units (for army splitting)
                         units_to_move = available_units[:min(army_count, len(available_units))]
 
+                    # Mission per-target attack cap (last-line guard, covers every
+                    # planner path): the cap is a per-turn total at this target, so
+                    # subtract units this player has already ordered there.
+                    from ai_military import mission_ai_attack_cap
+                    cap = mission_ai_attack_cap(game_state, self.player_index, to_territory)
+                    if cap is not None:
+                        already = sum(order.army_count for order in game_state.movement_orders
+                                      if order.player == self.player_index
+                                      and order.to_territory == to_territory)
+                        room = cap - already
+                        if room <= 0:
+                            logger.debug(f"Mission attack cap reached at {to_territory} ({cap} units)")
+                            return False
+                        units_to_move = units_to_move[:room]
+
                     if not units_to_move:
                         logger.warning(f"No units to move from {from_territory}")
                     else:
@@ -681,6 +696,13 @@ class AIPlayer:
                 territory = action_data['territory']
                 keep_plot = action_data['keep_plot']
                 hero_type = action_data['hero_type']
+                # Mission gate (start_hero_training() has no mission check of its own;
+                # the player is stopped in the UI). Tale II forbids Heroes for everyone.
+                from ai_military import mission_allows_ai_action
+                if not mission_allows_ai_action(game_state, 'train_hero',
+                                                territory=territory, hero_type=hero_type):
+                    logger.debug(f"Mission forbids hero training ({hero_type} in {territory})")
+                    return False
                 success = game_state.start_hero_training(territory, keep_plot, hero_type)
                 if success:
                     logger.info(f"Training hero {hero_type} in {territory}")

@@ -29,6 +29,7 @@ This guide provides module-specific guidance on when and how to modify different
 18. [Browser Screens](#browser-screens-saved-games--replays) - Saved Games + Replays UI
 19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
+21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
 
 ---
 
@@ -995,6 +996,7 @@ change hands, add it here and decide which column it belongs in.
 | `victory.py` elimination redistribution | no | the loser is already out of the game |
 | `campaign_mission_6.py:1356` | no | scripted faction handover, keeps armies and buildings |
 | `tale_lack_of_funds.py _revolt_territory()` | no | Popularity revolt (scripted handover); announced by the T1Revolt transmission |
+| `tale_final_breaths.py _rebel_territory()` | no | Rebellion (scripted handover); announced by a toast |
 | `SIM_ROUND_COMPLETE` / `FULL_STATE_SYNC` bulk sync | no | desync correction, not a fresh loss |
 | `keyboard_handler.py`, setup phase | no | debug cheats and game setup |
 
@@ -1177,6 +1179,17 @@ scripted AI, i.e. `block_ai` is `False`):
 - `is_action_allowed('train' | 'build', ...)` — already queried by `start_training()` /
   `start_construction()` for every player, so a mission can gate the AI by checking
   `game_state.current_player`.
+- `is_action_allowed('train_hero', territory=, hero_type=)` — `start_hero_training()` has
+  **no** mission check of its own (the player is stopped in the UI), so the built-in AI asks
+  through `ai_military.mission_allows_ai_action()`, both when planning
+  (`HeroManager.plan_hero_actions()`) and executing. Tale II forbids Heroes for everyone;
+  Tale I's gate refuses only player 0, so its AI still trains them.
+- `get_ai_attack_cap(attacker, territory)` → int or None — the most units this AI may send
+  against one target **per turn** (Tale II). Read through `ai_military.mission_ai_attack_cap()`,
+  which never caps moves into the AI's own land. Applied in
+  `AttackPlanner.select_attack_targets()` (planned units per target) and as a last-line guard
+  in `_execute_action_internal('move')`, which subtracts the units this player already has
+  ordered at that target (`gs.movement_orders`) — so orders a mission placed itself count too.
 - `ai_delay_scale` — see above.
 
 ✅ **Integrate notify_animation_complete():**
@@ -1217,6 +1230,13 @@ scripted AI, i.e. `block_ai` is `False`):
 **Mission target hook:** module-level `mission_allows_ai_target(game_state, player_index,
 territory)` returns the active mission's `is_ai_target_allowed()` verdict (True when no
 mission / no hook). Any new AI code path that picks an attack or conquest target must call it.
+Siblings: `mission_ai_attack_cap()` (per-target unit cap) and `mission_allows_ai_action()`
+(the mission's `is_action_allowed()` for actions the engine doesn't gate itself) — any new
+path that sends units at a target or trains Heroes must call them too.
+
+**Counter composition:** `ArmyComposer.calculate_counter_composition()` counters only combat
+units. Captains have no counter (`COUNTERED_BY['Captain'] is None`); when they were the most
+common enemy unit the AI used to try training unit type `None`.
 
 **Key classes:**
 - `ArmyComposer` - Calculates optimal unit composition (counter system)
@@ -2142,8 +2162,18 @@ outside `("map_edge", "window_edge")` to the default, `window_edge`.
 **...tune Tale I's Popularity / revolts / AI rules**
 → constants at the top of `tale_lack_of_funds.py`
 
+**...tune Tale II's difficulty (attack cap, forced attacks, rebellions)**
+→ constants at the top of `tale_final_breaths.py`
+
 **...restrict or speed up the built-in AI from a mission**
-→ mission `is_ai_target_allowed()` / `ai_delay_scale` (see AI System → mission hooks)
+→ mission `is_ai_target_allowed()` / `get_ai_attack_cap()` / `is_action_allowed()` /
+`ai_delay_scale` (see AI System → mission hooks)
+
+**...tax one player differently (mission)**
+→ `gs.player_taxation_override[player] = level`, read via `gs.get_taxation_level(player)`
+
+**...start a player with techs already researched**
+→ add to `player_tech_researched`, then `gs.apply_tech_effect(player, tech, announce=False)`
 
 **...outline territories on a map**
 → `"draw_borders": true` in `maps/manifest.json`; style in `MapRenderer.TERRITORY_BORDER_*`
@@ -2663,6 +2693,7 @@ the victory sentinel.
 - [campaign_mission_6.py](../campaign_mission_6.py) - The Second War (33 territories, 3 factions, 4 sequential quests, dynamic AI)
 - [campaign_mission_7.py](../campaign_mission_7.py) - The Fall (41 territories, 2 factions, garrison-enforced AI)
 - [tale_lack_of_funds.py](../tale_lack_of_funds.py) - Book of Tales, Tale I (Azincournean Highlands, built-in AI + Popularity) — see "Tale I: Lack of Funds"
+- [tale_final_breaths.py](../tale_final_breaths.py) - Book of Tales, Tale II (Mission 3 map, hold out 15 turns, capped + forced Kerunian attacks, Nordian Rebels) — see "Tale II: Final Breaths"
 - `campaign_data.json` - Mission text data (edit with `Campaign_Text_Tool.py`)
 - [cutscene_player.py](../cutscene_player.py) - Cutscene player (Ken Burns camera + crossfade + audio + subtitles)
 - [Cutscene_Tool.py](../Cutscene_Tool.py) - Cutscene editor tool
@@ -3241,6 +3272,79 @@ ways worth knowing before copying it:
   `campaign_{mission_id}_completed` stat.
 - **Tests:** `tests/test_tale_lack_of_funds.py` (a real Game on the Highlands; conftest reloads
   Avareon before every test, so the module re-loads its map in an autouse fixture).
+
+## Tale II: Final Breaths (`tale_final_breaths.py`)
+
+**Second Book of Tales scenario** (`mission_id = 'tale_2'`, class `TaleFinalBreaths`). Same
+interface and structure as Tale I (copy from either); what is different:
+
+1. **Map:** Avareon geometry (`'map_id': 'avareon'`) with Campaign Mission 3's background
+   (`assets/CampaignMaps/Campaign3Map.png`) and territory set — the Tale calls
+   `map_data.set_enabled_territories(MISSION_3_TERRITORIES)` (imported from
+   `campaign_mission_3.py`) and clears it in `_cleanup()`. 3 players, all on separate teams.
+   Mission 3's five extra territories (Zjoal Islands, Leimarch, Liadnon, Ahtep, Anodia) are
+   neutral and empty.
+2. **Setup** (`_setup_initial_state()`): Keeps on plot 0 of `KEEP_TERRITORIES`, Lunedale's
+   upgraded to a Castle (`gs.castle_upgrades['Lunedale'] = {0: True}`); every other plot of
+   each faction is filled from `BUILD_MIX` with Tale I's `allocate_building_counts()`
+   (largest remainder, `None` = empty plot). Each army = 1 Captain + random basic units
+   (sizes from `LARGE/MEDIUM_ARMY_TERRITORIES` / `DEFAULT_ARMY_SIZE`).
+   - **Pre-researched techs** go through `GameState.apply_tech_effect(player, tech,
+     announce=False)` — the effect chain extracted from `finish_research()`. Never set the
+     tech attributes by hand (missions 5/7 do, and missed some); then add the next row of
+     each column to `player_tech_available`.
+   - **100% taxation for the player only:** `gs.player_taxation_override = {PLAYER: 4}`.
+     `GameState.get_taxation_level(player)` reads the override, falling back to the game-wide
+     `taxation_level`; `apply_taxation()` and the top bar use it. Not saved — the Tale sets it
+     again in `restore_save_state()` and clears it in `_cleanup()`.
+   - Kerunian command limit raised to `RED_COMMAND_LIMIT` (200): they start with 88 units,
+     and at 100 their 7000 gold had nowhere to go, so attacks dried up after the first waves.
+     This (not the attack cap) is the main difficulty dial.
+   - Optional `KERUNIAN_REINFORCEMENTS` (off): `_spawn_kerunian_reinforcements()` adds ready
+     units to Kerunian territories at the start of their turn, before the forced attack
+     (ids = lowest free in that garrison, the engine's convention). Very strong — see the
+     constant's comment before enabling it.
+3. **Kerunian AI** = built-in (`block_ai` False on their turn), limited by:
+   - **`get_ai_attack_cap()`** — `attack_cap_for_turn(turn) = turn // 2 + ATTACK_CAP_BASE`
+     units per target per turn (visible turn = `gs.turn_number + 1`). See AI System →
+     mission hooks for where it is enforced.
+   - **Forced attacks** — `_on_kerunian_turn_start()` (from `turn_announcement_done` for
+     player 1, once per `gs.turn_number`) orders `FORCED_ATTACK_TARGETS` attack(s) itself,
+     **before** the AI plans: Lunedale / Free Cities first when reachable
+     (`FORCED_ATTACK_OBJECTIVES_FIRST`), otherwise the Zjoal border territory with the best
+     odds; up to the cap, leaving `FORCED_ATTACK_KEEP` units in each source. The AI's own
+     attacks then share whatever cap is left at that target.
+4. **Nordian Rebels** (player 2) never act: `block_ai` is True only on their turn,
+   `execute_ai_turn_override()` does nothing and `update_ai_turn()` calls `gs.next_player()`
+   as soon as their planning phase starts. `is_ai_target_allowed()` keeps them in their own
+   land. **Rebellions** (`_on_player_turn_start()`, `rebellions_for_turn()`): random Zjoal
+   territories outside `REBELLION_IMMUNE` change hands via `_rebel_territory()` (Tale I's
+   `_revolt_territory()` pattern), with a red toast through
+   `chat_notification_effect.add_system_notification()` (no denial sound).
+   - **They are never eliminated.** With 0 territories `check_victory()` silently adds them to
+     `gs.eliminated_players` (Total Conquest never calls the destructive `eliminate_player()`);
+     `update()` discards them from it every frame, so they keep their (empty) turn and show
+     as active in the Players window. Tale win/lose ignores them.
+5. **No Heroes for anyone:** `is_action_allowed('train_hero')` is always False and
+   `should_hide_hero_training()` True; the built-in AI checks the same gate.
+6. **No in-game intro or transmissions** — the intro/outro are cutscenes
+   (`tale_2_intro` / `tale_2_outro`, edit with Cutscene_Tool.py; skipped while absent).
+   `intro_active` is False from the start; the opening camera eases to Lunedale.
+- **Turn logic:** `_on_player_turn_start()` (guarded by `_last_turn_handled`): victory when a
+  player turn starts with `gs.turn_number >= HOLD_TURNS` and both objectives held; otherwise
+  the rebellions. **Defeat** the moment Lunedale or Free Cities isn't the player's
+  (`_check_objectives()` on `territory_conquered` and every `update()`, so any capture path
+  counts). An engine-ended game with `gs.winner == PLAYER` (Kerunians wiped out) is a
+  victory too. Exits through the shared endgame sequence (no transmission to wait for).
+- **Turns widget:** Tale I's Popularity widget without the button — "Turns to Hold: N" over a
+  `BattleBar.png` frame (crop constants imported from `tale_lack_of_funds.py`), bar =
+  `_display_remaining / HOLD_TURNS`, eased. `handle_click()` only swallows clicks on it.
+- **Balance** lives in the constants at the top (`RED_COMMAND_LIMIT`, `ATTACK_CAP_BASE`,
+  `FORCED_ATTACK_*`, `KERUNIAN_REINFORCEMENTS`, `REBELLION_*`). Their comments record the
+  simulation results they were tuned with: once both objectives hold 15 units no single
+  Kerunian stack breaks them, so pressure has to come from a steady supply of attackers.
+- **Tests:** `tests/test_tale_final_breaths.py` (a real Game on Avareon; conftest's Avareon
+  reload is the right map here).
 
 ## Replay Viewer HUD (playback screen)
 

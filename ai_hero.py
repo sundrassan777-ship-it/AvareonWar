@@ -786,6 +786,12 @@ class HeroManager:
         hero_training = self.selector.select_hero_to_train(
             game_state, player_index, self.ai_player.difficulty
         )
+        # Skip planning a hero the mission forbids, so its cost isn't held back
+        # from research (the execution path in ai_player re-checks the same gate)
+        from ai_military import mission_allows_ai_action
+        if hero_training and not mission_allows_ai_action(
+                game_state, 'train_hero', territory=hero_training[1], hero_type=hero_training[0]):
+            hero_training = None
         if hero_training:
             hero_type, territory, keep_plot = hero_training
             actions.append(('train_hero', {
