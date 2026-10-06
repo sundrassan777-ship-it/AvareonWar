@@ -496,6 +496,41 @@ from Saved Games. After a tale ends the player returns to the Book of Tales.
   popularity is below 100, 15-gold lands at 75 or below, 20-gold lands at 50 or below.
   **Generax never revolts.**
 
+### Tale II: Final Breaths
+
+**Map:** Avareon, Campaign Chapter 3's territories and map art. **Player:** the Zjoal Empire
+(Blue). No alliances — every faction for itself. No achievement yet.
+
+| Faction | Colour | Start | AI | Behaviour |
+|---------|--------|-------|----|-----------|
+| Zjoal Empire (player) | Blue | 17 territories, 200 gold | — | — |
+| Kerunian Empire | Red | 13 territories, 7000 gold, command limit 200 | Hard | Attacks every turn, limited per target (below) |
+| Nordian Rebels | Yellow | nothing | — | Takes Zjoal land by rebellion; never attacks, never builds or trains |
+
+- **Victory:** still holding **Lunedale and Free Cities** when 15 turns are over (the start
+  of turn 16). **Defeat:** the moment either of them is lost.
+- **Starting board:** Keeps in Affrancian Uplands, March of Auverne and Carnae; a **Castle**
+  in Lunedale. Every other plot: Zjoal 20 Barracks / 3 Mines / 3 Farms / 1 empty; Kerunian
+  14 Barracks / 2 Mines / 2 Farms / 1 Square (placement random). Every army has exactly one
+  Captain; sizes 12 (Affrancian Uplands, March of Auverne, Lunedale, Free Cities),
+  8 (Vense, Carnae, Orlais, Cualus, Damlére), otherwise 3 (Zjoal) / 5 (Kerunian). Zjoal
+  Islands, Leimarch, Liadnon, Ahtep and Anodia are neutral and empty.
+- **Zjoal technologies already researched:** the whole Combat column, the first 3 Economy
+  techs and the first 5 Leadership techs. Makeshift Barracks makes demolishing a Barracks a
+  full refund — the intended way to make room for Mines and Farms.
+- **100% taxation on the Zjoal Empire only:** all gold left unspent at the end of the
+  player's turn is lost (income arrives afterwards, so it can be spent next turn).
+- **Nobody can train Heroes.**
+- **Kerunian attacks:** at most **turn ÷ 2 + 10** units (rounded down) against any one
+  territory per turn — 10 on turn 1, 15 on turn 10, 17 on turns 14-15 — but any number of
+  territories may be attacked. Every Kerunian turn includes at least one **forced attack**,
+  aimed at Lunedale or Free Cities whenever they can reach one.
+- **Rebellions** (start of the player's turn): one random Zjoal territory on turns 2 and 4,
+  then one **every turn from turn 6** — 12 over the tale. The Rebels take its armies and
+  buildings. **Lunedale, Free Cities, Damlére and Oucine never rebel.** Rebel land can be
+  retaken; the Rebels are never eliminated, even with no land left.
+- **Turns to Hold** widget (bottom-left of the map) counts down from 15.
+
 ---
 
 ## 🏆 Player Level System

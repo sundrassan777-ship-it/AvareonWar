@@ -259,6 +259,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Taxation configuration (0=0%, 1=25%, 2=50%, 3=75%, 4=100%)
         # Applied at turn end BEFORE income collection
         self.taxation_level = taxation_level
+        # Per-player taxation level set by a mission ({player_index: level}); players
+        # not listed use taxation_level. Read through get_taxation_level(). Tale II
+        # taxes only the Zjoal Empire at 100%. Not saved: the mission sets it again.
+        self.player_taxation_override = {}
 
         # Victory condition configuration ("Domination (45+)", "Capital Assault", "Total Conquest")
         self.victory_condition = victory_condition

@@ -526,8 +526,13 @@ class UIRenderer:
             command_limit = self.game.game_state.player_command_limit[player]
 
             tax_percentages = [0, 25, 50, 75, 100]
-            tax_level = self.game.game_state.taxation_level if hasattr(self.game.game_state, 'taxation_level') else 0
-            tax_pct = tax_percentages[tax_level]
+            # Per-player level (a mission may tax one player only, e.g. Tale II)
+            gs = self.game.game_state
+            if hasattr(gs, 'get_taxation_level'):
+                tax_level = gs.get_taxation_level(player)
+            else:
+                tax_level = getattr(gs, 'taxation_level', 0)
+            tax_pct = tax_percentages[max(0, min(tax_level, len(tax_percentages) - 1))]
 
             # Command limit color coding (green ≤ 80%, yellow 80-100%, red > 100%)
             ratio = current_command / command_limit if command_limit > 0 else 0

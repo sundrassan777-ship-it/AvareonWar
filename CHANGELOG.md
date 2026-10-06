@@ -2,6 +2,56 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-06 - Book of Tales: Tale II "Final Breaths" (+ engine hooks and an AI fix)
+
+**The tale** (`tale_final_breaths.py`, class `TaleFinalBreaths`, `mission_id 'tale_2'`):
+- Avareon geometry with Campaign Mission 3's territory set and background
+  (`Campaign3Map.png`). Zjoal Empire (player) vs Kerunian Empire (built-in Hard AI) vs
+  Nordian Rebels; no alliances. Hold Lunedale and Free Cities for 15 turns; losing either
+  is defeat.
+- Setup: 17 / 13 / 0 territories, gold 200 / 7000 / 0, Kerunian command limit 200 (100
+  left them no room to spend their gold — playtesting found their attacks dried up). Keeps in
+  Affrancian Uplands, March of Auverne, Carnae and a Castle in Lunedale; remaining plots
+  75% Barracks / 10% Mines / 10% Farms + 5% empty (Zjoal) or Squares (Kerunian), shuffled.
+  Each army = 1 Captain + random units (12 / 8 / 3 / 5). Zjoal starts with the Combat
+  column, Economy 1-3 and Leadership 1-5 researched. Mission 3's other five territories are
+  neutral and empty.
+- Zjoal pays 100% taxation (player-only), so unspent gold is lost at the end of each turn.
+- Kerunian attacks capped at `turn // 2 + 10` units per target per turn, plus one forced
+  attack per Kerunian turn aimed at Lunedale / Free Cities when reachable. Tuned with
+  headless simulations against a bot that stacks both objectives (results noted at
+  `ATTACK_CAP_BASE`): caps of `turn // 2 + 1`/`+ 3` never threatened it.
+- Rebellions: one random Zjoal territory on turns 2 and 4, then one every turn from turn 6
+  (Lunedale, Free Cities, Damlére, Oucine immune); the Rebels never act and are never
+  eliminated, even with no land.
+- Optional Kerunian reinforcements (`KERUNIAN_REINFORCEMENTS`, off): spawn units in their
+  territories each turn; simulations showed even 1 per turn overwhelms a defender.
+- Nobody can train Heroes. "Turns to Hold" widget (Tale I's Popularity bar, no button).
+  No in-game transmissions; `tale_2_intro` / `tale_2_outro` cutscenes play if authored.
+- `book_of_tales.py`: `tale_2` shown as "Final Breaths" (description, objectives, notes incl.
+  the 100% taxation note). `main.py` `_TALE_REGISTRY['tale_2']`; `save_manager` label
+  "Tale: Final Breaths". `Cutscene_Tool.py` lists `tale_1`/`tale_2` intro/outro ("T1 In"…).
+
+**Engine:**
+- `ai_military.mission_ai_attack_cap()` → mission `get_ai_attack_cap(attacker, territory)`:
+  per-target, per-turn unit cap, applied in `AttackPlanner.select_attack_targets()` and as a
+  last-line guard in `AIPlayer._execute_action_internal('move')` (counts orders already
+  placed at that target).
+- `ai_military.mission_allows_ai_action()`: the built-in AI now honours the mission's
+  `is_action_allowed('train_hero')` (planning + execution); `start_hero_training()` itself
+  has no mission check. Tale I unaffected (its gate refuses only the player).
+- `GameState.apply_tech_effect(player, tech, announce=True)` extracted from
+  `finish_research()` (unchanged behaviour) so pre-granted techs apply identical effects.
+- Per-player taxation: `GameState.player_taxation_override` + `get_taxation_level(player)`,
+  used by `apply_taxation()` and the top-bar taxation slot.
+
+**Fix:** `ArmyComposer.calculate_counter_composition()` picked Captain as the enemy's
+"strongest" unit when Captains were the most common type; its counter is `None`, so the AI
+tried to train unit type `None` (logged "Invalid unit type: None", training slot wasted).
+Captains are now ignored when choosing the counter.
+
+**Tests:** `tests/test_tale_final_breaths.py` (45).
+
 ## 2026-09-26 - Action error feedback (+ the bugs underneath it)
 
 Every refused player action now either gives the denial sound + a red toast (top-left of

@@ -1161,6 +1161,75 @@ class BuildingMixin:
         self.add_message(f"Research cancelled: {tech_name}, {cost} gold refunded (100%)")
         return True
 
+    def apply_tech_effect(self, player, tech, announce=True):
+        """
+        Apply a researched technology's effect to `player`.
+
+        Extracted from finish_research() so campaign missions / Tales that start
+        a player with techs already researched (Tale II) apply exactly the same
+        effects as real research. Income techs (Efficient Farming/Mining, Laws of
+        Trade, ...) have no attribute to set here: economy.py checks the
+        researched set directly. announce=False skips the "Research complete"
+        messages (used for pre-granted techs).
+        """
+        effect_type = tech.get('effect_type')
+        effect_value = tech.get('effect_value')
+        say = self.add_message if announce else (lambda *_args, **_kw: None)
+
+        if effect_type == 'time_limit' and effect_value:
+            # Increase planning time limit
+            self.player_planning_time_limit[player] += effect_value
+            say(f"Research complete: {tech['name']}! Planning time increased by {effect_value}s")
+        elif effect_type == 'command_limit' and effect_value:
+            # Increase command limit
+            self.player_command_limit[player] += effect_value
+            new_limit = self.player_command_limit[player]
+            say(f"Research complete: {tech['name']}! Command limit increased to {new_limit}")
+        elif effect_type == 'cost_reduction' and effect_value:
+            # Apply cost reduction for Heroes and Keeps
+            self.player_royal_decree_discount[player] = effect_value
+            say(f"Research complete: {tech['name']}! Hero and Keep costs reduced by {effect_value}%")
+        elif effect_type == 'unit_cost_reduction' and effect_value:
+            # Apply cost reduction for Swordsmen and Pikemen
+            self.player_training_cost_discount[player] = effect_value
+            say(f"Research complete: {tech['name']}! Swordsman and Pikeman costs reduced by {effect_value}%")
+        elif effect_type == 'cavalry_cost_reduction' and effect_value:
+            # Apply cost reduction for Cavalry
+            self.player_cavalry_cost_discount[player] = effect_value
+            say(f"Research complete: {tech['name']}! Cavalry cost reduced by {effect_value}%")
+        elif effect_type == 'archer_keep_strength' and effect_value:
+            # Apply strength bonus for Archers in territories with friendly Keep/Castle
+            self.player_archer_keep_strength_bonus[player] = effect_value
+            say(f"Research complete: {tech['name']}! Archers gain +{effect_value}% strength in territories with friendly Keep/Castle")
+        elif effect_type == 'farm_destruction_bonus' and effect_value:
+            # Apply gold bonus for destroying enemy Farms
+            self.player_farm_destruction_gold_bonus[player] = effect_value
+            say(f"Research complete: {tech['name']}! Gain {effect_value} Gold whenever you destroy an enemy Farm")
+        elif effect_type == 'cavalry_strength_bonus' and effect_value:
+            # Apply strength bonus for Cavalry units
+            self.player_cavalry_strength_bonus[player] = effect_value
+            say(f"Research complete: {tech['name']}! Cavalry units gain +{effect_value}% strength")
+        elif effect_type == 'keep_siege_bonus' and effect_value:
+            # Enable Divide and Conquer bonus for attacking Keeps
+            self.player_divide_conquer_bonus[player] = True
+            say(f"Research complete: {tech['name']}! Pikemen/Swordsmen +20% strength, Archers +50% in Keep Phase 2")
+        elif effect_type == 'barracks_upgrade' and effect_value:
+            # Apply cost reduction for Barracks and enable full refund on demolish
+            self.player_barracks_cost_discount[player] = effect_value
+            self.player_barracks_full_refund[player] = True
+            say(f"Research complete: {tech['name']}! Barracks cost reduced by {effect_value}%, demolish returns 100%")
+        elif effect_type == 'hero_limit' and effect_value:
+            # Set hero limit to the new value + Captain cost discount (Heroic Fortitude)
+            self.player_hero_limit[player] = effect_value
+            self.player_captain_cost_discount[player] = 33  # 75g → 50g
+            say(f"Research complete: {tech['name']}! Hero limit increased to {effect_value}. Captain cost reduced to 50g.")
+        elif effect_type == 'hero_keep_defense' and effect_value:
+            # Set hero keep defense bonus
+            self.player_hero_keep_defense_bonus[player] = effect_value
+            say(f"Research complete: {tech['name']}! Keeps/Castles with heroes gain +{effect_value} defense bonus")
+        else:
+            say(f"Research complete: {tech['name']}!")
+
     def finish_research(self):
         """
         Complete research (called at start of player's turn).
@@ -1200,63 +1269,8 @@ class BuildingMixin:
                 # Remove from available (already researched)
                 self.player_tech_available[self.current_player].discard(tech_id)
 
-                # Apply the effect
-                effect_type = tech.get('effect_type')
-                effect_value = tech.get('effect_value')
-
-                if effect_type == 'time_limit' and effect_value:
-                    # Increase planning time limit
-                    self.player_planning_time_limit[self.current_player] += effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Planning time increased by {effect_value}s")
-                elif effect_type == 'command_limit' and effect_value:
-                    # Increase command limit
-                    self.player_command_limit[self.current_player] += effect_value
-                    new_limit = self.player_command_limit[self.current_player]
-                    self.add_message(f"Research complete: {tech['name']}! Command limit increased to {new_limit}")
-                elif effect_type == 'cost_reduction' and effect_value:
-                    # Apply cost reduction for Heroes and Keeps
-                    self.player_royal_decree_discount[self.current_player] = effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Hero and Keep costs reduced by {effect_value}%")
-                elif effect_type == 'unit_cost_reduction' and effect_value:
-                    # Apply cost reduction for Swordsmen and Pikemen
-                    self.player_training_cost_discount[self.current_player] = effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Swordsman and Pikeman costs reduced by {effect_value}%")
-                elif effect_type == 'cavalry_cost_reduction' and effect_value:
-                    # Apply cost reduction for Cavalry
-                    self.player_cavalry_cost_discount[self.current_player] = effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Cavalry cost reduced by {effect_value}%")
-                elif effect_type == 'archer_keep_strength' and effect_value:
-                    # Apply strength bonus for Archers in territories with friendly Keep/Castle
-                    self.player_archer_keep_strength_bonus[self.current_player] = effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Archers gain +{effect_value}% strength in territories with friendly Keep/Castle")
-                elif effect_type == 'farm_destruction_bonus' and effect_value:
-                    # Apply gold bonus for destroying enemy Farms
-                    self.player_farm_destruction_gold_bonus[self.current_player] = effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Gain {effect_value} Gold whenever you destroy an enemy Farm")
-                elif effect_type == 'cavalry_strength_bonus' and effect_value:
-                    # Apply strength bonus for Cavalry units
-                    self.player_cavalry_strength_bonus[self.current_player] = effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Cavalry units gain +{effect_value}% strength")
-                elif effect_type == 'keep_siege_bonus' and effect_value:
-                    # Enable Divide and Conquer bonus for attacking Keeps
-                    self.player_divide_conquer_bonus[self.current_player] = True
-                    self.add_message(f"Research complete: {tech['name']}! Pikemen/Swordsmen +20% strength, Archers +50% in Keep Phase 2")
-                elif effect_type == 'barracks_upgrade' and effect_value:
-                    # Apply cost reduction for Barracks and enable full refund on demolish
-                    self.player_barracks_cost_discount[self.current_player] = effect_value
-                    self.player_barracks_full_refund[self.current_player] = True
-                    self.add_message(f"Research complete: {tech['name']}! Barracks cost reduced by {effect_value}%, demolish returns 100%")
-                elif effect_type == 'hero_limit' and effect_value:
-                    # Set hero limit to the new value + Captain cost discount (Heroic Fortitude)
-                    self.player_hero_limit[self.current_player] = effect_value
-                    self.player_captain_cost_discount[self.current_player] = 33  # 75g → 50g
-                    self.add_message(f"Research complete: {tech['name']}! Hero limit increased to {effect_value}. Captain cost reduced to 50g.")
-                elif effect_type == 'hero_keep_defense' and effect_value:
-                    # Set hero keep defense bonus
-                    self.player_hero_keep_defense_bonus[self.current_player] = effect_value
-                    self.add_message(f"Research complete: {tech['name']}! Keeps/Castles with heroes gain +{effect_value} defense bonus")
-                else:
-                    self.add_message(f"Research complete: {tech['name']}!")
+                # Apply the effect (shared with missions that pre-grant techs)
+                self.apply_tech_effect(self.current_player, tech)
 
                 # Play research completion sound for human player only
                 # FIX: Check if current player is human (not AI) - sounds should never play for AI actions

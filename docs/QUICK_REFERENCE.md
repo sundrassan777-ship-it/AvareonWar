@@ -267,6 +267,36 @@ revolt T1Revolt (3s) · victory T1TWin (7s) · defeat T1TLoss (4s).
 
 ---
 
+## 📖 Tale II: Final Breaths Quick Reference
+
+Book of Tales, Avareon geometry + Campaign Mission 3 territories/background. Tuning
+constants: top of `tale_final_breaths.py`. Hold Lunedale + Free Cities for `HOLD_TURNS` (15).
+
+| Faction | Idx | Colour | Gold | AI | Territories | Notes |
+|---------|-----|--------|------|----|-------------|-------|
+| Zjoal Empire (player) | 0 | Blue | 200 | — | 17 (79 units) | 100% taxation (`PLAYER_TAXATION_LEVEL` 4), 15 techs pre-researched |
+| Kerunian Empire | 1 | Red | 7000 | Hard | 13 (88 units) | command limit 200 (`RED_COMMAND_LIMIT`) |
+| Nordian Rebels | 2 | Yellow | 0 | never acts | 0 | gains land only by rebellion |
+| Neutral | -1 | — | — | — | 5 (empty) | Zjoal Islands, Leimarch, Liadnon, Ahtep, Anodia |
+
+**Plots:** Keeps — Lunedale (Castle), Affrancian Uplands, March of Auverne, Carnae. Rest:
+Zjoal 20 Barracks / 3 Mine / 3 Farm / 1 empty; Kerunian 14 Barracks / 2 Mine / 2 Farm / 1 Square.
+**Armies:** 1 Captain each + random basics; 12 / 8 / 3 (Zjoal) / 5 (Kerunian).
+**Zjoal techs:** `tech_1_0`-`1_6`, `tech_0_0`-`0_2`, `tech_2_0`-`2_4` (next: `tech_0_3`, `tech_2_5`).
+
+| Rule | Value |
+|------|-------|
+| Kerunian cap per target per turn | `turn // 2 + ATTACK_CAP_BASE` (10) → T1 10, T10 15, T15 17 |
+| Forced Kerunian attacks | `FORCED_ATTACK_TARGETS` 1/turn, objectives first, `FORCED_ATTACK_KEEP` 1 unit stays home |
+| Rebellions | 1 on turns 2 and 4, then 1 every turn from turn 6 (12 total) |
+| Never rebel | Lunedale, Free Cities, Damlére, Oucine |
+| Kerunian reinforcements | off (`KERUNIAN_REINFORCEMENTS` (min, max) per territory per turn) |
+| Heroes | nobody can train them |
+
+**Achievement:** none yet. **Cutscenes:** `tale_2_intro` / `tale_2_outro` (optional).
+
+---
+
 ## 🗺️ Terrain Effects
 
 *Terrain system not yet implemented. Combat uses counter system and Keep bonus only.*
@@ -405,6 +435,7 @@ server.send_to_player(player_idx, msg)
 **Book of Tales:**
 - book_of_tales.py (picker, `SCENARIOS`)
 - tale_lack_of_funds.py (Tale I)
+- tale_final_breaths.py (Tale II)
 - main.py `_TALE_REGISTRY` + `_run_registered_mission()`
 
 **Data (root directory):**
