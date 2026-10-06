@@ -610,6 +610,22 @@ def play_transmission_sound(key):
         return False
 
 
+def get_transmission_length(key):
+    """Length in seconds of a loaded transmission voice line (0.0 if not loaded).
+
+    Lets a mission keep a transmission's text on screen at least as long as its
+    voice: the text expiring stops the voice (Tale II uses it so a line timed
+    shorter than its recording is never cut off).
+    """
+    sound = _transmission_sounds.get(key)
+    if sound is None:
+        return 0.0
+    try:
+        return sound.get_length()
+    except pygame.error:
+        return 0.0
+
+
 def stop_transmission_sound():
     """Stop any currently playing transmission voice line."""
     global _transmission_channel

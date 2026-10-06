@@ -996,7 +996,7 @@ change hands, add it here and decide which column it belongs in.
 | `victory.py` elimination redistribution | no | the loser is already out of the game |
 | `campaign_mission_6.py:1356` | no | scripted faction handover, keeps armies and buildings |
 | `tale_lack_of_funds.py _revolt_territory()` | no | Popularity revolt (scripted handover); announced by the T1Revolt transmission |
-| `tale_final_breaths.py _rebel_territory()` | no | Rebellion (scripted handover); announced by a toast |
+| `tale_final_breaths.py _rebel_territory()` | no | Rebellion (scripted handover); announced by a toast + the T2R1 / T2R+ transmission |
 | `SIM_ROUND_COMPLETE` / `FULL_STATE_SYNC` bulk sync | no | desync correction, not a fresh loss |
 | `keyboard_handler.py`, setup phase | no | debug cheats and game setup |
 
@@ -2891,7 +2891,11 @@ def is_action_allowed(self, action_type, **kwargs):
 ### Campaign Transmission Voice Lines
 
 **Naming:** `T{N}.mp3` for Mission 1, `M{X}T{N}.mp3` for Mission 2+, and for Book of Tales
-`T{tale}T{N}.mp3` plus named lines (Tale I: `T1T1`-`T1T3`, `T1Revolt`, `T1TWin`, `T1TLoss`).
+`T{tale}T{N}.mp3` plus named lines (Tale I: `T1T1`-`T1T3`, `T1Revolt`, `T1TWin`, `T1TLoss`;
+Tale II: `T2T1`-`T2T3`, `T2R1`, `T2R+`, `T2W`, `T2L`).
+`global_sound.get_transmission_length(key)` returns a loaded line's length (0.0 if missing);
+Tale II keeps each line on screen for `max(duration, length)`, because the text expiring
+stops the voice.
 Placed in `assets/sounds/transmissions/`. Loaded by `global_sound.load_transmission_sounds()`
 using filename stem as key (only for games with a `campaign_map`, which tales have).
 
@@ -3327,9 +3331,14 @@ interface and structure as Tale I (copy from either); what is different:
      as active in the Players window. Tale win/lose ignores them.
 5. **No Heroes for anyone:** `is_action_allowed('train_hero')` is always False and
    `should_hide_hero_training()` True; the built-in AI checks the same gate.
-6. **No in-game intro or transmissions** — the intro/outro are cutscenes
-   (`tale_2_intro` / `tale_2_outro`, edit with Cutscene_Tool.py; skipped while absent).
-   `intro_active` is False from the start; the opening camera eases to Lunedale.
+6. **Intro / transmissions** — same machinery as Tale I (copied, not shared): `INTRO_SEQUENCE`
+   (zoom to Lunedale, then T2T1-T2T3, all spoken by `ADVISOR_SPEAKER` "Advisor Valcerque")
+   runs in `_update_intro()` with gameplay paused; ESC skips a line; `restore_save_state()`
+   never replays it. Rebellions queue **one** line per turn that had any (`T2R1` the first
+   time — `_rebellion_announced`, saved — then `T2R+`), played at the next idle moment.
+   Victory/defeat wait for queued lines, then play `T2W` / `T2L` before the shared endgame
+   sequence. `_show_transmission()` uses `max(duration, recording length)`.
+   Optional cutscenes `tale_2_intro` / `tale_2_outro` (Cutscene_Tool.py) play around the tale.
 - **Turn logic:** `_on_player_turn_start()` (guarded by `_last_turn_handled`): victory when a
   player turn starts with `gs.turn_number >= HOLD_TURNS` and both objectives held; otherwise
   the rebellions. **Defeat** the moment Lunedale or Free Cities isn't the player's

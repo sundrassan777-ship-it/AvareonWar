@@ -2,6 +2,19 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-06 - Tale II transmissions (voiced by Advisor Valcerque)
+
+- `tale_final_breaths.py`: Tale I's intro / transmission machinery. Intro (gameplay
+  paused, ESC skips): zoom to Lunedale, then `T2T1`-`T2T3`. Rebellions: one line per turn
+  that had any — `T2R1` the first time (`_rebellion_announced`, saved), `T2R+` after.
+  Victory `T2W`, defeat `T2L`, each before the shared endgame screen; the endgame waits for
+  queued lines. A reload never replays the intro.
+- `global_sound.get_transmission_length(key)`: lines stay on screen for
+  `max(stated duration, recording length)` — the text expiring stops the voice, and T2T3 /
+  T2R1 are slightly longer than their stated 2 s / 3 s.
+- Voice files `assets/sounds/transmissions/T2T1-3, T2R1, T2R+, T2W, T2L.mp3`.
+- Tests: 12 transmission tests (`tests/test_tale_final_breaths.py`, now 64).
+
 ## 2026-10-06 - Tale II achievement: "Final Breaths"
 
 - `achievement_manager.py`: `campaign_tale_2` "Final Breaths" — "Win the Final Breaths
@@ -36,7 +49,8 @@ All notable changes to the AvareonWar project.
 - Optional Kerunian reinforcements (`KERUNIAN_REINFORCEMENTS`, off): spawn units in their
   territories each turn; simulations showed even 1 per turn overwhelms a defender.
 - Nobody can train Heroes. "Turns to Hold" widget (Tale I's Popularity bar, no button).
-  No in-game transmissions; `tale_2_intro` / `tale_2_outro` cutscenes play if authored.
+  No in-game transmissions yet (added later the same day, see above); `tale_2_intro` /
+  `tale_2_outro` cutscenes play if authored.
 - `book_of_tales.py`: `tale_2` shown as "Final Breaths" (description, objectives, notes incl.
   the 100% taxation note). `main.py` `_TALE_REGISTRY['tale_2']`; `save_manager` label
   "Tale: Final Breaths". `Cutscene_Tool.py` lists `tale_1`/`tale_2` intro/outro ("T1 In"…).

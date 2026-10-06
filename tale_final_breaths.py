@@ -19,7 +19,8 @@ import random
 import pygame
 import map_data
 from utils.logger import get_logger
-from campaign_utils import CameraZoomAnimation
+# Shared campaign utilities (TransmissionOverlay, camera animation, endgame sequences)
+from campaign_utils import TransmissionOverlay, CameraZoomAnimation
 from campaign_utils import update_endgame_sequence, render_endgame_sequence
 from campaign_mission_3 import MISSION_3_TERRITORIES
 # Shared with Tale I: plot-mix allocation and the BattleBar.png frame geometry
@@ -150,9 +151,40 @@ KERUNIAN_REINFORCEMENTS_FRONT_ONLY = False
 # Scale for the built-in AI's readability pauses (ai_player._pace), as Tale I
 AI_DELAY_SCALE = 0.0
 
-# Opening camera: zoom towards Lunedale (gameplay is not paused)
+# Opening camera: zoom towards Lunedale (first step of the intro)
 START_CAMERA_ZOOM = 2.0
 START_CAMERA_DURATION = 1.0
+
+# --- Transmissions ---
+# Voice lines live in assets/sounds/transmissions/ and are keyed by file stem
+# (global_sound.load_transmission_sounds loads them for any game with a campaign map).
+ADVISOR_SPEAKER = "Advisor Valcerque"   # Speaks every line of this Tale
+
+# Intro: zoom to Lunedale, then three voiced transmissions. Gameplay (and the
+# planning timer) is paused until it ends; ESC skips the current line.
+# Format: (action, param, speaker, text, voice_key, duration_seconds)
+INTRO_SEQUENCE = [
+    ('zoom_to', "Lunedale", None, "", None, 0.0),
+    ('say', None, ADVISOR_SPEAKER,
+     "The Kerunian Empire might outnumber us on the field, but I know that their "
+     "population is tired of war.", 'T2T1', 7.0),
+    ('say', None, ADVISOR_SPEAKER,
+     "We just need to hold on. Contain their expansion. Soon, their will to fight will "
+     "break and they will be forced to negotiate.", 'T2T2', 9.0),
+    ('say', None, ADVISOR_SPEAKER, "Defend our heartland at all costs!", 'T2T3', 2.0),
+]
+INTRO_LINE_GAP = 1.0   # Silence between consecutive voiced intro lines (as Tale I)
+
+# Gameplay / endgame transmissions: (speaker, text, voice_key, duration_seconds).
+# A line is never shown for less than its recording lasts (see _show_transmission).
+FIRST_REBELLION_TRANSMISSION = (ADVISOR_SPEAKER,
+                                "The Nordians are rebelling against us. We must hold!", 'T2R1', 3.0)
+REBELLION_TRANSMISSION = (ADVISOR_SPEAKER, "Another rebellion! Stay strong!", 'T2R+', 3.0)
+DEFEAT_TRANSMISSION = (ADVISOR_SPEAKER,
+                       "Our defenses have fallen! The legacy of our empire is undone.", 'T2L', 4.0)
+VICTORY_TRANSMISSION = (ADVISOR_SPEAKER,
+                        "We have done it! The Kerunians cannot continue the war - their people "
+                        "are revolting! The negotiations can commence!", 'T2W', 8.0)
 
 # --- Rebellions ---
 # Before turn REBELLION_RAMP_TURN: REBELLIONS_EARLY territories rebel at the start
@@ -224,19 +256,29 @@ class TaleFinalBreaths:
         self.active = True
         self.rng = rng or random.Random()
 
-        # No in-game intro (the intro is a cutscene, played by main.py before
-        # loading). These are read by main.py (planning timer, input gating).
-        self.intro_active = False
-        self.game_paused = False
-        self.timer_visible = True
+        # Intro sequence state (INTRO_SEQUENCE). intro_active / game_paused /
+        # timer_visible are also read by main.py (planning timer, input gating).
+        self.intro_active = True
+        self.intro_step_index = -1
+        self._intro_waiting_for_camera = False
+        self._intro_gap_timer = 0.0
+        self.game_paused = True
+        self.timer_visible = False
         self.allow_timer_expiry = True
         # Read by ai_player._pace(): fast AI turns for the built-in AI
         self.ai_delay_scale = AI_DELAY_SCALE
 
         # Camera animation (read by main.py to suspend manual zoom while active)
         self.camera_animation = None
-        # No transmissions in this Tale; campaign_utils' endgame sequence reads it
+
+        # Transmission overlay + queue of gameplay transmissions waiting for an
+        # idle moment: list of (speaker, text, voice_key, duration) tuples
         self.transmission_overlay = None
+        self.transmission_timer = 0.0
+        self.transmission_duration = 0.0
+        self.transmission_queue = []
+        # The first rebellion gets its own line (T2R1); later ones T2R+
+        self._rebellion_announced = False
 
         # Quest log — mirrors the Objectives in the Book of Tales description
         self.quest_log = [
@@ -293,7 +335,7 @@ class TaleFinalBreaths:
         map_data.set_enabled_territories(MISSION_3_TERRITORIES)
 
         self._setup_initial_state()
-        self._start_camera(CASTLE_TERRITORY)
+        self._advance_intro()   # Step 0: zoom to Lunedale
 
         logger.info("Tale 'Final Breaths' initialized: 3 factions on the Mission 3 map")
 
@@ -471,6 +513,125 @@ class TaleFinalBreaths:
                 and not gs.turn_announcement_active)
 
     # ========================================================================
+    # INTRO SEQUENCE (same machinery as Tale I)
+    # ========================================================================
+
+    def _advance_intro(self):
+        """Move to the next INTRO_SEQUENCE step (or end the intro after the last)."""
+        self.intro_step_index += 1
+        if self.intro_step_index >= len(INTRO_SEQUENCE):
+            self._end_intro()
+            return
+        action, param, speaker, text, voice_key, duration = INTRO_SEQUENCE[self.intro_step_index]
+        if action == 'zoom_to':
+            # Wait for the camera; skip straight on if it cannot animate (no camera)
+            self._intro_waiting_for_camera = self._start_camera(param)
+            if not self._intro_waiting_for_camera:
+                self._advance_intro()
+        elif action == 'say':
+            self._show_transmission(text, duration, speaker, voice_key)
+
+    def _update_intro(self, delta_time):
+        """Drive the intro: camera step, then each line for its duration + a gap."""
+        if self.camera_animation:
+            self.camera_animation.update(delta_time)
+            if not self.camera_animation.active:
+                self.camera_animation = None
+                if self._intro_waiting_for_camera:
+                    self._intro_waiting_for_camera = False
+                    self._advance_intro()
+            return
+        if self._intro_gap_timer > 0:
+            self._intro_gap_timer -= delta_time
+            if self._intro_gap_timer <= 0:
+                self._intro_gap_timer = 0.0
+                self._advance_intro()
+            return
+        if self.transmission_overlay and self.transmission_duration > 0:
+            self.transmission_timer += delta_time
+            if self.transmission_timer >= self.transmission_duration:
+                self._finish_intro_line()
+
+    def _finish_intro_line(self):
+        """Current intro line is over: short silence before the next voiced line."""
+        from global_sound import stop_transmission_sound
+        stop_transmission_sound()
+        self.transmission_overlay = None
+        self.transmission_duration = 0.0
+        next_idx = self.intro_step_index + 1
+        if next_idx < len(INTRO_SEQUENCE) and INTRO_SEQUENCE[next_idx][0] == 'say':
+            self._intro_gap_timer = INTRO_LINE_GAP
+        else:
+            self._advance_intro()
+
+    def _end_intro(self):
+        """Intro over: unpause, show the planning timer and restart it from full."""
+        import time
+        from global_sound import stop_transmission_sound
+        stop_transmission_sound()
+        self.intro_active = False
+        self.game_paused = False
+        self.timer_visible = True
+        self.transmission_overlay = None
+        self.transmission_duration = 0.0
+        self._intro_gap_timer = 0.0
+        self._intro_waiting_for_camera = False
+        self.camera_animation = None
+        self.game_state.planning_phase_start_time = time.time()
+        logger.info("Tale intro complete — gameplay begins")
+
+    # ========================================================================
+    # TRANSMISSIONS
+    # ========================================================================
+
+    def _show_transmission(self, text, duration, speaker=ADVISOR_SPEAKER, voice_key=None):
+        """Show a transmission and play its voice line.
+
+        The text stays up for `duration` seconds, or for as long as the recording
+        lasts if that is longer: the text expiring stops the voice, so a line
+        timed shorter than its recording would otherwise be cut off.
+        """
+        import main as _main
+        screen = self.main_game.screen
+        if not self.transmission_overlay:
+            self.transmission_overlay = TransmissionOverlay(
+                screen.get_width(), screen.get_height(), text, _main.TOP_PANEL_HEIGHT,
+                speaker=speaker)
+        else:
+            self.transmission_overlay.set_text(text, speaker=speaker)
+        self.transmission_timer = 0.0
+        self.transmission_duration = duration
+        if voice_key:
+            from global_sound import play_transmission_sound, get_transmission_length
+            self.transmission_duration = max(duration, get_transmission_length(voice_key))
+            play_transmission_sound(voice_key)
+
+    def _queue_transmission(self, transmission):
+        """Queue a (speaker, text, voice_key, duration) transmission for the next idle moment."""
+        self.transmission_queue.append(transmission)
+
+    def _start_pending_transmission(self):
+        """Show the next queued transmission."""
+        speaker, text, voice_key, duration = self.transmission_queue.pop(0)
+        self._show_transmission(text, duration, speaker, voice_key)
+
+    def skip_transmission(self):
+        """ESC skips the visible transmission (during the intro: skips to the next line)."""
+        if not self.active or not self.transmission_overlay:
+            return False
+        if self.victory_sequence_active or self.defeat_sequence_active:
+            return False
+        from global_sound import stop_transmission_sound
+        stop_transmission_sound()
+        self.transmission_overlay = None
+        self.transmission_timer = 0.0
+        self.transmission_duration = 0.0
+        if self.intro_active:
+            self._intro_gap_timer = 0.0
+            self._advance_intro()
+        return True
+
+    # ========================================================================
     # SAVE / RESTORE STATE
     # ========================================================================
 
@@ -484,10 +645,11 @@ class TaleFinalBreaths:
             'game_frozen': self.game_frozen,
             '_last_turn_handled': self._last_turn_handled,
             '_last_red_turn_handled': self._last_red_turn_handled,
+            '_rebellion_announced': self._rebellion_announced,
         }
 
     def restore_save_state(self, data):
-        """Restore Tale-specific state. The opening camera move is dropped on load."""
+        """Restore Tale-specific state. The intro is never replayed on load."""
         self.active = data.get('active', True)
         self.quest_log = data.get('quest_log', self.quest_log)
         self.timer_visible = data.get('timer_visible', True)
@@ -495,10 +657,21 @@ class TaleFinalBreaths:
         self.game_frozen = data.get('game_frozen', False)
         self._last_turn_handled = data.get('_last_turn_handled', self._last_turn_handled)
         self._last_red_turn_handled = data.get('_last_red_turn_handled', self._last_red_turn_handled)
+        self._rebellion_announced = data.get('_rebellion_announced', self._rebellion_announced)
         # The override isn't part of the saved game state: set it again
         self._apply_taxation()
         self._display_remaining = float(self.get_turns_remaining())   # No drain animation on load
+        # Resuming mid-game: never replay the intro the constructor just started
+        self.intro_active = False
+        self.intro_step_index = len(INTRO_SEQUENCE)
+        self._intro_waiting_for_camera = False
+        self._intro_gap_timer = 0.0
         self.camera_animation = None
+        self.transmission_overlay = None
+        self.transmission_duration = 0.0
+        self.transmission_queue = []
+        from global_sound import stop_transmission_sound
+        stop_transmission_sound()
         self.game_paused = False
 
     # ========================================================================
@@ -522,6 +695,11 @@ class TaleFinalBreaths:
         # eliminate_player()). Undo that so the Players window doesn't list them
         # as eliminated and their (empty) turn keeps coming round.
         gs.eliminated_players.discard(REBELS)
+
+        # Intro sequence owns the frame until it ends (gameplay is paused)
+        if self.intro_active:
+            self._update_intro(delta_time)
+            return None
 
         # Instant AI turns: skip the turn announcement banner for AI factions (as
         # Tale I). Completing it here runs the normal start-of-turn work and lets
@@ -554,17 +732,37 @@ class TaleFinalBreaths:
         if gs.phase == 'ended' and gs.winner == PLAYER:
             self._start_victory()
 
-        # Deferred victory/defeat: wait for battles and popups to finish, then
-        # start the shared campaign endgame sequence (no transmission to wait for)
-        if self._is_gameplay_idle():
-            if self._victory_waiting:
-                self._victory_waiting = False
-                self._pending_victory = True
-                self.game_paused = True
-            if self._defeat_waiting:
-                self._defeat_waiting = False
-                self._pending_defeat = True
-                self.game_paused = True
+        # Transmission timer — the voice line stops when its text expires
+        if self.transmission_overlay and self.transmission_duration > 0:
+            self.transmission_timer += delta_time
+            if self.transmission_timer >= self.transmission_duration:
+                self.transmission_overlay = None
+                self.transmission_duration = 0.0
+                from global_sound import stop_transmission_sound
+                stop_transmission_sound()
+
+        gameplay_idle = self._is_gameplay_idle()
+
+        # Queued gameplay transmissions (rebellions) wait for an idle moment
+        if not self.transmission_overlay and self.transmission_queue and gameplay_idle:
+            self._start_pending_transmission()
+
+        # Deferred victory/defeat: wait for battles, popups and queued transmissions
+        # to finish, then play the outro line; the shared campaign endgame
+        # sequence (victory/defeat screen) starts once it expires.
+        endgame_ready = gameplay_idle and not self.transmission_overlay and not self.transmission_queue
+        if self._victory_waiting and endgame_ready:
+            self._victory_waiting = False
+            self._pending_victory = True
+            self.game_paused = True
+            speaker, text, voice_key, duration = VICTORY_TRANSMISSION
+            self._show_transmission(text, duration, speaker, voice_key)
+        if self._defeat_waiting and endgame_ready:
+            self._defeat_waiting = False
+            self._pending_defeat = True
+            self.game_paused = True
+            speaker, text, voice_key, duration = DEFEAT_TRANSMISSION
+            self._show_transmission(text, duration, speaker, voice_key)
 
         # Victory -> 'exit_campaign'; defeat -> 'exit_campaign_defeat' (never the
         # victory sentinel, or main.py would play the outro after a loss)
@@ -840,8 +1038,16 @@ class TaleFinalBreaths:
             self._start_victory()
             return
 
-        for _ in range(rebellions_for_turn(self.get_current_turn())):
-            self._roll_rebellion()
+        rebelled = [t for _ in range(rebellions_for_turn(self.get_current_turn()))
+                    if (t := self._roll_rebellion())]
+        if rebelled:
+            # One voiced line per turn, however many territories rose up: the
+            # first rebellion of the Tale gets T2R1, every later one T2R+
+            if self._rebellion_announced:
+                self._queue_transmission(REBELLION_TRANSMISSION)
+            else:
+                self._queue_transmission(FIRST_REBELLION_TRANSMISSION)
+                self._rebellion_announced = True
 
     def get_rebellion_candidates(self):
         """Zjoal territories that may rebel (sorted, for determinism)."""
@@ -963,6 +1169,9 @@ class TaleFinalBreaths:
             render_endgame_sequence(self, screen, 'victory')
         elif self.defeat_sequence_active:
             render_endgame_sequence(self, screen, 'defeat')
+
+        if self.transmission_overlay:
+            self.transmission_overlay.render(screen)
 
     def _layout_widget(self):
         """(Re)compute the widget's rects; rebuild size-dependent caches if needed.
@@ -1088,6 +1297,8 @@ class TaleFinalBreaths:
     def _cleanup(self):
         """Restore shared state touched by the Tale."""
         logger.info("Cleaning up Tale 'Final Breaths'")
+        from global_sound import stop_transmission_sound
+        stop_transmission_sound()
         map_data.clear_enabled_territories()
         self.game_state.player_taxation_override = {}
         if self.original_flag_icons and hasattr(self.main_game, 'army_flag_icons'):

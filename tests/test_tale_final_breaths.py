@@ -73,8 +73,11 @@ def _unwire():
     map_data.clear_enabled_territories()
 
 
-def _new_tale(game, seed=0):
-    """Fresh Tale on the shared Game, wired in exactly as main.py does it."""
+def _new_tale(game, seed=0, skip_intro=True):
+    """Fresh Tale on the shared Game, wired in exactly as main.py does it.
+
+    Most tests start in normal play, so the intro is skipped unless asked for.
+    """
     gs = game.game_state
     gs.movement_orders = []
     gs.pending_battles = []
@@ -98,12 +101,23 @@ def _new_tale(game, seed=0):
     game.tutorial_mission = mission
     gs.tutorial_mission = mission
     map_data.set_tutorial_mission(mission)
+    if skip_intro:
+        mission._end_intro()
     return mission
 
 
 @pytest.fixture
 def tale(game):
     return _new_tale(game)
+
+
+@pytest.fixture
+def voices(monkeypatch):
+    """Record transmission voice keys instead of playing them."""
+    import global_sound
+    played = []
+    monkeypatch.setattr(global_sound, 'play_transmission_sound', lambda key: played.append(key) or True)
+    return played
 
 
 def _owned(gs, player):
@@ -587,6 +601,114 @@ class TestEndgame:
         outside = next(t for t in map_data.TERRITORY_INCOME if t not in MISSION_3_TERRITORIES)
         assert map_data.is_territory_enabled(outside)      # territory filter cleared
         assert tale.active is False
+
+
+# ============================================================================
+# TRANSMISSIONS
+# ============================================================================
+
+def _idle_until_quiet(tale, frames=400):
+    """Run frames until no transmission is showing or queued."""
+    for _ in range(frames):
+        tale.update(0.05)
+        if not tale.transmission_overlay and not tale.transmission_queue:
+            return
+
+
+class TestTransmissions:
+
+    def test_all_voice_files_exist(self):
+        import tale_final_breaths as t
+        keys = [step[4] for step in t.INTRO_SEQUENCE if step[4]] + [
+            tr[2] for tr in (t.FIRST_REBELLION_TRANSMISSION, t.REBELLION_TRANSMISSION,
+                             t.DEFEAT_TRANSMISSION, t.VICTORY_TRANSMISSION)]
+        assert keys == ['T2T1', 'T2T2', 'T2T3', 'T2R1', 'T2R+', 'T2L', 'T2W']
+        for key in keys:
+            assert os.path.exists(f'assets/sounds/transmissions/{key}.mp3'), key
+
+    def test_every_line_is_spoken_by_the_advisor(self):
+        import tale_final_breaths as t
+        speakers = {step[2] for step in t.INTRO_SEQUENCE if step[0] == 'say'} | {
+            tr[0] for tr in (t.FIRST_REBELLION_TRANSMISSION, t.REBELLION_TRANSMISSION,
+                             t.DEFEAT_TRANSMISSION, t.VICTORY_TRANSMISSION)}
+        assert speakers == {'Advisor Valcerque'}
+
+    def test_intro_pauses_then_plays_three_lines(self, game, voices):
+        tale = _new_tale(game, skip_intro=False)
+        assert tale.intro_active and tale.game_paused
+        assert tale.is_action_allowed('build') is False          # input blocked during the intro
+        for _ in range(1000):
+            tale.update(0.05)
+            if not tale.intro_active:
+                break
+        assert not tale.intro_active and not tale.game_paused and tale.timer_visible
+        assert voices == ['T2T1', 'T2T2', 'T2T3']
+
+    def test_escape_skips_intro_lines(self, game, voices):
+        tale = _new_tale(game, skip_intro=False)
+        for _ in range(200):                                      # through the camera zoom
+            tale.update(0.05)
+            if tale.transmission_overlay:
+                break
+        for _ in range(3):
+            assert tale.skip_transmission() is True
+        assert not tale.intro_active
+        assert voices == ['T2T1', 'T2T2', 'T2T3']
+
+    def test_line_never_shorter_than_its_recording(self, game, tale, monkeypatch, voices):
+        import global_sound
+        monkeypatch.setattr(global_sound, 'get_transmission_length', lambda key: 2.6)
+        tale._show_transmission("Defend our heartland at all costs!", 2.0, voice_key='T2T3')
+        assert tale.transmission_duration == 2.6
+        monkeypatch.setattr(global_sound, 'get_transmission_length', lambda key: 6.2)
+        tale._show_transmission("x", 7.0, voice_key='T2T1')
+        assert tale.transmission_duration == 7.0                 # stated time when longer
+
+    def test_first_rebellion_then_another(self, game, tale, voices):
+        _player_turn(game, tale, 1)                               # turn 2: first rebellion
+        _idle_until_quiet(tale)
+        _player_turn(game, tale, 3)                               # turn 4: second
+        _idle_until_quiet(tale)
+        _player_turn(game, tale, 5)                               # turn 6: third
+        _idle_until_quiet(tale)
+        assert voices == ['T2R1', 'T2R+', 'T2R+']
+
+    def test_one_line_per_turn_however_many_rebel(self, game, tale, voices, monkeypatch):
+        import tale_final_breaths
+        monkeypatch.setattr(tale_final_breaths, 'REBELLIONS_EARLY', 3)
+        _player_turn(game, tale, 1)
+        assert len(_owned(game.game_state, REBELS)) == 3
+        _idle_until_quiet(tale)
+        assert voices == ['T2R1']
+
+    def test_no_line_without_a_rebellion(self, game, tale, voices):
+        _player_turn(game, tale, 2)                               # turn 3: no rebellion
+        _idle_until_quiet(tale)
+        assert voices == []
+
+    def test_victory_line_then_exit(self, game, tale, voices):
+        _player_turn(game, tale, HOLD_TURNS)
+        assert _run_until_exit(tale) == 'exit_campaign'
+        assert voices == ['T2W']
+
+    def test_defeat_line_then_exit(self, game, tale, voices):
+        game.game_state.territory_owners['Lunedale'] = RED
+        assert _run_until_exit(tale) == 'exit_campaign_defeat'
+        assert voices == ['T2L']
+
+    def test_endgame_waits_for_a_queued_rebellion_line(self, game, tale, voices):
+        _player_turn(game, tale, 1)                               # queues T2R1
+        game.game_state.territory_owners['Free Cities'] = RED
+        assert _run_until_exit(tale) == 'exit_campaign_defeat'
+        assert voices == ['T2R1', 'T2L']
+
+    def test_reload_never_replays_the_intro(self, game, voices):
+        tale = _new_tale(game, skip_intro=False)
+        tale.restore_save_state({'_rebellion_announced': True})
+        assert not tale.intro_active and not tale.game_paused and tale.transmission_overlay is None
+        _player_turn(game, tale, 1)
+        _idle_until_quiet(tale)
+        assert voices == ['T2R+']                                 # first-rebellion line already used
 
 
 # ============================================================================

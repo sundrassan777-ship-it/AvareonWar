@@ -293,6 +293,9 @@ Zjoal 20 Barracks / 3 Mine / 3 Farm / 1 empty; Kerunian 14 Barracks / 2 Mine / 2
 | Kerunian reinforcements | off (`KERUNIAN_REINFORCEMENTS` (min, max) per territory per turn) |
 | Heroes | nobody can train them |
 
+**Transmissions** (Advisor Valcerque, `assets/sounds/transmissions/`): intro T2T1 (7s),
+T2T2 (9s), T2T3 (2s) · first rebellion T2R1 (3s) · later rebellions T2R+ (3s) · victory T2W
+(8s) · defeat T2L (4s). Shown for at least the recording's length.
 **Achievement:** `campaign_tale_2` "Final Breaths" (stat `campaign_tale_2_completed`, no reward).
 **Cutscenes:** `tale_2_intro` / `tale_2_outro` (optional).
 
