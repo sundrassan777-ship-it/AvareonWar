@@ -902,6 +902,78 @@ Tests: `tests/test_unit_context_menu.py`
 
 ---
 
+### Right sidebar: collapse, bookmarks and hit-testing
+
+The right sidebar (Technology / Heroes / Action Queue / Action Log / Quests / Chat) is an
+**overlay**: the map is drawn full-width underneath it (`MAP_WIDTH = WINDOW_WIDTH`, camera
+clamp and culling use the window width), so collapsing it needs no viewport change.
+
+**States** (`game_state.sidebar_expanded`, not saved; every new game starts expanded):
+
+| State | Panel | Bookmark tabs | Collapse button |
+|---|---|---|---|
+| Expanded | `[W - SIDEBAR_WIDTH, W)` | stick out to the panel's left | above the tabs, `>>` |
+| Collapsed | off-screen (`panel_x == W`) | flush with the right screen edge | above the tabs, `<<` |
+| Sliding | animated `panel_x` (150 ms, smoothstep) | travel with the panel | travels too |
+
+**Single source of truth — never recompute `WINDOW_WIDTH - 250`:**
+- `ui/sidebar_layout.py` (pure): `sidebar_progress()`, `reverse_anim_start()`,
+  `compute_sidebar_layout()` → `SidebarLayout(progress, panel_x, tab_x, top, height, panel_visible)`.
+- `Game` wrappers (main.py, "SIDEBAR LAYOUT & COLLAPSE"): `get_sidebar_layout()`,
+  `is_sidebar_animating()`, `is_point_on_sidebar_chrome(pos)` (tabs + button),
+  `is_point_over_sidebar_panel(pos)` (panel body, bounded to `TOP_PANEL_HEIGHT..BOTTOM_UI_Y`),
+  `is_point_over_sidebar(pos)` (either), `_is_ai_turn_click_allowed(pos)`.
+- Every consumer goes through them: left click (mouse_handler Priority 7), `get_click_area()`,
+  right click, map hover (`handle_mouse_motion`), tooltips (`update_frame_tooltips`), the mouse
+  wheel (`handle_camera_zoom`) and the AI-turn click whitelist. The old code hardcoded 250/40
+  in four places and ignored the collapsed state in three.
+
+**Toggling:** `toggle_sidebar(expand=None, animate=True)` → True if the state changed.
+- Collapsing is refused while `can_collapse_sidebar()` is False: the active mission's
+  `is_action_allowed('toggle_sidebar')`. The tutorial always refuses it (button drawn dimmed);
+  campaign missions / Tales refuse only while they block every action (intro, pause, endgame).
+  **Expanding is always allowed**, so the panel can never get stuck closed.
+- Inputs: the round button (`sidebar_toggle_button`), **F2** (`keyboard_handler` →
+  `{'toggle_sidebar': True}` → `_handle_sidebar_hotkey()`, plus the AI-turn branch of `run()`),
+  and a bookmark click while collapsed (opens the panel on that tab, after the tutorial's
+  `sidebar_tab` gate — a locked bookmark does nothing).
+- `_handle_sidebar_hotkey()` ignores F2 while chat input, a menu, the save dialog, the Players
+  window, a battle UI/popup, Battle Report detail, the alliance popup or the victory sequence is
+  up, or the game has ended.
+- Toggling clears `ui_renderer.tech_particles` (they store absolute screen positions).
+
+**Drawing** (`draw_order_sidebar()`): panel at `layout.panel_x` → bookmarks
+(`ui_renderer._draw_sidebar_tab_buttons(panel_x, …)`) → round button
+(`_draw_sidebar_toggle_button` / cached `_get_sidebar_toggle_sprite`, built from
+`assets/mapicons/CircleBorder.png` over a solid underlay) → order badge on the Action Queue
+bookmark while collapsed (`_draw_sidebar_order_badge`, **local player's** orders only) →
+content only while `panel_visible`. When fully collapsed it clears `technology_buttons`,
+`hero_selection_buttons`, `order_cancel_buttons` and `cancel_all_button` — stale rects would
+otherwise still catch clicks on the map beneath.
+
+**During the slide** panel-body clicks are consumed but not dispatched, and the tech tooltip
+and tech particles are skipped (the content moves under a still cursor).
+
+#### When to Modify
+
+✅ **Add a new sidebar tab:** add it to `game_state.sidebar_tabs`, both `tab_names` dicts
+(`ui_renderer._draw_sidebar_tab_buttons`), a `_draw_*_content(sidebar_x, …)` branch in
+`draw_order_sidebar()` and, if clickable, a branch in mouse_handler Priority 7. Position
+everything relative to `sidebar_x` — it moves during the slide.
+
+✅ **Anything that must know whether a point is "over the sidebar":** call
+`is_point_over_sidebar()` / `is_point_over_sidebar_panel()`. Do not compare with
+`WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH` — it is wrong while collapsed or sliding.
+
+✅ **Change the slide or button size:** `UIConstants.SIDEBAR_SLIDE_MS`,
+`SIDEBAR_TOGGLE_HEIGHT` (ui/scaler.py; the button must fit in `TAB_PADDING_TOP`).
+
+✅ **Let a mission keep the sidebar open:** return False for `'toggle_sidebar'` from its
+`is_action_allowed()`.
+
+⚠️ Click/hover rects are rebuilt in `draw_order_sidebar()`, so tests must draw the sidebar
+before hit-testing it. Tests: `tests/test_sidebar_collapse.py`.
+
 ### Battle Reports
 
 On-map summaries shown to a **defender** on the turn after their territory was attacked.
@@ -1879,6 +1951,48 @@ if self.sim_state is not None:
 - Security: Prevents players from naming themselves "Player 2" to see opponent messages
 - Message storage: Plain strings in `game_state.messages[]`
 
+### rendering/map_extension.py — the strip past the map's east edge
+
+**Why:** the map background is left-aligned (camera `min_x = 0`). On a 16:9 window at the
+minimum zoom (1.65) it ends before the window's right edge — 1600x900: map ends at x=1427, a
+173 px gap; 1280x720: 181 px; 3440x1440: ~1030 px. 16:10 and 4:3 have no gap. The frame is
+filled WHITE first, and the right sidebar used to hide the strip. With a collapsible sidebar it
+must be filled — **without changing the zoom**.
+
+**What it draws** (`MapEastExtension`, owned by `Game.map_east_extension`):
+- **Painted override:** `'<background path without .png>_east.png'`
+  (`east_extension_override_path()`), e.g. `maps/azincournean_highlands/map_east.png`,
+  `assets/map_east.png`, `assets/CampaignMaps/Campaign3Map_east.png`. Scaled to the map's
+  height; its left edge must continue the map's right edge. Past its end: the average colour of
+  its rightmost column.
+- **Generated (default):** `MAP_EAST_MODE = 'stretch'` continues each row's edge colour straight
+  east (averaged over the last 6 source px), blurs it (`MAP_EAST_BLUR_FACTOR`), keeps a thin
+  crisp band at the seam (`MAP_EAST_CRISP_BAND`) and fades into `MAP_EAST_FOG_COLOR` (warm dark
+  parchment). Past its end: solid fog. `'mirror'` reflects the map's last strip instead — more
+  texture, but it reverses geography (on Azincournean the NE coast bent back south-west), which
+  is why stretch is the default.
+
+**Cost:** built once per `(id(map_image_original), window width, map width, min zoom,
+override path, mode)` and stored at reduced density (≤ `MAP_EAST_MAX_PIXELS`, ~8 MB) — any zoom
+that shows a gap draws fewer screen px per source px than `window_w / src_w`, so this is
+lossless. Per frame it costs one blit while static; zoom changes rescale only the visible
+slice (same viewport-cache pattern as `_blit_map_background`, Y margin only). Benchmarks:
+`TestMapEastEdgePerformance` in `tests/test_fps_benchmark.py`.
+
+**Built lazily** from `_blit_map_east_extension()` (called by `_blit_map_background()` when
+`map_x + scaled_map_width < screen width`), never at load — the tutorial and mission 2 bake
+cloud cover into `map_image_original` after loading.
+
+#### When to Modify
+
+✅ **Anything that changes `map_image_original`** (new map, re-convert after `set_mode()`,
+drawing into it in place) must call `Game._invalidate_map_background_caches()`. In-place edits
+keep the same `id()`, so the id-keyed caches cannot notice them — the cloud-cover bakes in
+`tutorial_mission.py` / `campaign_mission_2.py` call it for that reason.
+
+✅ **Tune the look:** constants in `config/constants.py` (`MAP_EAST_*`). For one map, prefer a
+painted `_east.png` over changing the generator.
+
 ### rendering/helpers.py (~527 lines)
 
 **What it does:** Drawing utilities (text, shapes, borders)
@@ -1904,6 +2018,8 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `_ui_icon_cache` (main.py) - Cache scaled icons/portraits: `cache_key = ("prefix_name", size)`
 - `_text_cache` (main.py) - Cache static text: `self._get_cached_text(text, font, color)` — used by 128+ call sites
 - `_rotated_tab_text_cache` (main.py) - Cache rotated text surfaces
+- `_sidebar_toggle_sprites` (main.py) - Round sidebar collapse button, one sprite per (size, direction, state)
+- `MapEastExtension` (rendering/map_extension.py) - East map extension + its scaled visible slice (see that section)
 - `text_cache` (ui_renderer.py) - UIRenderer's own text cache: `self._get_cached_text(text, font, color)`
 - `_SHARED_SPRITE_CACHE` (production_glow_effect.py) - 16 pre-rendered rotation frames, keyed by `(quantized_zoom, player_color)` and **shared process-wide** across all effect instances (bounded LRU). Instances hold a reference via `_sprite_cache`.
 - `_scaled_text_cache` (turn_announcement_effect.py) - Smoothscale cache by quantized (width, height)
@@ -2010,9 +2126,11 @@ The codebase uses several performance patterns. Follow these when adding new ren
   top panel, sidebar, bottom UI and map. Return True to consume the click (Tale I swallows
   every click on its widget so the map beneath never gets selected).
 
-⚠️ **The sidebar region only exists above the bottom UI.** Priority 7 checks
-`pos[1] < self.bottom_ui_y` before treating the rightmost 250 px as sidebar. Without it,
-bottom-panel buttons in that strip (e.g. "Demolish Keep" at 1600x900) were swallowed.
+⚠️ **Sidebar hit-testing goes through the live layout** (see "Right sidebar: collapse,
+bookmarks and hit-testing" in the main.py section). Priority 7 tests the collapse button, then
+the bookmark tabs (a hit always consumes the click), then `is_point_over_sidebar_panel()`.
+The panel body only exists above the bottom UI: without that bound, bottom-panel buttons in
+the rightmost 250 px (e.g. "Demolish Keep" at 1600x900) were swallowed.
 
 ### input/keyboard_handler.py (~530 lines)
 
@@ -2024,6 +2142,13 @@ bottom-panel buttons in that strip (e.g. "Demolish Keep" at 1600x900) were swall
 1. Add key detection in `handle_keydown()`
 2. Trigger appropriate game action
 3. Document in `QUICK_REFERENCE.md`
+
+Order matters: options menu → game menu → **F2 (sidebar)** → ability targeting (swallows every
+key) → chat input → building/training shortcuts. A shortcut that must work while targeting a
+hero ability goes above that block. An update that is an *action* rather than an attribute
+(like `'toggle_sidebar'`) needs its own branch in `Game.handle_keyboard_input()`'s update loop,
+which otherwise `setattr`s every key. Keys used during AI turns must also be handled in the
+AI-turn branch of `run()` (it only passes ESC, F2, the wheel and whitelisted clicks).
 
 ### input/camera_handler.py (399 lines)
 
@@ -2212,6 +2337,12 @@ outside `("map_edge", "window_edge")` to the default, `window_edge`.
 **...add keyboard shortcut**
 → `input/keyboard_handler.py`
 
+**...change the right sidebar's collapse / slide / bookmarks, or test whether a point is over it**
+→ `ui/sidebar_layout.py` + `Game.get_sidebar_layout()` / `is_point_over_sidebar()` / `toggle_sidebar()` / `draw_order_sidebar()` (main.py)
+
+**...change what fills the strip past the map's east edge**
+→ `rendering/map_extension.py` + `MAP_EAST_*` in `config/constants.py`, or paint `<map background>_east.png`
+
 **...add new territory**
 → Use `Polygon_Tool.py`, `Economic_Tool.py`, `Plot_Tool.py`
 
@@ -2252,6 +2383,10 @@ outside `("map_edge", "window_edge")` to the default, `window_edge`.
 ### ❌ Making AI cheat
 **Wrong:** Giving AI extra gold or removing fog of war
 **Right:** Make AI smarter by improving decision logic
+
+### ❌ Hardcoding the sidebar's position
+`WINDOW_WIDTH - 250` (or `- UIConstants.SIDEBAR_WIDTH`) is wrong whenever the sidebar is
+collapsed or sliding. Use `Game.is_point_over_sidebar()` / `get_sidebar_layout()`.
 
 ### ❌ Hardcoding values
 **Wrong:** `if cost == 25:` (magic number)
@@ -2885,6 +3020,8 @@ def is_action_allowed(self, action_type, **kwargs):
         return False  # Disable Keep building
     if action_type == 'sidebar_tab' and kwargs.get('tab_name') == 'heroes':
         return False  # Hide Heroes tab
+    if action_type == 'toggle_sidebar':
+        return False  # Keep the right sidebar open (the tutorial does this)
     return True
 ```
 
