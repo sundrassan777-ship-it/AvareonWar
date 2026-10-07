@@ -201,11 +201,14 @@ class TestLockedSidebarControls:
         game.ui_renderer._draw_sidebar_tab_buttons(sidebar_x, main.TOP_PANEL_HEIGHT, main.UIConstants.SIDEBAR_WIDTH, 500)
         heroes = game.sidebar_tab_buttons['heroes']
         other = game.sidebar_tab_buttons['technology']
-        # Sample inside the tab, away from the border and the rotated label
-        heroes_px = game.screen.get_at((heroes.x + 4, heroes.y + 4))[:3]
-        other_px = game.screen.get_at((other.x + 4, other.y + 4))[:3]
-        assert heroes_px == (30, 30, 30)
-        assert other_px == (50, 50, 50)
+        # The bookmarks are textured sprites now (sidebar overhaul), so compare the
+        # tabs' average brightness instead of one exact pixel: locked < inactive.
+        import pygame
+
+        def brightness(rect):
+            return sum(pygame.transform.average_color(game.screen, rect)[:3])
+
+        assert brightness(heroes) < brightness(other) * 0.85
 
     def test_locked_cancel_all_is_greyed(self, game):
         game.game_state.sidebar_expanded = True

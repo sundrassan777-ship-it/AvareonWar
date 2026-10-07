@@ -114,7 +114,13 @@ class UIConstants:
     # ===== TAB SYSTEM =====
     TAB_WIDTH = 40           # Width of vertical tab buttons sticking out from sidebar
     TAB_PADDING_TOP = 45     # Padding at top of tab button area
-    TAB_PADDING_BOTTOM = 45  # Padding at bottom of tab button area
+    # Bottom padding was 45 (empty space); 12 gives the six tabs ~6 px more each so
+    # their labels fit with padding ("Action Queue" used to touch the tab borders)
+    TAB_PADDING_BOTTOM = 12  # Padding at bottom of tab button area
+    # Bookmark look: 'ribbon' (tapestry cut + gold trim) or 'plaque' (gold-framed)
+    # - see rendering/sidebar_widgets.py tab_sprite()
+    SIDEBAR_TAB_STYLE = 'ribbon'
+    TAB_ACTIVE_EXTEND = 6    # The active ribbon is drawn this much further out (left)
 
     # ===== COLLAPSE / EXPAND (ui/sidebar_layout.py) =====
     SIDEBAR_SLIDE_MS = 150       # Duration of the collapse/expand slide

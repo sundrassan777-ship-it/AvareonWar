@@ -29,6 +29,7 @@ import random
 from collections import OrderedDict
 from config.constants import *
 from ui.scaler import UIConstants
+from ui.sidebar_layout import compute_tab_rects
 from utils.logger import get_logger
 import map_data
 
@@ -2941,39 +2942,31 @@ class UIRenderer:
     
     def _draw_sidebar_tab_buttons(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height):
         """
-        Draw tab buttons on the LEFT SIDE of sidebar (Phase B: Vertical Tab System).
-        
-        Tabs stick out from the left edge like vertical bookmarks:
-        - Technology
-        - Heroes  
-        - Action Queue
-        - Action Log
-        - Quests
-        - Chat
-        
-        Each tab is a vertical button with 90-degree rotated text.
-        Active tab is highlighted. Clicking a tab makes it active.
-        
-        These tabs cover the full height of the sidebar, distributed evenly.
+        Draw the bookmark tabs on the LEFT side of the sidebar.
+
+        Tabs stick out from the panel's left edge (or sit at the screen edge when the
+        sidebar is collapsed): Technology, Heroes, Action Queue, Action Log, Quests, Chat.
+
+        Each tab is a pre-rendered sprite from SidebarWidgets.tab_sprite() in the style
+        UIConstants.SIDEBAR_TAB_STYLE ('ribbon' by default): label fitted with padding
+        (it used to touch the borders - "Action Queue" was 89 px in a 93 px tab), hover
+        highlight, click flash ('sidebar_tab', id) and an always-visible active state
+        (lit, inner gold glow, merging into the panel). Tutorial-highlighted tabs get a
+        green trim plus a pulsing ring; locked tabs are dimmed.
+
+        Geometry comes from sidebar_layout.compute_tab_rects() - the same rects the
+        panel border uses to leave a gap beside the active tab.
         """
-        # Tab dimensions
+        widgets = self.game.sidebar_widgets
         tab_width = UIConstants.TAB_WIDTH
-        num_tabs = len(self.game.game_state.sidebar_tabs)
-        
-        # Distribute tabs evenly across sidebar height
-        # Adjust padding to ensure all tabs fit with equal height
-        padding_top = UIConstants.TAB_PADDING_TOP
-        padding_bottom = UIConstants.TAB_PADDING_BOTTOM
-        available_height = sidebar_height - padding_top - padding_bottom
-        
-        # Calculate exact height for each tab (no spacing between tabs)
-        exact_tab_height = available_height / num_tabs
-        actual_tab_height = int(exact_tab_height)  # Round down for consistent height
-        tab_spacing = 0  # No spacing - tabs are adjacent
-        
+        tabs = self.game.game_state.sidebar_tabs
+        rects = [pygame.Rect(r) for r in compute_tab_rects(
+            sidebar_x - tab_width, sidebar_y, sidebar_height, len(tabs), tab_width,
+            UIConstants.TAB_PADDING_TOP, UIConstants.TAB_PADDING_BOTTOM)]
+
         # Store tab button rects for click detection
         self.game.sidebar_tab_buttons = {}
-        
+
         # Tab display names
         tab_names = {
             'technology': 'Technology',
@@ -2983,69 +2976,66 @@ class UIRenderer:
             'quests': 'Quests',
             'chat': 'Chat'
         }
-        
-        current_y = sidebar_y + padding_top
-        
-        for tab_id in self.game.game_state.sidebar_tabs:
+
+        mission = self.game.tutorial_mission if getattr(self.game, 'tutorial_mission', None) else None
+        mission_active = bool(mission and mission.active)
+        panel_image = getattr(self.game, 'right_panel_image', None)
+        clicked = getattr(self.game, 'clicked_element', None)
+        style = UIConstants.SIDEBAR_TAB_STYLE
+        # One label size for the whole column (consistent; see common_label_px)
+        label_px = None
+        if rects:
+            max_len, max_thick = widgets.tab_label_space(tab_width, rects[0].h)
+            label_px = widgets.common_label_px([tab_names[t] for t in tabs], max_len, max_thick)
+
+        for tab_id, tab_rect in zip(tabs, rects):
             is_active = (tab_id == self.game.game_state.active_sidebar_tab)
-            
-            # Tab button rectangle - STICKS OUT to the LEFT of sidebar
-            tab_x = sidebar_x - tab_width  # Left of sidebar
-            tab_rect = pygame.Rect(tab_x, current_y, tab_width, actual_tab_height)
-            
-            # Different colors for active/inactive
-            if is_active:
-                bg_color = (80, 120, 180)  # Blue for active
-                border_color = (120, 160, 220)
-            else:
-                bg_color = (50, 50, 50)  # Dark gray for inactive
-                border_color = (100, 100, 100)
-            
-            # Tutorial highlighting for sidebar tabs
-            tutorial_tab_highlight = False
             tab_locked = False
-            if (hasattr(self.game, 'tutorial_mission') and self.game.tutorial_mission
-                    and self.game.tutorial_mission.active):
-                btn_id = f'sidebar_{tab_id}'
-                if self.game.tutorial_mission.should_highlight_button(btn_id):
-                    tutorial_tab_highlight = True
-                    bg_color = (80, 180, 80)  # Green for highlighted
-                    border_color = (120, 220, 120)
-                elif not is_active and not self.game.tutorial_mission.is_action_allowed('sidebar_tab', tab_name=tab_id):
-                    # Locked tab (the click is refused): greyed out with dimmed text —
-                    # it used to look exactly like any other inactive tab
+            highlight = False
+            if mission_active:
+                if mission.should_highlight_button(f'sidebar_{tab_id}'):
+                    highlight = True
+                elif not is_active and not mission.is_action_allowed('sidebar_tab', tab_name=tab_id):
+                    # Locked tab (the click is refused): dimmed, not just "inactive"
                     tab_locked = True
-                    bg_color = (30, 30, 30)
-                    border_color = (60, 60, 60)
 
-            # Draw tab button
-            pygame.draw.rect(self.game.screen, bg_color, tab_rect)
-            pygame.draw.rect(self.game.screen, border_color, tab_rect, 2)
+            hovering = (not tab_locked) and widgets.hover(tab_rect)
+            if tab_locked:
+                state = 'locked'
+            elif clicked == ('sidebar_tab', tab_id):
+                state = 'flash'
+            elif highlight and not is_active:
+                state = 'highlight'
+            elif is_active:
+                state = 'active_hover' if hovering else 'active'
+            else:
+                state = 'hover' if hovering else 'inactive'
 
-            # Tutorial highlight: draw pulsing glow border
-            if tutorial_tab_highlight:
+            # Ribbon fill: the tapestry at this tab's own height, so the pattern runs on
+            # from the panel (cut once per size/state - cached)
+            # The active ribbon sticks out further than the others (drawn wider to the
+            # left) - the click rect stays the same size
+            extra = UIConstants.TAB_ACTIVE_EXTEND if (style == 'ribbon' and is_active) else 0
+            draw_rect = pygame.Rect(tab_rect.x - extra, tab_rect.y, tab_rect.w + extra, tab_rect.h)
+            texture_src = None
+            if panel_image is not None:
+                rel_y = max(0, tab_rect.y - sidebar_y)
+                texture_src = (panel_image, (30, rel_y, draw_rect.w, tab_rect.h))
+            sprite = widgets.tab_sprite(style, tab_names[tab_id], draw_rect.size, state, texture_src, label_px)
+            self.game.screen.blit(sprite, draw_rect.topleft)
+            # Keep the shared rotated-label cache populated (other code inspects it)
+            self.game._rotated_tab_text_cache.setdefault(tab_id, sprite)
+
+            # Tutorial highlight: pulsing ring from ONE cached surface (alpha set per
+            # frame) instead of a new Surface every frame
+            if highlight:
                 pulse = 0.5 + 0.5 * math.sin(time.time() * 4.0)
-                glow_alpha = int(150 + 100 * pulse)
-                glow_rect = tab_rect.inflate(4, 4)
-                glow_surface = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
-                pygame.draw.rect(glow_surface, (100, 255, 100, glow_alpha), glow_surface.get_rect(), 3)
-                self.game.screen.blit(glow_surface, glow_rect.topleft)
-
-            # R3 fix: cache rotated tab text (font.render + rotate are expensive per-frame)
-            # Locked tabs use a dimmed text variant, cached under its own key
-            text_key = f"{tab_id}__locked" if tab_locked else tab_id
-            if text_key not in self.game._rotated_tab_text_cache:
-                text_color = (110, 110, 110) if tab_locked else WHITE
-                tab_text = self.game._get_cached_text(tab_names[tab_id], self.game.small_font, text_color)
-                self.game._rotated_tab_text_cache[text_key] = pygame.transform.rotate(tab_text, -90)
-            rotated_text = self.game._rotated_tab_text_cache[text_key]
-            text_rect = rotated_text.get_rect(center=(tab_x + tab_width // 2, current_y + actual_tab_height // 2))
-            self.game.screen.blit(rotated_text, text_rect)
+                ring = widgets.pulse_ring(tab_rect.inflate(4, 4).size)
+                ring.set_alpha(int(150 + 100 * pulse))
+                self.game.screen.blit(ring, tab_rect.inflate(4, 4).topleft)
 
             # Store for click detection
             self.game.sidebar_tab_buttons[tab_id] = tab_rect
-            
-            current_y += actual_tab_height
-        
+
         # Return Y position where content should start (just below sidebar top, since tabs are on left)
         return sidebar_y + 15

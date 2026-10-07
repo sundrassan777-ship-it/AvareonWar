@@ -69,6 +69,7 @@ from rendering.map_renderer import MapRenderer
 from rendering.ui_renderer import UIRenderer
 from rendering.panel_renderer import PanelRenderer
 from rendering.map_extension import MapEastExtension, east_extension_override_path
+from rendering.sidebar_widgets import SidebarWidgets
 from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
@@ -1500,6 +1501,9 @@ class Game:
             self.separator_width,
             small_font_bold=self.small_font_bold
         )
+        # Right-sidebar widget kit: cached frames, buttons, bookmarks and capped-scale
+        # text (rendering/sidebar_widgets.py). Cleared on resolution change.
+        self.sidebar_widgets = SidebarWidgets(self)
         
         # Camera system (Phase 2D: Camera/Zoom implementation)
         self.camera_offset = [0.0, 0.0]  # [x, y] in world coordinates
@@ -4560,6 +4564,9 @@ class Game:
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
             self._sidebar_toggle_sprites = {}  # Rebuilt from CircleBorder in the new display format
+            # Sidebar widget sprites/fonts follow ui_scale and the display format
+            if getattr(self, 'sidebar_widgets', None) is not None:
+                self.sidebar_widgets.invalidate()
             self._hero_overlay_cache = {}
             # Close the unit context menu: its anchor rect belongs to the old layout
             self.unit_context_menu = None
@@ -7042,11 +7049,14 @@ class Game:
                 self.screen.blit(self.right_panel_image, (sidebar_x, sidebar_y))
             else:
                 pygame.draw.rect(self.screen, (40, 40, 40), sidebar_rect)
-            # Border around sidebar (drawn over image)
-            pygame.draw.rect(self.screen, (100, 100, 100), sidebar_rect, 3)
 
         # Bookmark tabs: always drawn, they travel with the panel's left edge
         content_start_y = self.ui_renderer._draw_sidebar_tab_buttons(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
+
+        # Bronze border, drawn after the tabs: its left edge leaves a gap beside the
+        # active bookmark so that tab visibly merges into the panel
+        if layout.panel_visible:
+            self._draw_sidebar_border(pygame.Rect(sidebar_x, sidebar_y, sidebar_width, sidebar_height))
 
         # Collapse / expand button above the tabs (also travels with them)
         self._draw_sidebar_toggle_button(layout)
@@ -7097,6 +7107,28 @@ class Game:
             self.cancel_all_button = cancel_all_rect
         else:
             self.cancel_all_button = None
+
+    def _draw_sidebar_border(self, rect):
+        """Bronze 3 px panel border (was flat grey), open beside the active tab.
+
+        The gap lines up with the active bookmark's rect (sidebar_tab_buttons, filled by
+        the tab renderer this frame), so the lit tab reads as part of the panel.
+        """
+        color = (138, 98, 50)
+        width = 3
+        pygame.draw.line(self.screen, color, rect.topleft, (rect.right - 1, rect.top), width)
+        pygame.draw.line(self.screen, color, (rect.left, rect.bottom - 2), (rect.right - 1, rect.bottom - 2), width)
+        pygame.draw.line(self.screen, color, (rect.right - 2, rect.top), (rect.right - 2, rect.bottom - 1), width)
+        active = (self.sidebar_tab_buttons or {}).get(self.game_state.active_sidebar_tab)
+        x = rect.left + 1
+        if active is not None and self.game_state.sidebar_expanded:
+            # Left edge in two pieces around the active tab
+            if active.top > rect.top:
+                pygame.draw.line(self.screen, color, (x, rect.top), (x, active.top), width)
+            if active.bottom < rect.bottom:
+                pygame.draw.line(self.screen, color, (x, active.bottom - 1), (x, rect.bottom - 1), width)
+        else:
+            pygame.draw.line(self.screen, color, (x, rect.top), (x, rect.bottom - 1), width)
 
     def _draw_sidebar_toggle_button(self, layout):
         """Round collapse / expand button, in the tab column just above the bookmarks.
@@ -14225,6 +14257,8 @@ class Game:
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('sidebar_tab', tab_name=tab_id)):
                         return True  # Silently consume click
+                    # Click flash on the bookmark (its sprite brightens briefly)
+                    self.trigger_click_flash('sidebar_tab', tab_id)
                     # A bookmark on the collapsed sidebar opens it on that tab
                     if not self.game_state.sidebar_expanded:
                         self.toggle_sidebar(expand=True)
