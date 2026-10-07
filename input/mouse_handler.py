@@ -169,58 +169,54 @@ class MouseHandler:
                 if 'rect' in marker and marker['rect'] and marker['rect'].collidepoint(pos):
                     return self.game.handle_alliance_marker_click(pos, marker)
 
-        # Priority 7: Order sidebar (expanded or collapsed)
-        # M20: Always check toggle button regardless of sidebar state, so the rect
-        # is tested whether sidebar is expanded or collapsed. This prevents the button
-        # from becoming unresponsive when sidebar state gets out of sync.
-        if hasattr(self.game, 'sidebar_toggle_button') and self.game.sidebar_toggle_button:
-            if self.game.sidebar_toggle_button.collidepoint(pos):
-                # Toggle sidebar expansion/collapse
-                self.game.game_state.sidebar_expanded = not self.game.game_state.sidebar_expanded
+        # Priority 7: Order sidebar (expanded or collapsed).
+        # All geometry comes from the game's live sidebar layout
+        # (Game.get_sidebar_layout / is_point_* helpers, ui/sidebar_layout.py), so it
+        # follows collapse/expand and the slide. Never hardcode 250 / 40 here.
+
+        # Collapse / expand button — tested in every state.
+        if self.game.sidebar_toggle_button and self.game.sidebar_toggle_button.collidepoint(pos):
+            self.game.toggle_sidebar()
+            return True
+
+        # Bookmark tabs: stick out left of the panel, or sit at the right screen edge
+        # when collapsed. A hit always consumes the click (never reaches the map).
+        if any(rect.collidepoint(pos) for rect in (self.game.sidebar_tab_buttons or {}).values()):
+            self.game.handle_order_sidebar_click(pos)
+            return True
+
+        # Panel body. Bounded to the map's height: the sidebar ends at the bottom UI
+        # panel, so bottom-UI buttons in the rightmost 250 px (e.g. "Demolish Keep" at
+        # 1600x900) are not swallowed as sidebar clicks.
+        if self.game.is_point_over_sidebar_panel(pos):
+            # Mid-slide the content is moving under the cursor: consume, don't act.
+            if not self.game.game_state.sidebar_expanded or self.game.is_sidebar_animating():
                 return True
-
-        # The sidebar sits beside the MAP only — it ends at the bottom UI panel.
-        # Without the y check, every bottom-UI button in the rightmost 250 px
-        # (e.g. "Demolish Keep" at 1600x900) was swallowed here as a sidebar click.
-        # (get_click_area() below already tests bottom_ui before the sidebar.)
-        if self.game.game_state.sidebar_expanded and pos[1] < self.bottom_ui_y:
-            sidebar_x = self.window_width - 250
-            if pos[0] >= sidebar_x:
-                # Always check tab buttons first (they're on the left edge, outside sidebar_x)
-                # But we still handle content inside the sidebar here
-                if self.game.game_state.active_sidebar_tab == 'action_queue':
-                    handled = self.game.handle_order_sidebar_click(pos)
-                    if handled:
-                        return handled
-                elif self.game.game_state.active_sidebar_tab == 'action_log':
-                    # Action log is read-only — consume click to prevent map interaction
-                    return True
-                elif self.game.game_state.active_sidebar_tab == 'heroes':
-                    # MULTIPLAYER: Block hero tab clicks for spectators
-                    if not self.game.is_local_player_active():
-                        return True  # Block but don't process
-                    handled = self.game.handle_heroes_tab_click(pos)
-                    if handled:
-                        return handled
-                elif self.game.game_state.active_sidebar_tab == 'technology':
-                    # MULTIPLAYER: Block technology tab clicks for spectators
-                    if not self.game.is_local_player_active():
-                        return True  # Block but don't process
-                    handled = self.game.handle_technology_tab_click(pos)
-                    if handled:
-                        return handled
-
-                # Consume click even if no tab handler matched — prevent map fallthrough
-                return True
-
-            # Tab buttons stick out to the LEFT of the sidebar, so check them separately
-            # They're at (sidebar_x - tab_width), so pos[0] < sidebar_x
-            if pos[0] < sidebar_x and pos[0] >= sidebar_x - 40:  # Tab width is ~40px
-                # This could be a tab button click
+            if self.game.game_state.active_sidebar_tab == 'action_queue':
                 handled = self.game.handle_order_sidebar_click(pos)
                 if handled:
                     return handled
-        
+            elif self.game.game_state.active_sidebar_tab == 'action_log':
+                # Action log is read-only — consume click to prevent map interaction
+                return True
+            elif self.game.game_state.active_sidebar_tab == 'heroes':
+                # MULTIPLAYER: Block hero tab clicks for spectators
+                if not self.game.is_local_player_active():
+                    return True  # Block but don't process
+                handled = self.game.handle_heroes_tab_click(pos)
+                if handled:
+                    return handled
+            elif self.game.game_state.active_sidebar_tab == 'technology':
+                # MULTIPLAYER: Block technology tab clicks for spectators
+                if not self.game.is_local_player_active():
+                    return True  # Block but don't process
+                handled = self.game.handle_technology_tab_click(pos)
+                if handled:
+                    return handled
+
+            # Consume click even if no tab handler matched — prevent map fallthrough
+            return True
+
         # Priority 8: Bottom UI
         if pos[1] >= self.bottom_ui_y:
             return self.game.handle_bottom_ui_click(pos)
@@ -279,9 +275,7 @@ class MouseHandler:
         if pos[1] >= self.bottom_ui_y:
             return 'bottom_ui'
         
-        if self.game.game_state.sidebar_expanded:
-            sidebar_x = self.window_width - 250
-            if pos[0] >= sidebar_x:
-                return 'sidebar'
+        if self.game.is_point_over_sidebar(pos):
+            return 'sidebar'
         
         return 'map_area'

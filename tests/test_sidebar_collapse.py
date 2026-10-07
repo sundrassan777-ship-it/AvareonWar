@@ -245,3 +245,190 @@ class TestEastExtensionRendering:
         assert game.map_east_extension._build_key != old_key
         w = game.screen.get_width()
         assert _rgb(game.screen, (w - 2, game.TOP_PANEL_HEIGHT + 50)) != WHITE
+
+
+# ============================================================================
+# PART 2 — SIDEBAR LAYOUT (ui/sidebar_layout.py) AND HIT-TESTING
+# ============================================================================
+
+class TestSidebarLayoutMath:
+
+    def test_progress_endpoints_and_no_animation(self):
+        from ui.sidebar_layout import sidebar_progress
+        assert sidebar_progress(True, None, 1000, 150) == 1.0
+        assert sidebar_progress(False, None, 1000, 150) == 0.0
+        # Finished slide == target
+        assert sidebar_progress(False, 0, 1000, 150) == 0.0
+        assert sidebar_progress(True, 0, 1000, 150) == 1.0
+
+    def test_progress_mid_slide(self):
+        from ui.sidebar_layout import sidebar_progress
+        # Half-way, smoothstep(0.5) == 0.5 in both directions
+        assert sidebar_progress(True, 1000, 1075, 150) == pytest.approx(0.5)
+        assert sidebar_progress(False, 1000, 1075, 150) == pytest.approx(0.5)
+        # Collapsing starts at 1 and ends at 0
+        assert sidebar_progress(False, 1000, 1000, 150) == pytest.approx(1.0)
+
+    def test_reversal_is_continuous(self):
+        """Toggling mid-slide resumes from the current position (no jump)."""
+        from ui.sidebar_layout import sidebar_progress, reverse_anim_start
+        start, now, dur = 1000, 1030, 150           # 20% into an expand
+        before = sidebar_progress(True, start, now, dur)
+        new_start = reverse_anim_start(start, now, dur)
+        after = sidebar_progress(False, new_start, now, dur)
+        assert after == pytest.approx(before)
+        # A finished slide restarts fresh
+        assert reverse_anim_start(0, 5000, dur) == 5000
+        assert reverse_anim_start(None, 5000, dur) == 5000
+
+    def test_layout_geometry(self):
+        from ui.sidebar_layout import compute_sidebar_layout
+        expanded = compute_sidebar_layout(1600, 46, 649, 1.0, 250, 40)
+        assert expanded.panel_x == 1350 and expanded.tab_x == 1310 and expanded.panel_visible
+        collapsed = compute_sidebar_layout(1600, 46, 649, 0.0, 250, 40)
+        # Panel fully off-screen; bookmark tabs flush with the right screen edge
+        assert collapsed.panel_x == 1600 and collapsed.tab_x == 1560
+        assert not collapsed.panel_visible
+
+
+class TestSidebarHitTesting:
+
+    def test_expanded_geometry_unchanged(self, game):
+        """Expanded sidebar sits exactly where it always did."""
+        import main
+        layout = game.get_sidebar_layout()
+        assert layout.panel_x == main.WINDOW_WIDTH - main.UIConstants.SIDEBAR_WIDTH
+        assert layout.progress == 1.0
+
+    def test_panel_body_is_bounded_to_the_map_height(self, game):
+        import main
+        x = main.WINDOW_WIDTH - 100
+        assert game.is_point_over_sidebar_panel((x, main.TOP_PANEL_HEIGHT + 50))
+        # Bottom UI below the sidebar is NOT the sidebar (Demolish Keep regression)
+        assert not game.is_point_over_sidebar_panel((x, main.BOTTOM_UI_Y + 10))
+        assert game.mouse.get_click_area((x, main.BOTTOM_UI_Y + 10)) == 'bottom_ui'
+        assert game.mouse.get_click_area((x, main.TOP_PANEL_HEIGHT + 50)) == 'sidebar'
+
+    def test_tabs_count_as_sidebar(self, game):
+        game.draw_order_sidebar()  # rebuilds the tab rects
+        tab = game.sidebar_tab_buttons['technology']
+        assert game.is_point_on_sidebar_chrome(tab.center)
+        assert game.is_point_over_sidebar(tab.center)
+        # Just left of the tab column is map
+        assert not game.is_point_over_sidebar((tab.x - 5, tab.centery))
+
+    def test_collapsed_panel_area_is_map(self, game):
+        """With the panel collapsed its former area is map for every check."""
+        import main
+        game.game_state.sidebar_expanded = False
+        game._sidebar_anim_start_ms = None
+        game.sidebar_tab_buttons = {}
+        game.sidebar_toggle_button = None
+        pos = (main.WINDOW_WIDTH - 150, main.TOP_PANEL_HEIGHT + main.MAP_HEIGHT // 2)
+        assert not game.is_point_over_sidebar(pos)
+        assert game.mouse.get_click_area(pos) == 'map_area'
+
+    def test_ai_turn_whitelist_follows_tabs_only(self, game):
+        """AI turns allow clicks on the tabs, not the 50 px of map left of them."""
+        import main
+        game.draw_order_sidebar()
+        tab = game.sidebar_tab_buttons['action_log']
+        assert game._is_ai_turn_click_allowed(tab.center)
+        assert not game._is_ai_turn_click_allowed((tab.x - 30, tab.centery))  # old leak
+        assert game._is_ai_turn_click_allowed((10, main.TOP_PANEL_HEIGHT - 2))  # top panel
+        # Tab x band but inside the bottom UI: the old x-only band let this through
+        assert not game._is_ai_turn_click_allowed((tab.centerx, main.BOTTOM_UI_Y + 20))
+
+
+class TestToggleSidebar:
+
+    def test_toggle_flips_and_animates(self, game):
+        gs = game.game_state
+        assert gs.sidebar_expanded
+        assert game.toggle_sidebar() is True
+        assert gs.sidebar_expanded is False
+        assert game.is_sidebar_animating()
+        assert game.toggle_sidebar(expand=False) is False  # already collapsed
+        assert game.toggle_sidebar(expand=True, animate=False) is True
+        assert gs.sidebar_expanded and not game.is_sidebar_animating()
+
+    def test_mission_forbids_collapse_but_never_expand(self, game):
+        from types import SimpleNamespace
+        game.tutorial_mission = SimpleNamespace(
+            active=True, is_action_allowed=lambda a, **k: a != 'toggle_sidebar')
+        assert not game.can_collapse_sidebar()
+        assert game.toggle_sidebar() is False
+        assert game.game_state.sidebar_expanded
+        # Expanding is always allowed so the panel can never get stuck closed
+        game.game_state.sidebar_expanded = False
+        assert game.toggle_sidebar() is True
+        # An inactive mission does not restrict anything
+        game.tutorial_mission.active = False
+        assert game.can_collapse_sidebar()
+
+    def test_real_tutorial_refuses_toggle(self):
+        """TutorialMission refuses 'toggle_sidebar' (decision: no collapse in the tutorial)."""
+        from types import SimpleNamespace
+        from tutorial_mission import TutorialMission
+        mission = TutorialMission.__new__(TutorialMission)
+        mission.active = True
+        mission.current_step_index = 0
+        mission.steps = [SimpleNamespace(
+            allowed_actions={'camera': True, 'sidebar_tabs': ['technology']},
+            movement_whitelist=None)]
+        assert mission.is_action_allowed('toggle_sidebar') is False
+
+    def test_toggle_clears_tech_particles(self, game):
+        """Particles store absolute positions; after the panel moves they'd float over the map."""
+        game.ui_renderer.tech_particles.append({'x': 1400, 'y': 300})
+        game.toggle_sidebar()
+        assert game.ui_renderer.tech_particles == []
+
+    def test_new_game_starts_expanded(self, game):
+        game.toggle_sidebar(animate=True)
+        game.initialize_game({
+            'num_players': 2,
+            'player_is_ai': [False, True],
+            'player_ai_difficulty': [None, 'Normal'],
+        })
+        assert game.game_state.sidebar_expanded
+        assert game._sidebar_anim_start_ms is None
+
+
+class TestBottomStripHover:
+    """
+    Pre-existing bug fixed alongside the migration: hover and tooltips compared the
+    cursor y with MAP_HEIGHT (a height) instead of BOTTOM_UI_Y (a y), so the lowest
+    TOP_PANEL_HEIGHT px of the map never highlighted nor showed tooltips.
+    """
+
+    def _point_over_territory_near_bottom(self, game):
+        import main
+        y = main.BOTTOM_UI_Y - 5
+        for x in range(40, main.WINDOW_WIDTH - 400, 7):
+            world = game.screen_to_world((x, y))
+            territory = game.get_territory_at_pos(world)
+            if territory and not game.get_plot_at_pos(world):
+                return (x, y), territory
+        pytest.skip("no territory under the bottom strip at this camera position")
+
+    def test_hover_reaches_the_bottom_of_the_map(self, game):
+        _set_camera(game, game.camera.min_zoom)
+        pos, _territory = self._point_over_territory_near_bottom(game)
+        game.handle_mouse_motion(pos)
+        assert game.hovered_territory is not None or game.hovered_army is not None
+
+    def test_tooltip_reaches_the_bottom_of_the_map(self, game, monkeypatch):
+        import pygame
+        _set_camera(game, game.camera.min_zoom)
+        pos, territory = self._point_over_territory_near_bottom(game)
+        calls = []
+        monkeypatch.setattr(game, 'draw_territory_hover_tooltip', lambda p: calls.append(p))
+        monkeypatch.setattr(pygame.mouse, 'get_pos', lambda: pos)
+        game.mouse_pos = pos
+        game.hover_start_time = None
+        game.show_tooltip_army = None
+        game.show_tooltip_button = None
+        game.show_tooltip_territory = territory
+        game.update_frame_tooltips()
+        assert calls, "territory tooltip suppressed in the lowest strip of the map"

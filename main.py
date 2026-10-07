@@ -62,6 +62,7 @@ from network_config import MessageType
 # Import refactored modules
 from config.constants import *
 from ui.scaler import UIScaler, UIConstants
+from ui.sidebar_layout import sidebar_progress, reverse_anim_start, compute_sidebar_layout
 from utils.colors import lighten_color, brighten_color
 from rendering.helpers import DrawingHelpers
 from rendering.map_renderer import MapRenderer
@@ -749,6 +750,10 @@ class Game:
         # Reload map image and rescale polygons/centers/plots for the selected map
         # (Game.__init__ loaded Avareon by default — override with correct map here)
         self._reload_map_assets(map_id)
+
+        # Every game starts with the sidebar expanded (the new GameState below sets
+        # sidebar_expanded=True); drop any slide left over from a previous game.
+        self._sidebar_anim_start_ms = None
 
         # Game state - use configuration from setup UI with skip_setup_phase=True
         game_mode = setup_config.get('game_mode', 'sequential')
@@ -1528,9 +1533,10 @@ class Game:
         # Initialize mouse handler (needs self reference and layout values)
         self.mouse = MouseHandler(self, TOP_PANEL_HEIGHT, BOTTOM_UI_Y, WINDOW_WIDTH)
 
-        # Cache sidebar tab button coordinates for AI turn event blocking
-        # Updated automatically when resolution changes
-        self._cache_sidebar_coordinates()
+        # Tick when the sidebar's collapse/expand slide started (None = not sliding).
+        # All sidebar geometry is derived from it by get_sidebar_layout()
+        # (ui/sidebar_layout.py) — nothing caches sidebar coordinates any more.
+        self._sidebar_anim_start_ms = None
 
         # Track previous player and phase for AI turn optimization
         self.previous_ai_check = -1
@@ -4486,9 +4492,8 @@ class Game:
             
             # Update mouse handler with new layout values
             self.mouse.update_layout(TOP_PANEL_HEIGHT, BOTTOM_UI_Y, WINDOW_WIDTH)
-
-            # Update cached sidebar coordinates for AI turn click detection
-            self._cache_sidebar_coordinates()
+            # (Sidebar geometry needs no update: get_sidebar_layout() reads the
+            # current WINDOW_WIDTH / TOP_PANEL_HEIGHT / MAP_HEIGHT on every call.)
 
             # Update UI renderer with new layout values
             layout_values = {
@@ -6400,22 +6405,20 @@ class Game:
         if pos[1] < TOP_PANEL_HEIGHT:
             return
 
-        # Check if clicking on sidebar area (body + tab buttons)
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        if self.game_state.sidebar_expanded:
-            if pos[0] >= sidebar_x:
-                # Handle technology tab right-click (for cancel research)
-                if self.game_state.active_sidebar_tab == 'technology':
-                    handled = self.handle_technology_tab_click(pos, right_click=True)
-                    if handled:
-                        return handled
-                # Block all right-clicks over expanded sidebar from reaching map
-                return
-            # Block right-clicks on sidebar tab buttons (they stick out left of sidebar)
-            if hasattr(self, 'sidebar_tab_buttons') and self.sidebar_tab_buttons:
-                for tab_rect in self.sidebar_tab_buttons.values():
-                    if tab_rect.collidepoint(pos):
-                        return
+        # Check if clicking on the sidebar (panel body, bookmark tabs, collapse button).
+        # Uses the live sidebar layout, so it follows collapse/expand.
+        if self.is_point_over_sidebar(pos):
+            # Technology tab right-click cancels research (not mid-slide: the
+            # buttons are moving under the cursor)
+            if (self.is_point_over_sidebar_panel(pos)
+                    and self.game_state.sidebar_expanded
+                    and not self.is_sidebar_animating()
+                    and self.game_state.active_sidebar_tab == 'technology'):
+                handled = self.handle_technology_tab_click(pos, right_click=True)
+                if handled:
+                    return handled
+            # Block all right-clicks over the sidebar from reaching the map
+            return
 
         # Check if clicking on map area (not bottom UI)
         if pos[1] >= BOTTOM_UI_Y:
@@ -6896,6 +6899,111 @@ class Game:
 
         # Store button for click detection
         self.disconnect_exit_button = exit_button
+
+    # ========================================
+    # SIDEBAR LAYOUT & COLLAPSE
+    # ========================================
+    # Single source of truth for "where is the right sidebar": every click, hover,
+    # tooltip, wheel and AI-turn check goes through these helpers instead of
+    # recomputing WINDOW_WIDTH - 250 (which ignored the collapsed state).
+
+    def get_sidebar_layout(self):
+        """Current sidebar geometry, animated while sliding (see ui/sidebar_layout.py)."""
+        game_state = getattr(self, 'game_state', None)
+        expanded = game_state.sidebar_expanded if game_state is not None else True
+        progress = sidebar_progress(expanded, self._sidebar_anim_start_ms,
+                                    pygame.time.get_ticks(), UIConstants.SIDEBAR_SLIDE_MS)
+        return compute_sidebar_layout(WINDOW_WIDTH, TOP_PANEL_HEIGHT, MAP_HEIGHT, progress,
+                                      UIConstants.SIDEBAR_WIDTH, UIConstants.TAB_WIDTH)
+
+    def is_sidebar_animating(self):
+        """True while the collapse/expand slide is running."""
+        start = self._sidebar_anim_start_ms
+        return (start is not None
+                and pygame.time.get_ticks() - start < UIConstants.SIDEBAR_SLIDE_MS)
+
+    def can_collapse_sidebar(self):
+        """False while the active mission forbids collapsing the sidebar.
+
+        The tutorial forbids it at every step (TutorialMission.is_action_allowed
+        refuses 'toggle_sidebar'); campaign missions and Tales allow it except while
+        they block all actions (intro, pause, victory/defeat sequence).
+        """
+        mission = getattr(self, 'tutorial_mission', None)
+        if mission is not None and getattr(mission, 'active', False):
+            return bool(mission.is_action_allowed('toggle_sidebar'))
+        return True
+
+    def toggle_sidebar(self, expand=None, animate=True):
+        """Collapse or expand the sidebar.
+
+        Args:
+            expand: True / False to force a state, None to flip it.
+            animate: Slide (default) or snap.
+
+        Returns:
+            bool: True if the state changed. Collapsing is refused while
+            can_collapse_sidebar() is False; expanding is always allowed so the
+            panel can never get stuck closed.
+        """
+        game_state = getattr(self, 'game_state', None)
+        if game_state is None:
+            return False
+        target = (not game_state.sidebar_expanded) if expand is None else bool(expand)
+        if target == game_state.sidebar_expanded:
+            return False
+        if not target and not self.can_collapse_sidebar():
+            return False
+
+        game_state.sidebar_expanded = target
+        if animate:
+            # Reversing mid-slide resumes from the current position (no jump)
+            self._sidebar_anim_start_ms = reverse_anim_start(
+                self._sidebar_anim_start_ms, pygame.time.get_ticks(),
+                UIConstants.SIDEBAR_SLIDE_MS)
+        else:
+            self._sidebar_anim_start_ms = None
+        # Tech-tree particles store absolute screen positions; after the panel moves
+        # they would float over the map for their 1.5-3 s lifetime.
+        particles = getattr(getattr(self, 'ui_renderer', None), 'tech_particles', None)
+        if particles:
+            particles.clear()
+        return True
+
+    def is_point_on_sidebar_chrome(self, pos):
+        """True on the collapse button or a bookmark tab (visible in every state)."""
+        toggle = self.sidebar_toggle_button
+        if toggle is not None and toggle.collidepoint(pos):
+            return True
+        return any(rect.collidepoint(pos) for rect in (self.sidebar_tab_buttons or {}).values())
+
+    def is_point_over_sidebar_panel(self, pos):
+        """True over the panel body (only while any of it is on screen).
+
+        Bounded to the map's height: the sidebar ends at the bottom UI panel, so
+        bottom-UI buttons in the rightmost 250 px are never swallowed.
+        """
+        if not (TOP_PANEL_HEIGHT <= pos[1] < BOTTOM_UI_Y):
+            return False
+        layout = self.get_sidebar_layout()
+        return layout.panel_visible and pos[0] >= layout.panel_x
+
+    def is_point_over_sidebar(self, pos):
+        """True anywhere the sidebar covers the map: panel body, tabs or button."""
+        return self.is_point_on_sidebar_chrome(pos) or self.is_point_over_sidebar_panel(pos)
+
+    def _is_ai_turn_click_allowed(self, pos):
+        """Clicks allowed while an AI player takes its turn.
+
+        Menus, the top panel, and the sidebar's bookmark tabs / collapse button
+        (switching tabs and collapsing are local UI, not game actions). The old
+        cached x-band also let through 50 px of MAP left of the tabs.
+        """
+        if self.game_menu_visible or self.options_menu_visible:
+            return True
+        if pos[1] < TOP_PANEL_HEIGHT:
+            return True
+        return self.is_point_on_sidebar_chrome(pos)
 
     def draw_order_sidebar(self):
         """
@@ -11767,27 +11875,11 @@ class Game:
                             self.handle_camera_zoom(event.y)
                         continue  # Processed, skip other processing
                     elif event.type == pygame.MOUSEBUTTONDOWN:
-                        # During AI turns, allow clicks in specific areas:
-                        # 1. When any menu is open (for menu interaction)
-                        # 2. Top panel (menu button)
-                        # 3. Sidebar area (Action Log, Chat, Action Queue)
-                        # 4. Collapsed tab area
-
-                        click_y = event.pos[1]
-                        click_x = event.pos[0]
-
-                        # Check if click is in allowed areas
-                        is_menu_open = self.game_menu_visible or self.options_menu_visible
-                        is_top_panel = click_y < TOP_PANEL_HEIGHT
-
-                        # Sidebar TAB BUTTONS ONLY (not content):
-                        # Coordinates cached in __init__ and updated on resolution change
-                        is_sidebar_tab = self.tab_button_area_start <= click_x < self.tab_button_area_end
-
-                        # NOTE: Collapsed tab check removed - sidebar never collapses
-                        is_collapsed_tab = False
-
-                        if is_menu_open or is_top_panel or is_sidebar_tab or is_collapsed_tab:
+                        # During AI turns, allow clicks only on: an open menu, the
+                        # top panel, and the sidebar's bookmark tabs / collapse button
+                        # (see _is_ai_turn_click_allowed — it follows the live sidebar
+                        # layout, so the tabs stay clickable when collapsed).
+                        if self._is_ai_turn_click_allowed(event.pos):
                             # Click is in allowed area - process it
                             if event.button == 1:  # Left click
                                 handled_result = self.mouse.handle_left_click(event.pos)
@@ -15259,16 +15351,10 @@ class Game:
         # This makes hover work correctly with camera offset and zoom!
         world_pos = self.screen_to_world(pos)
         
-        # Only track territory/army hover when in map area (not top panel, bottom UI, or sidebar)
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        in_sidebar = self.game_state.sidebar_expanded and pos[0] >= sidebar_x
-        # Also check sidebar tab buttons (they stick out to the left of the sidebar)
-        in_tab_buttons = False
-        if self.game_state.sidebar_expanded and hasattr(self, 'sidebar_tab_buttons') and self.sidebar_tab_buttons:
-            for tab_rect in self.sidebar_tab_buttons.values():
-                if tab_rect.collidepoint(pos):
-                    in_tab_buttons = True
-                    break
+        # Only track territory/army hover when in map area (not top panel, bottom UI, or sidebar).
+        # The sidebar check covers the panel body, bookmark tabs and collapse button,
+        # and follows collapse/expand (live layout).
+        in_sidebar = self.is_point_over_sidebar(pos)
         # The unit context menu can overlap the map when it flips upward - nothing
         # beneath it may highlight while it is open.
         ctx_menu_rect = self._get_unit_context_menu_rect()
@@ -15276,8 +15362,11 @@ class Game:
         # Battle Report popups float over the map, so territories beneath one must not
         # highlight or show tooltips while the cursor is on it.
         in_battle_report = bool(self._battle_report_rect_at(pos))
-        in_map_area = (pos[1] >= TOP_PANEL_HEIGHT and pos[1] < MAP_HEIGHT
-                       and not in_sidebar and not in_tab_buttons and not in_context_menu
+        # The map ends at BOTTOM_UI_Y (= TOP_PANEL_HEIGHT + MAP_HEIGHT). Comparing with
+        # MAP_HEIGHT (a height, not a y) left the lowest TOP_PANEL_HEIGHT px of the map
+        # with no hover highlight at all.
+        in_map_area = (TOP_PANEL_HEIGHT <= pos[1] < BOTTOM_UI_Y
+                       and not in_sidebar and not in_context_menu
                        and not in_battle_report)
         if in_map_area:
             # Check if hovering over an army first (takes priority over territory)
@@ -15564,11 +15653,17 @@ class Game:
                 self.show_tooltip_button = self.hover_target_button
         
         # Draw hover tooltips (on top of everything else)
-        # Check if in map area and NOT over sidebar
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        in_map_area = self.mouse_pos[1] >= TOP_PANEL_HEIGHT and self.mouse_pos[1] < MAP_HEIGHT and self.mouse_pos[0] < sidebar_x
+        # Check if in map area and NOT over the sidebar (live layout: follows collapse).
+        # BOTTOM_UI_Y, not MAP_HEIGHT: the latter is a height, and cut tooltips off
+        # for the lowest TOP_PANEL_HEIGHT px of the map.
+        in_map_area = (TOP_PANEL_HEIGHT <= self.mouse_pos[1] < BOTTOM_UI_Y
+                       and not self.is_point_over_sidebar(self.mouse_pos))
         in_top_panel = self.mouse_pos[1] < TOP_PANEL_HEIGHT
-        in_bottom_ui = self.mouse_pos[1] >= BOTTOM_UI_Y and self.mouse_pos[0] < sidebar_x
+        # Bottom-UI button tooltips keep their original rightmost-250 px cut-off. This
+        # is a bottom-panel rule (it stops unit tooltips lingering at the panel's right
+        # end), independent of whether the sidebar above is collapsed.
+        in_bottom_ui = (self.mouse_pos[1] >= BOTTOM_UI_Y
+                        and self.mouse_pos[0] < WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH)
 
         # Check top panel FIRST (has priority over map area)
         if in_top_panel and self.show_tooltip_button:
@@ -15715,10 +15810,10 @@ class Game:
         """
         # Check if mouse is over sidebar and a scrollable tab is active
         mouse_pos = pygame.mouse.get_pos()
-        sidebar_x = WINDOW_WIDTH - 250  # Sidebar position
-        
-        # If sidebar is expanded and mouse is over it
-        if self.game_state.sidebar_expanded and mouse_pos[0] >= sidebar_x:
+
+        # If the mouse is over the sidebar's panel body (live layout; bounded to the
+        # map's height so the wheel over the bottom UI's right end zooms as usual)
+        if self.game_state.sidebar_expanded and self.is_point_over_sidebar_panel(mouse_pos):
             active_tab = self.game_state.active_sidebar_tab
             
             # Handle scrolling for scrollable tabs
@@ -16203,17 +16298,6 @@ class Game:
         # No automatic selection - user controls all starting positions
         pass
 
-    def _cache_sidebar_coordinates(self):
-        """
-        Cache sidebar tab button coordinates for spectator mode click detection.
-
-        These coordinates define the clickable area for sidebar tab buttons during
-        AI turns. Cached for performance (avoids recalculation on every mouse click).
-        """
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        # Tab buttons extend left from sidebar with 50px margin
-        self.tab_button_area_start = sidebar_x - UIConstants.TAB_WIDTH - 50
-        self.tab_button_area_end = sidebar_x
 
 if __name__ == "__main__":
     from main_menu import MainMenu

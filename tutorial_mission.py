@@ -1272,6 +1272,12 @@ class TutorialMission:
         elif action_type == 'cancel_all_orders':
             return bool(allowed.get('cancel_all_orders'))
 
+        elif action_type == 'toggle_sidebar':
+            # The right sidebar stays open for the whole tutorial: its steps point
+            # at the bookmark tabs and panel contents. The collapse button is greyed
+            # out and F2 is ignored (Game.can_collapse_sidebar()).
+            return False
+
         return False
 
     def get_adjacency_override(self, territory):
