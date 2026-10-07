@@ -715,5 +715,179 @@ class TestMapEastEdgePerformance:
             f"East-gap zoom worst frame too slow: {result['worst_frame_ms']:.1f}ms")
 
 
+class TestSidebarScenarios:
+    """
+    Right-sidebar content under load, one scenario per tab (sidebar overhaul baseline).
+
+    Each scenario fills its tab well past one screen (40 orders, 2000 log lines, 500 chat
+    lines, 5 heroes) and changes the view every frame — scroll position and/or hovered
+    element — so nothing is served from a frame-identical cache. `_bench_scroll` drives
+    whichever scroll API exists, so the same scenarios measure the old code (message-count
+    offsets; no queue/heroes scroll) and the new pixel ScrollState per tab.
+    """
+
+    LOG_TEMPLATES = [
+        "--- Player {p}'s Turn ---",
+        "Player {p} earned {n} gold from 12 territories",
+        "Player {p}: 15 gold lost to taxation (20%)",
+        "Player {p} started building Barracks (60 gold, 2 turns)",
+        "Player {p}: Farm completed in Lentria",
+        "Player {p}: Swordsman trained in Lobardia",
+        "Order created: 3 armies Lobardia -> Lentria",
+        "=== BATTLE in Lentria! ===",
+        "  Attacker strength 42 vs defender strength 37",
+        "  Defender casualties: 2 Swordsman, 1 Archer",
+        "  Player {p} WINS! Lost 3 battalions, 5 remains",
+        "Player {p} conquers Lentria (5 armies)",
+        "Started research: Efficient Farming (120 gold, 3 turns)",
+        "Not enough gold! (Need 400)",
+    ]
+
+    @pytest.fixture
+    def sidebar_game(self, pygame_init):
+        from main import Game
+        game = Game()
+        game.initialize_game({
+            'num_players': 4,
+            'player_is_ai': [False, True, True, True],
+            # Numeric difficulty (0-2): the Action Log / Chat resolve player names,
+            # which index a difficulty-name list (the 'Normal' string crashes there)
+            'player_ai_difficulty': [None, 1, 1, 1],
+        })
+        game.game_state.phase = 'playing'
+        populate_map(game, buildings_per_territory=1, armies=20)
+        return game
+
+    # ---------------- populate helpers ----------------
+
+    @staticmethod
+    def populate_orders(game, n=40):
+        """n local-player orders, mixing own moves and attacks (with typed units)."""
+        import map_data
+        from game_state import MovementOrder
+        gs = game.game_state
+        own = [t for t, o in gs.territory_owners.items() if o == 0]
+        made = 0
+        unit_types = ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']
+        for i in range(n * 3):
+            if made >= n:
+                break
+            src = own[i % len(own)]
+            neighbors = map_data.get_neighbors(src)
+            if not neighbors:
+                continue
+            dst = neighbors[i % len(neighbors)]
+            garrison = gs.territory_garrisons.setdefault(src, {}).setdefault(0, {'unmoved': 20, 'moved': 0})
+            units = garrison.setdefault('units', [])
+            ids = []
+            for k in range(3):
+                uid = f"bench_{made}_{k}"
+                units.append({'id': uid, 'status': 'ready', 'order': None,
+                              'type': unit_types[(made + k) % len(unit_types)], 'xp': 0, 'level': 0})
+                ids.append(uid)
+            gs.movement_orders.append(MovementOrder(src, dst, 3, 0, unit_ids=ids))
+            made += 1
+        return made
+
+    @classmethod
+    def populate_log(cls, game, n=2000):
+        """Realistic message mix (turn headers, economy, battles with indented lines)."""
+        msgs = game.game_state.messages
+        for i in range(n):
+            template = cls.LOG_TEMPLATES[i % len(cls.LOG_TEMPLATES)]
+            msgs.append(template.format(p=(i // len(cls.LOG_TEMPLATES)) % 4 + 1, n=40 + i % 60))
+
+    @staticmethod
+    def populate_chat(game, n=500):
+        for i in range(n):
+            game.game_state.add_chat_message(i % 4, f"Chat line {i}: hold the river crossing", 'all')
+
+    @staticmethod
+    def populate_heroes(game):
+        """3 active + 2 in training for the local player."""
+        gs = game.game_state
+        own = [t for t, o in gs.territory_owners.items() if o == 0]
+        heroes = ['Halon Nextroy', 'Aidam Narn', 'Erec Silvyr']
+        gs.heroes.setdefault(0, {})
+        for i, hero in enumerate(heroes):
+            gs.heroes[0][hero] = {'keep_territory': own[i], 'keep_plot': 0, 'status': 'active'}
+        for i, hero in enumerate(['Darius Brennhen', 'Vearen Asford']):
+            gs.hero_training_queue.setdefault(own[3 + i], {})[0] = (hero, 1, 200)
+
+    @staticmethod
+    def research_some(game):
+        gs = game.game_state
+        gs.player_tech_researched[0].update({'tech_0_0', 'tech_0_1', 'tech_1_0'})
+        gs.player_tech_available[0].update({'tech_0_2', 'tech_1_1'})
+
+    @staticmethod
+    def _bench_scroll(game, tab, i):
+        """Move the tab's scroll position a little every frame (old or new API)."""
+        new_api = getattr(game, 'sidebar_scroll', None)
+        if new_api and tab in new_api:
+            new_api[tab].scroll(23 if (i // 15) % 2 == 0 else -23)
+        elif tab == 'action_log':
+            game.action_log_scroll_offset = i % 30
+        elif tab == 'chat':
+            game.chat_scroll_offset = i % 30
+
+    def _run(self, game, tab, name, before=None, samples=60):
+        game.game_state.active_sidebar_tab = tab
+        game.game_state.sidebar_expanded = True
+        layout = game.get_sidebar_layout()
+        mid_y = layout.top + layout.height // 2
+
+        def frame(i):
+            # Sweep the cursor down the panel body so hover states change every frame
+            game.mouse_pos = (layout.panel_x + 120, layout.top + 60 + (i * 11) % max(1, layout.height - 120))
+            if before:
+                before(i)
+
+        fps = FPSMeasurement(sample_count=samples)
+        result = record(name, fps.run_benchmark(game, before_frame=frame, warmup=5))
+        report(f'Sidebar: {name}', result)
+        assert result['avg_fps'] >= 25, f"{name} FPS too low: {result['avg_fps']:.1f}"
+        return result
+
+    # ---------------- scenarios ----------------
+
+    def test_sidebar_queue_40(self, sidebar_game):
+        assert self.populate_orders(sidebar_game, 40) >= 30
+        self._run(sidebar_game, 'action_queue', 'sidebar_queue_40',
+                  before=lambda i: self._bench_scroll(sidebar_game, 'action_queue', i))
+
+    def test_sidebar_log_2000(self, sidebar_game):
+        self.populate_log(sidebar_game, 2000)
+
+        def before(i):
+            self._bench_scroll(sidebar_game, 'action_log', i)
+            if i % 10 == 0:  # new events arrive while reading
+                sidebar_game.game_state.messages.append(f"Player 1: Archer trained in Lobardia ({i})")
+        self._run(sidebar_game, 'action_log', 'sidebar_log_2000', before=before)
+
+    def test_sidebar_chat_500(self, sidebar_game):
+        self.populate_chat(sidebar_game, 500)
+        self._run(sidebar_game, 'chat', 'sidebar_chat_500',
+                  before=lambda i: self._bench_scroll(sidebar_game, 'chat', i))
+
+    def test_sidebar_heroes(self, sidebar_game):
+        self.populate_heroes(sidebar_game)
+        self._run(sidebar_game, 'heroes', 'sidebar_heroes',
+                  before=lambda i: self._bench_scroll(sidebar_game, 'heroes', i))
+
+    def test_sidebar_tech(self, sidebar_game):
+        self.research_some(sidebar_game)
+        self._run(sidebar_game, 'technology', 'sidebar_tech')
+
+    def test_sidebar_bookmark_hover(self, sidebar_game):
+        """Cursor sweeps across the six bookmarks (hover state changes every frame)."""
+        sidebar_game.draw_order_sidebar()
+        tabs = list(sidebar_game.sidebar_tab_buttons.values())
+
+        def before(i):
+            sidebar_game.mouse_pos = tabs[i % len(tabs)].center
+        self._run(sidebar_game, 'action_queue', 'sidebar_bookmark_hover', before=before)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '--tb=short'])
