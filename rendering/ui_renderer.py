@@ -2701,11 +2701,15 @@ class UIRenderer:
                 if not self.game.game_state.player_is_ai[i]:
                     local_player = i
                     break
-        if self.game.game_state.player_has_silvyr(local_player):
+        # Skipped while the sidebar slides: particles store absolute screen positions,
+        # so ones spawned mid-slide would be left behind when the panel stops.
+        sliding = self.game.is_sidebar_animating()
+        if self.game.game_state.player_has_silvyr(local_player) and not sliding:
             self._render_tech_tree_particles(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
 
         # Draw tooltip at the very end so it appears on top of everything
-        if hovered_tech_info:
+        # (not mid-slide: the buttons are moving under a still cursor)
+        if hovered_tech_info and not sliding:
             # Use main.py's draw_tooltip_box for mixed-style rendering support
             self.game.draw_tooltip_box(self.game.mouse_pos, hovered_tech_info)
 

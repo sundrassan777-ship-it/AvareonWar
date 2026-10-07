@@ -432,3 +432,226 @@ class TestBottomStripHover:
         game.show_tooltip_territory = territory
         game.update_frame_tooltips()
         assert calls, "territory tooltip suppressed in the lowest strip of the map"
+
+
+# ============================================================================
+# PART 3 — THE COLLAPSE FEATURE (button, bookmarks, F2, slide, badge)
+# ============================================================================
+
+def _mission(blocked=lambda action, kwargs: False):
+    """Minimal stand-in for a mission: just what the sidebar drawing/clicks ask."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        active=True,
+        should_highlight_button=lambda b: False,
+        is_button_locked=lambda b: False,
+        is_action_allowed=lambda a, **k: not blocked(a, k),
+    )
+
+
+def _collapse(game):
+    game.toggle_sidebar(expand=False, animate=False)
+    game.draw_order_sidebar()
+
+
+def _key(key):
+    import pygame
+    return pygame.event.Event(pygame.KEYDOWN, key=key, unicode='', mod=0, scancode=0)
+
+
+def _map_mid_y():
+    import main
+    return main.TOP_PANEL_HEIGHT + main.MAP_HEIGHT // 2
+
+
+class TestCollapseButton:
+
+    def test_button_sits_above_the_tabs_and_collapses(self, game):
+        import main
+        game.draw_order_sidebar()
+        button = game.sidebar_toggle_button
+        first_tab = game.sidebar_tab_buttons['technology']
+        assert button is not None
+        assert button.x == first_tab.x and button.bottom <= first_tab.y
+        assert game.mouse.handle_left_click(button.center) is True
+        assert game.game_state.sidebar_expanded is False
+
+    def test_collapsed_tabs_and_button_sit_at_the_screen_edge(self, game):
+        import main
+        _collapse(game)
+        for rect in game.sidebar_tab_buttons.values():
+            assert rect.right == main.WINDOW_WIDTH
+        assert game.sidebar_toggle_button.right == main.WINDOW_WIDTH
+        # The same button expands it again
+        game.mouse.handle_left_click(game.sidebar_toggle_button.center)
+        assert game.game_state.sidebar_expanded is True
+
+    def test_button_greyed_and_refused_in_the_tutorial(self, game):
+        game.tutorial_mission = _mission(lambda a, k: a == 'toggle_sidebar')
+        game.draw_order_sidebar()
+        button = game.sidebar_toggle_button
+        # Locked palette (same as a locked bookmark tab)
+        assert tuple(game.screen.get_at((button.x + 3, button.y + 3)))[:3] == (30, 30, 30)
+        assert game.mouse.handle_left_click(button.center) is True  # consumed...
+        assert game.game_state.sidebar_expanded is True             # ...but refused
+        game.handle_keyboard_input(_key(__import__('pygame').K_F2))
+        assert game.game_state.sidebar_expanded is True
+
+
+class TestBookmarks:
+
+    def test_collapsed_bookmark_opens_the_panel_on_that_tab(self, game):
+        game.game_state.active_sidebar_tab = 'action_queue'
+        _collapse(game)
+        heroes = game.sidebar_tab_buttons['heroes']
+        assert game.mouse.handle_left_click(heroes.center) is True
+        assert game.game_state.sidebar_expanded is True
+        assert game.game_state.active_sidebar_tab == 'heroes'
+
+    def test_locked_bookmark_does_not_open_the_panel(self, game):
+        """Mission 2 locks the Heroes tab: clicking it while collapsed does nothing."""
+        game.game_state.active_sidebar_tab = 'action_queue'
+        _collapse(game)
+        game.tutorial_mission = _mission(lambda a, k: a == 'sidebar_tab' and k.get('tab_name') == 'heroes')
+        game.draw_order_sidebar()
+        game.mouse.handle_left_click(game.sidebar_tab_buttons['heroes'].center)
+        assert game.game_state.sidebar_expanded is False
+        assert game.game_state.active_sidebar_tab == 'action_queue'
+
+    def test_bookmarks_clickable_during_ai_turn_when_collapsed(self, game):
+        _collapse(game)
+        for rect in game.sidebar_tab_buttons.values():
+            assert game._is_ai_turn_click_allowed(rect.center)
+        assert game._is_ai_turn_click_allowed(game.sidebar_toggle_button.center)
+
+
+class TestCollapsedPanelIsMap:
+
+    def test_click_in_former_panel_area_reaches_the_map(self, game, monkeypatch):
+        import main
+        calls = []
+        monkeypatch.setattr(game, 'handle_map_area_click', lambda pos: calls.append(pos) or True)
+        _collapse(game)
+        pos = (main.WINDOW_WIDTH - 120, _map_mid_y())
+        game.mouse.handle_left_click(pos)
+        assert calls == [pos]
+
+    def test_hover_and_tooltips_in_former_panel_area(self, game):
+        import main
+        _collapse(game)
+        pos = (main.WINDOW_WIDTH - 120, _map_mid_y())
+        assert not game.is_point_over_sidebar(pos)
+        assert game.mouse.get_click_area(pos) == 'map_area'
+
+    def test_stale_content_rects_are_cleared(self, game):
+        import pygame
+        game.game_state.active_sidebar_tab = 'technology'
+        game.draw_order_sidebar()
+        assert game.technology_buttons  # drawn while expanded
+        game.cancel_all_button = pygame.Rect(0, 0, 10, 10)
+        _collapse(game)
+        assert game.technology_buttons == {}
+        assert game.hero_selection_buttons == {}
+        assert game.order_cancel_buttons == []
+        assert game.cancel_all_button is None
+
+
+class TestOrderBadge:
+
+    def test_badge_counts_only_the_local_players_orders(self, game, monkeypatch):
+        from game_state import MovementOrder
+        territory = next(iter(game.scaled_polygons))
+        game.game_state.movement_orders = (
+            [MovementOrder(territory, territory, 1, 0, [0]) for _ in range(2)]
+            + [MovementOrder(territory, territory, 1, 1, [0]) for _ in range(3)])
+        _collapse(game)
+        texts = []
+        original = game._get_cached_text
+        monkeypatch.setattr(game, '_get_cached_text',
+                            lambda text, *a, **k: texts.append(text) or original(text, *a, **k))
+        game.draw_order_sidebar()
+        assert '2' in texts and '5' not in texts
+
+    def test_no_badge_while_expanded(self, game, monkeypatch):
+        from game_state import MovementOrder
+        territory = next(iter(game.scaled_polygons))
+        game.game_state.movement_orders = [MovementOrder(territory, territory, 1, 0, [0])]
+        drawn = []
+        monkeypatch.setattr(game, '_draw_sidebar_order_badge', lambda: drawn.append(True))
+        game.draw_order_sidebar()
+        assert drawn == []
+
+
+class TestF2Hotkey:
+
+    def test_f2_toggles(self, game):
+        import pygame
+        game.handle_keyboard_input(_key(pygame.K_F2))
+        assert game.game_state.sidebar_expanded is False
+        game.handle_keyboard_input(_key(pygame.K_F2))
+        assert game.game_state.sidebar_expanded is True
+
+    @pytest.mark.parametrize('blocker', [
+        'chat_input_active', 'game_menu_visible', 'battle_popup_visible',
+        'enhanced_battle_ui', 'players_window_visible',
+    ])
+    def test_f2_ignored_while_something_modal_is_open(self, game, blocker):
+        blocked_value, clear_value = ((object(), None) if blocker == 'enhanced_battle_ui'
+                                      else (True, False))
+        setattr(game, blocker, blocked_value)
+        try:
+            assert game._handle_sidebar_hotkey() is False
+        finally:
+            setattr(game, blocker, clear_value)
+        assert game.game_state.sidebar_expanded is True
+
+    def test_f2_ignored_while_typing_chat(self, game):
+        """Typing in chat must not fold the panel (keyboard-handler level)."""
+        import pygame
+        game.chat_input_active = True
+        try:
+            game.handle_keyboard_input(_key(pygame.K_F2))
+        finally:
+            game.chat_input_active = False
+        assert game.game_state.sidebar_expanded is True
+
+    def test_f2_is_not_a_game_attribute(self, game):
+        """The keyboard update must call toggle_sidebar, not setattr(game, 'toggle_sidebar')."""
+        import pygame
+        game.handle_keyboard_input(_key(pygame.K_F2))
+        assert callable(game.toggle_sidebar)
+
+
+class TestSlide:
+
+    def test_mid_slide_panel_is_between_the_end_positions(self, game):
+        import main
+        import pygame
+        game.toggle_sidebar(expand=False, animate=True)
+        game._sidebar_anim_start_ms = pygame.time.get_ticks() - main.UIConstants.SIDEBAR_SLIDE_MS // 2
+        layout = game.get_sidebar_layout()
+        expanded_x = main.WINDOW_WIDTH - main.UIConstants.SIDEBAR_WIDTH
+        assert expanded_x < layout.panel_x < main.WINDOW_WIDTH
+
+    def test_panel_clicks_mid_slide_are_consumed_not_dispatched(self, game, monkeypatch):
+        import main
+        import pygame
+        game.game_state.active_sidebar_tab = 'technology'
+        calls = []
+        monkeypatch.setattr(game, 'handle_technology_tab_click', lambda *a, **k: calls.append(a) or True)
+        game.toggle_sidebar(expand=False, animate=False)
+        game.toggle_sidebar(expand=True, animate=True)        # start expanding
+        # Freeze "now" inside the slide, then click inside the (moving) panel
+        start = game._sidebar_anim_start_ms
+        monkeypatch.setattr(pygame.time, 'get_ticks', lambda: start + 100)
+        layout = game.get_sidebar_layout()
+        pos = (layout.panel_x + 20, _map_mid_y())
+        assert game.mouse.handle_left_click(pos) is True
+        assert calls == []
+
+    def test_finished_slide_is_forgotten_by_the_draw(self, game):
+        import pygame
+        game.toggle_sidebar(expand=False, animate=True)
+        game._sidebar_anim_start_ms = pygame.time.get_ticks() - 10_000
+        game.draw_order_sidebar()
+        assert game._sidebar_anim_start_ms is None

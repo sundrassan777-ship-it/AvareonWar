@@ -268,7 +268,8 @@ class TestFPSBaseline:
     def test_sidebar_open_fps(self, game_instance):
         """Sidebar open should not drop FPS below 50."""
         game_instance.game_state.active_sidebar_tab = 'action_queue'
-        game_instance.sidebar_expanded = True
+        # The flag lives on game_state (setting it on the Game object did nothing)
+        game_instance.game_state.sidebar_expanded = True
 
         fps = FPSMeasurement()
         result = fps.run_benchmark(game_instance)
@@ -345,20 +346,34 @@ class TestOptimizationRegression:
         print("  Cache hit verified")
 
     def test_rotated_tab_text_cache(self, game_instance):
-        """Rotated tab text should be cached."""
-        # Trigger sidebar draw to populate cache
-        game_instance.sidebar_expanded = False
+        """Rotated tab text is rendered once and reused (expanded and collapsed)."""
+        game_instance.draw_order_sidebar()
+        cached = dict(game_instance._rotated_tab_text_cache)
+        assert cached, "Rotated tab text cache not populated by draw_order_sidebar()"
 
-        # Check cache is empty initially
-        initial_cache_size = len(game_instance._rotated_tab_text_cache)
-
-        # Draw sidebar (which should cache rotated text)
-        # Note: We can't easily call draw_sidebar in isolation, but we can check the cache exists
-        assert hasattr(game_instance, '_rotated_tab_text_cache'), "Rotated tab text cache not initialized"
+        # Collapsed: the same bookmark labels, so no new rotations and same surfaces
+        game_instance.toggle_sidebar(expand=False, animate=False)
+        game_instance.draw_order_sidebar()
+        assert game_instance._rotated_tab_text_cache == cached
 
         print("\n=== Rotated Tab Text Cache ===")
-        print(f"  Cache initialized: Yes")
-        print(f"  Initial size: {initial_cache_size}")
+        print(f"  Cached labels: {len(cached)}")
+
+    def test_sidebar_slide_fps(self, game_instance):
+        """Collapse/expand slide: panel + content redrawn at a new x every frame."""
+        import pygame
+        game_instance.game_state.active_sidebar_tab = 'technology'
+        slide_ms = 150
+
+        def before(i):
+            # Alternate collapse/expand, each frame 15 ms further into the slide
+            game_instance.game_state.sidebar_expanded = (i // 10) % 2 == 1
+            game_instance._sidebar_anim_start_ms = pygame.time.get_ticks() - (i % 10) * slide_ms // 10
+
+        fps = FPSMeasurement()
+        result = record('sidebar_slide', fps.run_benchmark(game_instance, before_frame=before, warmup=3))
+        report('Sidebar collapse/expand slide', result)
+        assert result['avg_fps'] >= 50, f"Sidebar slide FPS too low: {result['avg_fps']:.1f}"
 
 
 class TestStressScenarios:

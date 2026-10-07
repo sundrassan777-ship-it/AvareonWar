@@ -175,8 +175,10 @@ class MouseHandler:
         # follows collapse/expand and the slide. Never hardcode 250 / 40 here.
 
         # Collapse / expand button — tested in every state.
+        # A refused toggle (greyed out: tutorial) is still consumed, just without the flash.
         if self.game.sidebar_toggle_button and self.game.sidebar_toggle_button.collidepoint(pos):
-            self.game.toggle_sidebar()
+            if self.game.toggle_sidebar():
+                self.game.trigger_click_flash('sidebar_toggle', 'toggle')
             return True
 
         # Bookmark tabs: stick out left of the panel, or sit at the right screen edge
