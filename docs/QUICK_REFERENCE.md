@@ -26,6 +26,14 @@
 - Esc: Cancel/Close
 - C: Chat
 - M: Menu
+- **F2: Collapse / expand the right sidebar** (also during AI turns; not while typing chat,
+  with a menu or popup open, or in the tutorial)
+
+**Right sidebar:**
+- Round button above the bookmarks: collapse (`>>`) / expand (`<<`)
+- Collapsed: the bookmarks stay at the screen edge - click one to open the panel on that tab
+- Collapsed: the Action Queue bookmark shows your queued-order count
+- Every game starts with the sidebar open; the tutorial keeps it open
 
 ---
 
@@ -431,6 +439,8 @@ server.send_to_player(player_idx, msg)
 - rendering/map_renderer.py
 - rendering/ui_renderer.py
 - rendering/helpers.py
+- rendering/map_extension.py (strip past the map's east edge)
+- ui/sidebar_layout.py (right sidebar geometry, collapse slide)
 
 **Input:**
 - input/mouse_handler.py
@@ -567,7 +577,29 @@ MIN_ZOOM = 0.5
 MAX_ZOOM = 2.0
 CAMERA_SPEED = 10
 EDGE_SCROLL_SPEED = 15
+
+# East map extension (fills the strip past the map's right edge at low zoom)
+MAP_EAST_MODE = 'stretch'          # or 'mirror'
+MAP_EAST_FOG_COLOR = (60, 48, 32)  # warm dark parchment
+MAP_EAST_BLUR_FACTOR = 16
+MAP_EAST_CRISP_BAND = 0.08
+MAP_EAST_MIN_SRC_PX = 256
+MAP_EAST_MAX_SRC_PX = 2048
+MAP_EAST_MAX_PIXELS = 2_000_000    # ~8 MB cap
 ```
+
+**Sidebar (ui/scaler.py `UIConstants`):**
+```python
+SIDEBAR_WIDTH = 250
+TAB_WIDTH = 40
+SIDEBAR_SLIDE_MS = 150        # collapse / expand slide
+SIDEBAR_TOGGLE_HEIGHT = 37    # round collapse button (fits in TAB_PADDING_TOP = 45)
+```
+Is a point over the sidebar? `game.is_point_over_sidebar(pos)` - never `WINDOW_WIDTH - 250`.
+
+**Painted east extension (optional):** `<map background>_east.png` beside the map image, e.g.
+`maps/azincournean_highlands/map_east.png` - map height (3072 px or same ratio), ~500-600 px
+wide, left edge continuing the map's right edge. Replaces the generated extension.
 
 ---
 

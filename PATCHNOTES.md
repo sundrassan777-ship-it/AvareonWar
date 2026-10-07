@@ -4,6 +4,41 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## More Room for the Map
+
+*7 October 2026*
+
+### Fold away the right-hand panel
+
+The panel on the right (Technology, Heroes, Action Queue, Action Log, Quests and Chat) can now
+be folded away to show the whole map - especially useful on the Azincournean Highlands, whose
+eastern provinces sat partly hidden behind it.
+
+- **Click the round gold button** at the top of the panel's bookmarks, or press **F2**, to fold
+  the panel away or bring it back. It slides smoothly in and out.
+- **The bookmarks stay on screen** at the right edge while the panel is folded. Click any of
+  them to open the panel straight on that tab.
+- **Orders at a glance:** while folded, the Action Queue bookmark shows how many orders you have
+  queued.
+- F2 works during the computer players' turns too. Every game starts with the panel open, and
+  it stays open throughout the tutorial.
+
+### The edge of the world
+
+When you zoom all the way out, the map no longer ends in a blank white strip on the right. It
+now fades gently into dark parchment.
+
+### Fixes
+
+- **Territory highlights and tooltips** now work along the bottom edge of the map, just above
+  the bottom panel. Before, the lowest strip of the map showed neither.
+- **While the computer players take their turns,** clicks just left of the panel's bookmarks no
+  longer go through to the map or the bottom panel.
+- **Scrolling the mouse wheel** over the right end of the bottom panel no longer scrolls the
+  chat or the action log.
+
+---
+
 ## A New Tale: Final Breaths
 
 *6 October 2026*

@@ -268,7 +268,8 @@ class TestFPSBaseline:
     def test_sidebar_open_fps(self, game_instance):
         """Sidebar open should not drop FPS below 50."""
         game_instance.game_state.active_sidebar_tab = 'action_queue'
-        game_instance.sidebar_expanded = True
+        # The flag lives on game_state (setting it on the Game object did nothing)
+        game_instance.game_state.sidebar_expanded = True
 
         fps = FPSMeasurement()
         result = fps.run_benchmark(game_instance)
@@ -345,20 +346,34 @@ class TestOptimizationRegression:
         print("  Cache hit verified")
 
     def test_rotated_tab_text_cache(self, game_instance):
-        """Rotated tab text should be cached."""
-        # Trigger sidebar draw to populate cache
-        game_instance.sidebar_expanded = False
+        """Rotated tab text is rendered once and reused (expanded and collapsed)."""
+        game_instance.draw_order_sidebar()
+        cached = dict(game_instance._rotated_tab_text_cache)
+        assert cached, "Rotated tab text cache not populated by draw_order_sidebar()"
 
-        # Check cache is empty initially
-        initial_cache_size = len(game_instance._rotated_tab_text_cache)
-
-        # Draw sidebar (which should cache rotated text)
-        # Note: We can't easily call draw_sidebar in isolation, but we can check the cache exists
-        assert hasattr(game_instance, '_rotated_tab_text_cache'), "Rotated tab text cache not initialized"
+        # Collapsed: the same bookmark labels, so no new rotations and same surfaces
+        game_instance.toggle_sidebar(expand=False, animate=False)
+        game_instance.draw_order_sidebar()
+        assert game_instance._rotated_tab_text_cache == cached
 
         print("\n=== Rotated Tab Text Cache ===")
-        print(f"  Cache initialized: Yes")
-        print(f"  Initial size: {initial_cache_size}")
+        print(f"  Cached labels: {len(cached)}")
+
+    def test_sidebar_slide_fps(self, game_instance):
+        """Collapse/expand slide: panel + content redrawn at a new x every frame."""
+        import pygame
+        game_instance.game_state.active_sidebar_tab = 'technology'
+        slide_ms = 150
+
+        def before(i):
+            # Alternate collapse/expand, each frame 15 ms further into the slide
+            game_instance.game_state.sidebar_expanded = (i // 10) % 2 == 1
+            game_instance._sidebar_anim_start_ms = pygame.time.get_ticks() - (i % 10) * slide_ms // 10
+
+        fps = FPSMeasurement()
+        result = record('sidebar_slide', fps.run_benchmark(game_instance, before_frame=before, warmup=3))
+        report('Sidebar collapse/expand slide', result)
+        assert result['avg_fps'] >= 50, f"Sidebar slide FPS too low: {result['avg_fps']:.1f}"
 
 
 class TestStressScenarios:
@@ -646,6 +661,58 @@ class TestCrowdedMapPerformance:
                         fps.run_benchmark(crowd_game, warmup=5), banners=total)
         report(f'Banner density: {total} banners', result)
         assert result['avg_fps'] >= 25, f"Banners {total} FPS too low: {result['avg_fps']:.1f}"
+
+
+class TestMapEastEdgePerformance:
+    """
+    The zoom range in which the map is narrower than the window.
+
+    At min zoom (1.65) a 16:9 map image ends ~175px before the window's right edge
+    (1600x900: at x=1427). The right sidebar used to hide that strip; once it can
+    collapse, the strip is filled by the generated east extension
+    (rendering/map_extension.py). These scenarios measure that the extension costs
+    one blit while static and stays cheap while zoom crosses the gap range.
+    """
+
+    @pytest.fixture
+    def edge_game(self, pygame_init):
+        from main import Game
+        game = Game()
+        game.initialize_game({
+            'num_players': 4,
+            'player_is_ai': [False, True, True, True],
+            'player_ai_difficulty': [None, 'Normal', 'Normal', 'Normal'],
+        })
+        game.game_state.phase = 'playing'
+        populate_map(game, buildings_per_territory=2, armies=50)
+        return game
+
+    def test_static_fps_at_min_zoom(self, edge_game):
+        """Fully zoomed out, camera at the map's left edge: the gap is widest."""
+        sync_camera(edge_game, zoom=edge_game.camera.min_zoom, offset=(0.0, 0.0))
+        fps = FPSMeasurement(sample_count=60)
+        result = record('edge_static_min_zoom', fps.run_benchmark(edge_game, warmup=5))
+        report('Static FPS @ min zoom (east gap visible)', result)
+        assert result['avg_fps'] >= 25, f"Min-zoom static FPS too low: {result['avg_fps']:.1f}"
+
+    def test_zoom_sweep_across_gap(self, edge_game):
+        """Bounce zoom 1.65 <-> 1.9: the gap shrinks to zero and reopens every frame."""
+        lo = edge_game.camera.min_zoom
+        hi = min(1.9, edge_game.camera.max_zoom)
+        steps = 20
+
+        def before(i):
+            # Triangle wave so every frame lands on a new zoom level (no cache hits)
+            phase = i % (2 * steps)
+            t = phase / steps if phase <= steps else (2 * steps - phase) / steps
+            sync_camera(edge_game, zoom=lo + (hi - lo) * t, offset=(0.0, 0.0),
+                        force_rescale=False)
+
+        fps = FPSMeasurement(sample_count=60)
+        result = record('edge_zoom_sweep', fps.run_benchmark(edge_game, before_frame=before, warmup=3))
+        report(f'Zoom sweep across the east gap ({lo:.2f} <-> {hi:.2f})', result)
+        assert result['worst_frame_ms'] < 100, (
+            f"East-gap zoom worst frame too slow: {result['worst_frame_ms']:.1f}ms")
 
 
 if __name__ == '__main__':

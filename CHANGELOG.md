@@ -2,6 +2,59 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-07 - Collapsible right sidebar + east map extension
+
+Branch `feature/collapsible-sidebar`. The right sidebar covered real map area (Azincournean
+Highlands' polygons reach x=4008 of 4096; the open sidebar always hid x > ~3800-3875).
+
+**Investigation (nothing under the sidebar was trimmed):** the map renders full-width beneath
+it — `MAP_WIDTH = WINDOW_WIDTH`, the camera clamp and all culling use the window width. The one
+hidden problem: the left-aligned map ends ~175 px before the window edge at min zoom on 16:9
+(1600x900: x=1427), showing the frame's WHITE fill, which only the sidebar concealed (and which
+3440x1440 already showed beside it).
+
+**East map extension** (`rendering/map_extension.py`, `MapEastExtension`):
+- Fills the strip past the map's right edge without changing the zoom. Default
+  `MAP_EAST_MODE = 'stretch'`: each row's edge colour continues east, blurred, fading into
+  `MAP_EAST_FOG_COLOR` (warm dark parchment). A first `'mirror'` version reversed geography (the
+  Azincournean NE coast bent back south-west) and is kept as an option.
+- Optional painted override `<background>_east.png` (e.g. `maps/<id>/map_east.png`).
+- Built lazily, stored at reduced density (<= 2M px), one blit per static frame; zoom changes
+  rescale only the visible slice. FPS unchanged within noise (new `TestMapEastEdgePerformance`).
+- `Game._invalidate_map_background_caches()` drops every map-derived cache. The tutorial and
+  mission 2 cloud-cover bakes now call it (they draw into `map_image_original` in place, so the
+  id-keyed viewport cache never noticed them).
+
+**Sidebar layout** (`ui/sidebar_layout.py` + `Game.get_sidebar_layout()`, `is_point_over_sidebar()`,
+`is_point_over_sidebar_panel()`, `is_point_on_sidebar_chrome()`, `toggle_sidebar()`):
+- One source of truth for the sidebar's geometry; every consumer migrated (left/right click,
+  `get_click_area`, hover, tooltips, mouse wheel, AI-turn click whitelist). Removed the
+  hardcoded `- 250` / `- 40` and the cached `_cache_sidebar_coordinates()` band.
+
+**Collapse feature:**
+- Round collapse button above the bookmark tabs (CircleBorder art, cached sprites; `>>` / `<<`),
+  **F2** (also during AI turns), and bookmark clicks on the collapsed sidebar (open on that tab).
+- Collapsed: bookmarks flush with the right screen edge; the Action Queue bookmark shows the local
+  player's queued-order count. 150 ms smoothstep slide, reversible mid-way; panel clicks, the
+  tech tooltip and tech particles are held during it. Content click rects cleared while collapsed.
+- The tutorial refuses `'toggle_sidebar'` (button dimmed, F2 ignored); F2 is also ignored while
+  typing chat or with a modal open. Expanding is always allowed. Not persisted: every game starts
+  expanded. Replaces the old unreachable single collapsed tab.
+- `RightPanel.jpg` is now `.convert()`ed (blitted every frame, and during the slide).
+
+**Fixes found on the way:**
+- Map hover and tooltips compared the cursor y with `MAP_HEIGHT` (a height) instead of
+  `BOTTOM_UI_Y`, so the lowest ~TOP_PANEL_HEIGHT px of the map never highlighted or showed tooltips.
+- The AI-turn click whitelist was an x-only band 50 px wider than the tabs: clicks leaked onto the
+  map left of the tabs and into the bottom UI below them.
+- The mouse wheel over the bottom UI's right end scrolled the chat / action log.
+- `tests/test_fps_benchmark.py` set `sidebar_expanded` on the Game instead of `game_state` (a no-op);
+  fixed, and a slide scenario added (~235 FPS, worst frame ~6-7 ms).
+
+**Tests:** `tests/test_sidebar_collapse.py` (55). Full suite: only the 3 known pre-existing
+`TestDominationVictory` failures (plus the known flaky `test_2v2_simultaneous_40turn`, verified
+5/10 failures on unmodified HEAD).
+
 ## 2026-10-06 - Tale II transmissions (voiced by Advisor Valcerque)
 
 - `tale_final_breaths.py`: Tale I's intro / transmission machinery. Intro (gameplay

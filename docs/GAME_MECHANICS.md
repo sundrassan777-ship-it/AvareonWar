@@ -642,6 +642,12 @@ Persistent player level that tracks progression across all game modes. XP is ear
 - Action Queue (orders)
 - Action Log (events)
 - Chat tab
+- Collapsible: the round button above the bookmarks (or F2) slides it off-screen, leaving the
+  bookmarks at the screen edge; clicking a bookmark reopens it on that tab. While collapsed the
+  Action Queue bookmark shows how many orders you have queued. Every game starts with it open;
+  the tutorial keeps it open.
+- When fully zoomed out the map ends before the right screen edge (16:9 windows); the strip past
+  the map is filled with a faded continuation of the map's edge.
 
 **Territory Info Panel:**
 - Shows selected territory
@@ -667,6 +673,7 @@ Persistent player level that tracks progression across all game modes. XP is ear
   outstanding Battle Reports, before opening the menu)
 - C: Chat
 - M: Menu
+- F2: Collapse / expand the right sidebar
 
 ---
 

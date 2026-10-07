@@ -115,6 +115,10 @@ class UIConstants:
     TAB_WIDTH = 40           # Width of vertical tab buttons sticking out from sidebar
     TAB_PADDING_TOP = 45     # Padding at top of tab button area
     TAB_PADDING_BOTTOM = 45  # Padding at bottom of tab button area
+
+    # ===== COLLAPSE / EXPAND (ui/sidebar_layout.py) =====
+    SIDEBAR_SLIDE_MS = 150       # Duration of the collapse/expand slide
+    SIDEBAR_TOGGLE_HEIGHT = 37   # Collapse button above the tabs (fits in TAB_PADDING_TOP)
     
     # ===== SCROLLBAR =====
     SCROLLBAR_WIDTH = 4        # Width of scrollbar track and thumb

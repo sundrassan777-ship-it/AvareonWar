@@ -62,11 +62,13 @@ from network_config import MessageType
 # Import refactored modules
 from config.constants import *
 from ui.scaler import UIScaler, UIConstants
+from ui.sidebar_layout import sidebar_progress, reverse_anim_start, compute_sidebar_layout
 from utils.colors import lighten_color, brighten_color
 from rendering.helpers import DrawingHelpers
 from rendering.map_renderer import MapRenderer
 from rendering.ui_renderer import UIRenderer
 from rendering.panel_renderer import PanelRenderer
+from rendering.map_extension import MapEastExtension, east_extension_override_path
 from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
@@ -400,6 +402,9 @@ class Game:
                     map_path = None  # No background — use dark fallback
 
             logger.info(f"Loading map: {map_path}")
+            # Remembered so the east map extension can find an optional painted
+            # '<background>_east.png' beside it (rendering/map_extension.py)
+            self.map_background_path = map_path
 
             # Load original high-resolution image (4096×3072) in display format.
             # The .convert() inside _load_map_background saves ~9ms per frame.
@@ -411,6 +416,7 @@ class Game:
         except pygame.error as e:
             logger.error(f"Error loading map: {e}")
             # Last-resort fallback
+            self.map_background_path = None
             self.map_image_original = _load_map_background(None)
             self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
         
@@ -489,7 +495,7 @@ class Game:
         # Calculate sidebar height (map height between top and bottom panels)
         sidebar_height = WINDOW_HEIGHT - TOP_PANEL_HEIGHT - BOTTOM_UI_HEIGHT
         try:
-            right_panel_original = pygame.image.load("assets/RightPanel.jpg")
+            right_panel_original = pygame.image.load("assets/RightPanel.jpg").convert()  # opaque JPG: display format for fast per-frame blits
             # Scale to fit sidebar width and height
             # Image left edge will align with left edge of sidebar
             self.right_panel_image = pygame.transform.scale(
@@ -676,19 +682,19 @@ class Game:
             try:
                 # Display-format load (see _load_map_background) — applies to every
                 # map, including Azincournean Highlands and future backgrounds.
+                self.map_background_path = map_path
                 self.map_image_original = _load_map_background(map_path)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
             except pygame.error as e:
                 logger.error(f"Error reloading map image for '{map_id}': {e}")
+                self.map_background_path = None
                 self.map_image_original = _load_map_background(None)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
 
-            # Drop the viewport map cache so the new background is picked up even if
-            # the camera happens to be in exactly the same position.
-            self.cached_scaled_map = None
-            self.cached_zoom_level = None
-            self._map_view_key = None
-            self._map_view_surface = None
+            # Drop the viewport map cache (and the east extension built from the old
+            # background) so the new one is picked up even if the camera happens to
+            # be in exactly the same position.
+            self._invalidate_map_background_caches()
 
         # Rescale polygons from the newly loaded map_data globals
         self.scaled_polygons = {}
@@ -744,6 +750,10 @@ class Game:
         # Reload map image and rescale polygons/centers/plots for the selected map
         # (Game.__init__ loaded Avareon by default — override with correct map here)
         self._reload_map_assets(map_id)
+
+        # Every game starts with the sidebar expanded (the new GameState below sets
+        # sidebar_expanded=True); drop any slide left over from a previous game.
+        self._sidebar_anim_start_ms = None
 
         # Game state - use configuration from setup UI with skip_setup_phase=True
         game_mode = setup_config.get('game_mode', 'sequential')
@@ -1193,6 +1203,7 @@ class Game:
         # PERFORMANCE: Rotated text cache for sidebar collapsed tab labels
         # Key: tab_name -> rotated Surface (pygame.transform.rotate is expensive)
         self._rotated_tab_text_cache = {}
+        self._sidebar_toggle_sprites = {}  # Round sidebar toggle button variants (_get_sidebar_toggle_sprite)
 
         # PERFORMANCE: Cached overlay surfaces to avoid per-frame SRCALPHA allocations
         # Each full-screen SRCALPHA surface is ~5.44MB — reuse instead of recreating
@@ -1523,9 +1534,10 @@ class Game:
         # Initialize mouse handler (needs self reference and layout values)
         self.mouse = MouseHandler(self, TOP_PANEL_HEIGHT, BOTTOM_UI_Y, WINDOW_WIDTH)
 
-        # Cache sidebar tab button coordinates for AI turn event blocking
-        # Updated automatically when resolution changes
-        self._cache_sidebar_coordinates()
+        # Tick when the sidebar's collapse/expand slide started (None = not sliding).
+        # All sidebar geometry is derived from it by get_sidebar_layout()
+        # (ui/sidebar_layout.py) — nothing caches sidebar coordinates any more.
+        self._sidebar_anim_start_ms = None
 
         # Track previous player and phase for AI turn optimization
         self.previous_ai_check = -1
@@ -1565,6 +1577,9 @@ class Game:
         self._map_view_key = None
         self._map_view_surface = None
         self._map_view_offset = (0, 0)
+        # East map extension: fills the strip past the map's right edge when zoomed far
+        # out (it used to be hidden by the right sidebar). Built lazily on first draw.
+        self.map_east_extension = MapEastExtension()
 
         # Camera debug state
         self.debug_edge_scroll = None
@@ -4478,9 +4493,8 @@ class Game:
             
             # Update mouse handler with new layout values
             self.mouse.update_layout(TOP_PANEL_HEIGHT, BOTTOM_UI_Y, WINDOW_WIDTH)
-
-            # Update cached sidebar coordinates for AI turn click detection
-            self._cache_sidebar_coordinates()
+            # (Sidebar geometry needs no update: get_sidebar_layout() reads the
+            # current WINDOW_WIDTH / TOP_PANEL_HEIGHT / MAP_HEIGHT on every call.)
 
             # Update UI renderer with new layout values
             layout_values = {
@@ -4531,12 +4545,10 @@ class Game:
                 ]
             
             # Clear caches (H11 fix: also clear icon/text caches to prevent stale entries)
-            self.cached_scaled_map = None
-            self.cached_zoom_level = None
-            # Viewport map cache: the destination surface was created in the OLD
-            # display format and the layout globals have changed, so drop both.
-            self._map_view_key = None
-            self._map_view_surface = None
+            # Viewport map cache + east extension: their surfaces were created in the
+            # OLD display format and the layout globals (window width, map width) have
+            # changed, so drop them all.
+            self._invalidate_map_background_caches()
             # The map scale_factor just changed, so the renderer's pre-computed
             # bounding boxes and multi-zoom polygons are stale (they were built from
             # the polygons at the OLD scale). Without this, territory polygons
@@ -4547,6 +4559,7 @@ class Game:
             self._tech_border_cache = {}
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
+            self._sidebar_toggle_sprites = {}  # Rebuilt from CircleBorder in the new display format
             self._hero_overlay_cache = {}
             # Close the unit context menu: its anchor rect belongs to the old layout
             self.unit_context_menu = None
@@ -4632,7 +4645,7 @@ class Game:
             sidebar_height = WINDOW_HEIGHT - TOP_PANEL_HEIGHT - BOTTOM_UI_HEIGHT
             if self.right_panel_image:
                 try:
-                    right_panel_original = pygame.image.load("assets/RightPanel.jpg")
+                    right_panel_original = pygame.image.load("assets/RightPanel.jpg").convert()  # opaque JPG: display format for fast per-frame blits
                     self.right_panel_image = pygame.transform.scale(
                         right_panel_original,
                         (UIConstants.SIDEBAR_WIDTH, sidebar_height)
@@ -6394,22 +6407,20 @@ class Game:
         if pos[1] < TOP_PANEL_HEIGHT:
             return
 
-        # Check if clicking on sidebar area (body + tab buttons)
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        if self.game_state.sidebar_expanded:
-            if pos[0] >= sidebar_x:
-                # Handle technology tab right-click (for cancel research)
-                if self.game_state.active_sidebar_tab == 'technology':
-                    handled = self.handle_technology_tab_click(pos, right_click=True)
-                    if handled:
-                        return handled
-                # Block all right-clicks over expanded sidebar from reaching map
-                return
-            # Block right-clicks on sidebar tab buttons (they stick out left of sidebar)
-            if hasattr(self, 'sidebar_tab_buttons') and self.sidebar_tab_buttons:
-                for tab_rect in self.sidebar_tab_buttons.values():
-                    if tab_rect.collidepoint(pos):
-                        return
+        # Check if clicking on the sidebar (panel body, bookmark tabs, collapse button).
+        # Uses the live sidebar layout, so it follows collapse/expand.
+        if self.is_point_over_sidebar(pos):
+            # Technology tab right-click cancels research (not mid-slide: the
+            # buttons are moving under the cursor)
+            if (self.is_point_over_sidebar_panel(pos)
+                    and self.game_state.sidebar_expanded
+                    and not self.is_sidebar_animating()
+                    and self.game_state.active_sidebar_tab == 'technology'):
+                handled = self.handle_technology_tab_click(pos, right_click=True)
+                if handled:
+                    return handled
+            # Block all right-clicks over the sidebar from reaching the map
+            return
 
         # Check if clicking on map area (not bottom UI)
         if pos[1] >= BOTTOM_UI_Y:
@@ -6891,98 +6902,167 @@ class Game:
         # Store button for click detection
         self.disconnect_exit_button = exit_button
 
+    # ========================================
+    # SIDEBAR LAYOUT & COLLAPSE
+    # ========================================
+    # Single source of truth for "where is the right sidebar": every click, hover,
+    # tooltip, wheel and AI-turn check goes through these helpers instead of
+    # recomputing WINDOW_WIDTH - 250 (which ignored the collapsed state).
+
+    def get_sidebar_layout(self):
+        """Current sidebar geometry, animated while sliding (see ui/sidebar_layout.py)."""
+        game_state = getattr(self, 'game_state', None)
+        expanded = game_state.sidebar_expanded if game_state is not None else True
+        progress = sidebar_progress(expanded, self._sidebar_anim_start_ms,
+                                    pygame.time.get_ticks(), UIConstants.SIDEBAR_SLIDE_MS)
+        return compute_sidebar_layout(WINDOW_WIDTH, TOP_PANEL_HEIGHT, MAP_HEIGHT, progress,
+                                      UIConstants.SIDEBAR_WIDTH, UIConstants.TAB_WIDTH)
+
+    def is_sidebar_animating(self):
+        """True while the collapse/expand slide is running."""
+        start = self._sidebar_anim_start_ms
+        return (start is not None
+                and pygame.time.get_ticks() - start < UIConstants.SIDEBAR_SLIDE_MS)
+
+    def can_collapse_sidebar(self):
+        """False while the active mission forbids collapsing the sidebar.
+
+        The tutorial forbids it at every step (TutorialMission.is_action_allowed
+        refuses 'toggle_sidebar'); campaign missions and Tales allow it except while
+        they block all actions (intro, pause, victory/defeat sequence).
+        """
+        mission = getattr(self, 'tutorial_mission', None)
+        if mission is not None and getattr(mission, 'active', False):
+            return bool(mission.is_action_allowed('toggle_sidebar'))
+        return True
+
+    def toggle_sidebar(self, expand=None, animate=True):
+        """Collapse or expand the sidebar.
+
+        Args:
+            expand: True / False to force a state, None to flip it.
+            animate: Slide (default) or snap.
+
+        Returns:
+            bool: True if the state changed. Collapsing is refused while
+            can_collapse_sidebar() is False; expanding is always allowed so the
+            panel can never get stuck closed.
+        """
+        game_state = getattr(self, 'game_state', None)
+        if game_state is None:
+            return False
+        target = (not game_state.sidebar_expanded) if expand is None else bool(expand)
+        if target == game_state.sidebar_expanded:
+            return False
+        if not target and not self.can_collapse_sidebar():
+            return False
+
+        game_state.sidebar_expanded = target
+        if animate:
+            # Reversing mid-slide resumes from the current position (no jump)
+            self._sidebar_anim_start_ms = reverse_anim_start(
+                self._sidebar_anim_start_ms, pygame.time.get_ticks(),
+                UIConstants.SIDEBAR_SLIDE_MS)
+        else:
+            self._sidebar_anim_start_ms = None
+        # Tech-tree particles store absolute screen positions; after the panel moves
+        # they would float over the map for their 1.5-3 s lifetime.
+        particles = getattr(getattr(self, 'ui_renderer', None), 'tech_particles', None)
+        if particles:
+            particles.clear()
+        return True
+
+    def is_point_on_sidebar_chrome(self, pos):
+        """True on the collapse button or a bookmark tab (visible in every state)."""
+        toggle = self.sidebar_toggle_button
+        if toggle is not None and toggle.collidepoint(pos):
+            return True
+        return any(rect.collidepoint(pos) for rect in (self.sidebar_tab_buttons or {}).values())
+
+    def is_point_over_sidebar_panel(self, pos):
+        """True over the panel body (only while any of it is on screen).
+
+        Bounded to the map's height: the sidebar ends at the bottom UI panel, so
+        bottom-UI buttons in the rightmost 250 px are never swallowed.
+        """
+        if not (TOP_PANEL_HEIGHT <= pos[1] < BOTTOM_UI_Y):
+            return False
+        layout = self.get_sidebar_layout()
+        return layout.panel_visible and pos[0] >= layout.panel_x
+
+    def is_point_over_sidebar(self, pos):
+        """True anywhere the sidebar covers the map: panel body, tabs or button."""
+        return self.is_point_on_sidebar_chrome(pos) or self.is_point_over_sidebar_panel(pos)
+
+    def _is_ai_turn_click_allowed(self, pos):
+        """Clicks allowed while an AI player takes its turn.
+
+        Menus, the top panel, and the sidebar's bookmark tabs / collapse button
+        (switching tabs and collapsing are local UI, not game actions). The old
+        cached x-band also let through 50 px of MAP left of the tabs.
+        """
+        if self.game_menu_visible or self.options_menu_visible:
+            return True
+        if pos[1] < TOP_PANEL_HEIGHT:
+            return True
+        return self.is_point_on_sidebar_chrome(pos)
+
     def draw_order_sidebar(self):
         """
-        Draw sidebar with exclusive tab system (Phase B/C).
-        
-        Features 5 tabs with mutual exclusion:
-        - Technology (placeholder)
-        - Heroes (placeholder)
-        - Action Queue (movement orders)
-        - Action Log (game messages)
-        - Quests (placeholder)
-        
-        Only one tab is active at a time. Clicking a tab switches to it.
-        
-        Visible during both planning and battle phases.
+        Draw the right sidebar: panel, bookmark tabs and collapse button.
+
+        Tabs (one active at a time): Technology, Heroes, Action Queue, Action Log,
+        Quests, Chat. Visible during both planning and battle phases.
+
+        Collapsible (F2 or the button above the tabs). Geometry comes from
+        get_sidebar_layout() (ui/sidebar_layout.py):
+        - expanded:  panel at the right edge, bookmark tabs sticking out to its left
+        - collapsed: panel off-screen, bookmark tabs flush with the screen edge; a
+                     click on a tab expands the panel on that tab
+        - sliding:   panel, tabs and content drawn at the animated x
+        The map is drawn full-width underneath (the panel is only an overlay), and
+        the east map extension fills the strip past the map's edge when zoomed out.
         """
-        # Tab display names
-        tab_names = {
-            'technology': 'Technology',
-            'heroes': 'Heroes',
-            'action_queue': 'Action Queue',
-            'action_log': 'Action Log',
-            'quests': 'Quests',
-            'chat': 'Chat'
-        }
-        
-        # Collapsed state - just show toggle button with active tab name
-        if not self.game_state.sidebar_expanded:
-            # Collapsed tab on right edge
-            tab_width = UIConstants.TAB_WIDTH
-            tab_height = 150  # Taller to fit rotated text + badge
-            tab_x = WINDOW_WIDTH - tab_width
-            tab_y = TOP_PANEL_HEIGHT + (MAP_HEIGHT - tab_height) // 2  # H6 fix: center in map area, not from y=0
-            
-            # Draw tab
-            tab_rect = pygame.Rect(tab_x, tab_y, tab_width, tab_height)
-            pygame.draw.rect(self.screen, (50, 50, 50), tab_rect)
-            pygame.draw.rect(self.screen, (100, 100, 100), tab_rect, 3)
-            
-            # Rotated text: Show active tab name (90 degrees clockwise)
-            # PERFORMANCE: Cache rotated text - pygame.transform.rotate is expensive
-            active_tab_name = tab_names[self.game_state.active_sidebar_tab]
-            if active_tab_name not in self._rotated_tab_text_cache:
-                text_surface = self._get_cached_text(active_tab_name, self.small_font, WHITE)
-                self._rotated_tab_text_cache[active_tab_name] = pygame.transform.rotate(text_surface, -90)
-            rotated_text = self._rotated_tab_text_cache[active_tab_name]
-            text_rect = rotated_text.get_rect(center=(tab_x + tab_width // 2, tab_y + tab_height // 2 - 10))
-            self.screen.blit(rotated_text, text_rect)
-            
-            # Draw order count badge if Action Queue tab and there are orders (at bottom of tab)
-            if self.game_state.active_sidebar_tab == 'action_queue':
-                order_count = len(self.game_state.movement_orders)
-                if order_count > 0:
-                    badge_y = tab_y + tab_height - 20
-                    # Small badge circle
-                    pygame.draw.circle(self.screen, (200, 50, 50), (tab_x + tab_width // 2, badge_y), 10)
-                    pygame.draw.circle(self.screen, WHITE, (tab_x + tab_width // 2, badge_y), 10, 2)
-                    
-                    # Count number
-                    count_text = self._get_cached_text(str(order_count), self.small_font, WHITE)
-                    count_rect = count_text.get_rect(center=(tab_x + tab_width // 2, badge_y))
-                    self.screen.blit(count_text, count_rect)
-            
-            # Store button rect for click detection
-            self.sidebar_toggle_button = tab_rect
-            return
-        
-        # Expanded state - show full sidebar with tabs
-        # Sidebar dimensions (on the right side, below top panel)
+        # Forget a finished slide so is_sidebar_animating() stays cheap and exact
+        if self._sidebar_anim_start_ms is not None and not self.is_sidebar_animating():
+            self._sidebar_anim_start_ms = None
+
+        layout = self.get_sidebar_layout()
         sidebar_width = UIConstants.SIDEBAR_WIDTH
-        sidebar_x = WINDOW_WIDTH - sidebar_width  # No margin - flush to edge
-        sidebar_y = TOP_PANEL_HEIGHT  # Start below top panel
-        sidebar_height = MAP_HEIGHT  # Full height to bottom panel
-        
-        # Draw sidebar background
-        sidebar_rect = pygame.Rect(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
-        
-        # Use custom image if available, otherwise fallback to solid color
-        if self.right_panel_image:
-            # Blit image with left edge aligned to sidebar left edge
-            self.screen.blit(self.right_panel_image, (sidebar_x, sidebar_y))
-        else:
-            # Fallback: solid color background
-            pygame.draw.rect(self.screen, (40, 40, 40), sidebar_rect)
-        
-        # Border around sidebar (drawn over image)
-        pygame.draw.rect(self.screen, (100, 100, 100), sidebar_rect, 3)
-        
-        # No collapse button - sidebar is always expanded
-        self.sidebar_toggle_button = None
-        
-        # Draw tab buttons on left side and get content start position (Phase 4D: inlined delegates)
+        sidebar_x = layout.panel_x        # == WINDOW_WIDTH when fully collapsed
+        sidebar_y = layout.top            # Start below top panel
+        sidebar_height = layout.height    # Full height to bottom panel
+
+        # Panel background (skipped when fully off-screen)
+        if layout.panel_visible:
+            sidebar_rect = pygame.Rect(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
+            # Use custom image if available, otherwise fallback to solid color
+            if self.right_panel_image:
+                # Blit image with left edge aligned to sidebar left edge
+                self.screen.blit(self.right_panel_image, (sidebar_x, sidebar_y))
+            else:
+                pygame.draw.rect(self.screen, (40, 40, 40), sidebar_rect)
+            # Border around sidebar (drawn over image)
+            pygame.draw.rect(self.screen, (100, 100, 100), sidebar_rect, 3)
+
+        # Bookmark tabs: always drawn, they travel with the panel's left edge
         content_start_y = self.ui_renderer._draw_sidebar_tab_buttons(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
+
+        # Collapse / expand button above the tabs (also travels with them)
+        self._draw_sidebar_toggle_button(layout)
+
+        # Order-count badge on the Action Queue bookmark while the panel is closed
+        if not self.game_state.sidebar_expanded:
+            self._draw_sidebar_order_badge()
+
+        if not layout.panel_visible:
+            # Fully collapsed: no content is drawn, so clear its click rects — stale
+            # ones would otherwise still match clicks on the map underneath.
+            self.technology_buttons = {}
+            self.hero_selection_buttons = {}
+            self.order_cancel_buttons = []
+            self.cancel_all_button = None
+            return
 
         # Draw content based on active tab (Phase 4D: inlined delegates)
         active_tab = self.game_state.active_sidebar_tab
@@ -7017,7 +7097,116 @@ class Game:
             self.cancel_all_button = cancel_all_rect
         else:
             self.cancel_all_button = None
-    
+
+    def _draw_sidebar_toggle_button(self, layout):
+        """Round collapse / expand button, in the tab column just above the bookmarks.
+
+        A gold disc (the same CircleBorder art as the map's plot icons) with dark
+        chevrons pointing the way the panel will move: '>>' (collapse) while
+        expanded, '<<' (expand) while collapsed. Brightens on hover and flashes on
+        click; dimmed — and refused by toggle_sidebar() — while the active mission
+        forbids collapsing (the whole tutorial).
+
+        The clickable area stays the full tab-column cell (sidebar_toggle_button),
+        a slightly larger target than the disc itself.
+        """
+        rect = pygame.Rect(layout.tab_x, layout.top + 4, UIConstants.TAB_WIDTH,
+                           UIConstants.SIDEBAR_TOGGLE_HEIGHT)
+        expanded = self.game_state.sidebar_expanded
+        if expanded and not self.can_collapse_sidebar():
+            state = 'locked'
+        elif self.clicked_element == ('sidebar_toggle', 'toggle'):
+            state = 'click'
+        elif rect.collidepoint(self.mouse_pos):
+            state = 'hover'
+        else:
+            state = 'normal'
+
+        diameter = min(rect.width, rect.height) - 1
+        sprite = self._get_sidebar_toggle_sprite(diameter, expanded, state)
+        self.screen.blit(sprite, sprite.get_rect(center=rect.center))
+        self.sidebar_toggle_button = rect
+
+    def _get_sidebar_toggle_sprite(self, diameter, expanded, state):
+        """Pre-rendered round toggle button, cached per (size, direction, state).
+
+        PERFORMANCE: scaling the 1024 px CircleBorder art and drawing the chevrons
+        happens once per variant (8 at most), never per frame. The cache is cleared
+        by apply_display_settings() with the other UI caches.
+        """
+        key = (diameter, expanded, state)
+        sprite = self._sidebar_toggle_sprites.get(key)
+        if sprite is not None:
+            return sprite
+
+        sprite = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+        radius = diameter // 2
+        # Solid underlay: CircleBorder's centre is partly see-through (it frames plot
+        # icons), so without this the map or the dark fog would show through the button.
+        pygame.draw.circle(sprite, (52, 38, 20), (radius, radius), radius)        # dark bronze rim
+        pygame.draw.circle(sprite, (168, 132, 58), (radius, radius), radius - 3)  # gold face
+        if self.circle_border is not None:
+            sprite.blit(pygame.transform.smoothscale(self.circle_border, (diameter, diameter)), (0, 0))
+
+        if state in ('hover', 'click'):
+            # Brighten the disc only (BLEND_RGB_ADD leaves alpha — the round shape — intact)
+            boost = 70 if state == 'click' else 35
+            sprite.fill((boost, boost, boost), special_flags=pygame.BLEND_RGB_ADD)
+        elif state == 'locked':
+            # Disabled look: darken (BLEND_RGBA_MULT keeps the transparent corners transparent)
+            sprite.fill((150, 150, 150, 255), special_flags=pygame.BLEND_RGBA_MULT)
+
+        # Two dark chevrons pointing the way the panel will move
+        chevron_color = (52, 42, 30) if state == 'locked' else (48, 30, 12)
+        direction = 1 if expanded else -1       # +1 points right, -1 points left
+        half_h = max(3, diameter // 6)
+        arm = half_h
+        center = diameter / 2.0
+        for offset in (-arm * 0.55, arm * 0.55):
+            tip_x = center + offset + direction * arm / 2.0
+            back_x = tip_x - direction * arm
+            pygame.draw.lines(sprite, chevron_color, False,
+                              [(back_x, center - half_h), (tip_x, center), (back_x, center + half_h)], 3)
+
+        self._sidebar_toggle_sprites[key] = sprite
+        return sprite
+
+    def _draw_sidebar_order_badge(self):
+        """Red order-count badge on the Action Queue bookmark (panel collapsed).
+
+        Counts only the local player's orders: the badge says "you have orders
+        queued", so other players' (AI or remote) orders must not inflate it.
+        Sits on the tab's outer edge near its top, clear of the rotated label.
+        """
+        tab_rect = (self.sidebar_tab_buttons or {}).get('action_queue')
+        if tab_rect is None:
+            return
+        local_player = self.get_local_player()
+        order_count = sum(1 for order in self.game_state.movement_orders
+                          if order.player == local_player)
+        if order_count <= 0:
+            return
+        center = (tab_rect.x, tab_rect.y + 12)
+        pygame.draw.circle(self.screen, (200, 50, 50), center, 10)
+        pygame.draw.circle(self.screen, WHITE, center, 10, 2)
+        count_text = self._get_cached_text(str(order_count), self.small_font, WHITE)
+        self.screen.blit(count_text, count_text.get_rect(center=center))
+
+    def _handle_sidebar_hotkey(self):
+        """F2: collapse / expand the sidebar, unless something modal is open.
+
+        Returns:
+            bool: True if the sidebar toggled.
+        """
+        if (self.chat_input_active or self.game_menu_visible or self.options_menu_visible
+                or self.save_dialog_active or self.players_window_visible
+                or self.enhanced_battle_ui is not None or self.battle_popup_visible
+                or self.battle_report_detail_ui is not None
+                or getattr(self, 'alliance_choice_popup_visible', False)
+                or self.victory_sequence_active
+                or self.game_state is None or self.game_state.phase == 'ended'):
+            return False
+        return self.toggle_sidebar()
 
     def draw_territory_hover_tooltip(self, mouse_pos):
         """Draw comprehensive tooltip when hovering over a territory (Phase 2: Using helper)"""
@@ -10857,6 +11046,43 @@ class Game:
     # Larger = fewer rebuilds while panning, but more pixels scaled per rebuild.
     _MAP_VIEW_MARGIN = 192
 
+    def _invalidate_map_background_caches(self):
+        """Drop every cache derived from map_image_original.
+
+        Call after the background is replaced (map switch), re-converted (display
+        change) or drawn into in place (mission cloud-cover bakes). The in-place case
+        keeps id(map_image_original) unchanged, so the id-keyed caches cannot notice
+        it on their own.
+        """
+        self.cached_scaled_map = None
+        self.cached_zoom_level = None
+        self._map_view_key = None
+        self._map_view_surface = None
+        extension = getattr(self, 'map_east_extension', None)
+        if extension is not None:
+            extension.invalidate()
+
+    def _blit_map_east_extension(self, map_right, map_y, scaled_map_width,
+                                 scaled_map_height, vis_top, vis_bottom):
+        """Draw the east map extension in the strip right of the map background.
+
+        Built lazily (first time a gap is visible) rather than at map load, so a
+        mission that bakes cloud cover into the map in its __init__ is included.
+        See rendering/map_extension.py.
+        """
+        src = self.map_image_original
+        extension = self.map_east_extension
+        try:
+            extension.ensure_built(
+                src, self.screen.get_width(), self.map_width,
+                getattr(self.camera, 'min_zoom', self.camera_min_zoom),
+                east_extension_override_path(getattr(self, 'map_background_path', None)))
+        except (pygame.error, ValueError) as exc:
+            # Never let a bad extension break the map: the draw below falls back to fog
+            logger.warning(f"Could not build map east extension: {exc}")
+        extension.draw(self.screen, map_right, map_y, scaled_map_width, scaled_map_height,
+                       src.get_width(), vis_top, vis_bottom, margin=self._MAP_VIEW_MARGIN)
+
     def _blit_map_background(self):
         """
         Scale and blit ONLY the visible slice of the map background.
@@ -10902,6 +11128,15 @@ class Game:
         vis_top = max(map_y, TOP_PANEL_HEIGHT)
         vis_right = min(map_x + scaled_map_width, self.screen.get_width())
         vis_bottom = min(map_y + scaled_map_height, view_bottom)
+
+        # Zoomed far out, the (left-aligned) map ends before the window's right edge.
+        # Fill that strip with the east extension instead of the frame's white fill —
+        # it used to be hidden by the right sidebar, which can now collapse. Done
+        # before the early return below so it also covers a map panned off-screen.
+        map_right = map_x + scaled_map_width
+        if map_right < self.screen.get_width():
+            self._blit_map_east_extension(map_right, map_y, scaled_map_width,
+                                          scaled_map_height, vis_top, vis_bottom)
 
         dest_w = int(vis_right - vis_left)
         dest_h = int(vis_bottom - vis_top)
@@ -11702,6 +11937,10 @@ class Game:
                             self.game_menu_visible = True
                             self._pause_game()
                         continue  # Processed ESC, skip other handling
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_F2:
+                        # Collapsing the sidebar is local UI, allowed while the AI plays
+                        self._handle_sidebar_hotkey()
+                        continue
                     elif event.type == pygame.MOUSEWHEEL:
                         # Handle options menu scrolling or camera zoom during AI turns
                         if self.options_menu_visible:
@@ -11715,27 +11954,11 @@ class Game:
                             self.handle_camera_zoom(event.y)
                         continue  # Processed, skip other processing
                     elif event.type == pygame.MOUSEBUTTONDOWN:
-                        # During AI turns, allow clicks in specific areas:
-                        # 1. When any menu is open (for menu interaction)
-                        # 2. Top panel (menu button)
-                        # 3. Sidebar area (Action Log, Chat, Action Queue)
-                        # 4. Collapsed tab area
-
-                        click_y = event.pos[1]
-                        click_x = event.pos[0]
-
-                        # Check if click is in allowed areas
-                        is_menu_open = self.game_menu_visible or self.options_menu_visible
-                        is_top_panel = click_y < TOP_PANEL_HEIGHT
-
-                        # Sidebar TAB BUTTONS ONLY (not content):
-                        # Coordinates cached in __init__ and updated on resolution change
-                        is_sidebar_tab = self.tab_button_area_start <= click_x < self.tab_button_area_end
-
-                        # NOTE: Collapsed tab check removed - sidebar never collapses
-                        is_collapsed_tab = False
-
-                        if is_menu_open or is_top_panel or is_sidebar_tab or is_collapsed_tab:
+                        # During AI turns, allow clicks only on: an open menu, the
+                        # top panel, and the sidebar's bookmark tabs / collapse button
+                        # (see _is_ai_turn_click_allowed — it follows the live sidebar
+                        # layout, so the tabs stay clickable when collapsed).
+                        if self._is_ai_turn_click_allowed(event.pos):
                             # Click is in allowed area - process it
                             if event.button == 1:  # Left click
                                 handled_result = self.mouse.handle_left_click(event.pos)
@@ -13228,6 +13451,9 @@ class Game:
         for key, value in updates.items():
             if key == 'clear_button_tooltip':
                 self.clear_button_tooltip()
+            elif key == 'toggle_sidebar':
+                # F2 — an action, not an attribute to set
+                self._handle_sidebar_hotkey()
             else:
                 setattr(self, key, value)
 
@@ -13988,17 +14214,20 @@ class Game:
         if self.game_state.phase != 'playing':
             return False
         
-        # Sidebar is always expanded - no collapse functionality
-        
-        # Check tab buttons (Phase B: only if expanded)
-        if self.game_state.sidebar_expanded and self.sidebar_tab_buttons:
+        # Check bookmark tabs — drawn in every state (sticking out of the panel, or at
+        # the screen edge when collapsed), so they are tested in every state too.
+        if self.sidebar_tab_buttons:
             for tab_id, tab_rect in self.sidebar_tab_buttons.items():
                 if tab_rect.collidepoint(pos):
-                    # Tutorial gate: block tabs not in allowed list
+                    # Tutorial gate: block tabs not in allowed list. A locked bookmark
+                    # does nothing at all — it doesn't even open a collapsed panel.
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('sidebar_tab', tab_name=tab_id)):
                         return True  # Silently consume click
+                    # A bookmark on the collapsed sidebar opens it on that tab
+                    if not self.game_state.sidebar_expanded:
+                        self.toggle_sidebar(expand=True)
                     # Switch to clicked tab
                     self.game_state.active_sidebar_tab = tab_id
 
@@ -15207,16 +15436,10 @@ class Game:
         # This makes hover work correctly with camera offset and zoom!
         world_pos = self.screen_to_world(pos)
         
-        # Only track territory/army hover when in map area (not top panel, bottom UI, or sidebar)
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        in_sidebar = self.game_state.sidebar_expanded and pos[0] >= sidebar_x
-        # Also check sidebar tab buttons (they stick out to the left of the sidebar)
-        in_tab_buttons = False
-        if self.game_state.sidebar_expanded and hasattr(self, 'sidebar_tab_buttons') and self.sidebar_tab_buttons:
-            for tab_rect in self.sidebar_tab_buttons.values():
-                if tab_rect.collidepoint(pos):
-                    in_tab_buttons = True
-                    break
+        # Only track territory/army hover when in map area (not top panel, bottom UI, or sidebar).
+        # The sidebar check covers the panel body, bookmark tabs and collapse button,
+        # and follows collapse/expand (live layout).
+        in_sidebar = self.is_point_over_sidebar(pos)
         # The unit context menu can overlap the map when it flips upward - nothing
         # beneath it may highlight while it is open.
         ctx_menu_rect = self._get_unit_context_menu_rect()
@@ -15224,8 +15447,11 @@ class Game:
         # Battle Report popups float over the map, so territories beneath one must not
         # highlight or show tooltips while the cursor is on it.
         in_battle_report = bool(self._battle_report_rect_at(pos))
-        in_map_area = (pos[1] >= TOP_PANEL_HEIGHT and pos[1] < MAP_HEIGHT
-                       and not in_sidebar and not in_tab_buttons and not in_context_menu
+        # The map ends at BOTTOM_UI_Y (= TOP_PANEL_HEIGHT + MAP_HEIGHT). Comparing with
+        # MAP_HEIGHT (a height, not a y) left the lowest TOP_PANEL_HEIGHT px of the map
+        # with no hover highlight at all.
+        in_map_area = (TOP_PANEL_HEIGHT <= pos[1] < BOTTOM_UI_Y
+                       and not in_sidebar and not in_context_menu
                        and not in_battle_report)
         if in_map_area:
             # Check if hovering over an army first (takes priority over territory)
@@ -15512,11 +15738,17 @@ class Game:
                 self.show_tooltip_button = self.hover_target_button
         
         # Draw hover tooltips (on top of everything else)
-        # Check if in map area and NOT over sidebar
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        in_map_area = self.mouse_pos[1] >= TOP_PANEL_HEIGHT and self.mouse_pos[1] < MAP_HEIGHT and self.mouse_pos[0] < sidebar_x
+        # Check if in map area and NOT over the sidebar (live layout: follows collapse).
+        # BOTTOM_UI_Y, not MAP_HEIGHT: the latter is a height, and cut tooltips off
+        # for the lowest TOP_PANEL_HEIGHT px of the map.
+        in_map_area = (TOP_PANEL_HEIGHT <= self.mouse_pos[1] < BOTTOM_UI_Y
+                       and not self.is_point_over_sidebar(self.mouse_pos))
         in_top_panel = self.mouse_pos[1] < TOP_PANEL_HEIGHT
-        in_bottom_ui = self.mouse_pos[1] >= BOTTOM_UI_Y and self.mouse_pos[0] < sidebar_x
+        # Bottom-UI button tooltips keep their original rightmost-250 px cut-off. This
+        # is a bottom-panel rule (it stops unit tooltips lingering at the panel's right
+        # end), independent of whether the sidebar above is collapsed.
+        in_bottom_ui = (self.mouse_pos[1] >= BOTTOM_UI_Y
+                        and self.mouse_pos[0] < WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH)
 
         # Check top panel FIRST (has priority over map area)
         if in_top_panel and self.show_tooltip_button:
@@ -15663,10 +15895,10 @@ class Game:
         """
         # Check if mouse is over sidebar and a scrollable tab is active
         mouse_pos = pygame.mouse.get_pos()
-        sidebar_x = WINDOW_WIDTH - 250  # Sidebar position
-        
-        # If sidebar is expanded and mouse is over it
-        if self.game_state.sidebar_expanded and mouse_pos[0] >= sidebar_x:
+
+        # If the mouse is over the sidebar's panel body (live layout; bounded to the
+        # map's height so the wheel over the bottom UI's right end zooms as usual)
+        if self.game_state.sidebar_expanded and self.is_point_over_sidebar_panel(mouse_pos):
             active_tab = self.game_state.active_sidebar_tab
             
             # Handle scrolling for scrollable tabs
@@ -16151,17 +16383,6 @@ class Game:
         # No automatic selection - user controls all starting positions
         pass
 
-    def _cache_sidebar_coordinates(self):
-        """
-        Cache sidebar tab button coordinates for spectator mode click detection.
-
-        These coordinates define the clickable area for sidebar tab buttons during
-        AI turns. Cached for performance (avoids recalculation on every mouse click).
-        """
-        sidebar_x = WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH
-        # Tab buttons extend left from sidebar with 50px margin
-        self.tab_button_area_start = sidebar_x - UIConstants.TAB_WIDTH - 50
-        self.tab_button_area_end = sidebar_x
 
 if __name__ == "__main__":
     from main_menu import MainMenu

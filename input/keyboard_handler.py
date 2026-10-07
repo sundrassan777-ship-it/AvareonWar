@@ -113,6 +113,16 @@ class KeyboardHandler:
             return (True, {})
 
         # ========================================
+        # SIDEBAR COLLAPSE / EXPAND (F2)
+        # ========================================
+        # Local UI only (never a game action). Ahead of ability targeting, which
+        # swallows every key; not while typing chat. Game._handle_sidebar_hotkey()
+        # applies the remaining gates (modal popups, tutorial).
+        if event.key == pygame.K_F2 and not ui_state.get('chat_input_active'):
+            updates['toggle_sidebar'] = True
+            return (True, updates)
+
+        # ========================================
         # ABILITY TARGETING HANDLING (high priority)
         # ========================================
         if ui_state.get('ability_targeting_active'):

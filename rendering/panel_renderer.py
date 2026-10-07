@@ -53,11 +53,10 @@ class PanelRenderer:
         
         This includes:
         - Bottom UI panel
-        - Right sidebar (if expanded)
+        - Right sidebar (always: when collapsed it still draws its bookmark tabs)
         """
         # Bottom UI (always visible)
         self.game.draw_bottom_ui()
         
-        # Right sidebar (if expanded)
-        if self.game.game_state.sidebar_expanded:
-            self.game.draw_order_sidebar()
+        # Right sidebar — draw_order_sidebar() handles expanded, collapsed and sliding
+        self.game.draw_order_sidebar()
