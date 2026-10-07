@@ -1203,6 +1203,7 @@ class Game:
         # PERFORMANCE: Rotated text cache for sidebar collapsed tab labels
         # Key: tab_name -> rotated Surface (pygame.transform.rotate is expensive)
         self._rotated_tab_text_cache = {}
+        self._sidebar_toggle_sprites = {}  # Round sidebar toggle button variants (_get_sidebar_toggle_sprite)
 
         # PERFORMANCE: Cached overlay surfaces to avoid per-frame SRCALPHA allocations
         # Each full-screen SRCALPHA surface is ~5.44MB — reuse instead of recreating
@@ -4558,6 +4559,7 @@ class Game:
             self._tech_border_cache = {}
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
+            self._sidebar_toggle_sprites = {}  # Rebuilt from CircleBorder in the new display format
             self._hero_overlay_cache = {}
             # Close the unit context menu: its anchor rect belongs to the old layout
             self.unit_context_menu = None
@@ -7097,40 +7099,77 @@ class Game:
             self.cancel_all_button = None
 
     def _draw_sidebar_toggle_button(self, layout):
-        """Collapse / expand button, in the tab column just above the bookmark tabs.
+        """Round collapse / expand button, in the tab column just above the bookmarks.
 
-        Chevrons point the way the panel will move: '>>' (collapse) while expanded,
-        '<<' (expand) while collapsed. Greyed out — and refused by toggle_sidebar() —
-        while the active mission forbids collapsing (the whole tutorial).
+        A gold disc (the same CircleBorder art as the map's plot icons) with dark
+        chevrons pointing the way the panel will move: '>>' (collapse) while
+        expanded, '<<' (expand) while collapsed. Brightens on hover and flashes on
+        click; dimmed — and refused by toggle_sidebar() — while the active mission
+        forbids collapsing (the whole tutorial).
+
+        The clickable area stays the full tab-column cell (sidebar_toggle_button),
+        a slightly larger target than the disc itself.
         """
-        tab_width = UIConstants.TAB_WIDTH
-        rect = pygame.Rect(layout.tab_x, layout.top + 4, tab_width,
+        rect = pygame.Rect(layout.tab_x, layout.top + 4, UIConstants.TAB_WIDTH,
                            UIConstants.SIDEBAR_TOGGLE_HEIGHT)
         expanded = self.game_state.sidebar_expanded
-        locked = expanded and not self.can_collapse_sidebar()
-
-        if locked:
-            # Same palette as a locked bookmark tab (ui_renderer._draw_sidebar_tab_buttons)
-            pygame.draw.rect(self.screen, (30, 30, 30), rect)
-            pygame.draw.rect(self.screen, (60, 60, 60), rect, 2)
-            chevron_color = (110, 110, 110)
+        if expanded and not self.can_collapse_sidebar():
+            state = 'locked'
+        elif self.clicked_element == ('sidebar_toggle', 'toggle'):
+            state = 'click'
+        elif rect.collidepoint(self.mouse_pos):
+            state = 'hover'
         else:
-            self.draw_feedback_button(rect, (50, 50, 50), 'sidebar_toggle', 'toggle',
-                                      border_color=(100, 100, 100), border_width=2)
-            chevron_color = WHITE
+            state = 'normal'
 
-        # Two chevrons drawn with lines (font glyphs like '»' are not guaranteed)
-        direction = 1 if expanded else -1       # +1 points right, -1 points left
-        half_h = max(4, rect.height // 5)
-        arm = max(4, half_h)
-        cx, cy = rect.centerx, rect.centery
-        for offset in (-arm // 2 - 2, arm // 2 + 2):
-            tip_x = cx + offset + direction * arm // 2
-            back_x = tip_x - direction * arm
-            pygame.draw.lines(self.screen, chevron_color, False,
-                              [(back_x, cy - half_h), (tip_x, cy), (back_x, cy + half_h)], 2)
-
+        diameter = min(rect.width, rect.height) - 1
+        sprite = self._get_sidebar_toggle_sprite(diameter, expanded, state)
+        self.screen.blit(sprite, sprite.get_rect(center=rect.center))
         self.sidebar_toggle_button = rect
+
+    def _get_sidebar_toggle_sprite(self, diameter, expanded, state):
+        """Pre-rendered round toggle button, cached per (size, direction, state).
+
+        PERFORMANCE: scaling the 1024 px CircleBorder art and drawing the chevrons
+        happens once per variant (8 at most), never per frame. The cache is cleared
+        by apply_display_settings() with the other UI caches.
+        """
+        key = (diameter, expanded, state)
+        sprite = self._sidebar_toggle_sprites.get(key)
+        if sprite is not None:
+            return sprite
+
+        sprite = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+        radius = diameter // 2
+        # Solid underlay: CircleBorder's centre is partly see-through (it frames plot
+        # icons), so without this the map or the dark fog would show through the button.
+        pygame.draw.circle(sprite, (52, 38, 20), (radius, radius), radius)        # dark bronze rim
+        pygame.draw.circle(sprite, (168, 132, 58), (radius, radius), radius - 3)  # gold face
+        if self.circle_border is not None:
+            sprite.blit(pygame.transform.smoothscale(self.circle_border, (diameter, diameter)), (0, 0))
+
+        if state in ('hover', 'click'):
+            # Brighten the disc only (BLEND_RGB_ADD leaves alpha — the round shape — intact)
+            boost = 70 if state == 'click' else 35
+            sprite.fill((boost, boost, boost), special_flags=pygame.BLEND_RGB_ADD)
+        elif state == 'locked':
+            # Disabled look: darken (BLEND_RGBA_MULT keeps the transparent corners transparent)
+            sprite.fill((150, 150, 150, 255), special_flags=pygame.BLEND_RGBA_MULT)
+
+        # Two dark chevrons pointing the way the panel will move
+        chevron_color = (52, 42, 30) if state == 'locked' else (48, 30, 12)
+        direction = 1 if expanded else -1       # +1 points right, -1 points left
+        half_h = max(3, diameter // 6)
+        arm = half_h
+        center = diameter / 2.0
+        for offset in (-arm * 0.55, arm * 0.55):
+            tip_x = center + offset + direction * arm / 2.0
+            back_x = tip_x - direction * arm
+            pygame.draw.lines(sprite, chevron_color, False,
+                              [(back_x, center - half_h), (tip_x, center), (back_x, center + half_h)], 3)
+
+        self._sidebar_toggle_sprites[key] = sprite
+        return sprite
 
     def _draw_sidebar_order_badge(self):
         """Red order-count badge on the Action Queue bookmark (panel collapsed).

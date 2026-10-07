@@ -487,11 +487,19 @@ class TestCollapseButton:
         assert game.game_state.sidebar_expanded is True
 
     def test_button_greyed_and_refused_in_the_tutorial(self, game):
+        def face_brightness():
+            # A point on the gold face of the round button, clear of the chevrons
+            button = game.sidebar_toggle_button
+            return sum(tuple(game.screen.get_at((button.centerx, button.y + 6)))[:3])
+
+        game.mouse_pos = (0, 0)  # not hovering
+        game.draw_order_sidebar()
+        normal = face_brightness()
         game.tutorial_mission = _mission(lambda a, k: a == 'toggle_sidebar')
         game.draw_order_sidebar()
         button = game.sidebar_toggle_button
-        # Locked palette (same as a locked bookmark tab)
-        assert tuple(game.screen.get_at((button.x + 3, button.y + 3)))[:3] == (30, 30, 30)
+        # Dimmed (disabled) look
+        assert face_brightness() < normal * 0.8
         assert game.mouse.handle_left_click(button.center) is True  # consumed...
         assert game.game_state.sidebar_expanded is True             # ...but refused
         game.handle_keyboard_input(_key(__import__('pygame').K_F2))
@@ -655,3 +663,34 @@ class TestSlide:
         game._sidebar_anim_start_ms = pygame.time.get_ticks() - 10_000
         game.draw_order_sidebar()
         assert game._sidebar_anim_start_ms is None
+
+
+class TestRoundToggleButton:
+
+    def test_button_is_round(self, game):
+        """Corners of the button cell show what's beneath (the disc is a circle)."""
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+        sprite = game._get_sidebar_toggle_sprite(
+            min(game.sidebar_toggle_button.size) - 1, True, 'normal')
+        assert sprite.get_at((0, 0)).a == 0                       # transparent corner
+        c = sprite.get_width() // 2
+        assert sprite.get_at((c, 4)).a == 255                     # opaque face
+
+    def test_sprites_are_cached_not_rebuilt_per_frame(self, game):
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+        first = dict(game._sidebar_toggle_sprites)
+        game.draw_order_sidebar()
+        assert game._sidebar_toggle_sprites == first
+        assert all(game._sidebar_toggle_sprites[k] is first[k] for k in first)
+
+    def test_hover_brightens(self, game):
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+        button = game.sidebar_toggle_button
+        probe = (button.centerx, button.y + 6)
+        normal = sum(tuple(game.screen.get_at(probe))[:3])
+        game.mouse_pos = button.center
+        game.draw_order_sidebar()
+        assert sum(tuple(game.screen.get_at(probe))[:3]) > normal
