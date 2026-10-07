@@ -67,6 +67,7 @@ from rendering.helpers import DrawingHelpers
 from rendering.map_renderer import MapRenderer
 from rendering.ui_renderer import UIRenderer
 from rendering.panel_renderer import PanelRenderer
+from rendering.map_extension import MapEastExtension, east_extension_override_path
 from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
@@ -400,6 +401,9 @@ class Game:
                     map_path = None  # No background — use dark fallback
 
             logger.info(f"Loading map: {map_path}")
+            # Remembered so the east map extension can find an optional painted
+            # '<background>_east.png' beside it (rendering/map_extension.py)
+            self.map_background_path = map_path
 
             # Load original high-resolution image (4096×3072) in display format.
             # The .convert() inside _load_map_background saves ~9ms per frame.
@@ -411,6 +415,7 @@ class Game:
         except pygame.error as e:
             logger.error(f"Error loading map: {e}")
             # Last-resort fallback
+            self.map_background_path = None
             self.map_image_original = _load_map_background(None)
             self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
         
@@ -676,19 +681,19 @@ class Game:
             try:
                 # Display-format load (see _load_map_background) — applies to every
                 # map, including Azincournean Highlands and future backgrounds.
+                self.map_background_path = map_path
                 self.map_image_original = _load_map_background(map_path)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
             except pygame.error as e:
                 logger.error(f"Error reloading map image for '{map_id}': {e}")
+                self.map_background_path = None
                 self.map_image_original = _load_map_background(None)
                 self.map_image = pygame.transform.scale(self.map_image_original, (self.map_width, self.map_height))
 
-            # Drop the viewport map cache so the new background is picked up even if
-            # the camera happens to be in exactly the same position.
-            self.cached_scaled_map = None
-            self.cached_zoom_level = None
-            self._map_view_key = None
-            self._map_view_surface = None
+            # Drop the viewport map cache (and the east extension built from the old
+            # background) so the new one is picked up even if the camera happens to
+            # be in exactly the same position.
+            self._invalidate_map_background_caches()
 
         # Rescale polygons from the newly loaded map_data globals
         self.scaled_polygons = {}
@@ -1565,6 +1570,9 @@ class Game:
         self._map_view_key = None
         self._map_view_surface = None
         self._map_view_offset = (0, 0)
+        # East map extension: fills the strip past the map's right edge when zoomed far
+        # out (it used to be hidden by the right sidebar). Built lazily on first draw.
+        self.map_east_extension = MapEastExtension()
 
         # Camera debug state
         self.debug_edge_scroll = None
@@ -4531,12 +4539,10 @@ class Game:
                 ]
             
             # Clear caches (H11 fix: also clear icon/text caches to prevent stale entries)
-            self.cached_scaled_map = None
-            self.cached_zoom_level = None
-            # Viewport map cache: the destination surface was created in the OLD
-            # display format and the layout globals have changed, so drop both.
-            self._map_view_key = None
-            self._map_view_surface = None
+            # Viewport map cache + east extension: their surfaces were created in the
+            # OLD display format and the layout globals (window width, map width) have
+            # changed, so drop them all.
+            self._invalidate_map_background_caches()
             # The map scale_factor just changed, so the renderer's pre-computed
             # bounding boxes and multi-zoom polygons are stale (they were built from
             # the polygons at the OLD scale). Without this, territory polygons
@@ -10857,6 +10863,43 @@ class Game:
     # Larger = fewer rebuilds while panning, but more pixels scaled per rebuild.
     _MAP_VIEW_MARGIN = 192
 
+    def _invalidate_map_background_caches(self):
+        """Drop every cache derived from map_image_original.
+
+        Call after the background is replaced (map switch), re-converted (display
+        change) or drawn into in place (mission cloud-cover bakes). The in-place case
+        keeps id(map_image_original) unchanged, so the id-keyed caches cannot notice
+        it on their own.
+        """
+        self.cached_scaled_map = None
+        self.cached_zoom_level = None
+        self._map_view_key = None
+        self._map_view_surface = None
+        extension = getattr(self, 'map_east_extension', None)
+        if extension is not None:
+            extension.invalidate()
+
+    def _blit_map_east_extension(self, map_right, map_y, scaled_map_width,
+                                 scaled_map_height, vis_top, vis_bottom):
+        """Draw the east map extension in the strip right of the map background.
+
+        Built lazily (first time a gap is visible) rather than at map load, so a
+        mission that bakes cloud cover into the map in its __init__ is included.
+        See rendering/map_extension.py.
+        """
+        src = self.map_image_original
+        extension = self.map_east_extension
+        try:
+            extension.ensure_built(
+                src, self.screen.get_width(), self.map_width,
+                getattr(self.camera, 'min_zoom', self.camera_min_zoom),
+                east_extension_override_path(getattr(self, 'map_background_path', None)))
+        except (pygame.error, ValueError) as exc:
+            # Never let a bad extension break the map: the draw below falls back to fog
+            logger.warning(f"Could not build map east extension: {exc}")
+        extension.draw(self.screen, map_right, map_y, scaled_map_width, scaled_map_height,
+                       src.get_width(), vis_top, vis_bottom, margin=self._MAP_VIEW_MARGIN)
+
     def _blit_map_background(self):
         """
         Scale and blit ONLY the visible slice of the map background.
@@ -10902,6 +10945,15 @@ class Game:
         vis_top = max(map_y, TOP_PANEL_HEIGHT)
         vis_right = min(map_x + scaled_map_width, self.screen.get_width())
         vis_bottom = min(map_y + scaled_map_height, view_bottom)
+
+        # Zoomed far out, the (left-aligned) map ends before the window's right edge.
+        # Fill that strip with the east extension instead of the frame's white fill —
+        # it used to be hidden by the right sidebar, which can now collapse. Done
+        # before the early return below so it also covers a map panned off-screen.
+        map_right = map_x + scaled_map_width
+        if map_right < self.screen.get_width():
+            self._blit_map_east_extension(map_right, map_y, scaled_map_width,
+                                          scaled_map_height, vis_top, vis_bottom)
 
         dest_w = int(vis_right - vis_left)
         dest_h = int(vis_bottom - vis_top)

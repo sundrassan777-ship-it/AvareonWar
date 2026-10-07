@@ -68,6 +68,18 @@ ORIGINAL_MAP_HEIGHT = 3072
 # Map area (calculated based on window size and panels)
 MAP_WIDTH = WINDOW_WIDTH  # Full width (no right panel)
 
+# East map extension (rendering/map_extension.py)
+# The map is left-aligned, so when zoomed far out on a 16:9 window it ends before
+# the window's right edge (~175 px at zoom 1.65). That strip used to be hidden by
+# the right sidebar; the extension fills it so the sidebar can collapse.
+# A painted '<background>_east.png' beside the map image overrides the generated one.
+MAP_EAST_FOG_COLOR = (60, 48, 32)     # Warm dark parchment the generated edge fades into
+MAP_EAST_MIN_SRC_PX = 256             # Narrowest generated extension (source pixels)
+MAP_EAST_MAX_SRC_PX = 2048            # Widest generated extension; beyond it is solid fog
+MAP_EAST_MAX_PIXELS = 2_000_000       # Memory cap for the stored extension (~8 MB)
+MAP_EAST_BLUR_FACTOR = 16             # Blur of the mirrored strip (hides reversed labels)
+MAP_EAST_CRISP_BAND = 0.08            # Share of the width kept crisp at the seam
+
 # ===========================================
 # COLORS
 # ===========================================

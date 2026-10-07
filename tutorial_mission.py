@@ -465,9 +465,15 @@ class TutorialMission:
         # Blit cloud cover onto the original map image
         game.map_image_original.blit(cover, (0, 0))
 
-        # Invalidate cached scaled map so it re-renders with the composited image
-        game.cached_scaled_map = None
-        game.cached_zoom_level = None
+        # Invalidate every cache derived from the map (scaled map, viewport slice and
+        # the east map extension) so they re-render with the composited image. The
+        # blit above draws in place, so id-keyed caches cannot notice it themselves.
+        invalidate = getattr(game, '_invalidate_map_background_caches', None)
+        if invalidate is not None:
+            invalidate()
+        else:
+            game.cached_scaled_map = None
+            game.cached_zoom_level = None
 
     def _build_steps(self):
         """Define the 23-step tutorial sequence."""

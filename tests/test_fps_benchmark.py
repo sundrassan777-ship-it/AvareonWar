@@ -648,5 +648,57 @@ class TestCrowdedMapPerformance:
         assert result['avg_fps'] >= 25, f"Banners {total} FPS too low: {result['avg_fps']:.1f}"
 
 
+class TestMapEastEdgePerformance:
+    """
+    The zoom range in which the map is narrower than the window.
+
+    At min zoom (1.65) a 16:9 map image ends ~175px before the window's right edge
+    (1600x900: at x=1427). The right sidebar used to hide that strip; once it can
+    collapse, the strip is filled by the generated east extension
+    (rendering/map_extension.py). These scenarios measure that the extension costs
+    one blit while static and stays cheap while zoom crosses the gap range.
+    """
+
+    @pytest.fixture
+    def edge_game(self, pygame_init):
+        from main import Game
+        game = Game()
+        game.initialize_game({
+            'num_players': 4,
+            'player_is_ai': [False, True, True, True],
+            'player_ai_difficulty': [None, 'Normal', 'Normal', 'Normal'],
+        })
+        game.game_state.phase = 'playing'
+        populate_map(game, buildings_per_territory=2, armies=50)
+        return game
+
+    def test_static_fps_at_min_zoom(self, edge_game):
+        """Fully zoomed out, camera at the map's left edge: the gap is widest."""
+        sync_camera(edge_game, zoom=edge_game.camera.min_zoom, offset=(0.0, 0.0))
+        fps = FPSMeasurement(sample_count=60)
+        result = record('edge_static_min_zoom', fps.run_benchmark(edge_game, warmup=5))
+        report('Static FPS @ min zoom (east gap visible)', result)
+        assert result['avg_fps'] >= 25, f"Min-zoom static FPS too low: {result['avg_fps']:.1f}"
+
+    def test_zoom_sweep_across_gap(self, edge_game):
+        """Bounce zoom 1.65 <-> 1.9: the gap shrinks to zero and reopens every frame."""
+        lo = edge_game.camera.min_zoom
+        hi = min(1.9, edge_game.camera.max_zoom)
+        steps = 20
+
+        def before(i):
+            # Triangle wave so every frame lands on a new zoom level (no cache hits)
+            phase = i % (2 * steps)
+            t = phase / steps if phase <= steps else (2 * steps - phase) / steps
+            sync_camera(edge_game, zoom=lo + (hi - lo) * t, offset=(0.0, 0.0),
+                        force_rescale=False)
+
+        fps = FPSMeasurement(sample_count=60)
+        result = record('edge_zoom_sweep', fps.run_benchmark(edge_game, before_frame=before, warmup=3))
+        report(f'Zoom sweep across the east gap ({lo:.2f} <-> {hi:.2f})', result)
+        assert result['worst_frame_ms'] < 100, (
+            f"East-gap zoom worst frame too slow: {result['worst_frame_ms']:.1f}ms")
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '--tb=short'])
