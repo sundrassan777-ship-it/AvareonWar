@@ -15,8 +15,13 @@ WHAT IT DRAWS
   maps/azincournean_highlands/map_east.png or assets/CampaignMaps/Campaign3Map_east.png),
   that painted image is drawn, scaled to the map's height. Anything past its end is
   filled with the average colour of its rightmost column.
-* Generated (default): the map's rightmost strip, mirrored horizontally (so the seam
-  is seamless), fading into MAP_EAST_FOG_COLOR. Past its end is solid fog.
+* Generated (default), in one of two MAP_EAST_MODE styles, then blurred and faded
+  into MAP_EAST_FOG_COLOR (past its end is solid fog):
+    'stretch' (default): every row continues the colour at the map's edge straight
+        east, so a coastline meeting the edge carries on outward. Chosen because a
+        mirror reverses geography — on Azincournean the NE coast bent back south-west.
+    'mirror': the map's rightmost strip reflected (keeps texture, reverses shapes).
+  Either way the join is seamless: the first extension column matches the map's last.
 
 COST
 The extension is built once per (map surface, window width) and stored at a reduced
@@ -32,7 +37,7 @@ import pygame
 
 from config.constants import (
     MAP_EAST_FOG_COLOR, MAP_EAST_MIN_SRC_PX, MAP_EAST_MAX_SRC_PX, MAP_EAST_MAX_PIXELS,
-    MAP_EAST_BLUR_FACTOR, MAP_EAST_CRISP_BAND,
+    MAP_EAST_BLUR_FACTOR, MAP_EAST_CRISP_BAND, MAP_EAST_MODE,
 )
 from utils.logger import get_logger
 
@@ -90,10 +95,23 @@ def _fog_ramp(width, height, fog_color):
     last = max(1, width - 1)
     for x in range(width):
         t = x / last
-        # smoothstep: a gentle start keeps the mirrored terrain readable near the seam
+        # smoothstep: a gentle start keeps the continued terrain readable near the seam
         alpha = int(round(255 * t * t * (3.0 - 2.0 * t)))
         row.set_at((x, 0), (*fog_color, alpha))
     return pygame.transform.scale(row, (width, height))
+
+
+def _stretched_edge(src, src_w, src_h, store_size, band=6):
+    """Each row continues the colour at the map's right edge straight east.
+
+    Unlike a mirror, this never reverses geography: a coastline that meets the
+    edge carries on eastward instead of bending back the way it came. The last
+    `band` source columns are averaged so a single noisy pixel doesn't streak.
+    """
+    band = max(1, min(band, src_w))
+    edge = src.subsurface(pygame.Rect(src_w - band, 0, band, src_h))
+    column = pygame.transform.smoothscale(edge, (1, store_size[1]))
+    return pygame.transform.scale(column, store_size)
 
 
 def _blurred(surface, factor):
@@ -139,8 +157,10 @@ class MapEastExtension:
     whenever the map background or the display changes.
     """
 
-    def __init__(self, fog_color=MAP_EAST_FOG_COLOR):
+    def __init__(self, fog_color=MAP_EAST_FOG_COLOR, mode=MAP_EAST_MODE):
         self.fog_color = tuple(fog_color)
+        # 'mirror' (map's last strip reflected) or 'stretch' (edge colours run east)
+        self.mode = mode
         # Built extension
         self.surface = None          # Stored (reduced density) extension, display format
         self.logical_width = 0       # Extension width in SOURCE pixels (map-image space)
@@ -173,7 +193,7 @@ class MapEastExtension:
         so such code must call invalidate() itself.
         """
         key = (id(src), src.get_size(), int(window_w), int(map_width),
-               round(float(min_zoom), 4), override_path, max_pixels)
+               round(float(min_zoom), 4), override_path, max_pixels, self.mode)
         if key == self._build_key:
             return  # Built (or a failed build) for these inputs — don't retry per frame
         self.invalidate()
@@ -215,7 +235,7 @@ class MapEastExtension:
         return True
 
     def _build_generated(self, src, src_w, src_h, window_w, map_width, min_zoom, max_pixels):
-        """Mirror the map's rightmost strip and fade it into the fog colour."""
+        """Continue the map's east edge (stretch or mirror), blur it, fade to fog."""
         needed = required_source_width(src_w, window_w, map_width, min_zoom)
         logical_w = int(math.ceil(needed))
         logical_w = max(MAP_EAST_MIN_SRC_PX, min(MAP_EAST_MAX_SRC_PX, logical_w))
@@ -224,13 +244,17 @@ class MapEastExtension:
         density = _storage_density(logical_w, src_h, src_w, window_w, max_pixels)
         store_size = (max(1, int(logical_w * density)), max(1, int(src_h * density)))
 
-        strip = src.subsurface(pygame.Rect(src_w - logical_w, 0, logical_w, src_h))
-        mirrored = pygame.transform.flip(strip, True, False)
-        crisp = pygame.transform.smoothscale(mirrored, store_size)
+        if self.mode == 'stretch':
+            crisp = _stretched_edge(src, src_w, src_h, store_size)
+        else:
+            strip = src.subsurface(pygame.Rect(src_w - logical_w, 0, logical_w, src_h))
+            mirrored = pygame.transform.flip(strip, True, False)
+            crisp = pygame.transform.smoothscale(mirrored, store_size)
 
-        # A plain mirror reads as mirrored map art (reversed labels, the Avareon scale
-        # bar). Blur it so only colour masses (sea / land) continue, and keep the crisp
-        # mirror for a thin band at the seam only, so the join itself stays seamless.
+        # Blur so only colour masses (sea / land) continue: a sharp mirror reads as
+        # reversed map art (labels, the Avareon scale bar) and a sharp stretch as
+        # streaks. The crisp version is kept for a thin band at the seam only, so the
+        # join itself stays seamless.
         stored = _blurred(crisp, MAP_EAST_BLUR_FACTOR)
         band = max(4, int(store_size[0] * MAP_EAST_CRISP_BAND))
         stored.blit(_fade_out_right(crisp, band), (0, 0))

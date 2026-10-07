@@ -79,6 +79,10 @@ MAP_EAST_MAX_SRC_PX = 2048            # Widest generated extension; beyond it is
 MAP_EAST_MAX_PIXELS = 2_000_000       # Memory cap for the stored extension (~8 MB)
 MAP_EAST_BLUR_FACTOR = 16             # Blur of the mirrored strip (hides reversed labels)
 MAP_EAST_CRISP_BAND = 0.08            # Share of the width kept crisp at the seam
+# 'stretch': edge colours run straight east (coastlines carry on outward).
+# 'mirror' : the map's last strip reflected (more texture, but reverses coastlines —
+#            on Azincournean the NE coast bent back south-west).
+MAP_EAST_MODE = 'stretch'
 
 # ===========================================
 # COLORS

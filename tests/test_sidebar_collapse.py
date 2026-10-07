@@ -117,6 +117,28 @@ class TestExtensionMath:
         assert ext.logical_width >= 1700
         assert w * h <= MAP_EAST_MAX_PIXELS * 1.01
 
+    def test_default_stretch_continues_the_edge_not_a_reflection(self, pygame_display):
+        """Geography must carry on outward, not bend back (mirror reversed the NE coast
+        of Azincournean). Source: red inland, a blue last few columns at the edge ->
+        the extension continues blue; a mirror would bring the red back."""
+        import pygame
+        from rendering.map_extension import MapEastExtension
+        from config.constants import MAP_EAST_MODE
+        assert MAP_EAST_MODE == 'stretch'
+        src = pygame.Surface((4096, 3072))
+        src.fill((220, 20, 20))
+        src.fill((20, 20, 220), pygame.Rect(4096 - 8, 0, 8, 3072))
+        ext = MapEastExtension()
+        ext.ensure_built(src, 1600, 865, 1.65)
+        w, h = ext.surface.get_size()
+        r, g, b = tuple(ext.surface.get_at((int(w * 0.3), h // 2)))[:3]
+        assert b > r, f"extension reflected the inland colour: {(r, g, b)}"
+
+        mirror = MapEastExtension(mode='mirror')
+        mirror.ensure_built(src, 1600, 865, 1.65)
+        r, g, b = tuple(mirror.surface.get_at((int(w * 0.3), h // 2)))[:3]
+        assert r > b, "sanity: the mirror mode does bring the inland colour back"
+
     def test_failed_build_is_not_retried_every_frame(self, pygame_display, tmp_path):
         """A corrupt override falls back to the generated extension, built once."""
         import pygame
