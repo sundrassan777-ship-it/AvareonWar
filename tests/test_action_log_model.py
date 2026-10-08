@@ -413,3 +413,140 @@ class TestChatTab:
         scroll = game.sidebar_scroll['chat']
         assert scroll.offset == 0
         assert scroll.view_top() + scroll.viewport_h == scroll.content_h
+
+
+# ============================================================================
+# P6 EXTRA 3 - FILTER CHIPS
+# ============================================================================
+
+class TestFilterChips:
+
+    def _open_log(self, game):
+        game.game_state.active_sidebar_tab = 'action_log'
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+
+    def test_chip_click_filters_flashes_and_jumps_to_newest(self, game):
+        _fill_log(game, rounds=10)
+        self._open_log(game)
+        game.sidebar_scroll['action_log'].scroll(200)
+        game.mouse.handle_left_click(game.sidebar_log_chips['battles'].center)
+        assert game.clicked_element == ('sidebar_log_filter', 'battles')
+        assert game.sidebar_log_filter == {'battle', 'conquest', 'victory'}
+        assert game.sidebar_scroll['action_log'].offset == 0
+        game.draw_order_sidebar()
+        model = game.ui_renderer._log_state['model']
+        assert {r.category for r in model.rows if r.kind in ('entry', 'banner')} <= {'battle', 'conquest'}
+        game.mouse.handle_left_click(game.sidebar_log_chips['all'].center)
+        assert game.sidebar_log_filter is None
+
+    def test_heroes_filter_keeps_only_hero_lines(self):
+        from rendering.action_log_model import FILTERS
+        heroes = dict((fid, cats) for fid, _l, cats in FILTERS)['heroes']
+        rows = _rows(["Player 1: Halon Nextroy trained in Lobardia!",
+                      "Player 1 earned 85 gold from 12 territories"], category_filter=heroes)
+        assert [r.category for r in rows if r.kind == 'entry'] == ['hero']
+
+    def test_chips_are_clickable_only_on_the_log_tab(self, game):
+        self._open_log(game)
+        chip = game.sidebar_log_chips['heroes'].center
+        game.game_state.active_sidebar_tab = 'chat'
+        game.draw_order_sidebar()
+        game.mouse.handle_left_click(chip)
+        assert game.sidebar_log_filter_id == 'all'
+
+    def test_switch_turns_them_off(self, game, monkeypatch):
+        from ui.scaler import UIConstants
+        monkeypatch.setattr(UIConstants, 'SIDEBAR_LOG_FILTERS', False)
+        self._open_log(game)
+        assert game.sidebar_log_chips == {}
+
+    def test_log_click_never_reaches_stale_order_buttons(self, game):
+        """The log's chips share handle_order_sidebar_click with the Action Queue; a
+        click on the log where a Cancel Order button used to be must not cancel it."""
+        from game_state import MovementOrder
+        gs = game.game_state
+        gs.current_player = 0
+        a, b = list(game.scaled_polygons)[:2]
+        gs.movement_orders.append(MovementOrder(a, b, 2, 0))
+        gs.active_sidebar_tab = 'action_queue'
+        game.draw_order_sidebar()
+        button = game.order_cancel_buttons[0][0].center
+        self._open_log(game)
+        game.mouse.handle_left_click(button)
+        assert len(gs.movement_orders) == 1
+
+
+# ============================================================================
+# P6 EXTRA 4 - UNREAD BADGES ON THE CHAT / ACTION LOG BOOKMARKS
+# ============================================================================
+
+class TestUnreadBadges:
+
+    BATTLE = ["=== BATTLE in Lentria! ===", "  Participants:", "    Player 1: 5 armies", "    Player 2: 3 armies"]
+
+    def _frame(self, game, tab='technology'):
+        game.game_state.active_sidebar_tab = tab
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+
+    def _unread(self, game):
+        totals = game._sidebar_unread_totals()
+        return {t: totals[t] - (game.sidebar_seen[t] or 0) for t in totals}
+
+    def test_history_at_start_counts_as_read(self, game):
+        gs = game.game_state
+        gs.add_chat_message(1, "old message", 'all')
+        gs.messages.extend(self.BATTLE)
+        self._frame(game)
+        assert self._unread(game) == {'chat': 0, 'action_log': 0}
+
+    def test_counts_new_items_from_others_only(self, game):
+        gs = game.game_state
+        self._frame(game)
+        gs.add_chat_message(1, "hello", 'all')
+        gs.add_chat_message(0, "my own line", 'all')
+        gs.messages.extend(self.BATTLE)                                   # our battle: counts
+        gs.messages.append("Player 2 conquers Odatria (3 armies)")        # not ours: hidden
+        gs.messages.append("Player 1 earned 80 gold from 4 territories")  # routine: no badge
+        self._frame(game)
+        assert self._unread(game) == {'chat': 1, 'action_log': 1}
+
+    def test_opening_the_tab_marks_it_read(self, game):
+        gs = game.game_state
+        self._frame(game)
+        gs.add_chat_message(1, "hello", 'all')
+        self._frame(game)
+        assert self._unread(game)['chat'] == 1
+        self._frame(game, 'chat')
+        assert self._unread(game)['chat'] == 0
+
+    def test_badges_drawn_on_the_bookmarks(self, game, monkeypatch):
+        gs = game.game_state
+        self._frame(game)
+        gs.add_chat_message(1, "hello", 'all')
+        drawn = []
+        monkeypatch.setattr(game, '_draw_tab_badge', lambda rect, count, *a: drawn.append((rect, count)))
+        self._frame(game)
+        assert drawn == [(game.sidebar_tab_buttons['chat'], 1)]
+
+    def test_switch_turns_them_off(self, game, monkeypatch):
+        from ui.scaler import UIConstants
+        monkeypatch.setattr(UIConstants, 'SIDEBAR_UNREAD_BADGES', False)
+        self._frame(game)
+        game.game_state.add_chat_message(1, "hello", 'all')
+        drawn = []
+        monkeypatch.setattr(game, '_draw_tab_badge', lambda *a: drawn.append(a))
+        self._frame(game)
+        assert drawn == []
+
+    def test_player_names_tolerate_a_named_difficulty(self):
+        """get_player_name crashed on player_ai_difficulty 'Normal' (some test setups);
+        the badge reads names on every tab, so that took the whole sidebar down."""
+        import map_data
+        from game_state import GameState
+        map_data.load_polygons()
+        gs = GameState(num_players=3, player_is_ai=[False, True, True],
+                       player_ai_difficulty=[None, 'Normal', None], skip_setup_phase=True)
+        assert gs.get_player_name(1) == "AI (Normal)"
+        assert gs.get_player_name(2) == "AI (Medium)"

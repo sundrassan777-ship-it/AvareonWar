@@ -729,7 +729,14 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         if self.player_is_ai[player_index]:
             difficulty_names = ['Easy', 'Medium', 'Hard']
             difficulty = self.player_ai_difficulty[player_index]
-            difficulty_name = difficulty_names[difficulty] if 0 <= difficulty < len(difficulty_names) else 'Medium'
+            # Setup screens pass 0-2; tolerate a name ('Normal') or None instead of
+            # crashing - the sidebar's unread badge reads names on every tab
+            if isinstance(difficulty, str):
+                difficulty_name = difficulty
+            elif isinstance(difficulty, int) and 0 <= difficulty < len(difficulty_names):
+                difficulty_name = difficulty_names[difficulty]
+            else:
+                difficulty_name = 'Medium'
             return f"AI ({difficulty_name})"
         else:
             # For human players, use profile name + optional title from settings

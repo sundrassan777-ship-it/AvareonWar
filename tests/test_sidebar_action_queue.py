@@ -286,3 +286,110 @@ class TestSidebarWheel:
         game.initialize_game({'num_players': 2, 'player_is_ai': [False, True],
                               'player_ai_difficulty': [None, 1]})
         assert game.sidebar_scroll['action_queue'].offset == 0
+
+
+# ============================================================================
+# P6 EXTRA 1 - HOVERED CARD HIGHLIGHTS ITS ROUTE ON THE MAP
+# ============================================================================
+
+class TestRouteHighlight:
+
+    def _hover_first_card(self, game):
+        game.draw_order_sidebar()
+        rect, entry = game.order_card_rects[0]
+        game.mouse_pos = (rect.centerx, rect.top + 6)
+        game.draw_order_sidebar()
+        return entry
+
+    def test_hovering_a_card_publishes_its_route(self, game):
+        _order(game, to_owner=2)
+        entry = self._hover_first_card(game)
+        assert game.sidebar_hovered_route == (entry.from_territory, entry.to_territory)
+        game.mouse_pos = (300, 300)
+        game.draw_order_sidebar()
+        assert game.sidebar_hovered_route is None
+
+    def test_switch_turns_it_off(self, game, monkeypatch):
+        from ui.scaler import UIConstants
+        monkeypatch.setattr(UIConstants, 'SIDEBAR_ROUTE_HIGHLIGHT', False)
+        _order(game, to_owner=2)
+        self._hover_first_card(game)
+        assert game.sidebar_hovered_route is None
+
+    def test_map_glows_only_the_hovered_route(self, game, monkeypatch):
+        first = _order(game, to_owner=2)
+        _order(game, to_owner=1, src_skip=1)
+        calls = []
+        monkeypatch.setattr(game.map_renderer, '_draw_route_glow', lambda *a: calls.append(a))
+        game.sidebar_hovered_route = None
+        game.map_renderer.draw_movement_arrows()
+        assert calls == []
+        game.sidebar_hovered_route = (first.from_territory, first.to_territory)
+        game.map_renderer.draw_movement_arrows()
+        assert len(calls) == 1
+
+
+# ============================================================================
+# P6 EXTRA 2 - CLICKING A CARD PANS THE MAP TO THE DESTINATION
+# ============================================================================
+
+def _run_pan(game, frames=40):
+    for _ in range(frames):
+        game._update_sidebar_pan(1 / 60)
+
+
+class TestCameraPan:
+
+    def _card_click(self, game):
+        game.camera.zoom = game.camera_zoom = 2.0     # zoomed in: the target is not clamped
+        game.camera.clamp_to_bounds()
+        game.camera_offset = list(game.camera.offset)
+        game.draw_order_sidebar()
+        rect, entry = game.order_card_rects[0]
+        game.mouse.handle_left_click((rect.centerx, rect.top + 6))
+        return entry
+
+    def test_card_click_flashes_and_centres_the_destination(self, game):
+        _order(game, to_owner=2)
+        entry = self._card_click(game)
+        assert game.clicked_element == ('sidebar_order_card', (entry.from_territory, entry.to_territory))
+        assert game._sidebar_pan is not None
+        _run_pan(game)
+        assert game._sidebar_pan is None
+        final = list(game.camera_offset)
+        # Expected: the destination centred in the map area LEFT of the open panel,
+        # then clamped to the map bounds like any camera move (east-edge territories
+        # can't be fully centred)
+        from main import MAP_HEIGHT     # the map-area height the pan centres in
+        cx, cy = game.scaled_centers[entry.to_territory]
+        zoom = game.camera.zoom
+        game.camera.offset = [cx - game.get_sidebar_layout().panel_x / 2 / zoom, cy - MAP_HEIGHT / 2 / zoom]
+        game.camera.clamp_to_bounds()
+        assert final == pytest.approx(list(game.camera.offset), abs=0.5)
+
+    def test_moving_the_camera_cancels_the_pan(self, game):
+        _order(game, to_owner=2)
+        self._card_click(game)
+        game._update_sidebar_pan(1 / 60)
+        game.camera_offset[0] += 25                  # e.g. a drag or edge scroll
+        game._update_sidebar_pan(1 / 60)
+        assert game._sidebar_pan is None
+
+    def test_refused_while_the_tutorial_locks_the_camera(self, game, monkeypatch):
+        _order(game, to_owner=2)
+        monkeypatch.setattr(game, '_is_tutorial_blocking', lambda action: action == 'camera')
+        self._card_click(game)
+        assert game._sidebar_pan is None
+
+    def test_cancel_order_button_does_not_pan(self, game):
+        _order(game, to_owner=2)
+        game.draw_order_sidebar()
+        game.mouse.handle_left_click(game.order_cancel_buttons[0][0].center)
+        assert game._sidebar_pan is None
+
+    def test_switch_turns_it_off(self, game, monkeypatch):
+        from ui.scaler import UIConstants
+        monkeypatch.setattr(UIConstants, 'SIDEBAR_CAMERA_PAN', False)
+        _order(game, to_owner=2)
+        self._card_click(game)
+        assert game._sidebar_pan is None

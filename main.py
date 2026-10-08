@@ -1545,6 +1545,14 @@ class Game:
         # Pixel scroll position per scrollable sidebar tab (see handle_sidebar_wheel)
         self._reset_sidebar_scroll()
         self.order_card_rects = []  # (clipped rect, entry) of visible Action Queue cards
+        # (from, to) of the Action Queue card under the mouse; the map renderer draws that
+        # route's arrow with a gold highlight (UIConstants.SIDEBAR_ROUTE_HIGHLIGHT)
+        self.sidebar_hovered_route = None
+        # Camera pan started from the sidebar (order card / hero portrait click):
+        # a CameraPanAnimation plus the camera offset it last set - anything else that
+        # moves the camera (drag, keys, edge scroll, wheel zoom) cancels the pan
+        self._sidebar_pan = None
+        self._sidebar_pan_offset = None
         self.sidebar_hero_ability_buttons = {}  # {(hero, i): rect} ability icons on sidebar hero cards
         self.hero_portrait_rects = {}           # {hero: rect} portraits on sidebar hero cards
         self.sidebar_tooltip = None  # (text, mouse_pos) hover label, drawn at frame end
@@ -7001,6 +7009,24 @@ class Game:
             'action_log': ScrollState('bottom'),
             'chat': ScrollState('bottom'),
         }
+        # Action Log filter chip (rendering/action_log_model.FILTERS): its id and the
+        # category set the log model shows (None = all)
+        self.sidebar_log_filter_id = 'all'
+        self.sidebar_log_filter = None
+        self.sidebar_log_chips = {}   # filter id -> screen rect, filled by the renderer
+        # Unread badges on the Chat / Action Log bookmarks: how many countable items the
+        # viewer has already seen per tab (None = take the current total as read, so a
+        # loaded save's history doesn't start out as "unread")
+        self.sidebar_seen = {'chat': None, 'action_log': None}
+        self._unread_cache = {}
+
+    def set_sidebar_log_filter(self, filter_id):
+        """Switch the Action Log filter chip; the log jumps back to the newest entry."""
+        from rendering.action_log_model import FILTERS
+        categories = next((cats for fid, _label, cats in FILTERS if fid == filter_id), None)
+        self.sidebar_log_filter_id = filter_id
+        self.sidebar_log_filter = set(categories) if categories else None
+        self.sidebar_scroll['action_log'].offset = 0
 
     def handle_sidebar_wheel(self, delta):
         """Mouse wheel over the sidebar panel. Returns True when the panel took it.
@@ -7078,6 +7104,9 @@ class Game:
             self._sidebar_anim_start_ms = None
         # Hover label for this frame (set by tab content, drawn in update_frame_tooltips)
         self.sidebar_tooltip = None
+        # Re-set by the Action Queue card under the mouse (read by the map renderer,
+        # which draws before the sidebar - so it shows the previous frame's hover)
+        self.sidebar_hovered_route = None
 
         layout = self.get_sidebar_layout()
         sidebar_width = UIConstants.SIDEBAR_WIDTH
@@ -7109,6 +7138,9 @@ class Game:
         # Order-count badge on the Action Queue bookmark while the panel is closed
         if not self.game_state.sidebar_expanded:
             self._draw_sidebar_order_badge()
+        # Unread counts on the Chat / Action Log bookmarks
+        if UIConstants.SIDEBAR_UNREAD_BADGES:
+            self._draw_sidebar_unread_badges(layout)
 
         if not layout.panel_visible:
             # Fully collapsed: no content is drawn, so clear its click rects — stale
@@ -7148,6 +7180,12 @@ class Game:
         # tapestry); other tabs have no such button.
         if active_tab != 'action_queue':
             self.cancel_all_button = None
+            # Card / Cancel Order rects belong to the Action Queue only: stale ones would
+            # still match clicks on the Action Log (whose chips share the click handler)
+            self.order_cancel_buttons = []
+            self.order_card_rects = []
+        if active_tab != 'action_log':
+            self.sidebar_log_chips = {}
 
     def _draw_sidebar_border(self, rect):
         """Bronze 3 px panel border (was flat grey), open beside the active tab.
@@ -7259,11 +7297,70 @@ class Game:
                           if order.player == local_player)
         if order_count <= 0:
             return
-        center = (tab_rect.x, tab_rect.y + 12)
-        pygame.draw.circle(self.screen, (200, 50, 50), center, 10)
-        pygame.draw.circle(self.screen, WHITE, center, 10, 2)
-        count_text = self._get_cached_text(str(order_count), self.small_font, WHITE)
-        self.screen.blit(count_text, count_text.get_rect(center=center))
+        self._draw_tab_badge(tab_rect, order_count, (200, 50, 50), WHITE, WHITE)
+
+    def _draw_tab_badge(self, tab_rect, count, fill, rim, text_color):
+        """Count badge on a bookmark's outer edge near its top, clear of the label.
+
+        A circle for one digit, a pill for more ("99+" caps it). Shared by the Action
+        Queue order badge (red) and the unread badges (gold).
+        """
+        label = str(count) if count < 100 else "99+"
+        text = self.sidebar_widgets.text(label, 'small_bold', text_color)
+        radius = 10
+        width = max(2 * radius, text.get_width() + 10)
+        rect = pygame.Rect(0, 0, width, 2 * radius)
+        rect.center = (tab_rect.x, tab_rect.y + 12)
+        pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
+        pygame.draw.rect(self.screen, rim, rect, 2, border_radius=radius)
+        self.screen.blit(text, text.get_rect(center=rect.center))
+
+    def _sidebar_unread_totals(self):
+        """Countable items per badge tab: {'chat': n, 'action_log': n}.
+
+        Chat: visible messages from OTHER players (team chat filtered as in the tab).
+        Action Log: visible top-level entries in BADGE_CATEGORIES, from a log model of
+        its own (same privacy rules as the tab). Both are recomputed only when their
+        message list grows - a frame with no new message costs two length checks.
+        """
+        from rendering.action_log_model import ActionLogModel, BADGE_CATEGORIES
+        gs = self.game_state
+        cache = self._unread_cache
+        viewer = self.get_local_player()
+        chat_key = (id(gs.chat_messages), len(gs.chat_messages), viewer)
+        if cache.get('chat_key') != chat_key:
+            cache['chat_key'] = chat_key
+            # Format: (timestamp, player_id, message[, channel]) - index access
+            cache['chat'] = sum(1 for m in gs.get_visible_chat_messages(viewer) if m[1] != viewer)
+        log_key = (id(gs.messages), len(gs.messages), viewer)
+        if cache.get('log_key') != log_key:
+            cache['log_key'] = log_key
+            model = cache.setdefault('log_model', ActionLogModel())
+            names = [gs.get_player_name(i) for i in range(gs.num_players)]
+            if model.update(gs.messages, viewer, names, BADGE_CATEGORIES) is not None:
+                cache['action_log'] = sum(1 for r in model.rows
+                                          if r.kind in ('entry', 'banner', 'victory') and r.indent == 0)
+            cache.setdefault('action_log', 0)
+        return {'chat': cache['chat'], 'action_log': cache['action_log']}
+
+    def _draw_sidebar_unread_badges(self, layout):
+        """Gold unread counts on the Chat / Action Log bookmarks.
+
+        The open tab counts as read (its count is marked seen every frame it shows);
+        a badge appears on a closed tab - or any tab while the panel is collapsed -
+        when new items arrived since.
+        """
+        totals = self._sidebar_unread_totals()
+        seen = self.sidebar_seen
+        open_tab = self.game_state.active_sidebar_tab if layout.panel_visible and self.game_state.sidebar_expanded else None
+        for tab_id, total in totals.items():
+            if seen.get(tab_id) is None or tab_id == open_tab or total < seen[tab_id]:
+                seen[tab_id] = total
+                continue
+            unread = total - seen[tab_id]
+            tab_rect = (self.sidebar_tab_buttons or {}).get(tab_id)
+            if unread > 0 and tab_rect is not None:
+                self._draw_tab_badge(tab_rect, unread, (214, 168, 64), (255, 236, 180), (40, 24, 8))
 
     def _handle_sidebar_hotkey(self):
         """F2: collapse / expand the sidebar, unless something modal is open.
@@ -11531,6 +11628,9 @@ class Game:
                 self.camera_offset = self.camera.offset.copy()
                 self.camera_zoom = self.camera.zoom
 
+            # Camera pan requested from the sidebar (runs even when paused - visual only)
+            self._update_sidebar_pan(delta_time)
+
             # FPS OPT: Set is_zoom_animating flag for rendering pipeline to use fast paths.
             # Covers start animation, campaign mission zoom, and mouse-wheel zoom settling.
             _start_anim_active = (self.start_camera_animation is not None
@@ -14217,6 +14317,48 @@ class Game:
         # Click not handled by any bottom UI element
         return False
     
+    def start_sidebar_camera_pan(self, territory):
+        """Smoothly pan the map to `territory` (order card / hero portrait click).
+
+        Centres the territory in the VISIBLE map - left of the sidebar panel when it is
+        open (layout.panel_x), the full width when it is collapsed. Refused (returns
+        False) while the tutorial locks the camera or another camera animation runs
+        (start-of-game zoom, a mission's scripted camera).
+        """
+        center = self.scaled_centers.get(territory)
+        if center is None or self._is_tutorial_blocking('camera'):
+            return False
+        if self.start_camera_animation is not None and self.start_camera_animation.active:
+            return False
+        mission_anim = getattr(self.tutorial_mission, 'camera_animation', None) if self.tutorial_mission else None
+        if mission_anim is not None and getattr(mission_anim, 'active', False):
+            return False
+        from campaign_utils import CameraPanAnimation
+        # Make the handler current first (the Game keeps its own offset/zoom mirrors)
+        self.camera.offset = list(self.camera_offset)
+        self.camera.zoom = self.camera_zoom
+        self._sidebar_pan = CameraPanAnimation(
+            self.camera, center, UIConstants.SIDEBAR_CAMERA_PAN_SECONDS,
+            self.get_sidebar_layout().panel_x, MAP_HEIGHT)
+        self._sidebar_pan_offset = list(self.camera.offset)
+        return True
+
+    def _update_sidebar_pan(self, delta_time):
+        """Advance the sidebar camera pan; cancelled when anything else moved the camera."""
+        pan = self._sidebar_pan
+        if pan is None:
+            return
+        if list(self.camera_offset) != self._sidebar_pan_offset or self.camera.zoom != self.camera_zoom:
+            # Dragged / scrolled / zoomed since our last step: the player took over
+            self._sidebar_pan = None
+            return
+        self.camera.offset = list(self.camera_offset)
+        still_active = pan.update(min(delta_time, 0.05))
+        self.camera_offset = list(self.camera.offset)
+        self._sidebar_pan_offset = list(self.camera_offset)
+        if not still_active:
+            self._sidebar_pan = None
+
     def handle_order_sidebar_click(self, pos):
         """
         Handle clicks on order sidebar buttons (Phase 2B extraction).
@@ -14275,7 +14417,10 @@ class Game:
                     return True
         
         # Check individual order cancel buttons (only if expanded)
-        if self.game_state.sidebar_expanded and self.order_cancel_buttons:
+        # Order controls answer only on the Action Queue tab (belt and braces: their
+        # rects are also cleared on other tabs by draw_order_sidebar)
+        on_queue = self.game_state.active_sidebar_tab == 'action_queue'
+        if self.game_state.sidebar_expanded and on_queue and self.order_cancel_buttons:
             # Format: (rect, order, player_order_index) — index access, see ui_renderer
             for button in self.order_cancel_buttons:
                 if button[0].collidepoint(pos):
@@ -14320,6 +14465,23 @@ class Game:
                         'player_index': self.local_player_index
                     })
                 return True
+
+        # Action Log filter chips
+        if self.game_state.sidebar_expanded and self.game_state.active_sidebar_tab == 'action_log':
+            for filter_id, chip_rect in (getattr(self, 'sidebar_log_chips', None) or {}).items():
+                if chip_rect.collidepoint(pos):
+                    self.trigger_click_flash('sidebar_log_filter', filter_id)
+                    self.set_sidebar_log_filter(filter_id)
+                    return True
+
+        # Order card body (not its Cancel Order button, checked above): flash the card
+        # and pan the map to the order's destination
+        if self.game_state.sidebar_expanded and on_queue and UIConstants.SIDEBAR_CAMERA_PAN:
+            for card_rect, entry in (self.order_card_rects or []):
+                if card_rect.collidepoint(pos):
+                    self.trigger_click_flash('sidebar_order_card', (entry.from_territory, entry.to_territory))
+                    self.start_sidebar_camera_pan(entry.to_territory)
+                    return True
         
         return False
     
@@ -15299,6 +15461,13 @@ class Game:
                 # Hero clicked - select it (click flash on the card)
                 self.trigger_click_flash('sidebar_hero_card', hero_name)
                 self.selected_hero = hero_name
+
+                # The portrait also pans the map to the hero's Keep
+                portrait = (getattr(self, 'hero_portrait_rects', None) or {}).get(hero_name)
+                if portrait is not None and portrait.collidepoint(pos) and UIConstants.SIDEBAR_CAMERA_PAN:
+                    hero_data = self.game_state.heroes.get(self.get_local_player(), {}).get(hero_name, {})
+                    if hero_data.get('keep_territory'):
+                        self.start_sidebar_camera_pan(hero_data['keep_territory'])
 
                 # Play hero selection voice line
                 from global_sound import play_hero_select_sound

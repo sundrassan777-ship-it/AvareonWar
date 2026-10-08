@@ -212,3 +212,28 @@ class TestAbilityTooltip:
         game.draw_order_sidebar()
         assert game.hover_target_button is None
         assert game.sidebar_hero_ability_buttons == {}
+
+
+# ============================================================================
+# P6 EXTRA 2 - PORTRAIT CLICK PANS THE MAP TO THE HERO'S KEEP
+# ============================================================================
+
+class TestPortraitPan:
+
+    def test_portrait_click_pans_to_the_keep(self, game, monkeypatch):
+        targets = []
+        monkeypatch.setattr(game, 'start_sidebar_camera_pan', lambda t: targets.append(t) or True)
+        game.draw_order_sidebar()
+        game.mouse.handle_left_click(game.hero_portrait_rects[HERO].center)
+        assert targets == [game.game_state.heroes[0][HERO]['keep_territory']]
+        assert game.selected_hero == HERO
+
+    def test_rest_of_the_card_only_selects(self, game, monkeypatch):
+        targets = []
+        monkeypatch.setattr(game, 'start_sidebar_camera_pan', lambda t: targets.append(t) or True)
+        game.draw_order_sidebar()
+        card = game.hero_selection_buttons[HERO]
+        portrait = game.hero_portrait_rects[HERO]
+        game.mouse.handle_left_click((portrait.right + 6, portrait.centery))   # the title text
+        assert card.collidepoint((portrait.right + 6, portrait.centery))
+        assert game.selected_hero == HERO and targets == []

@@ -714,6 +714,33 @@ class SidebarWidgets:
         pygame.draw.polygon(surf, outline, points, 1)
         return self._put(key, self.display_alpha(surf))
 
+    def chip(self, label, size, active, state='normal'):
+        """Small pill toggle (Action Log filter chips), cached per look.
+
+        active: gold-filled with dark text (the selected filter); otherwise dark with a
+        bronze rim. state: 'normal' / 'hover' / 'flash' brighten it like other controls.
+        """
+        w, h = int(size[0]), int(size[1])
+        key = ('chip', label, w, h, bool(active), state, self.scale)
+        cached = self._get(key)
+        if cached is not None:
+            return cached
+        surf = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
+        rect = surf.get_rect()
+        radius = h // 2
+        if active:
+            pygame.draw.rect(surf, (196, 150, 62), rect, border_radius=radius)
+            pygame.draw.rect(surf, GOLD_LIGHT, rect, 1, border_radius=radius)
+            color = (44, 28, 10)
+        else:
+            pygame.draw.rect(surf, (38, 26, 18), rect, border_radius=radius)
+            pygame.draw.rect(surf, BRONZE_EDGE, rect, 1, border_radius=radius)
+            color = PARCHMENT
+        _apply_state(surf, state)
+        text = self.text(self.fit_text(label, 'small_bold', w - 8), 'small_bold', color)
+        surf.blit(text, text.get_rect(center=rect.center))
+        return self._put(key, self.display_alpha(surf))
+
     def pulse_ring(self, size, color=(100, 255, 100)):
         """Tutorial highlight ring, cached; the caller sets its alpha per frame."""
         key = ('ring', int(size[0]), int(size[1]), color)

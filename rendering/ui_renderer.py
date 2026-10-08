@@ -1912,7 +1912,13 @@ class UIRenderer:
         w = game.sidebar_widgets
         button = self._order_button_rect(lay, rect, w.scale) if lay['button_h'] else None
         over_button = button is not None and not cancel_locked and w.hover(button, viewport)
-        card_state = 'hover' if (w.hover(rect, viewport) and not over_button) else 'normal'
+        over_card = w.hover(rect, viewport)
+        card_state = 'hover' if (over_card and not over_button) else 'normal'
+        if getattr(game, 'clicked_element', None) == ('sidebar_order_card', (entry.from_territory, entry.to_territory)):
+            card_state = 'flash'    # clicked: the map pans to the destination
+        if over_card and UIConstants.SIDEBAR_ROUTE_HIGHLIGHT:
+            # The map draws this order's arrow highlighted (map_renderer._draw_route_glow)
+            game.sidebar_hovered_route = (entry.from_territory, entry.to_territory)
         button_state = 'normal'
         if button is not None and not cancel_locked:
             flash_key = ('sidebar_cancel_order', getattr(entry.order, 'order_id', None))
@@ -2243,6 +2249,11 @@ class UIRenderer:
         screen.blit(header, (full.center_x - half, content_start_y))
         list_top = content_start_y + header.get_height() + 8
 
+        # Filter chips (All / Battles / Economy / Heroes) under the header
+        game.sidebar_log_chips = {}
+        if UIConstants.SIDEBAR_LOG_FILTERS:
+            list_top = self._draw_log_filter_chips(full, list_top) + 8
+
         geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
                                footer_h=8, panel_width=sidebar_width, scrollbar=True)
         viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
@@ -2260,6 +2271,40 @@ class UIRenderer:
         self._draw_scrolling_list(items, ys, total_h, viewport, scroll,
                                   lambda item, y: self._draw_log_item(item[1], viewport.x, y, viewport.w))
         w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
+
+    def _draw_log_filter_chips(self, full, top):
+        """One row of filter chips across the tapestry; returns the row's bottom y.
+
+        The active chip is gold-filled; hover brightens and a click flashes like every
+        other sidebar control. Click handling: main.py handle_order_sidebar_click.
+        """
+        from rendering.action_log_model import FILTERS
+        game = self.game
+        w = game.sidebar_widgets
+        gap = 4
+        height = max(16, int(round(20 * w.scale)))
+        width = full.right - full.x
+        # Each chip as wide as its label + padding, the spare width shared out evenly
+        # (equal widths cut "Economy" to "Econ..." at 1600x900)
+        font = w.font('small_bold')
+        widths = [font.size(label)[0] + 12 for _fid, label, _cats in FILTERS]
+        spare = width - gap * (len(FILTERS) - 1) - sum(widths)
+        widths = [cw + max(0, spare) // len(FILTERS) for cw in widths]
+        active_id = getattr(game, 'sidebar_log_filter_id', 'all')
+        clicked = getattr(game, 'clicked_element', None)
+        x = full.x + max(0, width - (sum(widths) + gap * (len(FILTERS) - 1))) // 2
+        for (filter_id, label, _categories), chip_w in zip(FILTERS, widths):
+            rect = pygame.Rect(x, top, chip_w, height)
+            if clicked == ('sidebar_log_filter', filter_id):
+                state = 'flash'
+            elif w.hover(rect):
+                state = 'hover'
+            else:
+                state = 'normal'
+            game.screen.blit(w.chip(label, rect.size, filter_id == active_id, state), rect.topleft)
+            game.sidebar_log_chips[filter_id] = rect
+            x += chip_w + gap
+        return top + height
 
     def _update_chat_layout(self, width):
         """Chat messages laid out in pixels; re-filtered only when a message arrives."""

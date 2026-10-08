@@ -79,8 +79,9 @@ def _rect_of(game, control):
     if control == 'tech_tile':
         return game.technology_buttons['tech_0_0'], ('technology_button', 'tech_0_0')
     if control == 'order_card':
-        # Hover only: the card body has no click action yet
-        return game.order_card_rects[0][0], None
+        # The card body pans the map to the destination (P6) and flashes
+        rect, entry = game.order_card_rects[0]
+        return rect, ('sidebar_order_card', (entry.from_territory, entry.to_territory))
     if control == 'cancel_order':
         rect, order, _ = game.order_cancel_buttons[0]
         return rect, ('sidebar_cancel_order', order.order_id)
@@ -90,12 +91,14 @@ def _rect_of(game, control):
         return game.hero_selection_buttons[HERO], ('sidebar_hero_card', HERO)
     if control == 'hero_ability':
         return game.sidebar_hero_ability_buttons[(HERO, 0)], ('sidebar_hero_ability', (HERO, 0))
+    if control == 'log_chip':
+        return game.sidebar_log_chips['battles'], ('sidebar_log_filter', 'battles')
     raise AssertionError(control)
 
 
 TAB_OF = {'bookmark': 'technology', 'toggle': 'technology', 'tech_tile': 'technology',
           'order_card': 'action_queue', 'cancel_order': 'action_queue', 'cancel_all': 'action_queue',
-          'hero_card': 'heroes', 'hero_ability': 'heroes'}
+          'hero_card': 'heroes', 'hero_ability': 'heroes', 'log_chip': 'action_log'}
 
 
 @pytest.mark.parametrize('control', list(TAB_OF))

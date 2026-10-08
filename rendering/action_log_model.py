@@ -302,6 +302,20 @@ class ActionLogModel:
         return first_changed_row
 
 
+# Action Log filter chips: (id, label, categories shown - None = everything).
+# Warnings, orders and uncategorised lines appear under "All" only.
+FILTERS = (
+    ('all', 'All', None),
+    ('battles', 'Battles', frozenset({'battle', 'conquest', 'victory'})),
+    ('economy', 'Economy', frozenset({'economy', 'construction', 'training', 'research'})),
+    ('heroes', 'Heroes', frozenset({'hero'})),
+)
+
+# Categories that light the Action Log bookmark's unread badge: events that happened
+# to the viewer. Income, orders, construction etc. arrive every turn and would keep
+# the badge lit permanently.
+BADGE_CATEGORIES = frozenset({'battle', 'conquest', 'hero', 'victory'})
+
 # Display names for the filter chips (P6) and legends
 CATEGORY_LABELS = {
     'battle': 'Battles', 'conquest': 'Conquest', 'economy': 'Economy', 'construction': 'Buildings',

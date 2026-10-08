@@ -125,6 +125,13 @@ class UIConstants:
     # ===== COLLAPSE / EXPAND (ui/sidebar_layout.py) =====
     SIDEBAR_SLIDE_MS = 150       # Duration of the collapse/expand slide
     SIDEBAR_TOGGLE_HEIGHT = 37   # Collapse button above the tabs (fits in TAB_PADDING_TOP)
+
+    # ===== SIDEBAR EXTRAS (each benchmarked; switch off here if one costs too much) =====
+    SIDEBAR_ROUTE_HIGHLIGHT = True   # Hovering an Action Queue card highlights its map arrow
+    SIDEBAR_CAMERA_PAN = True        # Clicking an order card / hero portrait pans the map there
+    SIDEBAR_CAMERA_PAN_SECONDS = 0.45
+    SIDEBAR_LOG_FILTERS = True       # Filter chips (All / Battles / Economy / Heroes) in the Action Log
+    SIDEBAR_UNREAD_BADGES = True     # Unread counts on the Chat / Action Log bookmarks
     
     # ===== SCROLLBAR =====
     SCROLLBAR_WIDTH = 4        # Width of scrollbar track and thumb
