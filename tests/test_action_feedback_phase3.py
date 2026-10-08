@@ -218,7 +218,15 @@ class TestLockedSidebarControls:
         game.draw_order_sidebar()
         rect = game.cancel_all_button
         assert rect is not None
-        assert game.screen.get_at((rect.x + 6, rect.y + 6))[:3] == (110, 110, 110)
+        # CANCEL ALL is ornate button art now (sidebar overhaul): the locked look is a
+        # dimmed sprite, so compare it with the unlocked one instead of one pixel.
+        import pygame
+        locked = sum(pygame.transform.average_color(game.screen, rect)[:3])
+        game.tutorial_mission = None
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+        normal = sum(pygame.transform.average_color(game.screen, game.cancel_all_button)[:3])
+        assert locked < normal * 0.85
 
 
 class TestSaveFeedback:

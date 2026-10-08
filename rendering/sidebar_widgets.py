@@ -111,6 +111,7 @@ class SidebarWidgets:
         'body': (12, False, False),
         'body_bold': (12, True, False),
         'small': (10, False, False),
+        'small_bold': (10, True, False),
         'italic': (11, False, True),
         'digits': (15, True, False),
     }
@@ -197,6 +198,42 @@ class SidebarWidgets:
                 image = crop_to_opaque(raw, threshold=128) if raw else None
             self._art[key] = image
         return self._art[key]
+
+    # ------------------------------------------------------------------ icons
+
+    def icon(self, path, size, crop=False, frame=False):
+        """An image file as a size x size icon (aspect kept, centred), cached."""
+        key = ('icon_path', path, int(size), crop, frame)
+        cached = self._get(key)
+        if cached is not None:
+            return cached
+        return self._put(key, self._make_icon(load_cached_image(path, alpha=True), size, crop, frame))
+
+    def icon_surface(self, key, surface, size, crop=False, frame=False):
+        """An already-loaded surface (unit portrait, army flag) as an icon, cached by `key`."""
+        full_key = ('icon_surf', key, int(size), crop, frame, id(surface))
+        cached = self._get(full_key)
+        if cached is not None:
+            return cached
+        return self._put(full_key, self._make_icon(surface, size, crop, frame))
+
+    @staticmethod
+    def _make_icon(image, size, crop, frame):
+        size = max(2, int(size))
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        if image is None:
+            return surf
+        if crop:
+            image = crop_to_opaque(image, threshold=40)
+        iw, ih = image.get_size()
+        inner = size - (2 if frame else 0)
+        scale = min(inner / float(iw), inner / float(ih))
+        scaled = pygame.transform.smoothscale(image, (max(1, int(iw * scale)), max(1, int(ih * scale))))
+        surf.blit(scaled, scaled.get_rect(center=(size // 2, size // 2)))
+        if frame:
+            # Thin gold frame: the unit portraits are opaque squares
+            pygame.draw.rect(surf, GOLD_DARK, surf.get_rect(), 1)
+        return surf
 
     # ------------------------------------------------------------------ nine-slice
 
@@ -307,13 +344,21 @@ class SidebarWidgets:
             state = 'hover'
         else:
             state = 'normal'
-        screen = self.game.screen
-        screen.blit(self.button_sprite(art, rect.size, tint, state), rect.topleft)
-        if label:
-            color = (150, 140, 128) if locked else text_color
-            label_surf = self.text(self.fit_text(label, role, rect.w - 24), role, color)
-            screen.blit(label_surf, label_surf.get_rect(center=(rect.centerx, rect.centery)))
+        self.blit_button(self.game.screen, rect, label, art, tint, state, role, text_color)
         return hovering
+
+    def blit_button(self, surface, rect, label, art='campaign', tint=None, state='normal',
+                    role='body_bold', text_color=PARCHMENT):
+        """Draw a button in a given state onto any surface (no hover logic).
+
+        Used by draw_button() and by pre-composed sprites (e.g. order cards), which
+        decide the state themselves.
+        """
+        surface.blit(self.button_sprite(art, rect.size, tint, state), rect.topleft)
+        if label:
+            color = (150, 140, 128) if state == 'locked' else text_color
+            label_surf = self.text(self.fit_text(label, role, rect.w - 24), role, color)
+            surface.blit(label_surf, label_surf.get_rect(center=rect.center))
 
     # ------------------------------------------------------------------ decorations
 

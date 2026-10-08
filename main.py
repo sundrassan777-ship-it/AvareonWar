@@ -62,7 +62,7 @@ from network_config import MessageType
 # Import refactored modules
 from config.constants import *
 from ui.scaler import UIScaler, UIConstants
-from ui.sidebar_layout import sidebar_progress, reverse_anim_start, compute_sidebar_layout
+from ui.sidebar_layout import sidebar_progress, reverse_anim_start, compute_sidebar_layout, ScrollState
 from utils.colors import lighten_color, brighten_color
 from rendering.helpers import DrawingHelpers
 from rendering.map_renderer import MapRenderer
@@ -755,6 +755,7 @@ class Game:
         # Every game starts with the sidebar expanded (the new GameState below sets
         # sidebar_expanded=True); drop any slide left over from a previous game.
         self._sidebar_anim_start_ms = None
+        self._reset_sidebar_scroll()
 
         # Game state - use configuration from setup UI with skip_setup_phase=True
         game_mode = setup_config.get('game_mode', 'sequential')
@@ -1542,6 +1543,9 @@ class Game:
         # All sidebar geometry is derived from it by get_sidebar_layout()
         # (ui/sidebar_layout.py) — nothing caches sidebar coordinates any more.
         self._sidebar_anim_start_ms = None
+        # Pixel scroll position per scrollable sidebar tab (see handle_sidebar_wheel)
+        self._reset_sidebar_scroll()
+        self.order_card_rects = []  # (clipped rect, entry) of visible Action Queue cards
 
         # Track previous player and phase for AI turn optimization
         self.previous_ai_check = -1
@@ -6979,6 +6983,39 @@ class Game:
             particles.clear()
         return True
 
+    # Tabs whose content scrolls with the new pixel ScrollState. 'chat' and
+    # 'action_log' still use their message-count offsets until they move over (P3).
+    _LEGACY_WHEEL_TABS = ('chat', 'action_log')
+
+    def _reset_sidebar_scroll(self):
+        """Fresh scroll positions for every scrollable sidebar tab (new game)."""
+        self.sidebar_scroll = {
+            'action_queue': ScrollState('top'),
+            'heroes': ScrollState('top'),
+        }
+
+    def handle_sidebar_wheel(self, delta):
+        """Mouse wheel over the sidebar panel. Returns True when the panel took it.
+
+        Over the panel body the wheel scrolls the active tab's list (3 text lines per
+        notch) and is ALWAYS consumed there — before, on tabs without scrolling it
+        zoomed the map hidden under the panel. Off the panel (or while it slides) it
+        returns False and the caller zooms the map as usual.
+        """
+        if not self.game_state or not self.game_state.sidebar_expanded or self.is_sidebar_animating():
+            return False
+        if not self.is_point_over_sidebar_panel(pygame.mouse.get_pos()):
+            return False
+        tab = self.game_state.active_sidebar_tab
+        if tab in self._LEGACY_WHEEL_TABS:
+            return False  # handled by the legacy branch in handle_camera_zoom
+        scroll = getattr(self, 'sidebar_scroll', {}).get(tab)
+        if scroll is not None and delta:
+            step = 3 * self.sidebar_widgets.font('body').get_linesize()
+            # Wheel up (delta > 0) = towards the start of the list
+            scroll.scroll(-step if delta > 0 else step)
+        return True
+
     def is_point_on_sidebar_chrome(self, pos):
         """True on the collapse button or a bookmark tab (visible in every state)."""
         toggle = self.sidebar_toggle_button
@@ -7071,6 +7108,7 @@ class Game:
             self.technology_buttons = {}
             self.hero_selection_buttons = {}
             self.order_cancel_buttons = []
+            self.order_card_rects = []
             self.cancel_all_button = None
             return
 
@@ -7090,22 +7128,9 @@ class Game:
         elif active_tab == 'chat':
             self.ui_renderer._draw_chat_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
 
-        # Cancel All button at bottom (only show in Action Queue tab, and only when the
-        # sidebar's player has orders — it cancels only that player's orders)
-        if active_tab == 'action_queue' and any(
-                order.player == self.order_sidebar_player for order in self.game_state.movement_orders):
-            cancel_all_y = sidebar_y + sidebar_height - 50
-            cancel_all_rect = pygame.Rect(sidebar_x + 20, cancel_all_y, sidebar_width - 40, 35)
-            # Grey when the tutorial/mission blocks cancelling (it used to look clickable)
-            cancel_all_locked = bool(self.tutorial_mission and self.tutorial_mission.active
-                                     and not self.tutorial_mission.is_action_allowed('cancel_all_orders'))
-            cancel_all_color = (110, 110, 110) if cancel_all_locked else (150, 50, 50)
-            pygame.draw.rect(self.screen, cancel_all_color, cancel_all_rect, border_radius=5)
-            cancel_all_text = self._get_cached_text("CANCEL ALL", self.font, WHITE)
-            cancel_all_text_rect = cancel_all_text.get_rect(center=cancel_all_rect.center)
-            self.screen.blit(cancel_all_text, cancel_all_text_rect)
-            self.cancel_all_button = cancel_all_rect
-        else:
+        # CANCEL ALL is drawn by the Action Queue renderer (pinned footer, centred on the
+        # tapestry); other tabs have no such button.
+        if active_tab != 'action_queue':
             self.cancel_all_button = None
 
     def _draw_sidebar_border(self, rect):
@@ -11926,6 +11951,9 @@ class Game:
                                 handled, should_quit = handled_result
                                 if should_quit:
                                     running = False
+                    elif event.type == pygame.MOUSEWHEEL and not (self.game_menu_visible or self.options_menu_visible):
+                        # The camera is locked, but reading the sidebar is not: scroll it
+                        self.handle_sidebar_wheel(event.y)
                     continue  # Block all other input
 
                 # Block action input during AI player turns (but allow hovering and menu)
@@ -14284,6 +14312,7 @@ class Game:
                     # Find the clicked order by identity: its position in the full list can
                     # differ from its position among this player's orders
                     order = button[1]
+                    self.trigger_click_flash('sidebar_cancel_order', getattr(order, 'order_id', None))
                     full_index = next((i for i, o in enumerate(self.game_state.movement_orders)
                                        if o is order), None)
                     if full_index is not None and self.game_state.cancel_movement_order(full_index):
@@ -14305,6 +14334,7 @@ class Game:
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('cancel_all_orders')):
                     return True  # Silently block
+                self.trigger_click_flash('sidebar_cancel_all', None)
                 # Cancel only the orders the sidebar shows — other players' orders
                 # (e.g. AI orders in the same planning phase) must survive
                 self.game_state.cancel_all_orders(player=self.order_sidebar_player)
@@ -15927,6 +15957,11 @@ class Game:
             Part of Phase 2D camera system.
             Makes camera fully controllable (pan + zoom).
         """
+        # Sidebar first: over the panel the wheel scrolls the tab (or does nothing),
+        # never the map underneath
+        if self.handle_sidebar_wheel(delta):
+            return
+
         # Check if mouse is over sidebar and a scrollable tab is active
         mouse_pos = pygame.mouse.get_pos()
 

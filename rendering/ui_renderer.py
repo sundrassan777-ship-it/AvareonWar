@@ -1650,114 +1650,382 @@ class UIRenderer:
                 self.game.resolution_option_buttons.append((option_rect, resolution))
                 option_y += 32
     
-    def _draw_action_queue_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Draw Action Queue tab content (movement orders)."""
-        # Header (Phase 2: Use SemiBold for section header)
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        header_y = content_start_y
-        header_text = self.get_cached_text("Action Queue", self.game.font_bold, WHITE, "font_bold")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
-        
-        # Draw separator line
-        pygame.draw.line(self.game.screen, RED_SEPARATOR, 
-                        (sidebar_x + 30, header_y + 30),
-                        (sidebar_x + sidebar_width - 10, header_y + 30), 2)
-        
-        # Determine LOCAL player
-        if self.game.multiplayer_mode:
-            local_player = self.game.local_player_index if self.game.local_player_index is not None else 0
+    # ========================================================================
+    # ACTION QUEUE (sidebar overhaul P2)
+    # ========================================================================
+    # kind -> (label, title colour, text colour, card fill gradient (top, bottom))
+    ORDER_KIND_STYLE = {
+        # Fills kept dark and slightly muted so the cards sit on the tapestry, not on it
+        'attack': ('Attack', (255, 128, 104), (255, 216, 202), ((62, 24, 20), (34, 12, 10))),
+        'own': ('Move', (146, 186, 255), (210, 225, 255), ((26, 34, 62), (13, 17, 34))),
+        'ally': ('Reinforce Ally', (140, 224, 140), (210, 245, 210), ((24, 50, 30), (11, 27, 15))),
+    }
+    ORDER_KIND_ICONS = {'attack': 'assets/mapicons/BattleIcon1.png', 'ally': 'assets/mapicons/AllianceIcon1.png'}
+    UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
+    CANCEL_TINT = (255, 108, 96)
+
+    def _order_kind(self, player, to_territory):
+        """'own' / 'ally' / 'attack' — mirrors game_state/military.py (create order).
+
+        The old card was red whenever the target owner differed from the player, so a
+        reinforcement into an ally's territory looked like an attack.
+        """
+        gs = self.game.game_state
+        owner = gs.territory_owners.get(to_territory, -1)
+        if owner == player:
+            return 'own'
+        if owner is not None and owner >= 0 and player is not None and player >= 0 and gs.are_allies(player, owner):
+            return 'ally'
+        return 'attack'
+
+    def _order_composition(self, from_territory, player, unit_ids, army_count):
+        """[(unit_type, count)] for an order, or [(None, army_count)] when unknown.
+
+        Orders carry unit ids; their types live on the source garrison's unit dicts.
+        Count-only orders (no unit_ids) fall back to the plain army count.
+        """
+        counts = {}
+        if unit_ids:
+            wanted = set(unit_ids)
+            garrison = self.game.game_state.territory_garrisons.get(from_territory, {}).get(player, {}) or {}
+            for unit in garrison.get('units', []) or []:
+                if unit.get('id') in wanted:
+                    unit_type = unit.get('type') or 'Swordsman'
+                    counts[unit_type] = counts.get(unit_type, 0) + 1
+        if not counts:
+            return [(None, army_count)]
+        ordered = [(t, counts.pop(t)) for t in self.UNIT_ORDER if t in counts]
+        return ordered + sorted(counts.items(), key=lambda item: str(item[0]))
+
+    def _queue_entries(self, local_player):
+        """Cards to show: queued orders, then (simultaneous mode, after Ready) the
+        orders already submitted — read-only, since sim_state refuses changes then."""
+        from types import SimpleNamespace
+        gs = self.game.game_state
+        entries = []
+        for i, order in enumerate(o for o in gs.movement_orders if o.player == local_player):
+            entries.append(SimpleNamespace(
+                order=order, index=i, submitted=False, player=order.player,
+                from_territory=order.from_territory, to_territory=order.to_territory,
+                army_count=order.army_count, unit_ids=getattr(order, 'unit_ids', None) or [],
+                via=getattr(order, 'intermediate_territory', None)))
+        sim_state = getattr(self.game, 'sim_state', None)
+        if sim_state is not None and getattr(sim_state, 'players_ready', {}).get(local_player, False):
+            for order in sim_state.player_orders.get(local_player, []) or []:
+                if order.get('type') != 'movement':
+                    continue
+                # Sim order dicts don't carry the Captain 2-hop via-territory
+                entries.append(SimpleNamespace(
+                    order=None, index=None, submitted=True, player=local_player,
+                    from_territory=order.get('from_territory'), to_territory=order.get('to_territory'),
+                    army_count=order.get('army_count', 0), unit_ids=order.get('unit_ids') or [], via=None))
+        return entries
+
+    def _queue_entry_key(self, entry):
+        """Everything a card's look depends on (changes -> the card is re-laid out)."""
+        owner = self.game.game_state.territory_owners.get(entry.to_territory, -1)
+        return (id(entry.order) if entry.order is not None else None, entry.from_territory,
+                entry.to_territory, entry.army_count, tuple(entry.unit_ids), entry.via,
+                entry.submitted, owner)
+
+    def _order_card_layout(self, entry, width):
+        """Measure one card (memoised per entry key + width + text scale)."""
+        w = self.game.sidebar_widgets
+        key = (self._queue_entry_key(entry), int(width), w.scale)
+        cache = self.__dict__.setdefault('_queue_layout_cache', OrderedDict())
+        lay = cache.get(key)
+        if lay is not None:
+            cache.move_to_end(key)
+            return lay
+        lay = self._measure_order_card(entry, width)
+        lay['key'] = key
+        cache[key] = lay
+        if len(cache) > 256:
+            cache.popitem(last=False)
+        return lay
+
+    def _measure_order_card(self, entry, width):
+        """Layout of one card. Returns a dict the compose step uses unchanged."""
+        w = self.game.sidebar_widgets
+        s = w.scale
+        border = max(7, int(round(8 * s)))
+        pad = border + 5
+        inner_w = width - 2 * pad
+        body_h = w.font('body').get_linesize()
+        small_h = w.font('small_bold').get_linesize()
+        kind = self._order_kind(entry.player, entry.to_territory)
+
+        # Route: "From ➜ To" on one line when it fits, else "From" / "➜ To"
+        arrow_w = int(16 * s) + 8
+        from_name, to_name = str(entry.from_territory), str(entry.to_territory)
+        one_line = w.font('body').size(from_name)[0] + arrow_w + w.font('body').size(to_name)[0] <= inner_w
+        if one_line:
+            route = [(from_name, to_name)]
         else:
-            local_player = 0
-            for i in range(self.game.game_state.num_players):
-                if not self.game.game_state.player_is_ai[i]:
-                    local_player = i
-                    break
+            route = [(w.fit_text(from_name, 'body', inner_w), None),
+                     (None, w.fit_text(to_name, 'body', inner_w - arrow_w))]
 
-        # Filter orders to show only LOCAL player's orders
-        local_orders = [order for order in self.game.game_state.movement_orders if order.player == local_player]
+        # Unit composition chips, wrapped into rows
+        icon = int(round(20 * s))
+        rows, row_w = [[]], 0
+        for unit_type, count in self._order_composition(entry.from_territory, entry.player,
+                                                        entry.unit_ids, entry.army_count):
+            label = f"×{count}" if unit_type else f"{count} unit{'s' if count != 1 else ''}"
+            chip_w = (icon + 3 if unit_type else 0) + w.font('small_bold').size(label)[0] + 8
+            if rows[-1] and row_w + chip_w > inner_w:
+                rows.append([])
+                row_w = 0
+            rows[-1].append((unit_type, label, chip_w))
+            row_w += chip_w
+        chip_row_h = max(icon, small_h)
 
-        # Reset every frame, BEFORE the empty-list early return: otherwise the X of the
-        # last cancelled order stayed clickable and hit whatever order came next.
-        self.game.order_cancel_buttons = []
+        icon_px = max(small_h, int(16 * s))
+        button_h = 0 if entry.submitted else max(20, int(round(22 * s)))
+        height = (pad + icon_px + 4 + body_h * len(route)
+                  + (body_h if entry.via else 0) + 5 + chip_row_h * len(rows) + 3 * (len(rows) - 1)
+                  + (6 + button_h if button_h else 0) + pad)
+        return {'kind': kind, 'border': border, 'pad': pad, 'route': route, 'arrow_w': arrow_w,
+                'rows': rows, 'icon': icon, 'icon_px': icon_px, 'chip_row_h': chip_row_h,
+                'button_h': button_h, 'body_h': body_h, 'small_h': small_h, 'height': height,
+                'width': int(width)}
+
+    @staticmethod
+    def _order_button_rect(lay, card_rect, scale):
+        """Cancel Order button inside a card (same rect for drawing and clicking)."""
+        pad = lay['pad']
+        bw = min(card_rect.w - 2 * pad, int(round(118 * scale)))
+        button = pygame.Rect(0, 0, bw, lay['button_h'])
+        button.midbottom = (card_rect.centerx, card_rect.bottom - pad + 2)
+        return button
+
+    @staticmethod
+    def _draw_route_arrow(surface, x, cy, length, color):
+        """Small drawn arrow (shaft + chevron head) between territory names."""
+        head = max(4, length // 3)
+        pygame.draw.line(surface, color, (x, cy), (x + length - 2, cy), 2)
+        pygame.draw.lines(surface, color, False, [(x + length - head - 1, cy - head), (x + length - 1, cy),
+                                                  (x + length - head - 1, cy + head)], 2)
+
+    def _compose_order_card(self, entry, lay, card_state, button_state, cancel_locked):
+        """One card fully drawn onto its own surface, cached per interaction state.
+
+        PERFORMANCE: drawing a card piece by piece (frame, ~10 texts, icons, button)
+        every frame cost ~0.65 ms with 40 orders; a composed card is one blit. The
+        cache holds a handful of states per visible card (normal / hover / button
+        hover / flash / locked) and is keyed by the card's layout key.
+        """
+        key = (lay['key'], card_state, button_state, cancel_locked)
+        cache = self.__dict__.setdefault('_queue_card_cache', OrderedDict())
+        surf = cache.get(key)
+        if surf is not None:
+            cache.move_to_end(key)
+            return surf
+
+        game = self.game
+        w = game.sidebar_widgets
+        label, title_color, text_color, fill = self.ORDER_KIND_STYLE[lay['kind']]
+        width, height, pad = lay['width'], lay['height'], lay['pad']
+        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        surf.blit(w.card('wood', (width, height), lay['border'], fill, card_state), (0, 0))
+        rect = surf.get_rect()
+
+        x0, y = pad, pad
+        # Title row: kind icon + kind label (+ "Submitted" marker)
+        icon_px = lay['icon_px']
+        icon_path = self.ORDER_KIND_ICONS.get(lay['kind'])
+        if icon_path:
+            icon = w.icon(icon_path, icon_px, crop=True)
+        else:
+            flags = getattr(game, 'army_flag_icons', {}).get(entry.player, {}) or {}
+            icon = w.icon_surface(('flag', entry.player), flags.get(1), icon_px, crop=True)
+        if icon is not None:
+            surf.blit(icon, icon.get_rect(midleft=(x0, y + icon_px // 2)))
+        title = label.upper() + ('  •  SUBMITTED' if entry.submitted else '')
+        title_surf = w.text(w.fit_text(title, 'small_bold', width - 2 * pad - icon_px - 6), 'small_bold', title_color)
+        surf.blit(title_surf, title_surf.get_rect(midleft=(x0 + icon_px + 6, y + icon_px // 2)))
+        y += icon_px + 4
+
+        # Route
+        for from_name, to_name in lay['route']:
+            x = x0
+            if from_name:
+                text = w.text(from_name, 'body', text_color)
+                surf.blit(text, (x, y))
+                x += text.get_width() + 4
+            if to_name:
+                self._draw_route_arrow(surf, x, y + lay['body_h'] // 2, lay['arrow_w'] - 8, title_color)
+                x += lay['arrow_w']
+                text = w.text(w.fit_text(to_name, 'body', width - pad - x), 'body', text_color)
+                surf.blit(text, (x, y))
+            y += lay['body_h']
+        if entry.via:
+            via = w.text(w.fit_text(f"via {entry.via}", 'italic', width - 2 * pad), 'italic', (200, 190, 170))
+            surf.blit(via, (x0 + 4, y))
+            y += lay['body_h']
+        y += 5
+
+        # Unit composition chips
+        for row in lay['rows']:
+            x = x0
+            for unit_type, chip_label, chip_w in row:
+                if unit_type:
+                    icon = w.icon_surface(('unit', unit_type), getattr(game, 'unit_icons', {}).get(unit_type),
+                                          lay['icon'], frame=True)
+                    surf.blit(icon, (x, y + (lay['chip_row_h'] - lay['icon']) // 2))
+                    x += lay['icon'] + 3
+                count = w.text(chip_label, 'small_bold', (236, 226, 204))
+                surf.blit(count, count.get_rect(midleft=(x, y + lay['chip_row_h'] // 2)))
+                x += count.get_width() + 8
+            y += lay['chip_row_h'] + 3
+
+        # Cancel Order (queued orders only)
+        if lay['button_h']:
+            button = self._order_button_rect(lay, rect, w.scale)
+            w.blit_button(surf, button, 'Cancel Order', art='campaign', tint=self.CANCEL_TINT,
+                          state='locked' if cancel_locked else button_state, role='small_bold')
+
+        cache[key] = surf
+        if len(cache) > 96:
+            cache.popitem(last=False)
+        return surf
+
+    def _draw_order_card(self, entry, lay, rect, viewport, cancel_locked):
+        """Blit one (cached) card at `rect`; returns the clipped Cancel Order rect or None."""
+        game = self.game
+        w = game.sidebar_widgets
+        button = self._order_button_rect(lay, rect, w.scale) if lay['button_h'] else None
+        over_button = button is not None and not cancel_locked and w.hover(button, viewport)
+        card_state = 'hover' if (w.hover(rect, viewport) and not over_button) else 'normal'
+        button_state = 'normal'
+        if button is not None and not cancel_locked:
+            flash_key = ('sidebar_cancel_order', getattr(entry.order, 'order_id', None))
+            if getattr(game, 'clicked_element', None) == flash_key:
+                button_state = 'flash'
+            elif over_button:
+                button_state = 'hover'
+        game.screen.blit(self._compose_order_card(entry, lay, card_state, button_state, cancel_locked),
+                         rect.topleft)
+        return w.clip_hit(button, viewport) if button is not None else None
+
+    def _draw_action_queue_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
+        """Action Queue tab: the local player's queued orders as wooden cards.
+
+        Each card: order kind (Attack / Move / Reinforce Ally, coloured fill + icon),
+        "From ➜ To" (plus "via X" for Captain 2-hop moves), unit composition chips and a
+        Cancel Order button. The list scrolls (mouse wheel, pixel ScrollState) inside a
+        clipped viewport that ends above the pinned CANCEL ALL footer — the old cards
+        could run underneath it. In simultaneous mode, orders already submitted with
+        Ready are listed read-only ("Submitted").
+
+        PERFORMANCE: card layouts are memoised per order and each visible card is a
+        pre-composed surface (see _compose_order_card), so a frame costs one blit per
+        visible card regardless of queue length.
+
+        Click rects (consumed by Game.handle_order_sidebar_click):
+            order_cancel_buttons: [(clipped rect, order, player_order_index)] - visible only
+            cancel_all_button:    rect or None
+            order_card_rects:     [(clipped rect, entry)] - visible cards
+        """
+        from ui.sidebar_layout import content_geometry, SCROLLBAR_W
+        game = self.game
+        w = game.sidebar_widgets
+        screen = game.screen
+        local_player = game.get_local_player()
+
+        # Reset every frame, BEFORE any early return: otherwise the X of the last
+        # cancelled order stayed clickable and hit whatever order came next.
+        game.order_cancel_buttons = []
+        game.order_card_rects = []
+        game.cancel_all_button = None
         # Player whose orders this sidebar shows — the CANCEL ALL button cancels only these
-        self.game.order_sidebar_player = local_player
+        game.order_sidebar_player = local_player
 
-        # Check if there are any orders
-        if len(local_orders) == 0:
-            # Show empty message
-            # FPS OPTIMIZATION 4.1: Use cached text for static message
-            empty_text = self.get_cached_text("No actions queued", self.game.small_font, RED_TEXT_DIM, "small_font")
-            empty_rect = empty_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 80))
-            self.game.screen.blit(empty_text, empty_rect)
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Action Queue", 2 * half, role='title')
+        screen.blit(header, (full.center_x - half, content_start_y))
+        list_top = content_start_y + header.get_height() + 8
+
+        entries = self._queue_entries(local_player)
+        if not entries:
+            empty = w.text("No orders queued", 'body', (200, 170, 150))
+            screen.blit(empty, empty.get_rect(center=(full.center_x, list_top + 30)))
+            hint_y = list_top + 50
+            for line in w.wrap("Select an army, then right-click a territory to give an order.", 'italic',
+                               full.width - 10):
+                hint = w.text(line, 'italic', (170, 150, 130))
+                screen.blit(hint, hint.get_rect(midtop=(full.center_x, hint_y)))
+                hint_y += hint.get_height()
+            game.sidebar_scroll['action_queue'].set_content(0, 0)
             return
 
-        # Tutorial/mission lock on cancelling: the click is refused, so grey the X buttons
-        mission = getattr(self.game, 'tutorial_mission', None)
+        # Tutorial/mission locks: the clicks are refused, so the buttons look locked
+        mission = getattr(game, 'tutorial_mission', None)
         cancel_locked = bool(mission and mission.active and not mission.is_action_allowed('cancel_order'))
+        cancel_all_locked = bool(mission and mission.active and not mission.is_action_allowed('cancel_all_orders'))
 
-        # Draw each order (LOCAL player only)
-        order_y = header_y + UIConstants.HEADER_OFFSET
-        order_height = 60
+        has_queued = any(not e.submitted for e in entries)
+        btn_h = max(28, int(round(34 * w.scale)))
+        footer_h = (btn_h + 18) if has_queued else 8
+        geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
+                               footer_h=footer_h, panel_width=sidebar_width, scrollbar=True)
+        viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
 
-        for i, order in enumerate(local_orders):
-            if order_y + order_height > sidebar_y + sidebar_height - 10:
-                # Too many orders to fit, show scroll indicator
-                # FPS OPTIMIZATION 4.1: Use cached text for static indicator
-                scroll_text = self.get_cached_text("...", self.game.small_font, WHITE, "small_font")
-                self.game.screen.blit(scroll_text, (sidebar_x + sidebar_width // 2 - 10, order_y))
-                break
+        # Lay the cards out top-down (layouts memoised, so this is cheap per frame)
+        gap = 6
+        items = []
+        y = 0
+        submitted_started = False
+        for entry in entries:
+            if entry.submitted and not submitted_started:
+                submitted_started = True
+                sub_hdr = w.section_header("Submitted", geo.width, role='heading')
+                items.append(('header', sub_hdr, y, sub_hdr.get_height()))
+                y += sub_hdr.get_height() + gap
+            lay = self._order_card_layout(entry, geo.width)
+            items.append(('card', (entry, lay), y, lay['height']))
+            y += lay['height'] + gap
+        content_h = max(0, y - gap)
 
-            # Determine if this is an attack (red) or reinforcement (blue)
-            target_owner = self.game.game_state.territory_owners.get(order.to_territory)
-            is_attack = target_owner is not None and target_owner != order.player
+        scroll = game.sidebar_scroll['action_queue']
+        scroll.set_content(content_h, viewport.h)
+        top = viewport.y - scroll.view_top()
 
-            # Color based on movement type
-            movement_color = (255, 100, 100) if is_attack else (100, 150, 255)  # Red for attack, blue for reinforcement
-            border_color = (200, 50, 50) if is_attack else (50, 100, 200)
+        previous_clip = w.begin_clip(viewport)
+        try:
+            for kind, payload, item_y, item_h in items:
+                screen_y = top + item_y
+                if screen_y + item_h < viewport.top:
+                    continue
+                if screen_y > viewport.bottom:
+                    break
+                if kind == 'header':
+                    screen.blit(payload, (viewport.x, screen_y))
+                    continue
+                entry, lay = payload
+                rect = pygame.Rect(viewport.x, screen_y, viewport.w, item_h)
+                cancel_rect = self._draw_order_card(entry, lay, rect, viewport, cancel_locked)
+                card_hit = w.clip_hit(rect, viewport)
+                if card_hit is not None:
+                    game.order_card_rects.append((card_hit, entry))
+                if cancel_rect is not None and entry.order is not None:
+                    # Format: (rect, order, player_order_index). The order object identifies
+                    # the order to cancel locally; the index (among this player's orders) is
+                    # what the ORDER_REMOVE network message carries.
+                    game.order_cancel_buttons.append((cancel_rect, entry.order, entry.index))
+        finally:
+            w.end_clip(previous_clip)
 
-            # Order background
-            order_rect = pygame.Rect(sidebar_x + 30, order_y, sidebar_width - 60, order_height - 5)
-            pygame.draw.rect(self.game.screen, (60, 60, 60), order_rect, border_radius=5)
-            pygame.draw.rect(self.game.screen, border_color, order_rect, 2, border_radius=5)
+        w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
 
-            # Movement text: "Origin -> Target" format in single line
-            movement_text = f"{order.from_territory} -> {order.to_territory}"
-
-            # Truncate if too long
-            max_width = sidebar_width - 100
-            movement_surface = self.get_cached_text(movement_text, self.game.small_font, movement_color, "small")
-            if movement_surface.get_width() > max_width:
-                # Try shortening territory names
-                from_short = order.from_territory[:10] + "..." if len(order.from_territory) > 10 else order.from_territory
-                to_short = order.to_territory[:10] + "..." if len(order.to_territory) > 10 else order.to_territory
-                movement_text = f"{from_short} -> {to_short}"
-                movement_surface = self.get_cached_text(movement_text, self.game.small_font, movement_color, "small")
-
-            self.game.screen.blit(movement_surface, (sidebar_x + 40, order_y + 8))
-
-            # Army count below
-            count_text = self.get_cached_text(f"Units: {order.army_count}", self.game.small_font, (200, 200, 200), "small")
-            self.game.screen.blit(count_text, (sidebar_x + 40, order_y + 28))
-
-            # Cancel button (X) - ASCII character for better font compatibility
-            # FPS OPTIMIZATION 4.1: Use cached text for static button label
-            cancel_button_rect = pygame.Rect(sidebar_x + sidebar_width - 45, order_y + 18, 30, 25)
-            # Grey when the tutorial/mission blocks cancelling (it used to look clickable)
-            cancel_color = (110, 110, 110) if cancel_locked else (200, 50, 50)
-            pygame.draw.rect(self.game.screen, cancel_color, cancel_button_rect, border_radius=3)
-            cancel_text = self.get_cached_text("X", self.game.font, WHITE, "font")
-            cancel_text_rect = cancel_text.get_rect(center=cancel_button_rect.center)
-            self.game.screen.blit(cancel_text, cancel_text_rect)
-
-            # Store (rect, order object, per-player index) for click detection.
-            # Format: (rect, order, player_order_index). The order object identifies the
-            # order to cancel locally; i (its index among this player's orders) is what the
-            # ORDER_REMOVE network message carries. The old format stored only i and used
-            # it on the full movement_orders list, cancelling the wrong order.
-            self.game.order_cancel_buttons.append((cancel_button_rect, order, i))
-
-            order_y += order_height
+        # CANCEL ALL — pinned below the list, centred on the visible tapestry
+        if has_queued:
+            bw = min(full.width, int(round(190 * w.scale)))
+            cancel_all = pygame.Rect(0, 0, bw, btn_h)
+            cancel_all.midbottom = (full.center_x, sidebar_y + sidebar_height - 10)
+            w.draw_button(cancel_all, 'Cancel All', art='campaign', tint=self.CANCEL_TINT,
+                          flash_key=('sidebar_cancel_all', None), locked=cancel_all_locked, role='heading')
+            game.cancel_all_button = cancel_all
     
     def _draw_action_log_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """
