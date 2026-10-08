@@ -117,6 +117,42 @@ class FontManager:
         """
         return self.get_font(size, weight='semibold')
 
+    def get_italic_font(self, size, weight='regular'):
+        """
+        Italic font of the given size, as its OWN Font object.
+
+        Cinzel has no italic TTF, so the slant is pygame's synthetic set_italic().
+        That flag lives on the Font object, and get_font() hands every caller the same
+        cached object per (size, weight): calling set_italic() on a get_font() result
+        made ALL regular text of that size italic (the top bar, panels, tooltips,
+        options menu, battle screen - and at 1280x720 even the normal-size font).
+        Italic fonts are therefore created and cached separately under
+        (size, weight, 'italic').
+
+        Args:
+            size: Font size in pixels (int)
+            weight: 'regular' or 'semibold', as for get_font()
+
+        Returns:
+            pygame.Font: A separate italic font object
+        """
+        cache_key = (size, weight, 'italic')
+        font = self.font_cache.get(cache_key)
+        if font is not None:
+            return font
+        # Build a fresh object from the same file (bypassing the shared cache entry)
+        shared = self.font_cache.pop((size, weight), None)
+        try:
+            font = self.get_font(size, weight)
+        finally:
+            if shared is not None:
+                self.font_cache[(size, weight)] = shared
+            else:
+                self.font_cache.pop((size, weight), None)
+        font.set_italic(True)
+        self.font_cache[cache_key] = font
+        return font
+
     def clear_cache(self):
         """
         Clear the font cache.
@@ -134,9 +170,10 @@ class FontManager:
         """
         sizes = set()
         weights = set()
-        for size, weight in self.font_cache.keys():
-            sizes.add(size)
-            weights.add(weight)
+        # Keys are (size, weight) or (size, weight, 'italic') - index access
+        for key in self.font_cache.keys():
+            sizes.add(key[0])
+            weights.add(key[1])
 
         return {
             'num_fonts': len(self.font_cache),

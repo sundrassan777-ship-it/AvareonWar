@@ -103,6 +103,25 @@ in CODE_GUIDE.md.
 - Action Log filter chips (`SIDEBAR_LOG_FILTERS`).
 - Unread badges on the Chat and Action Log bookmarks (`SIDEBAR_UNREAD_BADGES`).
 
+**Accidental italic text (P8):**
+- `Game.small_font_italic` was `font_manager.get_font(12 * ui_scale)` + `set_italic(True)`.
+  `get_font()` returns one cached object per (size, weight), so all regular 12 px text was
+  italic, and likewise all 16 px text through the lore font. Affected: the top bar numbers
+  and FPS counter, "Elapsed Game Time", the territory / Barracks / Keep / Hero / army
+  panels, territory, building, ability and tech tooltips, the options menu, the chat input
+  and the battle screen. At 1280x720 the normal-size font was hit too (planning timer, the
+  "Click a building plot" hint, build panel title, End Turn). A resolution change left the
+  old sizes italic as well.
+- Audit first: every italic text was recorded per screen at 1600x900 / 1280x720 /
+  1920x1080, with before/after screenshots. The owner then chose: everything upright
+  except "No active quests".
+- New `FontManager.get_italic_font(size, weight)` builds and caches a separate object
+  under `(size, weight, 'italic')`. `small_font_italic` / `lore_font_italic` use it, in
+  `__init__` and `apply_display_settings`. Deliberately italic now: the hero title,
+  territory lore, tooltip description lines, "No active quests".
+- `get_cache_info()` reads keys by index (3-part italic keys).
+- New `tests/test_font_italic.py` (8).
+
 **Other fixes:**
 - Action Queue card / Cancel Order click rects were not cleared on other tabs. Once the
   Action Log shared the click handler (for its chips), a click on the log over an old Cancel

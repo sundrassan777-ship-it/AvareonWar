@@ -20,9 +20,11 @@ Text scale: the panel is a fixed 250 px wide while the game's fonts grow with
 ui_scale (at 2560x1440 they are ~60% larger), so sidebar text is capped at
 SIDEBAR_TEXT_MAX_SCALE times its 1600x900 size to keep content fitting.
 
-Fonts: FontManager caches fonts by (size, weight), so Game.small_font and
-Game.small_font_italic are the SAME object (set_italic() on one changes both). The
-sidebar builds its own Font objects so its italic and upright text stay independent.
+Fonts: the sidebar builds its own Font objects (one per size / bold / italic), so its
+italic and upright text stay independent of the game's shared fonts. FontManager
+caches one object per (size, weight); italic fonts must come from get_italic_font(),
+never from set_italic() on a get_font() result (that made all small text italic
+until P8).
 
 Hover / flash convention: an element is "hovered" when the cursor is on it and the
 sidebar is not sliding; it "flashes" while game.clicked_element equals its flash key

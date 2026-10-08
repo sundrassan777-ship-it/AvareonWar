@@ -68,6 +68,10 @@ new battles, conquests and hero events you haven't looked at yet.
 - The mouse wheel over the panel scrolls the open tab and no longer zooms the map hidden
   underneath it.
 - Text in the panel is easier to read and no longer grows too large on big screens.
+- **Small text is no longer slanted by accident.** Numbers in the top bar, the bottom panels,
+  tooltips, the options menu, the chat line and the battle screen were all in italics
+  (on 1280x720 screens even more text was). They are upright now; only lore, hero titles,
+  descriptions and the "No active quests" note stay in italics.
 
 ### Balance fix
 

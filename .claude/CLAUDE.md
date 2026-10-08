@@ -160,6 +160,7 @@ AvareonWar/
 - [tests/test_sidebar_heroes.py](tests/test_sidebar_heroes.py) - Heroes tab cards, shared ability status/cast with the bottom Hero UI, portrait pan
 - [tests/test_sidebar_tech.py](tests/test_sidebar_tech.py) - Tech arrow states, grid fit at 720p/900p/1080p, centring
 - [tests/test_sidebar_feedback.py](tests/test_sidebar_feedback.py) - Pixel audit: every sidebar control highlights on hover and flashes on click
+- [tests/test_font_italic.py](tests/test_font_italic.py) - Italic only where intended: separate italic font objects, no shared font left italic after resolution changes
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -199,7 +200,7 @@ AvareonWar/
 
 **Configuration:**
 - [config/constants.py](config/constants.py) - All game constants (window, colors, timing, camera)
-- [config/font_manager.py](config/font_manager.py) - Font loading and caching
+- [config/font_manager.py](config/font_manager.py) - Font loading and caching (one shared object per size/weight; italic via `get_italic_font()`, never `set_italic()` on a `get_font()` result)
 - [config/action_error_messages.py](config/action_error_messages.py) - Every player-facing "action refused" toast text (+ `hero_slain`), edited by the owner — each entry commented with when it shows
 
 ### Data Files (JSON)

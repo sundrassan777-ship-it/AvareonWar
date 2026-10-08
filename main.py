@@ -1462,13 +1462,13 @@ class Game:
         self.font_bold = self.font_manager.get_bold_font(int(15 * self.ui_scale))
         self.large_font_bold = self.font_manager.get_bold_font(int(24 * self.ui_scale))
 
-        # Italic font — Cinzel has no italic TTF, so synthesize slant via pygame set_italic()
-        self.small_font_italic = self.font_manager.get_font(int(12 * self.ui_scale))
-        self.small_font_italic.set_italic(True)
+        # Italic font — Cinzel has no italic TTF, so the slant is synthetic. Its own Font
+        # object (get_italic_font): set_italic() on the shared get_font() object used to
+        # make ALL regular text of that size italic (P8 audit, CHANGELOG 2026-10-08)
+        self.small_font_italic = self.font_manager.get_italic_font(int(12 * self.ui_scale))
 
         # Larger italic font for territory lore text in the bottom UI preview region
-        self.lore_font_italic = self.font_manager.get_font(int(16 * self.ui_scale))
-        self.lore_font_italic.set_italic(True)
+        self.lore_font_italic = self.font_manager.get_italic_font(int(16 * self.ui_scale))
 
         # Extra small font for 720p overflow prevention (Hero Info, tooltips)
         # At 720p, use even smaller font (8px) to prevent text overflow
@@ -4614,10 +4614,9 @@ class Game:
             self.small_font_bold = self.font_manager.get_bold_font(int(12 * self.ui_scale))
             self.font_bold = self.font_manager.get_bold_font(int(15 * self.ui_scale))
             self.large_font_bold = self.font_manager.get_bold_font(int(24 * self.ui_scale))
-            self.small_font_italic = self.font_manager.get_font(int(12 * self.ui_scale))
-            self.small_font_italic.set_italic(True)  # synthetic italic (no italic TTF available)
-            self.lore_font_italic = self.font_manager.get_font(int(16 * self.ui_scale))
-            self.lore_font_italic.set_italic(True)
+            # Separate italic objects - never set_italic() on a shared get_font() result
+            self.small_font_italic = self.font_manager.get_italic_font(int(12 * self.ui_scale))
+            self.lore_font_italic = self.font_manager.get_italic_font(int(16 * self.ui_scale))
             extra_small_size = 8 if actual_height == 720 else int(10 * self.ui_scale)
             self.extra_small_font = self.font_manager.get_font(extra_small_size)
 

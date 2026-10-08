@@ -3264,8 +3264,10 @@ class UIRenderer:
         # Get quest log from tutorial mission
         tutorial = self.game.game_state.tutorial_mission
         if not tutorial or not tutorial.active:
-            # No active tutorial — show placeholder
-            msg_text = self.get_cached_text("No active quests", self.game.small_font, (150, 150, 150), "small_font")
+            # No active tutorial — show placeholder. Deliberately italic (owner's choice in
+            # the P8 audit; it used to be italic only through the shared-font bug)
+            msg_text = self.get_cached_text("No active quests", self.game.small_font_italic, (150, 150, 150),
+                                            "small_font_italic")
             msg_rect = msg_text.get_rect(center=(full.center_x, body_top + 15))
             self.game.screen.blit(msg_text, msg_rect)
             return

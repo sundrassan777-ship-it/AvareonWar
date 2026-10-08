@@ -593,6 +593,16 @@ BONUS_TYPES = {
 3. Draw button in rendering phase
 4. Consider using `rendering/ui_renderer.py` for consistency
 
+**Fonts and italics:** game text uses the `Game` font attributes (`font`, `small_font`,
+`large_font`, the `*_bold` ones, `extra_small_font`), all from `config/font_manager.py`, which
+caches ONE object per (size, weight). For slanted text use `small_font_italic` /
+`lore_font_italic`, or `font_manager.get_italic_font(size)`. **Never call `set_italic()` on a
+`get_font()` result:** it changes the shared object, so every regular text of that size
+turns italic. That was the case until 2026-10-08: the top bar, bottom panels, tooltips,
+options menu, battle screen, and at 1280x720 even the normal-size font. Deliberately
+italic today: the hero title, territory lore, tooltip description lines and the Quests
+tab's "No active quests". Tests: `tests/test_font_italic.py`.
+
 #### ✅ Add Button Tooltip (Lines 4227-4500)
 
 **Tooltip types supported:**
@@ -1001,8 +1011,8 @@ visible tapestry is `panel_x + 24 … panel_x + 247` and its centre is `panel_x 
 **Text.** `w.text(text, role, color)` with roles `title / heading / body / body_bold / small /
 small_bold / italic / digits`. Sidebar text grows with `ui_scale` but is capped at
 `SIDEBAR_TEXT_MAX_SCALE = 1.15` (the panel is always 250 px wide), with a 9 px floor. The
-kit builds its **own** `Font` objects: `FontManager` returns one shared object per
-(size, weight), so `game.small_font` and `game.small_font_italic` are the same font (P8).
+kit builds its **own** `Font` objects, so its italic role never touches the game's
+shared fonts (see "Fonts and italics" under main.py).
 
 **Frames.** `w.nine_slice('wood' | 'bronze', size, border, fill)` keeps the art's border at a
 fixed thickness at any size. Source insets were measured from the images (`FRAMES`).
