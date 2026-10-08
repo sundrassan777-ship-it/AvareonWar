@@ -70,6 +70,9 @@ from rendering.ui_renderer import UIRenderer
 from rendering.panel_renderer import PanelRenderer
 from rendering.map_extension import MapEastExtension, east_extension_override_path
 from rendering.sidebar_widgets import SidebarWidgets
+from rendering.bottom_panel_kit import (BottomPanelKit, TINT_END_TURN, TINT_END_TURN_HIGHLIGHT,
+                                        TINT_SELECT_ARMY, TINT_SELECT_ALL, TINT_DESELECT_ALL,
+                                        GOLD_TEXT as BOTTOM_GOLD_TEXT)
 from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
@@ -720,6 +723,12 @@ class Game:
             ]
 
         logger.info(f"Reloaded map assets for '{map_id}': {len(self.scaled_polygons)} territories, {len(self.scaled_plots)} plot sets")
+
+    def bottom_panel_geometry(self):
+        """(top y, height) of the bottom UI panel - the module globals, which
+        apply_display_settings() rewrites on a resolution change. Read by the
+        bottom panel kit (rendering/bottom_panel_kit.py)."""
+        return BOTTOM_UI_Y, BOTTOM_UI_HEIGHT
 
     def scale(self, value):
         """
@@ -1504,6 +1513,9 @@ class Game:
         # Right-sidebar widget kit: cached frames, buttons, bookmarks and capped-scale
         # text (rendering/sidebar_widgets.py). Cleared on resolution change.
         self.sidebar_widgets = SidebarWidgets(self)
+        # Bottom panel kit: section geometry, headline + gold rule, ornate buttons,
+        # BattleBar timer (rendering/bottom_panel_kit.py). Cleared on resolution change.
+        self.bottom_panel_kit = BottomPanelKit(self)
         
         # Camera system (Phase 2D: Camera/Zoom implementation)
         self.camera_offset = [0.0, 0.0]  # [x, y] in world coordinates
@@ -4585,6 +4597,8 @@ class Game:
             # Sidebar widget sprites/fonts follow ui_scale and the display format
             if getattr(self, 'sidebar_widgets', None) is not None:
                 self.sidebar_widgets.invalidate()
+            if getattr(self, 'bottom_panel_kit', None) is not None:
+                self.bottom_panel_kit.invalidate()
             self._hero_overlay_cache = {}
             # Close the unit context menu: its anchor rect belongs to the old layout
             self.unit_context_menu = None
@@ -8599,193 +8613,247 @@ class Game:
     # PHASE 5: EXTRACTED BOTTOM UI METHODS
     # ========================================
     
+    # Right edge of the End Turn section: the pillar between it and the next section
+    # (310 px at 1600 wide). Every bottom panel view starts its first section here.
+    END_TURN_SECTION_FRAC = 0.194
+
+    def _end_turn_section_rect(self):
+        """Content rect of the leftmost (End Turn) section, shared by every view."""
+        return self.bottom_panel_kit.section_rect(None, int(WINDOW_WIDTH * self.END_TURN_SECTION_FRAC))
+
+    def _display_turn_number(self):
+        """Turn number shown above the planning timer (1-based).
+
+        Simultaneous mode counts rounds itself (sim_state.round_number starts at 1);
+        sequential game_state.turn_number counts completed rounds from 0.
+        """
+        if self.sim_state is not None:
+            return getattr(self.sim_state, 'round_number', 1)
+        return self.game_state.turn_number + 1
+
+    def _end_turn_button_state(self):
+        """
+        (state, label) of the End Turn button.
+
+        state: 'normal' | 'highlight' (tutorial points at it) | 'locked' (greyed: the
+        click would be refused). Pulled out of the drawing code so the rules can be
+        tested without inspecting pixels. Later rules win, as before: a sequential
+        lock or a simultaneous-mode state overrides a tutorial highlight.
+        """
+        state, label = 'normal', "End Turn"
+
+        if self._is_tutorial_active():
+            if self.tutorial_mission.should_highlight_button('end_turn'):
+                state = 'highlight'
+            elif (self.tutorial_mission.is_button_locked('end_turn')
+                    or not self.tutorial_mission.is_action_allowed('end_turn')):
+                # Grey locked. is_action_allowed() is the check the click uses; campaign
+                # missions and the Tale only block through it (intro, pause, endgame),
+                # so is_button_locked() alone left the button looking clickable.
+                state = 'locked'
+
+        # SEQUENTIAL MODE: next_player() refuses while armies are still moving or
+        # battles are unresolved - grey the button instead of letting it look clickable
+        if self.sim_state is None and (
+                self.game_state.turn_phase == 'execution'
+                or (self.game_state.turn_phase == 'battles' and self.game_state.pending_battles)):
+            state = 'locked'
+
+        # SIMULTANEOUS MODE: grey while this player is ready or during resolution
+        if self.sim_state is not None:
+            if self.sim_state.sim_phase == 'planning':
+                if self.sim_state.players_ready.get(self.get_local_player(), False):
+                    state, label = 'locked', "Waiting..."
+            elif self.sim_state.sim_phase in ('executing', 'resolving'):
+                state = 'locked'
+                label = "Resolving..." if self.sim_state.sim_phase == 'resolving' else "Executing..."
+
+        return state, label
+
+    def _planning_timer_info(self):
+        """
+        What sits under "Turn X:" in the End Turn section.
+
+        Returns ('timer', remaining, limit), ('waiting', [player names]) or None (no
+        timer: not the planning phase, or a mission hides it).
+        """
+        # Check mission's is_timer_visible() if active, otherwise show during planning
+        show_timer = self.game_state.turn_phase == 'planning'
+        if self._is_tutorial_active():
+            # Mission controls timer visibility (intro sequence hides/shows it)
+            if hasattr(self.tutorial_mission, 'is_timer_visible'):
+                show_timer = show_timer and self.tutorial_mission.is_timer_visible()
+            else:
+                show_timer = False  # Tutorial mission hides timer by default
+
+        if self.sim_state is not None:
+            # SIMULTANEOUS MODE: its own timer, or "Waiting for: X, Y" once ready
+            if self.sim_state.sim_phase != 'planning':
+                return None
+            local_player = self.get_local_player()
+            if self.sim_state.players_ready.get(local_player, False):
+                return ('waiting', self.sim_state.get_waiting_player_names())
+            return ('timer', self.sim_state.get_remaining_time(local_player),
+                    self.sim_state._get_timer_limit(local_player))
+
+        if not show_timer:
+            return None
+        # SEQUENTIAL MODE: standard timer
+        remaining_time = self.game_state.get_remaining_planning_time()
+        time_limit = self.game_state.player_planning_time_limit[self.game_state.current_player]
+        # During mission intro, show full timer bar (static, not counting down)
+        if self.tutorial_mission and getattr(self.tutorial_mission, 'intro_active', False):
+            remaining_time = time_limit
+        return ('timer', remaining_time, time_limit)
+
     def _draw_player_info_section(self):
         """
-        Draw left side player info section in bottom UI.
-        
-        Phase 5: Extracted from draw_bottom_ui() for maintainability.
-        Displays player color, gold, income, and control buttons.
-        
-        Renders:
-        - Current player name and color
-        - Gold amount and income per turn
-        - End Turn button
-        - Action Log toggle button
-        - Testing mode indicator
-        
-        Location: Left side of bottom UI panel
-        Width: Expanded 75% wider for better visibility
+        Draw the leftmost (End Turn) section of the bottom UI, shared by every view.
+
+        Centred stack (owner-designed 2026-10-08):
+            player name (player colour)
+            ---<>--- gold rule
+            [ End Turn ]   CampaignBTN, green wood; grey when refused
+            ---<>--- gold rule
+            Turn X:
+            [ BattleBar planning timer ]  (or "Waiting for: ..." in simultaneous mode)
+            Elapsed Game Time (grey, small)
         """
-        # Dynamic positioning: moved left to expand available space (2.5% instead of 9.4%)
-        # Elements are now 75% wider (210px instead of 120px)
-        ui_x = int(WINDOW_WIDTH * 0.025)  # Shifted left for expansion
-        ui_y = BOTTOM_UI_Y + self.scale(30)  # Scaled vertical offset
-
         if self.game_state.phase == 'playing':
-            # Current player - smart wrapping if name+title overflows available width
-            player_color = self.game_state.get_player_color(self.game_state.current_player)
-            player_name = self.game_state.get_player_name(self.game_state.current_player)
-            # Max width: End Turn button width (matches the element directly below)
-            max_name_width = self.scale(180 if WINDOW_HEIGHT == 720 else 210)
-            player_text = self._get_cached_text(player_name, self.large_font_bold, player_color)
-            if player_text.get_width() <= max_name_width:
-                # Fits in one line at full size
-                self.screen.blit(player_text, (ui_x, ui_y))
-                ui_y += self.scale(50)
-            else:
-                # Multi-line: use smaller font (15pt bold) for better spacing
-                name_font = self.font_bold
-                words = player_name.split(' ')
-                line1_words = []
-                for i, word in enumerate(words):
-                    test_line = ' '.join(line1_words + [word])
-                    if name_font.size(test_line)[0] > max_name_width and line1_words:
-                        break
-                    line1_words.append(word)
-                line2_words = words[len(line1_words):]
-                line1_surface = self._get_cached_text(' '.join(line1_words), name_font, player_color)
-                self.screen.blit(line1_surface, (ui_x, ui_y))
-                if line2_words:
-                    line2_surface = self._get_cached_text(' '.join(line2_words), name_font, player_color)
-                    self.screen.blit(line2_surface, (ui_x, ui_y + self.scale(20)))
-                ui_y += self.scale(50)
+            self._draw_end_turn_section(self._end_turn_section_rect())
 
-            # Gold and income removed - now shown in top panel
-
-            # End Turn button - scaled dimensions (narrower at 720p to prevent overflow)
-            button_width = 180 if WINDOW_HEIGHT == 720 else 210  # Reduce width for 720p
-            end_turn_rect = pygame.Rect(ui_x, ui_y, self.scale(button_width), self.scale(40))
-
-            # Tutorial hook: override End Turn button color when highlighted
-            end_turn_color = (100, 150, 100)  # Default green
-            end_turn_text = "End Turn"  # Default text
-
-            if self._is_tutorial_active():
-                if self.tutorial_mission.should_highlight_button('end_turn'):
-                    end_turn_color = (50, 255, 50)  # Bright green highlight
-                elif (self.tutorial_mission.is_button_locked('end_turn')
-                        or not self.tutorial_mission.is_action_allowed('end_turn')):
-                    # Grey locked. is_action_allowed() is the check the click uses; campaign
-                    # missions and the Tale only block through it (intro, pause, endgame),
-                    # so is_button_locked() alone left the button looking clickable.
-                    end_turn_color = (120, 120, 120)
-
-            # SEQUENTIAL MODE: next_player() refuses while armies are still moving or
-            # battles are unresolved — grey the button instead of letting it look clickable
-            if self.sim_state is None and (
-                    self.game_state.turn_phase == 'execution'
-                    or (self.game_state.turn_phase == 'battles' and self.game_state.pending_battles)):
-                end_turn_color = (120, 120, 120)
-
-            # SIMULTANEOUS MODE: Grey out End Turn button when player is ready or during resolution
-            sim_player_ready = False
-            if self.sim_state is not None:
-                if self.sim_state.sim_phase == 'planning':
-                    local_player = self.get_local_player()
-                    sim_player_ready = self.sim_state.players_ready.get(local_player, False)
-                    if sim_player_ready:
-                        end_turn_color = (120, 120, 120)  # Grey - waiting for other players
-                        end_turn_text = "Waiting..."
-                elif self.sim_state.sim_phase in ('executing', 'resolving'):
-                    # Grey out during execution and resolution phases
-                    end_turn_color = (120, 120, 120)
-                    end_turn_text = "Resolving..." if self.sim_state.sim_phase == 'resolving' else "Executing..."
-
-            self.draw_feedback_button(end_turn_rect, end_turn_color,
-                                      'bottom_button', 'end_turn',
-                                      text=end_turn_text)
-
-            # Tutorial hook: draw pulsing green glow border on End Turn when highlighted
-            if self._is_tutorial_active():
-                if self.tutorial_mission.should_highlight_button('end_turn'):
-                    pulse = int(180 + 75 * math.sin(pygame.time.get_ticks() / 200.0))
-                    glow_rect = end_turn_rect.inflate(6, 6)
-                    pygame.draw.rect(self.screen, (50, 255, 50), glow_rect, 3, border_radius=4)
-
-            self.end_turn_button = end_turn_rect
-
-            # Planning timer display (under End Turn button) - scaled
-            # Check mission's is_timer_visible() if active, otherwise show during planning
-            _show_timer = self.game_state.turn_phase == 'planning'
-            if self._is_tutorial_active():
-                # Mission controls timer visibility (intro sequence hides/shows it)
-                if hasattr(self.tutorial_mission, 'is_timer_visible'):
-                    _show_timer = _show_timer and self.tutorial_mission.is_timer_visible()
-                else:
-                    _show_timer = False  # Tutorial mission hides timer by default
-
-            # SIMULTANEOUS MODE: Show waiting indicator if player is ready
-            if self.sim_state is not None and self.sim_state.sim_phase == 'planning':
-                local_player = self.get_local_player()
-                is_ready = self.sim_state.players_ready.get(local_player, False)
-
-                if is_ready:
-                    # Show "Waiting for: X, Y" indicator with intelligent wrapping
-                    waiting_names = self.sim_state.get_waiting_player_names()
-                    if waiting_names:
-                        # Wrap names if too long for available width
-                        max_width = self.scale(button_width + 20)  # Allow slight overflow
-                        waiting_lines = self._wrap_waiting_text(waiting_names, max_width)
-                    else:
-                        waiting_lines = ["All players ready..."]
-
-                    # Draw waiting indicator below End Turn button (multi-line support)
-                    waiting_y = ui_y + self.scale(50)
-                    line_height = self.scale(16)
-                    for i, line in enumerate(waiting_lines):
-                        waiting_surface = self._get_cached_text(line, self.small_font, (180, 180, 180))
-                        waiting_rect = waiting_surface.get_rect(center=(
-                            ui_x + self.scale(button_width) // 2,
-                            waiting_y + i * line_height
-                        ))
-                        self.screen.blit(waiting_surface, waiting_rect)
-                else:
-                    # Show simultaneous mode timer
-                    remaining_time = self.sim_state.get_remaining_time(local_player)
-                    self._draw_planning_timer(ui_x, ui_y, button_width, remaining_time,
-                                             self.sim_state._get_timer_limit(local_player))
-
-            elif _show_timer and self.sim_state is None:
-                # SEQUENTIAL MODE ONLY: Standard timer display
-                # (Simultaneous mode handles its own timer above)
-                remaining_time = self.game_state.get_remaining_planning_time()
-                time_limit = self.game_state.player_planning_time_limit[self.game_state.current_player]
-
-                # During mission intro, show full timer bar (static, not counting down)
-                if self.tutorial_mission:
-                    if hasattr(self.tutorial_mission, 'intro_active') and self.tutorial_mission.intro_active:
-                        remaining_time = time_limit  # Show full bar during intro
-
-                if remaining_time is not None:
-                    self._draw_planning_timer(ui_x, ui_y, button_width, remaining_time, time_limit)
-
-            # Elapsed game time display (below End Turn button or timer)
-            if self.game_start_time is not None:
-                elapsed_seconds = int(time.time() - self.game_start_time)
-                hours = elapsed_seconds // 3600
-                minutes = (elapsed_seconds % 3600) // 60
-                seconds = elapsed_seconds % 60
-
-                # Position below the timer (if showing) or below End Turn button
-                elapsed_y = ui_y + self.scale(75) if self.game_state.turn_phase == 'planning' else ui_y + self.scale(45)
-
-                elapsed_text = f"Elapsed Game Time: {hours:02d}:{minutes:02d}:{seconds:02d}"
-                elapsed_surface = self._get_cached_text(elapsed_text, self.small_font, (180, 180, 180))
-                self.screen.blit(elapsed_surface, (ui_x, elapsed_y))
-
-            # Command Limit moved to top panel (now part of Taxation - Command - Gold - Income group)
-
-        # Vertical separator line - dynamic positioning (19.4% of width for 1600px base)
-        separator_x = int(WINDOW_WIDTH * 0.194)  # Was 310 at 1600px width
+        # Pillar between this section and the view's first section
+        separator_x = int(WINDOW_WIDTH * self.END_TURN_SECTION_FRAC)
         self.draw_separator(separator_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
 
-    def _wrap_waiting_text(self, player_names: list, max_width: int) -> list:
+    def _draw_end_turn_section(self, rect):
+        """
+        Layout + drawing of the End Turn section inside `rect` (see the caller).
+
+        Gaps shrink to fit the panel (180 px tall at 1280x720); if it still doesn't
+        fit (720p and a player name that wraps), the elapsed time line is dropped.
+        The block is centred vertically when there is room to spare.
+        """
+        kit = self.bottom_panel_kit
+        gs = self.game_state
+
+        # --- Player name: one line in the title font, else two lines a size smaller
+        player_color = gs.get_player_color(gs.current_player)
+        player_name = gs.get_player_name(gs.current_player)
+        name_role = 'title'
+        name_lines = [player_name]
+        if kit.font('title').size(player_name)[0] > rect.w:
+            name_role = 'heading'
+            name_lines = kit.wrap(player_name, name_role, rect.w, max_lines=2)
+
+        # --- Sizes of every row
+        button_w = min(rect.w, kit.px(220))
+        button_h = kit.button_height(button_w)
+        bar_w = min(rect.w, kit.px(236))
+        bar_h = kit.battlebar_height(bar_w)
+        timer = self._planning_timer_info()
+        waiting_lines = []
+        if timer is not None and timer[0] == 'waiting':
+            waiting_lines = (self._wrap_waiting_text(timer[1], rect.w, kit.font('small'))
+                             if timer[1] else ["All players ready..."])
+        elif timer is not None and (timer[1] is None or timer[2] <= 0):
+            timer = None  # No time limit: only "Turn X" shows
+        show_elapsed = self.game_start_time is not None
+
+        name_h = len(name_lines) * kit.line_height(name_role)
+        rule_h = kit.rule_height()
+        turn_h = kit.line_height('body_bold')
+        small_h = kit.line_height('small')
+        if timer is None:
+            timer_h = 0
+        elif timer[0] == 'waiting':
+            timer_h = len(waiting_lines) * small_h
+        else:
+            timer_h = bar_h
+
+        def stack_height(gap, elapsed):
+            """(height of the whole block, number of gaps) for a given gap."""
+            rows = [name_h, rule_h, button_h, rule_h, turn_h]
+            if timer_h:
+                rows.append(timer_h)
+            if elapsed:
+                rows.append(small_h)
+            return sum(rows) + gap * (len(rows) - 1), len(rows) - 1
+
+        # Largest gap (up to 6 px at the reference size) that fits; drop the elapsed
+        # time line only if even 1 px gaps overflow
+        fixed, n_gaps = stack_height(0, show_elapsed)
+        if fixed + n_gaps > rect.h and show_elapsed:
+            show_elapsed = False
+            fixed, n_gaps = stack_height(0, False)
+        gap = max(1, min(kit.px(6), (rect.h - fixed) // max(1, n_gaps)))
+        height, _ = stack_height(gap, show_elapsed)
+        y = rect.top + max(0, (rect.h - height) // 2)
+        cx = rect.centerx
+
+        # 1. Player name
+        for line in name_lines:
+            kit.centered_text(line, name_role, player_color, cx, y)
+            y += kit.line_height(name_role)
+        y += gap
+        # 2. Rule
+        kit.rule(rect, y)
+        y += rule_h + gap
+
+        # 3. End Turn button
+        state, label = self._end_turn_button_state()
+        end_turn_rect = pygame.Rect(0, y, button_w, button_h)
+        end_turn_rect.centerx = cx
+        tint = TINT_END_TURN_HIGHLIGHT if state == 'highlight' else TINT_END_TURN
+        kit.ornate_button(end_turn_rect, label, tint, flash_key=('bottom_button', 'end_turn'),
+                          locked=(state == 'locked'))
+        if state == 'highlight':
+            # Tutorial hook: pulsing green ring around the highlighted End Turn button
+            ring_rect = end_turn_rect.inflate(6, 6)
+            ring = self.sidebar_widgets.pulse_ring(ring_rect.size)
+            ring.set_alpha(int(150 + 105 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 200.0))))
+            self.screen.blit(ring, ring_rect.topleft)
+        self.end_turn_button = end_turn_rect
+        y += button_h + gap
+
+        # 4. Rule
+        kit.rule(rect, y)
+        y += rule_h + gap
+
+        # 5. "Turn X:" and the planning timer under it
+        kit.centered_text(f"Turn {self._display_turn_number()}:", 'body_bold', BOTTOM_GOLD_TEXT, cx, y)
+        y += turn_h
+        if timer is not None:
+            y += gap
+            if timer[0] == 'waiting':
+                for line in waiting_lines:
+                    kit.centered_text(line, 'small', (200, 195, 185), cx, y)
+                    y += small_h
+            else:
+                bar_rect = pygame.Rect(0, y, bar_w, bar_h)
+                bar_rect.centerx = cx
+                self._draw_planning_timer(bar_rect, timer[1], timer[2])
+                y += bar_h
+
+        # 6. Elapsed game time (grey: information only)
+        if show_elapsed:
+            elapsed_seconds = int(time.time() - self.game_start_time)
+            hours = elapsed_seconds // 3600
+            minutes = (elapsed_seconds % 3600) // 60
+            seconds = elapsed_seconds % 60
+            kit.centered_text(f"Elapsed Game Time: {hours:02d}:{minutes:02d}:{seconds:02d}",
+                              'small', (170, 165, 155), cx, y + gap)
+
+        # Command Limit and Gold/Income live in the top panel
+
+    def _wrap_waiting_text(self, player_names: list, max_width: int, font=None) -> list:
         """
         Wrap 'Waiting for: X, Y, Z' text into multiple lines if too long.
 
         Args:
             player_names: List of player names waiting
             max_width: Maximum width in pixels
+            font: Font the lines are drawn with (default self.small_font)
 
         Returns:
             List of text lines to render
@@ -8802,7 +8870,7 @@ class Game:
             if i < len(player_names) - 1:
                 test_text += ","
 
-            test_width = self.small_font.size(test_text)[0]
+            test_width = (font or self.small_font).size(test_text)[0]
 
             if test_width > max_width and current_line != "Waiting for:":
                 # Start new line
@@ -8822,61 +8890,30 @@ class Game:
 
         return lines if lines else ["Waiting..."]
 
-    def _draw_planning_timer(self, ui_x, ui_y, button_width, remaining_time, time_limit):
+    def _draw_planning_timer(self, rect, remaining_time, time_limit):
         """
-        Draw the planning phase timer below the End Turn button.
+        Draw the planning timer as a BattleBar frame in `rect` (End Turn section).
 
-        Used by both sequential and simultaneous modes.
+        Used by both sequential and simultaneous modes. The fill empties from right
+        to left and turns green -> yellow -> red as time runs out; m:ss sits on it.
 
         Args:
-            ui_x: X position of the UI area
-            ui_y: Y position below End Turn button
-            button_width: Width of the End Turn button
+            rect: Frame rect (height from bottom_panel_kit.battlebar_height())
             remaining_time: Remaining time in seconds
             time_limit: Total time limit in seconds
         """
         if remaining_time is None or time_limit <= 0:
             return
-
+        time_ratio = max(0.0, min(1.0, remaining_time / time_limit))
+        if time_ratio > 0.5:
+            bar_color = (90, 190, 80)    # Green
+        elif time_ratio > 0.25:
+            bar_color = (215, 190, 70)   # Yellow
+        else:
+            bar_color = (210, 80, 70)    # Red
         minutes = int(remaining_time // 60)
         seconds = int(remaining_time % 60)
-        timer_text = f"{minutes}:{seconds:02d}"
-
-        # Timer rectangle dimensions - scaled (match button width)
-        timer_rect_x = ui_x
-        timer_rect_y = ui_y + self.scale(45)
-        timer_rect_width = self.scale(button_width)
-        timer_rect_height = self.scale(25)
-
-        # Draw white background rectangle
-        timer_background = pygame.Rect(timer_rect_x, timer_rect_y, timer_rect_width, timer_rect_height)
-        pygame.draw.rect(self.screen, (255, 255, 255), timer_background)
-        pygame.draw.rect(self.screen, (100, 100, 100), timer_background, 2)  # Border
-
-        # Calculate time ratio and progress bar color
-        time_ratio = remaining_time / time_limit
-
-        # Progress bar color: green -> yellow -> red as time runs out
-        if time_ratio > 0.5:
-            bar_color = (100, 200, 100)  # Green
-        elif time_ratio > 0.25:
-            bar_color = (200, 200, 100)  # Yellow
-        else:
-            bar_color = (200, 100, 100)  # Red
-
-        # Draw progress bar (fills from left to right, empties from right to left)
-        bar_padding = 3
-        inner_width = timer_rect_width - (bar_padding * 2)
-        inner_height = timer_rect_height - (bar_padding * 2)
-        bar_width = int(inner_width * time_ratio)
-        if bar_width > 0:
-            progress_bar = pygame.Rect(timer_rect_x + bar_padding, timer_rect_y + bar_padding, bar_width, inner_height)
-            pygame.draw.rect(self.screen, bar_color, progress_bar)
-
-        # Draw timer text centered on the rectangle (black for visibility)
-        timer_surface = self._get_cached_text(timer_text, self.font, (0, 0, 0))
-        timer_text_rect = timer_surface.get_rect(center=(timer_rect_x + timer_rect_width // 2, timer_rect_y + timer_rect_height // 2))
-        self.screen.blit(timer_surface, timer_text_rect)
+        self.bottom_panel_kit.battlebar(rect, time_ratio, bar_color, text=f"{minutes}:{seconds:02d}")
 
     def _draw_army_info_section(self):
         """

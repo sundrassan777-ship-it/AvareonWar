@@ -115,18 +115,14 @@ def game(pygame_display):
 
 
 def _end_turn_color(game):
-    """Colour draw_bottom_ui() passes for the End Turn button."""
-    captured = {}
-    real = game.draw_feedback_button
+    """GREY when the End Turn button is drawn greyed (locked), else its state.
 
-    def spy(rect, color, button_type, button_id, *a, **k):
-        if button_id == 'end_turn':
-            captured['color'] = color
-        return real(rect, color, button_type, button_id, *a, **k)
-
-    with mock.patch.object(game, 'draw_feedback_button', side_effect=spy):
-        game.draw_bottom_ui()
-    return captured.get('color')
+    The button is a CampaignBTN since the bottom panel overhaul; whether it is greyed
+    comes from Game._end_turn_button_state(), which draw_bottom_ui() draws from.
+    """
+    game.draw_bottom_ui()  # Still draws without errors in every state
+    state, _label = game._end_turn_button_state()
+    return GREY if state == 'locked' else state
 
 
 class TestEndTurnButton:
