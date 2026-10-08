@@ -1304,8 +1304,7 @@ class Game:
         self.chat_input_active = False  # Is chat input box open?
         self.chat_input_text = ""  # Current text being typed
         self.chat_channel = 'all'  # Current chat channel: 'all' or 'team' (TAB to toggle)
-        self.chat_scroll_offset = 0  # How many messages to scroll (0 = bottom/newest)
-        self.action_log_scroll_offset = 0  # Scroll offset for action log
+        # (Chat / Action Log scrolling: pixel ScrollStates in self.sidebar_scroll)
         
         # Gameplay Settings (configurable via Options menu)
         # MUST be defined BEFORE hover_delay system since hover_delay references tooltip_delay_ms
@@ -6984,15 +6983,17 @@ class Game:
             particles.clear()
         return True
 
-    # Tabs whose content scrolls with the new pixel ScrollState. 'chat' and
-    # 'action_log' still use their message-count offsets until they move over (P3).
-    _LEGACY_WHEEL_TABS = ('chat', 'action_log')
-
     def _reset_sidebar_scroll(self):
-        """Fresh scroll positions for every scrollable sidebar tab (new game)."""
+        """Fresh scroll positions for every scrollable sidebar tab (new game).
+
+        Action Log and Chat are anchored at the bottom: offset 0 shows the newest
+        entries and the wheel moves back into history.
+        """
         self.sidebar_scroll = {
             'action_queue': ScrollState('top'),
             'heroes': ScrollState('top'),
+            'action_log': ScrollState('bottom'),
+            'chat': ScrollState('bottom'),
         }
 
     def handle_sidebar_wheel(self, delta):
@@ -7008,8 +7009,6 @@ class Game:
         if not self.is_point_over_sidebar_panel(pygame.mouse.get_pos()):
             return False
         tab = self.game_state.active_sidebar_tab
-        if tab in self._LEGACY_WHEEL_TABS:
-            return False  # handled by the legacy branch in handle_camera_zoom
         scroll = getattr(self, 'sidebar_scroll', {}).get(tab)
         if scroll is not None and delta:
             step = 3 * self.sidebar_widgets.font('body').get_linesize()
@@ -15981,47 +15980,6 @@ class Game:
         if self.handle_sidebar_wheel(delta):
             return
 
-        # Check if mouse is over sidebar and a scrollable tab is active
-        mouse_pos = pygame.mouse.get_pos()
-
-        # If the mouse is over the sidebar's panel body (live layout; bounded to the
-        # map's height so the wheel over the bottom UI's right end zooms as usual)
-        if self.game_state.sidebar_expanded and self.is_point_over_sidebar_panel(mouse_pos):
-            active_tab = self.game_state.active_sidebar_tab
-            
-            # Handle scrolling for scrollable tabs
-            if active_tab == 'chat':
-                # Calculate approximate visible messages based on sidebar height
-                sidebar_height = UIConstants.SIDEBAR_HEIGHT
-                content_height = sidebar_height - UIConstants.SIDEBAR_CONTENT_PADDING  # Minus header and padding
-                approx_visible = max(5, content_height // UIConstants.PIXELS_PER_MESSAGE_SCROLL)
-                
-                # Max scroll = total messages minus what fits on screen
-                total_msgs = len(self.game_state.chat_messages)
-                max_scroll = max(0, total_msgs - approx_visible)
-                
-                if delta > 0:  # Scroll up (see older messages)
-                    self.chat_scroll_offset = min(self.chat_scroll_offset + 1, max_scroll)
-                else:  # Scroll down (see newer messages)
-                    self.chat_scroll_offset = max(self.chat_scroll_offset - 1, 0)
-                return  # Don't zoom camera
-            
-            elif active_tab == 'action_log':
-                # Calculate approximate visible messages based on sidebar height
-                sidebar_height = UIConstants.SIDEBAR_HEIGHT
-                content_height = sidebar_height - UIConstants.SIDEBAR_CONTENT_PADDING  # Minus header and padding
-                approx_visible = max(5, content_height // UIConstants.PIXELS_PER_MESSAGE_SCROLL)
-                
-                # Max scroll = total messages minus what fits on screen
-                total_msgs = len(self.game_state.messages)
-                max_scroll = max(0, total_msgs - approx_visible)
-                
-                if delta > 0:  # Scroll up (see older messages)
-                    self.action_log_scroll_offset = min(self.action_log_scroll_offset + 1, max_scroll)
-                else:  # Scroll down (see newer messages)
-                    self.action_log_scroll_offset = max(self.action_log_scroll_offset - 1, 0)
-                return  # Don't zoom camera
-        
         # Sync state to camera handler before zoom
         self.camera.offset = self.camera_offset
         self.camera.zoom = self.camera_zoom

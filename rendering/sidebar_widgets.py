@@ -119,7 +119,10 @@ class SidebarWidgets:
     def font(self, role, px=None):
         """A sidebar font. `px` overrides the role's scaled size (label fitting)."""
         base, bold, italic = self.FONT_ROLES.get(role, self.FONT_ROLES['body'])
-        size = max(7, int(round(px if px is not None else base * self.scale)))
+        # Roles never drop below 9 px (at 1280x720 the 10 px 'small' role scaled to 8 px,
+        # unreadable for the Action Log's battle details); explicit px (label fitting)
+        # keeps its own minimum
+        size = max(7, int(round(px))) if px is not None else max(9, int(round(base * self.scale)))
         key = (size, bold, italic)
         font = self._fonts.get(key)
         if font is None:

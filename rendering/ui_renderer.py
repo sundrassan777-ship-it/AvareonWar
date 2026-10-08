@@ -2051,394 +2051,311 @@ class UIRenderer:
                           flash_key=('sidebar_cancel_all', None), locked=cancel_all_locked, role='heading')
             game.cancel_all_button = cancel_all
     
+    # ========================================================================
+    # ACTION LOG + CHAT (sidebar overhaul P3)
+    # ========================================================================
+    # category -> marker / tint colour
+    LOG_CATEGORY_COLORS = {
+        'battle': (236, 120, 100), 'conquest': (236, 172, 92), 'economy': (226, 198, 112),
+        'construction': (204, 178, 136), 'training': (160, 196, 232), 'research': (140, 196, 255),
+        'hero': (206, 156, 240), 'orders': (176, 188, 202), 'victory': (245, 214, 140),
+        'error': (255, 104, 86), 'other': (200, 190, 176),
+    }
+    LOG_CHILD_COLOR = (172, 160, 144)
+
+    @staticmethod
+    def _mix(a, b, t):
+        return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+    def _layout_log_row(self, row, width, first):
+        """Pixel layout of one model row: (height, draw spec). Pure measuring, no drawing."""
+        w = self.game.sidebar_widgets
+        if row.kind in ('section', 'turn'):
+            line_h = w.font('heading').get_linesize()
+            top = 0 if first else 10
+            return top + line_h + 8, {'kind': 'band', 'text': row.text.upper(), 'top': top, 'h': line_h + 8}
+        if row.kind == 'subturn':
+            line_h = w.font('italic').get_linesize()
+            top = 0 if first else 4
+            return top + line_h + 2, {'kind': 'subturn', 'text': row.text, 'top': top}
+        if row.kind == 'victory':
+            line_h = w.font('heading').get_linesize()
+            lines = []
+            for text in row.text.split('\n'):
+                lines.extend(w.wrap(text, 'heading', width - 16))
+            top = 0 if first else 8
+            return top + 12 + line_h * len(lines), {'kind': 'victory', 'lines': lines, 'top': top, 'line_h': line_h}
+        if row.kind == 'banner':
+            line_h = w.font('body_bold').get_linesize()
+            lines = w.wrap(row.text, 'body_bold', width - 14)
+            top = 0 if first else 7
+            return top + line_h * len(lines) + 1, {'kind': 'banner', 'lines': lines, 'top': top,
+                                                   'line_h': line_h, 'category': row.category}
+        # 'entry'
+        if row.indent == 0:
+            role, dx = 'body', 14
+            top = 0 if first else 6
+        else:
+            role, dx = 'small', 14 + 10 * (row.indent - 1)
+            top = 1
+        line_h = w.font(role).get_linesize()
+        lines = w.wrap(row.text, role, width - dx)
+        return top + line_h * len(lines), {'kind': 'entry', 'lines': lines, 'top': top, 'line_h': line_h,
+                                           'role': role, 'dx': dx, 'indent': row.indent,
+                                           'category': row.category}
+
+    def _update_log_layout(self, width):
+        """Bring the Action Log model + its pixel layout up to date (incremental).
+
+        Returns (items, ys, total_h, grew_px): items[i] = (height, spec, row) and
+        ys[i] = its content-space y. Only rows changed since the last frame are
+        measured; nothing scans the whole history per frame any more.
+        """
+        from rendering.action_log_model import ActionLogModel
+        game = self.game
+        gs = game.game_state
+        w = game.sidebar_widgets
+        state = self.__dict__.setdefault('_log_state', {'model': ActionLogModel(), 'items': [], 'ys': [],
+                                                        'total': 0, 'key': None})
+        model = state['model']
+        names = [gs.get_player_name(i) for i in range(gs.num_players)]
+        changed = model.update(gs.messages, game.get_local_player(), names,
+                               getattr(game, 'sidebar_log_filter', None))
+        key = (int(width), w.scale)
+        if key != state['key']:
+            state['key'] = key
+            changed = 0
+            state['items'], state['ys'], state['total'] = [], [], 0
+        if changed is None:
+            return state['items'], state['ys'], state['total'], 0
+        rows = model.rows
+        old_total = state['total']
+        rebuilt = changed == 0
+        items = state['items'][:changed]
+        ys = state['ys'][:changed]
+        y = (ys[-1] + items[-1][0]) if items else 0
+        for i in range(changed, len(rows)):
+            height, spec = self._layout_log_row(rows[i], width, first=(i == 0))
+            items.append((height, spec, rows[i]))
+            ys.append(y)
+            y += height
+        state['items'], state['ys'], state['total'] = items, ys, y
+        grew = 0 if rebuilt else max(0, y - old_total)
+        return items, ys, y, grew
+
+    def _draw_log_item(self, spec, x, y, width):
+        """Draw one laid-out Action Log row at content-column x, screen y."""
+        game = self.game
+        w = game.sidebar_widgets
+        screen = game.screen
+        kind = spec['kind']
+        y += spec['top']
+        if kind == 'band':
+            surf, area = w.band(width, spec['h'], (212, 170, 80, 38))
+            screen.blit(surf, (x, y), area)
+            pygame.draw.line(screen, (150, 112, 52), (x, y), (x + width - 1, y), 1)
+            pygame.draw.line(screen, (150, 112, 52), (x, y + spec['h'] - 1), (x + width - 1, y + spec['h'] - 1), 1)
+            label = w.text(spec['text'], 'heading', (245, 214, 140))
+            screen.blit(label, label.get_rect(center=(x + width // 2, y + spec['h'] // 2)))
+        elif kind == 'subturn':
+            label = w.text(w.fit_text(spec['text'], 'italic', width - 30), 'italic', (186, 170, 150))
+            screen.blit(label, (x + 2, y))
+            line_y = y + label.get_height() // 2
+            if x + label.get_width() + 10 < x + width:
+                pygame.draw.line(screen, (110, 84, 48), (x + label.get_width() + 8, line_y), (x + width - 1, line_y), 1)
+        elif kind == 'victory':
+            block = pygame.Rect(x, y, width, 12 + spec['line_h'] * len(spec['lines']))
+            surf, area = w.band(block.w, block.h, (60, 40, 14, 170))
+            screen.blit(surf, block.topleft, area)
+            pygame.draw.rect(screen, (212, 170, 80), block, 1, border_radius=3)
+            ly = y + 6
+            for line in spec['lines']:
+                label = w.text(line, 'heading', (245, 214, 140))
+                screen.blit(label, label.get_rect(midtop=(x + width // 2, ly)))
+                ly += spec['line_h']
+        elif kind == 'banner':
+            color = self.LOG_CATEGORY_COLORS.get(spec['category'], (220, 200, 170))
+            self._draw_log_marker(x + 4, y + spec['line_h'] // 2, color, big=True)
+            ly = y
+            for line in spec['lines']:
+                screen.blit(w.text(line, 'body_bold', self._mix(color, (255, 240, 215), 0.35)), (x + 14, ly))
+                ly += spec['line_h']
+        else:  # entry
+            color = self.LOG_CATEGORY_COLORS.get(spec['category'], (220, 200, 170))
+            if spec['indent'] == 0:
+                self._draw_log_marker(x + 4, y + spec['line_h'] // 2, color)
+                text_color = self._mix(color, (238, 226, 204), 0.55)
+            else:
+                text_color = self.LOG_CHILD_COLOR
+            ly = y
+            for line in spec['lines']:
+                screen.blit(w.text(line, spec['role'], text_color), (x + spec['dx'], ly))
+                ly += spec['line_h']
+
+    def _draw_log_marker(self, cx, cy, color, big=False):
+        """Small category diamond in front of a log line."""
+        r = 4 if big else 3
+        pygame.draw.polygon(self.game.screen, color, [(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)])
+
+    def _draw_scrolling_list(self, items, ys, total_h, viewport, scroll, draw_item):
+        """Draw the rows of a bottom-anchored list that intersect the viewport."""
+        import bisect
+        w = self.game.sidebar_widgets
+        scroll.set_content(total_h, viewport.h)
+        view_top = scroll.view_top()
+        # Short lists sit at the top of the viewport
+        origin = viewport.y - view_top
+        first = max(0, bisect.bisect_right(ys, view_top) - 1)
+        previous_clip = w.begin_clip(viewport)
+        try:
+            for i in range(first, len(items)):
+                screen_y = origin + ys[i]
+                if screen_y > viewport.bottom:
+                    break
+                draw_item(items[i], screen_y)
+        finally:
+            w.end_clip(previous_clip)
+
     def _draw_action_log_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """
-        Draw Action Log tab content (Phase C: Migration from bottom panel).
+        Action Log tab: the game's event log, organised and readable.
 
-        Shows all game messages in the sidebar tab instead of overlay.
-        Messages include:
-        - Battle results
-        - Building completions
-        - Army training completions
-        - Territory captures
-        - Income updates
+        Grouped by turn ("Turn k" bands, "<Name>'s turn" sub-headings), each entry with
+        a category colour + marker (battle, conquest, economy, buildings, training,
+        research, heroes, orders, warnings), battle details nested under their battle
+        heading, victory/elimination as one block. Model: rendering/action_log_model.py.
+
+        Scrolling: pixel ScrollState anchored at the bottom - the newest entry is always
+        visible at offset 0, and the view holds still while new entries arrive if the
+        reader has scrolled back. (The old message-count offset used the UNFILTERED
+        count, so it scrolled past the end, and could hide the newest lines.)
         """
-        # Header (Phase 2: Use SemiBold for section header)
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        header_y = content_start_y
-        header_text = self.get_cached_text("Action Log", self.game.font_bold, WHITE, "font_bold")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
-        
-        # Draw separator line
-        pygame.draw.line(self.game.screen, (100, 100, 100),
-                        (sidebar_x + 30, header_y + 30),
-                        (sidebar_x + sidebar_width - 10, header_y + 30), 2)
+        from ui.sidebar_layout import content_geometry, SCROLLBAR_W
+        game = self.game
+        w = game.sidebar_widgets
+        screen = game.screen
 
-        # Determine LOCAL player (for filtering messages)
-        # Purpose: Show only LOCAL player's messages, not opponents' actions
-        if self.game.multiplayer_mode:
-            local_player = self.game.local_player_index if self.game.local_player_index is not None else 0
-        else:
-            local_player = 0
-            for i in range(self.game.game_state.num_players):
-                if not self.game.game_state.player_is_ai[i]:
-                    local_player = i
-                    break
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Action Log", 2 * half, role='title')
+        screen.blit(header, (full.center_x - half, content_start_y))
+        list_top = content_start_y + header.get_height() + 8
 
-        # Helper function to check if message belongs to local player
-        # Purpose: Parse player indices from messages (supports both "Player X" and custom names)
-        def is_local_player_message(msg, local_player_num):
-            """
-            Check if a message belongs to the local player.
-            Returns True if:
-            - Message contains "Player X" where X = local_player_num + 1
-            - Message contains the local player's custom name (e.g., "Editoreus")
-            - Message doesn't contain any player identification (global messages)
-            Returns False if:
-            - Message only mentions other players
-            """
-            import re
+        geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
+                               footer_h=8, panel_width=sidebar_width, scrollbar=True)
+        viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
+        items, ys, total_h, grew = self._update_log_layout(geo.width)
+        scroll = game.sidebar_scroll['action_log']
+        if grew:
+            scroll.on_content_grew(grew)
 
-            # Get local player's custom name (if any)
-            local_player_name = self.game.game_state.get_player_name(local_player_num)
-
-            # Method 1: Check for "Player X" pattern (used in most messages)
-            player_matches = re.findall(r'Player (\d+)', msg)
-
-            # Method 2: Check if message contains local player's custom name
-            # (for messages that might use custom names instead of "Player X")
-            has_local_name = local_player_name in msg if local_player_name else False
-
-            # If no player identification found, it's a global message
-            if not player_matches and not has_local_name:
-                # Check if message contains ANY player name (not just local)
-                # If it contains other player names but not ours, filter it out
-                for i in range(self.game.game_state.num_players):
-                    if i != local_player_num:
-                        other_name = self.game.game_state.get_player_name(i)
-                        if other_name and other_name in msg:
-                            return False  # Message about another player
-                # No player identification - global message
-                return True
-
-            # If we found local player's name, include message
-            if has_local_name:
-                return True
-
-            # Check if "Player X" matches local player (convert 0-indexed to 1-indexed)
-            local_player_id = str(local_player_num + 1)
-            for player_id in player_matches:
-                if player_id == local_player_id:
-                    return True  # Message involves local player
-
-            # Message only involves other players
-            return False
-
-        # Check if there are any messages
-        if len(self.game.game_state.messages) == 0:
-            # Show empty message
-            # FPS OPTIMIZATION 4.1: Use cached text for static message
-            empty_text = self.get_cached_text("No actions yet", self.game.small_font, (150, 150, 150), "small_font")
-            empty_rect = empty_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 80))
-            self.game.screen.blit(empty_text, empty_rect)
+        if not items:
+            empty = w.text("No events yet", 'body', (200, 170, 150))
+            screen.blit(empty, empty.get_rect(center=(full.center_x, list_top + 30)))
+            scroll.set_content(0, viewport.h)
             return
 
-        # Helper function to replace "Player X" with actual player names
-        # Purpose: Convert generic "Player 1", "Player 2" to custom names like "Editoreus"
-        def replace_player_names_in_message(msg):
-            """
-            Replace all "Player X" patterns in message with actual player names.
-            Example: "Player 1 earned 100 gold" -> "Editoreus earned 100 gold"
-            """
-            import re
+        self._draw_scrolling_list(items, ys, total_h, viewport, scroll,
+                                  lambda item, y: self._draw_log_item(item[1], viewport.x, y, viewport.w))
+        w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
 
-            # Find all "Player X" patterns
-            def replace_match(match):
-                player_num = int(match.group(1))  # Extract number (1-indexed)
-                player_index = player_num - 1  # Convert to 0-indexed
+    def _update_chat_layout(self, width):
+        """Chat messages laid out in pixels; re-filtered only when a message arrives."""
+        game = self.game
+        gs = game.game_state
+        w = game.sidebar_widgets
+        viewer = game.get_local_player()
+        source = gs.chat_messages
+        key = (id(source), viewer, int(width), w.scale)
+        state = self.__dict__.setdefault('_chat_state', {'key': None, 'count': 0, 'items': [], 'ys': [],
+                                                         'total': 0, 'visible': 0})
+        if state['key'] != key or len(source) < state['count']:
+            state.update(key=key, count=0, items=[], ys=[], total=0, visible=0)
+        if len(source) == state['count']:
+            return state['items'], state['ys'], state['total'], 0
 
-                # Get actual player name
-                if 0 <= player_index < self.game.game_state.num_players:
-                    return self.game.game_state.get_player_name(player_index)
-                else:
-                    return match.group(0)  # Keep original if invalid
+        # Team chat is filtered per viewer; filtering is per message, so the visible
+        # list only grows at its end and new entries can be appended
+        visible = gs.get_visible_chat_messages(viewer)
+        old_total = state['total']
+        y = state['total']
+        name_h = w.font('small_bold').get_linesize()
+        body_h = w.font('body').get_linesize()
+        for message in visible[state['visible']:]:
+            # Format: (timestamp, player_id, message[, channel]) - index access (old saves: 3-tuple)
+            timestamp, player_id, text = message[0], message[1], message[2]
+            channel = message[3] if len(message) > 3 else 'all'
+            lines = w.wrap(text, 'body', width - 6)
+            height = 6 + name_h + body_h * len(lines)
+            state['items'].append((height, {'time': timestamp, 'player': player_id, 'team': channel == 'team',
+                                            'lines': lines, 'name_h': name_h, 'body_h': body_h}))
+            state['ys'].append(y)
+            y += height
+        grew = 0 if state['visible'] == 0 else max(0, y - old_total)
+        state.update(count=len(source), visible=len(visible), total=y)
+        return state['items'], state['ys'], state['total'], grew
 
-            # Replace all "Player X" with actual names
-            return re.sub(r'Player (\d+)', replace_match, msg)
-
-        # Get messages to display (oldest to newest), filtered by local player
-        # Purpose: Only show messages that involve the local player or are global
-        # Also replace "Player X" with actual player names
-        all_messages = [replace_player_names_in_message(msg)
-                       for msg in self.game.game_state.messages
-                       if is_local_player_message(msg, local_player)]
-        total_messages = len(all_messages)
-        
-        # Calculate approximate visible messages
-        # Use generous estimate for selection - rendering loop will stop when full
-        available_height = sidebar_y + sidebar_height - (header_y + UIConstants.HEADER_OFFSET) - UIConstants.BOTTOM_RESERVE
-        approx_messages_visible = max(5, available_height // UIConstants.PIXELS_PER_MESSAGE_SELECTION)
-        
-        # Calculate which messages to show based on scroll offset
-        # When scroll_offset = 0: Show newest messages (end of list)
-        # When scroll_offset > 0: Scroll back in history
-        
-        # End index is total minus scroll offset
-        end_index = total_messages - self.game.action_log_scroll_offset
-        # Start index ensures we don't show more than fits
-        start_index = max(0, end_index - approx_messages_visible)
-        
-        messages_to_show = all_messages[start_index:end_index]
-        start_msg_index = start_index
-        
-        # Draw messages (oldest to newest, top to bottom)
-        msg_y = header_y + UIConstants.HEADER_OFFSET
-        messages_rendered = 0
-        
-        for message in messages_to_show:
-            # Check if we're out of space
-            if msg_y + 40 > sidebar_y + sidebar_height - UIConstants.BOTTOM_RESERVE:
-                break
-
-            messages_rendered += 1
-
-            # Determine message color (dark gold for turn start messages)
-            dark_gold = (200, 160, 0)  # Dark gold color
-            if "Turn ---" in message or "'s Turn" in message:
-                # Turn start message - use dark gold color
-                msg_color = dark_gold
-            else:
-                # Regular message - use normal color
-                msg_color = (200, 200, 200)
-
-            # Word wrap for long messages (fit in sidebar)
-            max_chars = UIConstants.MESSAGE_MAX_CHARS
-            if len(message) > max_chars:
-                words = message.split()
-                line = ""
-                for word in words:
-                    test_line = line + " " + word if line else word
-                    if len(test_line) > max_chars:
-                        # FPS OPT: Cache action log text renders
-                        msg_text = self.get_cached_text(line, self.game.small_font, msg_color, "small")
-                        self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                        msg_y += 18
-                        line = word
-
-                        # Check space again
-                        if msg_y + 40 > sidebar_y + sidebar_height - UIConstants.BOTTOM_RESERVE:
-                            break
-                    else:
-                        line = test_line
-
-                # Draw last line
-                if line and msg_y + 20 < sidebar_y + sidebar_height - 40:
-                    msg_text = self.get_cached_text(line, self.game.small_font, msg_color, "small")
-                    self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                    msg_y += 18
-            else:
-                # Short message - draw directly
-                msg_text = self.get_cached_text(message, self.game.small_font, msg_color, "small")
-                self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                msg_y += 18
-
-            # Add small gap between messages
-            msg_y += 5
-        
-        # Calculate actual end index based on what we rendered
-        actual_end_index = start_msg_index + messages_rendered
-        
-        # Draw scroll position indicator on right side
-        if total_messages > messages_rendered:
-            # Calculate scroll position
-            max_scroll = total_messages - messages_rendered
-            scroll_percentage = 1.0 - (self.game.action_log_scroll_offset / max_scroll) if max_scroll > 0 else 1.0
-            
-            # Scrollbar dimensions
-            scrollbar_x = sidebar_x + sidebar_width - UIConstants.SCROLLBAR_OFFSET
-            scrollbar_top = header_y + UIConstants.HEADER_OFFSET
-            scrollbar_height = sidebar_y + sidebar_height - scrollbar_top - 10
-            
-            # Draw scrollbar track
-            pygame.draw.rect(self.game.screen, (60, 60, 60), 
-                           (scrollbar_x, scrollbar_top, UIConstants.SCROLLBAR_WIDTH, scrollbar_height))
-            
-            # Draw scrollbar thumb
-            thumb_height = max(UIConstants.SCROLLBAR_THUMB_MIN, int(scrollbar_height * (messages_rendered / total_messages)))
-            thumb_y = scrollbar_top + int((scrollbar_height - thumb_height) * scroll_percentage)
-            pygame.draw.rect(self.game.screen, (150, 150, 150), 
-                           (scrollbar_x, thumb_y, UIConstants.SCROLLBAR_WIDTH, thumb_height))
-            
-            # Draw position text
-            position_text = f"{actual_end_index}/{total_messages}"
-            pos_text_surface = self.get_cached_text(position_text, self.game.small_font, (120, 120, 120), "small")
-            pos_rect = pos_text_surface.get_rect(right=sidebar_x + sidebar_width - 15,
-                                                  bottom=sidebar_y + sidebar_height - 5)
-            self.game.screen.blit(pos_text_surface, pos_rect)
+    def _draw_chat_item(self, spec, x, y, width):
+        """One chat message: '[time] [TEAM] Name:' line, then the wrapped text."""
+        game = self.game
+        gs = game.game_state
+        w = game.sidebar_widgets
+        screen = game.screen
+        y += 6
+        time_surf = w.text(f"[{spec['time']}]", 'small', (150, 140, 128))
+        screen.blit(time_surf, (x, y))
+        nx = x + time_surf.get_width() + 5
+        if spec['team']:
+            team = w.text("[TEAM]", 'small_bold', (110, 210, 110))
+            screen.blit(team, (nx, y))
+            nx += team.get_width() + 5
+        name = w.text(w.fit_text(f"{gs.get_player_name(spec['player'])}:", 'small_bold', x + width - nx),
+                      'small_bold', gs.get_player_color(spec['player']))
+        screen.blit(name, (nx, y))
+        ly = y + spec['name_h']
+        for line in spec['lines']:
+            screen.blit(w.text(line, 'body', (226, 216, 196)), (x + 6, ly))
+            ly += spec['body_h']
 
     def _draw_chat_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """
-        Draw Chat tab content with message history and scrolling.
+        Chat tab: message history, newest at the bottom.
 
-        Format: [timestamp] [TEAM]? PlayerName: message
-        Supports scrolling with mouse wheel to view older messages.
-        Filters team messages based on viewer's team membership.
+        Format: [timestamp] [TEAM]? PlayerName: message. Team messages are filtered by
+        the viewer's alliance (get_visible_chat_messages, local player). Pixel scrolling
+        anchored at the bottom, like the Action Log - the old offset used the
+        unfiltered message count and scrolled past the end.
         """
-        # Header (Phase 2: Use SemiBold for section header)
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        header_y = content_start_y
-        header_text = self.get_cached_text("Chat", self.game.font_bold, WHITE, "font_bold")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
+        from ui.sidebar_layout import content_geometry, SCROLLBAR_W
+        game = self.game
+        w = game.sidebar_widgets
+        screen = game.screen
 
-        # Draw separator line
-        pygame.draw.line(self.game.screen, (100, 100, 100),
-                        (sidebar_x + 30, header_y + 30),
-                        (sidebar_x + sidebar_width - 10, header_y + 30), 2)
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Chat", 2 * half, role='title')
+        screen.blit(header, (full.center_x - half, content_start_y))
+        list_top = content_start_y + header.get_height() + 8
 
-        # Get viewer's player index for message filtering
-        if self.game.multiplayer_mode:
-            viewer_player = getattr(self.game, 'local_player_index', 0)
-        else:
-            viewer_player = self.game.game_state.current_player
+        geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
+                               footer_h=8, panel_width=sidebar_width, scrollbar=True)
+        viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
+        items, ys, total_h, grew = self._update_chat_layout(geo.width)
+        scroll = game.sidebar_scroll['chat']
+        if grew:
+            scroll.on_content_grew(grew)
 
-        # Get visible messages (filters team chat by alliance)
-        all_messages = self.game.game_state.get_visible_chat_messages(viewer_player)
-        total_messages = len(all_messages)
-
-        # Check if there are any visible messages
-        if total_messages == 0:
-            # Show empty message
-            # FPS OPTIMIZATION 4.1: Use cached text for static messages
-            empty_text = self.get_cached_text("No messages yet", self.game.small_font, (150, 150, 150), "small_font")
-            empty_rect = empty_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 80))
-            self.game.screen.blit(empty_text, empty_rect)
-
-            # Instructions
-            hint_text = self.get_cached_text("Press ENTER to chat", self.game.small_font, (120, 120, 120), "small_font")
-            hint_rect = hint_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 110))
-            self.game.screen.blit(hint_text, hint_rect)
+        if not items:
+            empty = w.text("No messages yet", 'body', (200, 170, 150))
+            screen.blit(empty, empty.get_rect(center=(full.center_x, list_top + 30)))
+            hint = w.text("Press ENTER to chat", 'italic', (170, 150, 130))
+            screen.blit(hint, hint.get_rect(center=(full.center_x, list_top + 54)))
+            scroll.set_content(0, viewport.h)
             return
-        
-        # Calculate approximate visible messages
-        # Use generous estimate for selection - rendering loop will stop when full
-        available_height = sidebar_y + sidebar_height - (header_y + UIConstants.HEADER_OFFSET) - UIConstants.BOTTOM_RESERVE
-        approx_messages_visible = max(5, available_height // UIConstants.PIXELS_PER_MESSAGE_SELECTION)
-        
-        # Calculate which messages to show based on scroll offset
-        # When scroll_offset = 0: Show newest messages (end of list)
-        # When scroll_offset > 0: Scroll back in history
-        
-        # End index is total minus scroll offset
-        end_index = total_messages - self.game.chat_scroll_offset
-        # Start index ensures we don't show more than fits
-        start_index = max(0, end_index - approx_messages_visible)
-        
-        messages_to_show = all_messages[start_index:end_index]
-        start_msg_index = start_index
-        
-        # Draw messages (oldest to newest, top to bottom)
-        msg_y = header_y + UIConstants.HEADER_OFFSET
-        messages_rendered = 0
-        
-        for idx, msg_tuple in enumerate(messages_to_show):
-            # Check if we're out of space
-            if msg_y + 40 > sidebar_y + sidebar_height - UIConstants.BOTTOM_RESERVE:
-                break
 
-            messages_rendered += 1
-
-            # Handle both 3-tuple (old format) and 4-tuple (new format with channel)
-            if len(msg_tuple) == 4:
-                timestamp, player_id, message, channel = msg_tuple
-            else:
-                timestamp, player_id, message = msg_tuple
-                channel = 'all'
-
-            # Format: [timestamp] [TEAM]? PlayerName: message
-            player_color = self.game.game_state.get_player_color(player_id)
-            player_name = self.game.game_state.get_player_name(player_id)
-
-            # FPS OPT: Cache all chat text renders
-            time_text = self.get_cached_text(f"[{timestamp}]", self.game.small_font, (150, 150, 150), "small")
-            self.game.screen.blit(time_text, (sidebar_x + 30, msg_y))
-            name_x = sidebar_x + 30 + time_text.get_width() + 5
-
-            # Draw [TEAM] indicator for team messages (green color)
-            if channel == 'team':
-                team_text = self.get_cached_text("[TEAM]", self.game.small_font, (100, 200, 100), "small")
-                self.game.screen.blit(team_text, (name_x, msg_y))
-                name_x += team_text.get_width() + 5
-
-            # Draw player name in their color
-            name_text = self.get_cached_text(player_name + ":", self.game.small_font, player_color, "small")
-            self.game.screen.blit(name_text, (name_x, msg_y))
-            msg_y += 18
-
-            # Draw message (word wrapped)
-            max_chars = UIConstants.MESSAGE_MAX_CHARS
-            if len(message) > max_chars:
-                words = message.split()
-                line = ""
-                for word in words:
-                    test_line = line + " " + word if line else word
-                    if len(test_line) > max_chars:
-                        msg_text = self.get_cached_text(line, self.game.small_font, (200, 200, 200), "small")
-                        self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                        msg_y += 16
-                        line = word
-
-                        # Check space again
-                        if msg_y + 30 > sidebar_y + sidebar_height - 40:
-                            break
-                    else:
-                        line = test_line
-
-                # Draw last line
-                if line and msg_y + 20 < sidebar_y + sidebar_height - 40:
-                    msg_text = self.get_cached_text(line, self.game.small_font, (200, 200, 200), "small")
-                    self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                    msg_y += 16
-            else:
-                # Short message - draw directly
-                msg_text = self.get_cached_text(message, self.game.small_font, (200, 200, 200), "small")
-                self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                msg_y += 16
-            
-            # Add gap between messages
-            msg_y += 8
-        
-        # Calculate actual end index based on what we rendered
-        actual_end_index = start_msg_index + messages_rendered
-        
-        # Draw scroll position indicator on right side
-        if total_messages > messages_rendered:
-            # Calculate scroll position
-            max_scroll = total_messages - messages_rendered
-            scroll_percentage = 1.0 - (self.game.chat_scroll_offset / max_scroll) if max_scroll > 0 else 1.0
-            
-            # Scrollbar dimensions
-            scrollbar_x = sidebar_x + sidebar_width - UIConstants.SCROLLBAR_OFFSET
-            scrollbar_top = header_y + UIConstants.HEADER_OFFSET
-            scrollbar_height = sidebar_y + sidebar_height - scrollbar_top - 10
-            
-            # Draw scrollbar track
-            pygame.draw.rect(self.game.screen, (60, 60, 60), 
-                           (scrollbar_x, scrollbar_top, UIConstants.SCROLLBAR_WIDTH, scrollbar_height))
-            
-            # Draw scrollbar thumb
-            thumb_height = max(UIConstants.SCROLLBAR_THUMB_MIN, int(scrollbar_height * (messages_rendered / total_messages)))
-            thumb_y = scrollbar_top + int((scrollbar_height - thumb_height) * scroll_percentage)
-            pygame.draw.rect(self.game.screen, (150, 150, 150), 
-                           (scrollbar_x, thumb_y, UIConstants.SCROLLBAR_WIDTH, thumb_height))
-            
-            # Draw position text
-            position_text = f"{actual_end_index}/{total_messages}"
-            pos_text_surface = self.get_cached_text(position_text, self.game.small_font, (120, 120, 120), "small")
-            pos_rect = pos_text_surface.get_rect(right=sidebar_x + sidebar_width - 15,
-                                                  bottom=sidebar_y + sidebar_height - 5)
-            self.game.screen.blit(pos_text_surface, pos_rect)
+        self._draw_scrolling_list(items, ys, total_h, viewport, scroll,
+                                  lambda item, y: self._draw_chat_item(item[1], viewport.x, y, viewport.w))
+        w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
 
     def _draw_heroes_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """Draw Heroes tab content showing active heroes and training progress."""
