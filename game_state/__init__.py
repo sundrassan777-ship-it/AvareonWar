@@ -936,7 +936,22 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         self.messages.append(message)
         # No limit - keep all messages for full game history
         logger.info(f"{message}")
-    
+
+    def add_player_message(self, player, message):
+        """Add a message about one player's own action: "Player N: <message>".
+
+        The Action Log shows a line to the viewer only if it names them or names
+        nobody. Unnamed per-player lines ("Started research: X", "Not enough gold!")
+        therefore reached every player: in simultaneous mode an AI researching the
+        same tech one round later read as the viewer's own research starting and
+        completing twice. Naming the acting player keeps them private.
+        player=None (e.g. cancel_all_orders for everyone) logs the message as is.
+        """
+        if player is None or player < 0:
+            self.add_message(message)
+        else:
+            self.add_message(f"Player {player + 1}: {message}")
+
     def add_chat_message(self, player_id, message, channel="all"):
         """Add a chat message with timestamp, player info, and channel.
 

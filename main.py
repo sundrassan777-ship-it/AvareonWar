@@ -2388,7 +2388,8 @@ class Game:
                                 if enemy_id != player_id:
                                     self.game_state.hero_silence_status[enemy_id] = 2
                             self.game_state.add_message(f"Player {player_id + 1}: {hero_name} casts Vow of Silence!")
-                            self.game_state.add_message("All enemy heroes are silenced until next turn!")
+                            # Named like the local path (heroes._activate_vow_of_silence)
+                            self.game_state.add_player_message(player_id, "All enemy heroes are silenced until next turn!")
                             logger.info(f"[NETWORK] Executed Vow of Silence for player {player_id}")
                         elif ability_name == 'Extort Populace':
                             success, error_msg = self.game_state.execute_extort_populace(player_id)

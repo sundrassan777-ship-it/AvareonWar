@@ -48,30 +48,30 @@ class HeroMixin:
 
         # 1. Validate hero type
         if hero_type not in self.HERO_TYPES:
-            self.add_message(f"Invalid hero type: {hero_type}")
+            self.add_player_message(self.current_player, f"Invalid hero type: {hero_type}")
             return False
 
         # 2. Check ownership
         if self.territory_owners.get(territory, -1) != self.current_player:
-            self.add_message("You don't own this territory!")
+            self.add_player_message(self.current_player, "You don't own this territory!")
             return False
 
         # 3. Verify this is a Keep
         if (territory not in self.buildings or
             keep_plot_index not in self.buildings[territory] or
             self.buildings[territory][keep_plot_index] != 'Keep'):
-            self.add_message("This is not a Keep!")
+            self.add_player_message(self.current_player, "This is not a Keep!")
             return False
 
         # 4. Check if Keep is upgrading to Castle (blocks new training)
         if self.is_upgrading_to_castle(territory, keep_plot_index):
-            self.add_message("Cannot train hero while Keep is upgrading to Castle!")
+            self.add_player_message(self.current_player, "Cannot train hero while Keep is upgrading to Castle!")
             return False
 
         # 5. Check if Keep already training
         if (territory in self.hero_training_queue and
             keep_plot_index in self.hero_training_queue[territory]):
-            self.add_message("This Keep is already training a hero!")
+            self.add_player_message(self.current_player, "This Keep is already training a hero!")
             return False
 
         # 5b. Check if Keep already has a trained hero residing in it
@@ -79,19 +79,19 @@ class HeroMixin:
             for hero_name, hero_data in self.heroes[self.current_player].items():
                 if (hero_data['keep_territory'] == territory and
                     hero_data['keep_plot'] == keep_plot_index):
-                    self.add_message(f"This Keep already has {hero_name}!")
+                    self.add_player_message(self.current_player, f"This Keep already has {hero_name}!")
                     return False
 
         # 6. Check global uniqueness
         if hero_type in self.hero_ownership[self.current_player]:
-            self.add_message(f"You already have {hero_type}!")
+            self.add_player_message(self.current_player, f"You already have {hero_type}!")
             return False
 
         # 6b. Check hero limit
         current_hero_count = len(self.hero_ownership[self.current_player])
         hero_limit = self.player_hero_limit[self.current_player]
         if current_hero_count >= hero_limit:
-            self.add_message(f"Hero limit reached! ({current_hero_count}/{hero_limit})")
+            self.add_player_message(self.current_player, f"Hero limit reached! ({current_hero_count}/{hero_limit})")
             self.last_action_error = "hero_limit"
             return False
 
@@ -104,7 +104,7 @@ class HeroMixin:
             hero_cost = int(hero_cost * (100 - discount_percent) / 100)
 
         if self.player_gold[self.current_player] < hero_cost:
-            self.add_message(f"Not enough gold! (Need {hero_cost})")
+            self.add_player_message(self.current_player, f"Not enough gold! (Need {hero_cost})")
             self.last_action_error = "gold"
             return False
 
@@ -155,7 +155,7 @@ class HeroMixin:
         # 5. Remove from ownership (allow retraining)
         self.hero_ownership[owner].discard(hero_type)
 
-        self.add_message(f"Hero training canceled, {hero_cost} gold refunded (100%)")
+        self.add_player_message(owner, f"Hero training canceled, {hero_cost} gold refunded (100%)")
         self._training_version += 1  # FPS OPT: Production glow sync
         return True
 
@@ -190,7 +190,7 @@ class HeroMixin:
                     # Keep destroyed - lose training (no refund)
                     keeps_to_remove.append(keep_plot_index)
                     self.hero_ownership[owner].discard(hero_type)
-                    self.add_message(f"{territory}: {hero_type} training lost (Keep destroyed)")
+                    self.add_player_message(owner, f"{territory}: {hero_type} training lost (Keep destroyed)")
                     continue
 
                 # Decrement timer
@@ -505,7 +505,7 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {current_player + 1}: {caster_hero_name} casts Vow of Silence!")
-        self.add_message("All enemy heroes are silenced until next turn!")
+        self.add_player_message(current_player, "All enemy heroes are silenced until next turn!")
 
     def _activate_master_negotiator(self, player_index):
         """
@@ -535,7 +535,8 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {player_index + 1}: Master Negotiator activated!")
-        self.add_message("Farms, Mines, and Squares cost 75% less this turn!")
+        # Named like the line above - unnamed, it told every player about the discount
+        self.add_player_message(player_index, "Farms, Mines, and Squares cost 75% less this turn!")
 
     def _activate_embargo(self, player_index):
         """
@@ -556,7 +557,7 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {player_index + 1}: Embargo activated!")
-        self.add_message("All enemies will receive no income at the start of their next turn!")
+        self.add_player_message(player_index, "All enemies will receive no income at the start of their next turn!")
 
     def execute_relentless_charge(self, target_territory, owner):
         """

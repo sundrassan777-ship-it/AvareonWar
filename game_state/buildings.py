@@ -184,7 +184,7 @@ class BuildingMixin:
 
         # Check one building per territory per turn limit
         if territory in self.buildings_started_this_turn:
-            self.add_message("Only one building per territory per turn!")
+            self.add_player_message(self.current_player, "Only one building per territory per turn!")
             return False
 
         # Per-type rules (no Keep in Fortress territories; one Keep / Training Grounds /
@@ -192,7 +192,7 @@ class BuildingMixin:
         # their red tint always matches what this method refuses.
         block_reason = self.get_building_type_block_reason(territory, building_type)
         if block_reason:
-            self.add_message(block_reason)
+            self.add_player_message(self.current_player, block_reason)
             return False
 
         # Check if plot is empty. Only a build shortcut key can get here (the build
@@ -213,7 +213,7 @@ class BuildingMixin:
             cost = self.get_building_cost(building_type, self.current_player)
 
             if self.player_gold[self.current_player] < cost:
-                self.add_message("Not enough Resources!")
+                self.add_player_message(self.current_player, "Not enough Resources!")
                 self.last_action_error = "gold"
                 return False
         except (KeyError, IndexError) as e:
@@ -311,10 +311,13 @@ class BuildingMixin:
                     logger.debug(f"  Awarded {self.BUILDING_XP_PER_TURN} XP to {building_type} in {territory} plot {plot_index} "
                                  f"(now: {self.get_building_xp_data(territory, plot_index)})")
                     if new_level > old_level:
-                        self.add_message(f"  {building_type} in {territory} reached level {new_level}!")
+                        # Named, not indented: in sequential mode these follow the turn heading
+                        # directly, so as indented sub-lines they had no owner and showed
+                        # every player the enemy's Farm/Mine levels
+                        self.add_player_message(self.current_player, f"{building_type} in {territory} reached level {new_level}!")
         if xp_awarded_count > 0:
             logger.info(f"Building XP tick: +{self.BUILDING_XP_PER_TURN} XP to {xp_awarded_count} Farms/Mines for Player {self.current_player + 1}")
-            self.add_message(f"  +{self.BUILDING_XP_PER_TURN} XP to {xp_awarded_count} building{'s' if xp_awarded_count > 1 else ''}")
+            self.add_player_message(self.current_player, f"+{self.BUILDING_XP_PER_TURN} XP to {xp_awarded_count} building{'s' if xp_awarded_count > 1 else ''}")
 
     def _tick_training_grounds_xp(self):
         """Award XP to all units garrisoned in territories with Training Grounds.
@@ -361,7 +364,7 @@ class BuildingMixin:
             logger.info(f"Training Grounds XP tick: +{xp_amount} XP to {total_units_trained} units "
                         f"in {territories_affected} territor{'ies' if territories_affected > 1 else 'y'} "
                         f"for Player {self.current_player + 1}")
-            self.add_message(f"  Training Grounds: +{xp_amount} XP to {total_units_trained} unit{'s' if total_units_trained > 1 else ''} "
+            self.add_player_message(self.current_player, f"Training Grounds: +{xp_amount} XP to {total_units_trained} unit{'s' if total_units_trained > 1 else ''} "
                              f"in {territories_affected} territor{'ies' if territories_affected > 1 else 'y'}")
 
     def finish_constructions(self):
@@ -451,7 +454,7 @@ class BuildingMixin:
         # Allow building again on this territory this turn (since we canceled)
         self.buildings_started_this_turn.discard(territory)
 
-        self.add_message(f"Construction canceled, {cost} gold refunded")
+        self.add_player_message(owner, f"Construction canceled, {cost} gold refunded")
         return True
 
     def destroy_building(self, territory, plot_index):
@@ -517,7 +520,7 @@ class BuildingMixin:
                 if not self.hero_training_queue[territory]:
                     del self.hero_training_queue[territory]
                 self.hero_ownership[owner].discard(hero_type)
-                self.add_message("Hero training cancelled (Keep demolished)")
+                self.add_player_message(owner, "Hero training cancelled (Keep demolished)")
 
             # Clean up Castle tracking
             if self.is_castle(territory, plot_index):
@@ -534,7 +537,7 @@ class BuildingMixin:
         # Note: Demolishing does NOT consume your building slot
         # You can still build one building this turn if you haven't already
 
-        self.add_message(f"{building_type} destroyed, {refund} gold refunded")
+        self.add_player_message(owner, f"{building_type} destroyed, {refund} gold refunded")
         return True
 
     def has_barracks(self, territory):
@@ -563,14 +566,14 @@ class BuildingMixin:
 
         # Validate unit type (with error handling)
         if unit_type not in self.UNIT_TYPES:
-            self.add_message(f"Invalid unit type: {unit_type}")
+            self.add_player_message(self.current_player, f"Invalid unit type: {unit_type}")
             self.log_error(f"Invalid unit type: {unit_type}")
             return False
 
         # Check ownership (with error handling)
         try:
             if self.territory_owners.get(territory, -1) != self.current_player:
-                self.add_message("You don't own this territory!")
+                self.add_player_message(self.current_player, "You don't own this territory!")
                 return False
         except Exception as e:
             self.log_error(f"Failed to check territory ownership for {territory}", e)
@@ -581,7 +584,7 @@ class BuildingMixin:
             if territory not in self.buildings or barracks_plot_index not in self.buildings[territory]:
                 return False
             if self.buildings[territory][barracks_plot_index] != 'Barracks':
-                self.add_message("This is not a Barracks!")
+                self.add_player_message(self.current_player, "This is not a Barracks!")
                 return False
         except Exception as e:
             self.log_error(f"Failed to check Barracks in {territory}[{barracks_plot_index}]", e)
@@ -591,7 +594,7 @@ class BuildingMixin:
         # M1 fix: use get_territory_total_armies to include allied garrisons
         current_armies = self.get_territory_total_armies(territory)
         if current_armies >= self.MAX_ARMIES_PER_TERRITORY:
-            self.add_message(f"Army limit reached in {territory}! (Max {self.MAX_ARMIES_PER_TERRITORY} per territory)")
+            self.add_player_message(self.current_player, f"Army limit reached in {territory}! (Max {self.MAX_ARMIES_PER_TERRITORY} per territory)")
             self.last_action_error = "army_limit"
             return False
 
@@ -599,7 +602,7 @@ class BuildingMixin:
         current_command = self.get_player_army_count(self.current_player)
         command_limit = self.player_command_limit[self.current_player]
         if current_command >= command_limit:
-            self.add_message(f"Command limit reached! ({current_command}/{command_limit})")
+            self.add_player_message(self.current_player, f"Command limit reached! ({current_command}/{command_limit})")
             self.last_action_error = "command_limit"
             return False
 
@@ -611,7 +614,7 @@ class BuildingMixin:
 
         # Check queue limit (MAX_TRAINING_QUEUE units per Barracks)
         if len(self.training_queue[territory][barracks_plot_index]) >= self.MAX_TRAINING_QUEUE:
-            self.add_message(f"Training queue full! (Max {self.MAX_TRAINING_QUEUE} per Barracks)")
+            self.add_player_message(self.current_player, f"Training queue full! (Max {self.MAX_TRAINING_QUEUE} per Barracks)")
             self.last_action_error = "queue_full"
             return False
 
@@ -620,7 +623,7 @@ class BuildingMixin:
             base_cost = self.UNIT_TYPES[unit_type]['cost']
             unit_cost = self.get_effective_cost(unit_type, base_cost, self.current_player)
             if self.player_gold[self.current_player] < unit_cost:
-                self.add_message(f"Not enough gold to train {unit_type}! (Need {unit_cost} gold)")
+                self.add_player_message(self.current_player, f"Not enough gold to train {unit_type}! (Need {unit_cost} gold)")
                 self.last_action_error = "gold"
                 return False
         except (KeyError, IndexError) as e:
@@ -688,7 +691,7 @@ class BuildingMixin:
         if not self.training_queue[territory]:
             del self.training_queue[territory]
 
-        self.add_message(f"Training canceled, {unit_cost} gold refunded")
+        self.add_player_message(owner, f"Training canceled, {unit_cost} gold refunded")
         self._training_version += 1  # FPS OPT: Production glow sync
         return True
 
@@ -750,7 +753,7 @@ class BuildingMixin:
                         current_armies = self.get_territory_total_armies(territory)
                         if current_armies >= self.MAX_ARMIES_PER_TERRITORY:
                             # At army limit - pause training (don't spawn, don't remove from queue)
-                            self.add_message(f"{territory}: Training paused - army limit reached ({self.MAX_ARMIES_PER_TERRITORY}/{self.MAX_ARMIES_PER_TERRITORY})")
+                            self.add_player_message(owner, f"{territory}: Training paused - army limit reached ({self.MAX_ARMIES_PER_TERRITORY}/{self.MAX_ARMIES_PER_TERRITORY})")
                             # Keep unit in queue with 0 turns (will check again next turn)
                             queue[0] = (unit_type, 0) if cost_paid is None else (unit_type, 0, cost_paid)
                             continue  # Skip to next Barracks
@@ -875,35 +878,35 @@ class BuildingMixin:
 
         # 1. Check ownership
         if self.territory_owners.get(territory, -1) != self.current_player:
-            self.add_message("You don't own this territory!")
+            self.add_player_message(self.current_player, "You don't own this territory!")
             return False
 
         # 2. Verify this is a Keep
         if (territory not in self.buildings or
             keep_plot_index not in self.buildings[territory] or
             self.buildings[territory][keep_plot_index] != 'Keep'):
-            self.add_message("This is not a Keep!")
+            self.add_player_message(self.current_player, "This is not a Keep!")
             return False
 
         # 3. Check if already a Castle
         if self.is_castle(territory, keep_plot_index):
-            self.add_message("This Keep is already a Castle!")
+            self.add_player_message(self.current_player, "This Keep is already a Castle!")
             return False
 
         # 4. Check if already upgrading
         if self.is_upgrading_to_castle(territory, keep_plot_index):
-            self.add_message("This Keep is already being upgraded!")
+            self.add_player_message(self.current_player, "This Keep is already being upgraded!")
             return False
 
         # 5. Check if hero is training (CANNOT upgrade during training)
         if (territory in self.hero_training_queue and
             keep_plot_index in self.hero_training_queue[territory]):
-            self.add_message("Cannot upgrade while hero is training!")
+            self.add_player_message(self.current_player, "Cannot upgrade while hero is training!")
             return False
 
         # 6. Check gold
         if self.player_gold[self.current_player] < UPGRADE_COST:
-            self.add_message(f"Not enough gold! (Need {UPGRADE_COST})")
+            self.add_player_message(self.current_player, f"Not enough gold! (Need {UPGRADE_COST})")
             self.last_action_error = "gold"
             return False
 
@@ -916,7 +919,7 @@ class BuildingMixin:
             self.castle_upgrades_in_progress[territory] = {}
         self.castle_upgrades_in_progress[territory][keep_plot_index] = UPGRADE_TIME
 
-        self.add_message(f"Upgrading Keep to Castle ({UPGRADE_COST} gold, {UPGRADE_TIME} turns)")
+        self.add_player_message(self.current_player, f"Upgrading Keep to Castle ({UPGRADE_COST} gold, {UPGRADE_TIME} turns)")
         return True
 
     def cancel_castle_upgrade(self, territory, keep_plot_index):
@@ -939,7 +942,7 @@ class BuildingMixin:
         if not self.castle_upgrades_in_progress[territory]:
             del self.castle_upgrades_in_progress[territory]
 
-        self.add_message(f"Castle upgrade cancelled, {UPGRADE_COST} gold refunded (100%)")
+        self.add_player_message(owner, f"Castle upgrade cancelled, {UPGRADE_COST} gold refunded (100%)")
         return True
 
     def finish_castle_upgrades(self):
@@ -1049,17 +1052,17 @@ class BuildingMixin:
                 break
 
         if not tech:
-            self.add_message("Technology not found!")
+            self.add_player_message(self.current_player, "Technology not found!")
             return False
 
         # Check if technology is available (per-player)
         if tech_id not in self.player_tech_available[self.current_player]:
-            self.add_message(f"{tech['name']} is locked!")
+            self.add_player_message(self.current_player, f"{tech['name']} is locked!")
             return False
 
         # Check if already researched (per-player)
         if tech_id in self.player_tech_researched[self.current_player]:
-            self.add_message(f"{tech['name']} is already researched!")
+            self.add_player_message(self.current_player, f"{tech['name']} is already researched!")
             return False
 
         # Check if another research is in progress
@@ -1068,14 +1071,14 @@ class BuildingMixin:
             # Find the tech name for the message
             for t in self.technologies:
                 if t['id'] == current_research['tech_id']:
-                    self.add_message(f"Already researching {t['name']}!")
+                    self.add_player_message(self.current_player, f"Already researching {t['name']}!")
                     break
             return False
 
         # Check special requirements (e.g., Castle requirement)
         if tech.get('requires_castle', False):
             if not self.player_has_castle(self.current_player):
-                self.add_message(f"{tech['name']} requires a Castle!")
+                self.add_player_message(self.current_player, f"{tech['name']} requires a Castle!")
                 return False
 
         # Check cost (apply hero modifiers and territorial bonuses)
@@ -1084,7 +1087,7 @@ class BuildingMixin:
 
         if cost > 0:
             if self.player_gold[self.current_player] < cost:
-                self.add_message(f"Not enough gold! (Need {cost})")
+                self.add_player_message(self.current_player, f"Not enough gold! (Need {cost})")
                 self.last_action_error = "gold"
                 return False
 
@@ -1105,7 +1108,7 @@ class BuildingMixin:
             'cost_paid': cost
         }
 
-        self.add_message(f"Started research: {tech['name']} ({cost} gold, {turns} turns)")
+        self.add_player_message(self.current_player, f"Started research: {tech['name']} ({cost} gold, {turns} turns)")
 
         # Tutorial hook: notify research started
         if self.tutorial_mission:
@@ -1128,7 +1131,7 @@ class BuildingMixin:
 
         # Check if research is in progress
         if player_id not in self.research_in_progress:
-            self.add_message("No research in progress!")
+            self.add_player_message(player_id, "No research in progress!")
             return False
 
         # Get the research info
@@ -1158,7 +1161,7 @@ class BuildingMixin:
         # Remove from research tracking
         del self.research_in_progress[player_id]
 
-        self.add_message(f"Research cancelled: {tech_name}, {cost} gold refunded (100%)")
+        self.add_player_message(player_id, f"Research cancelled: {tech_name}, {cost} gold refunded (100%)")
         return True
 
     def apply_tech_effect(self, player, tech, announce=True):
@@ -1174,7 +1177,7 @@ class BuildingMixin:
         """
         effect_type = tech.get('effect_type')
         effect_value = tech.get('effect_value')
-        say = self.add_message if announce else (lambda *_args, **_kw: None)
+        say = (lambda text: self.add_player_message(player, text)) if announce else (lambda *_args, **_kw: None)
 
         if effect_type == 'time_limit' and effect_value:
             # Increase planning time limit

@@ -51,6 +51,7 @@ _ROUND_RE = re.compile(r"^--- Round (\d+) ---$")
 _RULE_RE = re.compile(r"^=+$")
 _BANNER_RE = re.compile(r"^=== (.+?) ===$")
 _PLAYER_RE = re.compile(r'Player (\d+)')
+_OWNER_PREFIX_RE = re.compile(r'^Player \d+: ')
 
 # (category, pattern) checked in order on the raw (un-renamed) message
 _RULES = [
@@ -106,7 +107,9 @@ _RULES = [(category, pattern if pattern is not None else _hero_pattern()) for ca
 
 def classify(message):
     """Category of one raw message (see _RULES); 'other' when nothing matches."""
-    text = message.strip()
+    # Per-player lines are "Player N: <text>" (GameState.add_player_message); the
+    # rules are written for the bare text (several are anchored with ^)
+    text = _OWNER_PREFIX_RE.sub('', message.strip(), count=1)
     for category, pattern in _RULES:
         if pattern.search(text):
             return category

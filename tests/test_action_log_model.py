@@ -44,6 +44,10 @@ def _rows(messages, local=0, names=NAMES, category_filter=None):
     ("Player 3 ELIMINATED!", 'victory'),
     ("   PLAYER 2 WINS!", 'victory'),
     ("Something nobody categorised", 'other'),
+    # Per-player lines carry an owner prefix (GameState.add_player_message)
+    ("Player 2: Started research: Master Planner I (85 gold, 2 turns)", 'research'),
+    ("Player 2: Not enough gold! (Need 400)", 'error'),
+    ("Player 1: Order created: 3 armies Lobardia -> Lentria", 'orders'),
 ])
 def test_classify(message, category):
     assert classify(message) == category
@@ -153,6 +157,60 @@ class TestSimultaneousRounds:
         sim.start_planning_phase()
         markers = [m for m in gs.messages if m.startswith('--- Round')]
         assert markers == ['--- Round 1 ---', '--- Round 2 ---']
+
+
+class TestPerPlayerMessages:
+    """Owner report: in a simultaneous game the log said "Started research: Master Planner I"
+    twice and "Research complete" twice. The second pair was the AI researching the same
+    tech a round later - the messages named nobody, so they were shown to everyone."""
+
+    @staticmethod
+    def _game_state():
+        import map_data
+        from game_state import GameState
+        map_data.load_polygons()
+        gs = GameState(num_players=2, player_is_ai=[False, True], player_ai_difficulty=[None, 1],
+                       skip_setup_phase=True, game_mode='simultaneous')
+        gs.phase = 'playing'
+        return gs
+
+    def test_the_reported_sequence_shows_only_our_research(self):
+        rows = _rows(["--- Round 13 ---", "Player 1: Started research: Master Planner I (100 gold, 2 turns)",
+                      "--- Round 14 ---", "Player 2: Started research: Master Planner I (85 gold, 2 turns)",
+                      "Player 1 earned 189 gold from 4 territories",
+                      "Player 1: Research complete: Master Planner I! Planning time increased by 30s",
+                      "--- Round 15 ---", "Player 2 earned 756 gold from 31 territories",
+                      "Player 2: Research complete: Master Planner I! Planning time increased by 30s"])
+        research = [r.text for r in rows if r.category == 'research']
+        assert research == ["Editoreus: Started research: Master Planner I (100 gold, 2 turns)",
+                            "Editoreus: Research complete: Master Planner I! Planning time increased by 30s"]
+
+    def test_research_messages_name_the_researching_player(self):
+        gs = self._game_state()
+        gs.current_player = 1
+        gs.player_gold[1] = 10000
+        tech_id = sorted(gs.player_tech_available[1])[0]
+        assert gs.start_research(tech_id)
+        assert gs.messages[-1].startswith("Player 2: Started research: ")
+        assert gs.cancel_research(1)
+        assert gs.messages[-1].startswith("Player 2: Research cancelled: ")
+        tech = next(t for t in gs.technologies if t['id'] == tech_id)
+        gs.apply_tech_effect(1, tech)
+        assert gs.messages[-1].startswith("Player 2: Research complete: ")
+
+    def test_refusals_name_the_player(self):
+        gs = self._game_state()
+        gs.current_player = 1
+        gs.player_gold[1] = 0
+        tech_id = sorted(gs.player_tech_available[1])[0]
+        assert not gs.start_research(tech_id)
+        assert gs.messages[-1].startswith("Player 2: Not enough gold!")
+        assert classify(gs.messages[-1]) == 'error'
+
+    def test_helper_without_player_logs_plain_text(self):
+        gs = self._game_state()
+        gs.add_player_message(None, "Cancelled 3 orders")
+        assert gs.messages[-1] == "Cancelled 3 orders"
 
 
 class TestIncremental:

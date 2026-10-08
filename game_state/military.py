@@ -76,7 +76,7 @@ class MilitaryMixin:
         garrison = self.territory_garrisons.get(territory, {}).get(self.current_player)
 
         if not garrison or garrison.get('unmoved', 0) <= 0:
-            self.add_message("No armies available to move in this territory")
+            self.add_player_message(self.current_player, "No armies available to move in this territory")
             return False
 
         # Select the army (works for own territory OR allied territory with garrison)
@@ -672,14 +672,14 @@ class MilitaryMixin:
             if self.army_has_captain(from_territory):
                 intermediate_territory = self.find_2hop_path(from_territory, to_territory, self.current_player)
             if not intermediate_territory:
-                self.add_message("Territories are not adjacent!")
+                self.add_player_message(self.current_player, "Territories are not adjacent!")
                 return False
 
         # R8 fix: Validate against current player's garrison, not territory owner's
         # In allied scenarios, a player may garrison in territory they don't own
         garrison = self.territory_garrisons.get(from_territory, {}).get(self.current_player)
         if not garrison or garrison.get('unmoved', 0) <= 0:
-            self.add_message("No armies available to move")
+            self.add_player_message(self.current_player, "No armies available to move")
             return False
 
         # Validate: army limit for reinforcements (moving to own territory or ally territory)
@@ -693,7 +693,7 @@ class MilitaryMixin:
             # Uses projected capacity: current + incoming - outgoing orders
             projected, _ = self._get_effective_capacity(to_territory)
             if projected + army_count > self.MAX_ARMIES_PER_TERRITORY:
-                self.add_message(f"Cannot reinforce {to_territory}: would exceed army limit of {self.MAX_ARMIES_PER_TERRITORY}!")
+                self.add_player_message(self.current_player, f"Cannot reinforce {to_territory}: would exceed army limit of {self.MAX_ARMIES_PER_TERRITORY}!")
                 return False
 
         # Check if order already exists from this territory
@@ -710,7 +710,7 @@ class MilitaryMixin:
                             unit['order'] = None
                 # Remove old order
                 self.movement_orders.pop(i)
-                self.add_message(f"Previous order cancelled and replaced")
+                self.add_player_message(self.current_player, f"Previous order cancelled and replaced")
                 break
         
         # Create the order
@@ -727,13 +727,13 @@ class MilitaryMixin:
         )
         
         self.movement_orders.append(order)
-        self.add_message(f"Order created: {army_count} armies {from_territory} -> {to_territory}")
+        self.add_player_message(self.current_player, f"Order created: {army_count} armies {from_territory} -> {to_territory}")
         
         # Revalidate: if old outgoing was replaced with smaller order, from_territory
         # retains more armies, so incoming orders to from_territory might now overflow
         cancelled = self._revalidate_incoming_orders(from_territory)
         if cancelled:
-            self.add_message(f"Auto-cancelled incoming to {from_territory} (capacity exceeded):")
+            self.add_player_message(self.current_player, f"Auto-cancelled incoming to {from_territory} (capacity exceeded):")
             for desc in cancelled:
                 self.add_message(f"  - {desc}")
 
@@ -886,7 +886,7 @@ class MilitaryMixin:
         invalid_units = [uid for uid in unit_ids if uid not in ready_units]
         if invalid_units:
             _rollback_auto_cancel()
-            self.add_message("Some selected armies are not ready to move")
+            self.add_player_message(player, "Some selected armies are not ready to move")
             self.last_action_error = "unit_not_ready"  # player-facing toast (see main.py)
             return False
 
@@ -903,13 +903,13 @@ class MilitaryMixin:
                     intermediate_territory = self.find_2hop_path(from_territory, to_territory, player)
                 if not intermediate_territory:
                     _rollback_auto_cancel()
-                    self.add_message("Territories are not adjacent!")
+                    self.add_player_message(player, "Territories are not adjacent!")
                     self.last_action_error = "not_adjacent"
                     return False
         except Exception as e:
             _rollback_auto_cancel()
             self.log_error(f"Failed to check adjacency between {from_territory} and {to_territory}", e)
-            self.add_message("Error checking territory adjacency")
+            self.add_player_message(player, "Error checking territory adjacency")
             return False
 
         # Use the player parameter (which player is making this order)
@@ -927,7 +927,7 @@ class MilitaryMixin:
             projected, _ = self._get_effective_capacity(to_territory)
             if projected + len(unit_ids) > self.MAX_ARMIES_PER_TERRITORY:
                 _rollback_auto_cancel()
-                self.add_message(f"Cannot reinforce {to_territory}: would exceed army limit of {self.MAX_ARMIES_PER_TERRITORY}!")
+                self.add_player_message(player, f"Cannot reinforce {to_territory}: would exceed army limit of {self.MAX_ARMIES_PER_TERRITORY}!")
                 self.last_action_error = "reinforce_limit"
                 self.last_action_error_args = {'territory': to_territory,
                                                'limit': self.MAX_ARMIES_PER_TERRITORY}
@@ -936,7 +936,7 @@ class MilitaryMixin:
         # Validation passed: the auto-cancel is now final, so report it (it used to be
         # reported before validation, even when the new order was then refused)
         if units_to_reset:
-            self.add_message(f"Previous orders for selected armies cancelled")
+            self.add_player_message(player, f"Previous orders for selected armies cancelled")
 
         # Create the order with unit IDs
         # Deferred import to avoid circular import (MovementOrder defined in game_state/__init__.py)
@@ -958,7 +958,7 @@ class MilitaryMixin:
                 unit['status'] = 'ordered'
                 unit['order'] = order
         
-        self.add_message(f"Order created: {len(unit_ids)} armies {from_territory} -> {to_territory}")
+        self.add_player_message(player, f"Order created: {len(unit_ids)} armies {from_territory} -> {to_territory}")
         
         # Tutorial hook: notify that movement order was created
         if self.tutorial_mission:
@@ -971,7 +971,7 @@ class MilitaryMixin:
         # so incoming orders to from_territory might now overflow
         cancelled = self._revalidate_incoming_orders(from_territory)
         if cancelled:
-            self.add_message(f"Auto-cancelled incoming to {from_territory} (capacity exceeded):")
+            self.add_player_message(player, f"Auto-cancelled incoming to {from_territory} (capacity exceeded):")
             for desc in cancelled:
                 self.add_message(f"  - {desc}")
 
@@ -991,14 +991,14 @@ class MilitaryMixin:
                         if unit.get('order') == order:
                             unit['status'] = 'ready'
                             unit['order'] = None
-            self.add_message(f"Order cancelled: {order.from_territory} -> {order.to_territory}")
+            self.add_player_message(order.player, f"Order cancelled: {order.from_territory} -> {order.to_territory}")
             self.movement_orders.pop(order_index)
 
             # Revalidate: cancelled outgoing order means from_territory keeps its
             # armies, so incoming orders to from_territory might now overflow
             cancelled = self._revalidate_incoming_orders(order.from_territory)
             if cancelled:
-                self.add_message(f"Auto-cancelled incoming to {order.from_territory} (capacity exceeded):")
+                self.add_player_message(order.player, f"Auto-cancelled incoming to {order.from_territory} (capacity exceeded):")
                 for desc in cancelled:
                     self.add_message(f"  - {desc}")
 
@@ -1056,14 +1056,14 @@ class MilitaryMixin:
             # Keep other players' orders (e.g. AI orders queued in the same planning phase)
             self.movement_orders = [order for order in self.movement_orders if order.player != player]
         if count > 0:
-            self.add_message(f"Cancelled {count} orders")
+            self.add_player_message(player, f"Cancelled {count} orders")
             if player is not None:
                 # Same rule as cancel_movement_order(): the cancelled armies stay home, so
                 # other players' (allied) orders into those territories may now overflow
                 for from_territory in {order.from_territory for order in to_cancel}:
                     cancelled = self._revalidate_incoming_orders(from_territory)
                     if cancelled:
-                        self.add_message(f"Auto-cancelled incoming to {from_territory} (capacity exceeded):")
+                        self.add_player_message(player, f"Auto-cancelled incoming to {from_territory} (capacity exceeded):")
                         for desc in cancelled:
                             self.add_message(f"  - {desc}")
         return count
