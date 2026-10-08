@@ -482,15 +482,15 @@ class HeroMixin:
         current_player = self.current_player
 
         # Silence all enemy players until end of caster's next turn
-        for player_index in range(self.num_players):
-            if player_index != current_player:
-                # Counter = 2 regardless of player count:
-                # Decrement happens at start of each player's own turn (sequential)
-                # or once per round for all players (simultaneous).
-                # 1st decrement: 2->1 (silenced during their turn)
-                # 2nd decrement: 1->0 (silence expires after caster's next turn ends)
-                # Old bug: used num_players, which made silence last num_players-1 rounds
-                self.hero_silence_status[player_index] = 2
+        # Enemies only: allies (same team) were silenced too (every player != caster)
+        for player_index in self.ability_enemies(current_player):
+            # Counter = 2 regardless of player count:
+            # Decrement happens at start of each player's own turn (sequential)
+            # or once per round for all players (simultaneous).
+            # 1st decrement: 2->1 (silenced during their turn)
+            # 2nd decrement: 1->0 (silence expires after caster's next turn ends)
+            # Old bug: used num_players, which made silence last num_players-1 rounds
+            self.hero_silence_status[player_index] = 2
 
         # M5 fix: Guard pygame import for headless (test) environments
         try:
@@ -505,7 +505,19 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {current_player + 1}: {caster_hero_name} casts Vow of Silence!")
-        self.add_player_message(current_player, "All enemy heroes are silenced until next turn!")
+        # Indented sub-line naming the silenced players: the Action Log shows the whole
+        # block to every player it names, so the victims learn who silenced them
+        self.add_message(self.ability_victims_line("Heroes silenced until next turn",
+                                                   self.ability_enemies(current_player)))
+
+    def ability_enemies(self, caster):
+        """Players an "all enemies" hero ability hits (Vow of Silence, Embargo).
+
+        Everyone except the caster, their allies (same team) and eliminated players.
+        Both abilities used to hit every player but the caster, allies included.
+        """
+        return [p for p in range(self.num_players)
+                if p != caster and not self.are_allies(p, caster) and p not in self.eliminated_players]
 
     def _activate_master_negotiator(self, player_index):
         """
@@ -545,11 +557,11 @@ class HeroMixin:
         Args:
             player_index: Player index activating the ability
         """
-        # Mark all enemy players to have income blocked on their next turn
-        for i in range(self.num_players):
-            if i != player_index:
-                if i not in self.embargo_blocked_players:
-                    self.embargo_blocked_players.append(i)
+        # Mark all enemy players to have income blocked on their next turn.
+        # Enemies only: allies (same team) used to lose their income too.
+        for i in self.ability_enemies(player_index):
+            if i not in self.embargo_blocked_players:
+                self.embargo_blocked_players.append(i)
 
         # Play spell sound effect
         from global_sound import play_spell_sound
@@ -557,7 +569,9 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {player_index + 1}: Embargo activated!")
-        self.add_player_message(player_index, "All enemies will receive no income at the start of their next turn!")
+        # Indented sub-line naming the blocked players (shown to them, see Vow of Silence)
+        self.add_message(self.ability_victims_line("No income at the start of their next turn",
+                                                   self.ability_enemies(player_index)))
 
     def execute_relentless_charge(self, target_territory, owner):
         """
@@ -833,7 +847,9 @@ class HeroMixin:
             )
 
         # Build message
-        message = f"Player {owner + 1}: Aggressive Diplomacy conquers {target_territory}!"
+        # "from Player N" so the player losing the territory sees it in their Action Log
+        lost_by = f" from Player {current_owner + 1}" if current_owner is not None and current_owner >= 0 else ""
+        message = f"Player {owner + 1}: Aggressive Diplomacy conquers {target_territory}{lost_by}!"
         self.add_message(message)
 
         if armies_destroyed > 0:
@@ -1324,7 +1340,10 @@ class HeroMixin:
 
         # Add message to action log
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
-        self.add_message(f"Player {owner + 1}: Royal Charisma stole {units_to_steal} units from {target_territory} to {narn_keep_territory}{haste_msg}!")
+        # Name the robbed players so they see it in their Action Log
+        robbed = sorted({garrison_owner for garrison_owner, _unit in stolen_units if garrison_owner != owner})
+        robbed_msg = f" ({', '.join(f'Player {p + 1}' for p in robbed)})" if robbed else ""
+        self.add_message(f"Player {owner + 1}: Royal Charisma stole {units_to_steal} units from {target_territory}{robbed_msg} to {narn_keep_territory}{haste_msg}!")
 
         # Player Level: award XP for using active hero ability (targeted)
         self._track_stat(owner, 'xp_earned', 2)
@@ -1399,7 +1418,9 @@ class HeroMixin:
         else:
             # No hero found - ability is wasted (still a success: the cooldown is spent,
             # by design). Record a notice so the caster gets the toast explaining the miss.
-            self.add_message(f"Player {owner + 1}: Regicide failed in {target_territory} - no hero present!")
+            # Name the targeted player: they should know a Regicide was attempted on them
+            self.add_message(f"Player {owner + 1}: Regicide failed in {target_territory} "
+                             f"(Player {territory_owner + 1}) - no hero present!")
             self.last_action_error = 'regicide_no_hero'
 
         # Player Level: award XP for using active hero ability (targeted)

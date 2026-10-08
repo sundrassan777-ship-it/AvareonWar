@@ -159,6 +159,13 @@ class TestSimultaneousRounds:
         assert markers == ['--- Round 1 ---', '--- Round 2 ---']
 
 
+class GameStateHelper:
+    @staticmethod
+    def victims(text, players):
+        from game_state import GameState
+        return GameState.ability_victims_line(text, players)
+
+
 class TestPerPlayerMessages:
     """Owner report: in a simultaneous game the log said "Started research: Master Planner I"
     twice and "Research complete" twice. The second pair was the AI researching the same
@@ -206,6 +213,51 @@ class TestPerPlayerMessages:
         assert not gs.start_research(tech_id)
         assert gs.messages[-1].startswith("Player 2: Not enough gold!")
         assert classify(gs.messages[-1]) == 'error'
+
+    def test_enemy_ability_is_shown_to_the_players_it_hits(self):
+        """Vow of Silence / Embargo name their victims on a sub-line, so the whole cast
+        block reaches them; a caster-only ability (Master Negotiator) stays private."""
+        gs = self._game_state()
+        gs._activate_embargo(1)
+        gs._activate_master_negotiator(1)
+        rows = _rows(gs.messages, local=0, names=NAMES[:2])
+        texts = [r.text for r in rows]
+        assert "AI (Medium): Embargo activated!" in texts
+        assert "No income at the start of their next turn: Editoreus" in texts
+        assert not any('Master Negotiator' in t or '75% less' in t for t in texts)
+
+    def test_vow_of_silence_names_every_silenced_player(self):
+        rows = _rows(["Player 2: Aidam Narn casts Vow of Silence!",
+                      GameStateHelper.victims("Heroes silenced until next turn", [0, 2])], local=2)
+        assert [r.text for r in rows if r.kind != 'section'] == [
+            "AI (Medium): Aidam Narn casts Vow of Silence!",
+            "Heroes silenced until next turn: Editoreus, AI (Hard)"]
+
+    def test_attacked_player_sees_diplomacy_charisma_and_failed_regicide(self):
+        lines = ["Player 2: Aggressive Diplomacy conquers Lentria from Player 1!",
+                 "Player 2: Royal Charisma stole 3 units from Lentria (Player 1) to Odatria!",
+                 "Player 2: Regicide failed in Lentria (Player 1) - no hero present!"]
+        assert len([r for r in _rows(lines, local=0) if r.kind == 'entry']) == 3
+        assert not [r for r in _rows(lines, local=2) if r.kind == 'entry']
+
+    def test_vow_and_embargo_spare_allies_and_eliminated_players(self):
+        """Owner rule: these hit enemies only. Both used to hit every player but the
+        caster, so a team-mate lost their income / hero abilities too."""
+        import map_data
+        from game_state import GameState
+        map_data.load_polygons()
+        gs = GameState(num_players=4, player_is_ai=[False, True, True, True],
+                       player_ai_difficulty=[None, 1, 1, 1], player_teams=[0, 0, 1, 1],
+                       skip_setup_phase=True)
+        gs.phase = 'playing'
+        gs.eliminated_players.add(3)
+        assert gs.ability_enemies(0) == [2]
+        gs.current_player = 0
+        gs._activate_vow_of_silence('Aidam Narn', {'name': 'Vow of Silence'})
+        assert gs.hero_silence_status.get(1, 0) == 0 and gs.hero_silence_status[2] == 2
+        gs._activate_embargo(0)
+        assert gs.embargo_blocked_players == [2]
+        assert gs.messages[-1] == "  No income at the start of their next turn: Player 3"
 
     def test_helper_without_player_logs_plain_text(self):
         gs = self._game_state()

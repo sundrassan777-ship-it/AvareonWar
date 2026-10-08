@@ -2383,13 +2383,16 @@ class Game:
                             else:
                                 logger.error(f"[NETWORK] Reinforce failed for player {player_id}: {error_msg}")
                         elif ability_name == 'Vow of Silence':
-                            # Silence all enemy players (counter=2: lasts until end of caster's next turn)
-                            for enemy_id in range(self.game_state.num_players):
-                                if enemy_id != player_id:
-                                    self.game_state.hero_silence_status[enemy_id] = 2
+                            # Silence all enemy players (counter=2: lasts until end of caster's next turn).
+                            # Same target set as the local path: allies are not silenced.
+                            for enemy_id in self.game_state.ability_enemies(player_id):
+                                self.game_state.hero_silence_status[enemy_id] = 2
                             self.game_state.add_message(f"Player {player_id + 1}: {hero_name} casts Vow of Silence!")
-                            # Named like the local path (heroes._activate_vow_of_silence)
-                            self.game_state.add_player_message(player_id, "All enemy heroes are silenced until next turn!")
+                            # Same sub-line as the local path (heroes._activate_vow_of_silence):
+                            # names the silenced players so they see the cast
+                            self.game_state.add_message(self.game_state.ability_victims_line(
+                                "Heroes silenced until next turn",
+                                self.game_state.ability_enemies(player_id)))
                             logger.info(f"[NETWORK] Executed Vow of Silence for player {player_id}")
                         elif ability_name == 'Extort Populace':
                             success, error_msg = self.game_state.execute_extort_populace(player_id)

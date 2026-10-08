@@ -952,6 +952,17 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         else:
             self.add_message(f"Player {player + 1}: {message}")
 
+    @staticmethod
+    def ability_victims_line(text, players):
+        """Indented Action Log sub-line naming the players a hero ability hit.
+
+        Placed under the caster's "Player N: ... casts X!" line. The Action Log shows a
+        block to every player it names, so this is what makes an enemy's Vow of Silence
+        or Embargo visible to the players it affects (and only to them).
+        """
+        names = ', '.join(f"Player {p + 1}" for p in players)
+        return f"  {text}: {names}"
+
     def add_chat_message(self, player_id, message, channel="all"):
         """Add a chat message with timestamp, player info, and channel.
 
