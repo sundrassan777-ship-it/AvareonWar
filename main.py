@@ -1545,6 +1545,8 @@ class Game:
         # Pixel scroll position per scrollable sidebar tab (see handle_sidebar_wheel)
         self._reset_sidebar_scroll()
         self.order_card_rects = []  # (clipped rect, entry) of visible Action Queue cards
+        self.sidebar_hero_ability_buttons = {}  # {(hero, i): rect} ability icons on sidebar hero cards
+        self.hero_portrait_rects = {}           # {hero: rect} portraits on sidebar hero cards
         self.sidebar_tooltip = None  # (text, mouse_pos) hover label, drawn at frame end
 
         # Track previous player and phase for AI turn optimization
@@ -7111,11 +7113,19 @@ class Game:
             self.hero_selection_buttons = {}
             self.order_cancel_buttons = []
             self.order_card_rects = []
+            self.sidebar_hero_ability_buttons = {}
+            self.hero_portrait_rects = {}
             self.cancel_all_button = None
+            self.update_button_hover(None, 'sidebar_hero_ability')
             return
 
         # Draw content based on active tab (Phase 4D: inlined delegates)
         active_tab = self.game_state.active_sidebar_tab
+        if active_tab != 'heroes':
+            # Hero-card rects/hover belong to the Heroes tab only
+            self.sidebar_hero_ability_buttons = {}
+            self.hero_portrait_rects = {}
+            self.update_button_hover(None, 'sidebar_hero_ability')
 
         if active_tab == 'action_queue':
             self.ui_renderer._draw_action_queue_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
@@ -7708,14 +7718,18 @@ class Game:
                              border_color=(200, 200, 200),
                              padding=7, line_spacing=4)
 
-    def draw_ability_tooltip(self, mouse_pos, hero_name, ability_index):
-        """Draw tooltip for hero ability buttons"""
+    def draw_ability_tooltip(self, mouse_pos, hero_name, ability_index, player=None):
+        """Draw tooltip for hero ability buttons.
+
+        `player` whose cooldown / silence to show: defaults to the acting player (bottom
+        bar); the sidebar Heroes tab passes the local player.
+        """
         # Check if tooltips are enabled
         if not self.tooltips_enabled:
             return
 
         # Get hero info
-        current_player = self.game_state.current_player
+        current_player = self.game_state.current_player if player is None else player
         if hero_name not in self.game_state.HERO_TYPES:
             return
 
@@ -9309,6 +9323,9 @@ class Game:
         self.cancel_button = None
         self.demolish_button = None
         self.territory_info_plot_buttons = []
+        # Hero ability slots were only reset inside draw_hero_ui, so after the Hero UI
+        # closed their rects stayed clickable over whatever the bottom panel showed next
+        self.hero_ability_buttons = {}
 
         # Always draw player info section (left side)
         self._draw_player_info_section()
@@ -9351,6 +9368,102 @@ class Game:
         if self.selected_plot:
             self._draw_building_ui_section()
             return
+
+    def draw_hero_ability_icon(self, rect, hero_name, ability_index, status, hovering, clicking,
+                               digit_font, disabled=None, surface=None):
+        """Draw one hero ability button (icon, spell border, overlays, cooldown digits).
+
+        Shared by the bottom-bar Hero UI (60 px) and the sidebar Heroes tab (~30 px).
+        `status` comes from game_state.get_hero_ability_status(). `disabled` defaults to
+        "active ability that can't be cast now"; the sidebar passes True when it is not
+        the viewer's turn. `surface` defaults to the screen (the sidebar draws into a
+        cached sprite instead and blits that).
+        """
+        size = rect.w
+        target = self.screen if surface is None else surface
+        if disabled is None:
+            disabled = status['type'] == 'active' and not status['castable']
+        image = self.ability_images.get((hero_name, ability_index)) if hasattr(self, 'ability_images') else None
+        if image:
+            # PERFORMANCE: cached scaled icon / border / overlays (keyed by size)
+            icon = self._get_cached_ui_icon(image, f'ability_{hero_name}_{ability_index}', size)
+            target.blit(icon, rect.topleft)
+            if disabled:
+                target.blit(self._get_hero_overlay(size, 'dark'), rect.topleft)
+            if clicking:
+                target.blit(self._get_hero_overlay(size, 'bright'), rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+            elif hovering:
+                target.blit(self._get_hero_overlay(size, 'light'), rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+            border, border_id = ((self.passive_spell_border, 'passive_spell_border') if status['type'] == 'passive'
+                                 else (self.active_spell_border, 'active_spell_border'))
+            if border:
+                target.blit(self._get_cached_ui_icon(border, border_id, size), rect.topleft)
+                # Hover/click also brighten the border
+                if clicking:
+                    target.blit(self._get_hero_overlay(size, 'bright'), rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+                elif hovering:
+                    target.blit(self._get_hero_overlay(size, 'light'), rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+        else:
+            # Fallback: ability number
+            number = self._get_cached_text(str(ability_index + 1), self.font, GRAY if disabled else WHITE)
+            target.blit(number, number.get_rect(center=rect.center))
+
+        # Cooldown turns, with a shadow for readability
+        if status['cooldown'] > 0:
+            text = str(status['cooldown'])
+            digits = self._get_cached_text(text, digit_font, (255, 200, 200))
+            digits_rect = digits.get_rect(center=(rect.centerx, rect.bottom - max(8, size // 4)))
+            shadow = self._get_cached_text(text, digit_font, BLACK)
+            offset = 2 if size >= 40 else 1
+            target.blit(shadow, (digits_rect.x + offset, digits_rect.y + offset))
+            target.blit(digits, digits_rect)
+
+    def try_cast_hero_ability(self, hero_name, ability_index, flash_type='hero_ability'):
+        """Cast a hero ability exactly as the bottom-bar button does. Returns True if cast.
+
+        Shared by the bottom-bar Hero UI and the sidebar Heroes tab so both behave
+        identically: targeted abilities enter targeting mode; immediate ones run, are
+        broadcast in multiplayer (SIM_HERO_ABILITY) and play their map effect; a refusal
+        shows its toast. Uses game_state.current_player (the acting player) - callers
+        gate on whose turn it is.
+        """
+        current_player = self.game_state.current_player
+        status = self.game_state.get_hero_ability_status(current_player, hero_name, ability_index)
+        if status is None or not status['castable']:
+            return False
+        ability_name = status['name']
+        self.trigger_click_flash(flash_type, (hero_name, ability_index))
+
+        result = self.game_state.activate_hero_ability(hero_name, ability_index)
+        if result == 'requires_targeting':
+            # Enter targeting mode
+            self.ability_targeting_active = True
+            self.ability_targeting_hero = hero_name
+            self.ability_targeting_ability_index = ability_index
+            self.ability_targeting_ability_name = ability_name
+        elif result is True:
+            # Immediate ability executed - broadcast to other players in multiplayer
+            # Sync fix: send in both sequential and simultaneous modes (not just sim)
+            if self.multiplayer_mode:
+                self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
+                    'player_id': current_player,
+                    'hero_name': hero_name,
+                    'ability_index': ability_index,
+                    'ability_name': ability_name,
+                    'target': None  # No target for immediate abilities
+                })
+                logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name}")
+            # Trigger visual effect for immediate abilities
+            self.map_renderer.trigger_ability_effect(ability_name, None, current_player)
+        elif isinstance(result, str):
+            # An immediate ability refused with a reason (Reinforce: its Keep territory is
+            # full). The refusal recorded its message code.
+            if self.game_state.last_action_error:
+                self._show_action_failure_feedback()
+            else:
+                self.show_action_error(message=result)
+        self.clear_button_tooltip()
+        return True
 
     def draw_hero_ui(self):
         """Draw Hero UI when a hero is selected from Heroes tab"""
@@ -9459,100 +9572,17 @@ class Game:
             # Store button rect for click detection
             self.hero_ability_buttons[(hero_name, i)] = ability_rect
 
-            # Check if ability exists at this index
-            if i < len(abilities):
-                ability = abilities[i]
-                ability_type = ability.get('type', 'active')
-                ability_name = ability.get('name', 'Unknown')
-
-                # Check if ability is on cooldown
-                cooldown_remaining = 0
-                if hero_name in self.game_state.hero_ability_cooldowns.get(current_player, {}):
-                    cooldown_remaining = self.game_state.hero_ability_cooldowns[current_player][hero_name].get(ability_name, 0)
-
-                # Check if hero is silenced (only affects active abilities)
-                is_silenced = self.game_state.hero_silence_status.get(current_player, 0) > 0
-
-                # Determine button state
-                is_disabled = False
-                if ability_type == 'active':
-                    is_disabled = (cooldown_remaining > 0) or is_silenced
-
-                # Check for hover/click effects
+            # Availability + drawing are shared with the sidebar Heroes tab
+            # (game_state.get_hero_ability_status / draw_hero_ability_icon)
+            status = self.game_state.get_hero_ability_status(current_player, hero_name, i)
+            if status is not None:
                 is_hovering = ability_rect.collidepoint(self.mouse_pos)
                 if is_hovering:
                     # Track hover for tooltip (both active and passive abilities)
                     current_ability_hover = ('hero_ability', (hero_name, i))
-
-                is_clicking = False
-                if ability_type == 'active' and not is_disabled:
-                    is_clicking = (self.clicked_element and
-                                  self.clicked_element[0] == 'hero_ability' and
-                                  self.clicked_element[1] == (hero_name, i))
-
-                # Try to draw ability icon
-                if (hero_name, i) in self.ability_images and self.ability_images[(hero_name, i)]:
-                    ability_image = self.ability_images[(hero_name, i)]
-
-                    # PERFORMANCE OPTIMIZATION: Use cached scaled ability icon (fixes FPS drop)
-                    icon_size = ability_size
-                    ability_icon_id = f'ability_{hero_name}_{i}'
-                    cached_ability = self._get_cached_ui_icon(ability_image, ability_icon_id, icon_size)
-
-                    # Draw cached icon at button position
-                    self.screen.blit(cached_ability, (ability_rect.x, ability_rect.y))
-
-                    # Apply grayscale/darkening overlay if disabled (using cached overlay)
-                    if is_disabled:
-                        dark_overlay = self._get_hero_overlay(icon_size, 'dark')
-                        self.screen.blit(dark_overlay, (ability_rect.x, ability_rect.y))
-
-                    # Apply hover/click brightness effects (using cached overlays)
-                    if is_clicking:
-                        bright_overlay = self._get_hero_overlay(icon_size, 'bright')
-                        self.screen.blit(bright_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-                    elif is_hovering:
-                        light_overlay = self._get_hero_overlay(icon_size, 'light')
-                        self.screen.blit(light_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-
-                    # PERFORMANCE OPTIMIZATION: Cache spell border scaling
-                    if ability_type == 'passive' and self.passive_spell_border:
-                        cached_border = self._get_cached_ui_icon(self.passive_spell_border, 'passive_spell_border', ability_size)
-                        self.screen.blit(cached_border, (ability_rect.x, ability_rect.y))
-
-                        # Apply hover/click effects to border on screen
-                        if is_clicking:
-                            bright_overlay = self._get_hero_overlay(ability_size, 'bright')
-                            self.screen.blit(bright_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-                        elif is_hovering:
-                            light_overlay = self._get_hero_overlay(ability_size, 'light')
-                            self.screen.blit(light_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-
-                    elif ability_type == 'active' and self.active_spell_border:
-                        cached_border = self._get_cached_ui_icon(self.active_spell_border, 'active_spell_border', ability_size)
-                        self.screen.blit(cached_border, (ability_rect.x, ability_rect.y))
-
-                        # Apply hover/click effects to border on screen
-                        if is_clicking:
-                            bright_overlay = self._get_hero_overlay(ability_size, 'bright')
-                            self.screen.blit(bright_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-                        elif is_hovering:
-                            light_overlay = self._get_hero_overlay(ability_size, 'light')
-                            self.screen.blit(light_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-                else:
-                    # Fallback: Draw ability number
-                    number_text = self._get_cached_text(str(i + 1), self.font, WHITE if not is_disabled else GRAY)
-                    number_rect = number_text.get_rect(center=ability_rect.center)
-                    self.screen.blit(number_text, number_rect)
-
-                # Draw cooldown number if on cooldown
-                if cooldown_remaining > 0:
-                    cooldown_text = self._get_cached_text(str(cooldown_remaining), self.large_font, (255, 200, 200))
-                    cooldown_rect = cooldown_text.get_rect(center=(ability_rect.centerx, ability_rect.bottom - 15))
-                    # Draw shadow for readability
-                    shadow_text = self._get_cached_text(str(cooldown_remaining), self.large_font, BLACK)
-                    self.screen.blit(shadow_text, (cooldown_rect.x + 2, cooldown_rect.y + 2))
-                    self.screen.blit(cooldown_text, cooldown_rect)
+                is_clicking = status['castable'] and self.clicked_element == ('hero_ability', (hero_name, i))
+                self.draw_hero_ability_icon(ability_rect, hero_name, i, status, is_hovering, is_clicking,
+                                            self.large_font)
             else:
                 # No ability at this slot - draw empty placeholder
                 pygame.draw.rect(self.screen, (60, 60, 60), ability_rect, border_radius=5)
@@ -14174,71 +14204,10 @@ class Game:
         if self.selected_hero and self.hero_ability_buttons:
             for (hero_name, ability_index), button_rect in self.hero_ability_buttons.items():
                 if button_rect.collidepoint(pos):
-                    # Check if this hero is the selected one
+                    # Only the selected hero's abilities; a click on a slot is always
+                    # consumed (cooldown / silence / passive simply do nothing)
                     if hero_name == self.selected_hero:
-                        # Get ability info
-                        current_player = self.game_state.current_player
-                        hero_info = self.game_state.HERO_TYPES[hero_name]
-                        abilities = hero_info.get('abilities', [])
-
-                        if ability_index < len(abilities):
-                            ability = abilities[ability_index]
-                            ability_type = ability.get('type', 'active')
-                            ability_name = ability.get('name', 'Unknown')
-
-                            # Only handle active abilities
-                            if ability_type == 'active':
-                                # Check if ability is on cooldown
-                                cooldown_remaining = 0
-                                if hero_name in self.game_state.hero_ability_cooldowns.get(current_player, {}):
-                                    cooldown_remaining = self.game_state.hero_ability_cooldowns[current_player][hero_name].get(ability_name, 0)
-
-                                # Check if hero is silenced
-                                is_silenced = self.game_state.hero_silence_status.get(current_player, 0) > 0
-
-                                # Only activate if not on cooldown and not silenced
-                                if cooldown_remaining == 0 and not is_silenced:
-                                    # Trigger click flash
-                                    self.trigger_click_flash('hero_ability', (hero_name, ability_index))
-
-                                    # Activate ability
-                                    result = self.game_state.activate_hero_ability(hero_name, ability_index)
-
-                                    # Check if ability requires targeting
-                                    if result == 'requires_targeting':
-                                        # Enter targeting mode
-                                        self.ability_targeting_active = True
-                                        self.ability_targeting_hero = hero_name
-                                        self.ability_targeting_ability_index = ability_index
-                                        self.ability_targeting_ability_name = ability_name
-                                    elif result is True:
-                                        # Immediate ability executed - broadcast to other players in multiplayer
-                                        # Sync fix: send in both sequential and simultaneous modes (not just sim)
-                                        if self.multiplayer_mode:
-
-                                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
-                                                'player_id': current_player,
-                                                'hero_name': hero_name,
-                                                'ability_index': ability_index,
-                                                'ability_name': ability_name,
-                                                'target': None  # No target for immediate abilities
-                                            })
-                                            logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name}")
-
-                                        # Trigger visual effect for immediate abilities
-                                        self.map_renderer.trigger_ability_effect(
-                                            ability_name, None, current_player)
-                                    elif isinstance(result, str):
-                                        # An immediate ability refused with a reason (Reinforce:
-                                        # its Keep territory is full). This used to be dropped
-                                        # silently. The refusal recorded its message code.
-                                        if self.game_state.last_action_error:
-                                            self._show_action_failure_feedback()
-                                        else:
-                                            self.show_action_error(message=result)
-
-                                    self.clear_button_tooltip()
-                                    return True
+                        self.try_cast_hero_ability(hero_name, ability_index)
                     return True
 
         # Click not handled by any bottom UI element
@@ -15270,6 +15239,26 @@ class Game:
 
         return True  # Consume clicks inside popup
 
+    def _can_cast_from_sidebar(self):
+        """May the viewer cast hero abilities from the sidebar right now?
+
+        Mirrors the bottom-bar Hero UI: the game is in play, it is the viewer's turn to
+        act (casting uses game_state.current_player, and in sequential single-player
+        is_local_player_active() is True even during AI turns), the viewer is active
+        (multiplayer / simultaneous Ready), and no battle resolution is under way (the
+        bottom bar hides the Hero UI then).
+        """
+        gs = self.game_state
+        if gs is None or gs.phase != 'playing':
+            return False
+        if gs.current_player != self.get_local_player() or not self.is_local_player_active():
+            return False
+        if self._is_sim_resolving():
+            return False
+        if gs.turn_phase == 'battles' and gs.pending_battles:
+            return False
+        return True
+
     def handle_heroes_tab_click(self, pos):
         """
         Handle clicks on hero selection buttons in the Heroes sidebar tab.
@@ -15288,6 +15277,14 @@ class Game:
             - Sets self.selected_hero to the clicked hero name
             - Clears other UI selections (territory, plot, barracks, keep)
         """
+        # Ability icons on the hero cards: cast exactly like the bottom-bar buttons
+        # (shared try_cast_hero_ability), only when it's the viewer's turn to act
+        for (hero_name, ability_index), icon_rect in (getattr(self, 'sidebar_hero_ability_buttons', None) or {}).items():
+            if icon_rect.collidepoint(pos):
+                if self._can_cast_from_sidebar():
+                    self.try_cast_hero_ability(hero_name, ability_index, flash_type='sidebar_hero_ability')
+                return True
+
         # Check if we have hero selection buttons stored
         if not self.hero_selection_buttons:
             return False
@@ -15295,7 +15292,8 @@ class Game:
         # Check each hero button
         for hero_name, hero_rect in self.hero_selection_buttons.items():
             if hero_rect.collidepoint(pos):
-                # Hero clicked - select it
+                # Hero clicked - select it (click flash on the card)
+                self.trigger_click_flash('sidebar_hero_card', hero_name)
                 self.selected_hero = hero_name
 
                 # Play hero selection voice line
@@ -15840,6 +15838,11 @@ class Game:
             else:
                 # Regular button tooltip (buildings, training, army units, etc.)
                 self.draw_button_tooltip(self.mouse_pos, self.show_tooltip_button)
+        elif (self.show_tooltip_button and self.show_tooltip_button[0] == 'sidebar_hero_ability'
+              and self.is_point_over_sidebar_panel(self.mouse_pos)):
+            # Ability icon on a sidebar hero card: the LOCAL player's cooldowns
+            hero_name, ability_index = self.show_tooltip_button[1]
+            self.draw_ability_tooltip(self.mouse_pos, hero_name, ability_index, player=self.get_local_player())
         elif self.show_tooltip_button and self.show_tooltip_button[0] == 'territory_lore':
             # Territory preview tooltip — drawn even past sidebar_x since the preview
             # image extends into that region of the bottom panel

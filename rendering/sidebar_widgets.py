@@ -202,6 +202,20 @@ class SidebarWidgets:
             self._art[key] = image
         return self._art[key]
 
+    @staticmethod
+    def display_alpha(surface):
+        """`surface` converted to the display's alpha pixel format when a display exists.
+
+        Composed SRCALPHA sprites (cards, icons) are blitted every frame; in the
+        display's own format pygame blends them without a per-pixel format conversion.
+        """
+        if pygame.display.get_init() and pygame.display.get_surface() is not None:
+            try:
+                return surface.convert_alpha()
+            except pygame.error:
+                pass
+        return surface
+
     # ------------------------------------------------------------------ icons
 
     def icon(self, path, size, crop=False, frame=False):

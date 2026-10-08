@@ -1899,6 +1899,8 @@ class UIRenderer:
             w.blit_button(surf, button, 'Cancel Order', art='campaign', tint=self.CANCEL_TINT,
                           state='locked' if cancel_locked else button_state, role='small_bold')
 
+        # Display alpha format: noticeably faster to blend every frame
+        surf = self.game.sidebar_widgets.display_alpha(surf)
         cache[key] = surf
         if len(cache) > 96:
             cache.popitem(last=False)
@@ -2357,145 +2359,303 @@ class UIRenderer:
                                   lambda item, y: self._draw_chat_item(item[1], viewport.x, y, viewport.w))
         w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
 
-    def _draw_heroes_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Draw Heroes tab content showing active heroes and training progress."""
-        # Initialize hero button storage for click detection
-        if not hasattr(self.game, 'hero_selection_buttons'):
-            self.game.hero_selection_buttons = {}
-        self.game.hero_selection_buttons = {}
+    # ========================================================================
+    # HEROES (sidebar overhaul P4)
+    # ========================================================================
+    HERO_CARD_FILL = ((36, 26, 23, 238), (20, 14, 13, 238))
+    HERO_TITLE_COLOR = (214, 160, 96)
 
-        # Header
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        header_y = content_start_y
-        header_text = self.get_cached_text("Heroes", self.game.font, WHITE, "font")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
+    def _hero_entries(self, local_player):
+        """(kind, hero, info) for the local player's active heroes, then those in training."""
+        gs = self.game.game_state
+        entries = []
+        for hero, data in (gs.heroes.get(local_player, {}) or {}).items():
+            entries.append(('active', hero, {'keep': data.get('keep_territory', '?')}))
+        for territory, keeps in gs.hero_training_queue.items():
+            if gs.territory_owners.get(territory, -1) != local_player:
+                continue
+            for keep_plot, entry in keeps.items():
+                # Format: (hero_type, turns_remaining[, paid_cost]) - index access (old saves: 2-tuple)
+                hero, remaining = entry[0], entry[1]
+                total = max(1, int(gs.HERO_TYPES.get(hero, {}).get('training_time', remaining) or 1))
+                entries.append(('training', hero, {'keep': territory, 'remaining': int(remaining),
+                                                   'total': max(total, int(remaining))}))
+        return entries
 
-        # Show LOCAL player's heroes (not current turn player)
-        if self.game.multiplayer_mode:
-            current_player = self.game.local_player_index if self.game.local_player_index is not None else 0
+    def _hero_card_layout(self, kind, hero, info, width):
+        """Measure one hero card (memoised: text wrapping/fitting is the costly part)."""
+        key = (kind, hero, info.get('keep'), info.get('remaining'), info.get('total'), int(width),
+               self.game.sidebar_widgets.scale)
+        cache = self.__dict__.setdefault('_hero_layout_cache', OrderedDict())
+        lay = cache.get(key)
+        if lay is None:
+            lay = self._measure_hero_card(kind, hero, info, width)
+            cache[key] = lay
+            if len(cache) > 64:
+                cache.popitem(last=False)
+        return lay
+
+    def _measure_hero_card(self, kind, hero, info, width):
+        """Measure one hero card (card-local rects for portrait / ability icons)."""
+        w = self.game.sidebar_widgets
+        s = w.scale
+        border = max(8, int(round(9 * s)))
+        pad = border + 6
+        inner_w = width - 2 * pad
+        name_h = w.font('heading').get_linesize()
+        italic_h = w.font('italic').get_linesize()
+        small_h = w.font('small').get_linesize()
+        portrait = int(round(46 * s))
+        text_x = pad + portrait + 8
+        text_w = width - pad - text_x
+        title = ' '.join(self.game.game_state.HERO_TYPES.get(hero, {}).get('description', []) or [])
+        title_lines = w.wrap(title, 'italic', text_w)[:2] if title else []
+        location = w.fit_text(f"Keep: {info['keep']}", 'small', text_w)
+        body_h = max(portrait, italic_h * len(title_lines) + 3 + small_h)
+
+        y = pad
+        name_y = y
+        y += name_h + 2
+        rule1_y = y
+        y += 7 + 5
+        body_y = y
+        y += body_h + 5
+        rule2_y = y
+        y += 7 + 6
+        icons = []
+        if kind == 'active':
+            icon = int(round(32 * s))
+            gap = max(6, int(round(10 * s)))
+            total = 3 * icon + 2 * gap
+            start = (width - total) // 2
+            for i in range(3):
+                icons.append(pygame.Rect(start + i * (icon + gap), y, icon, icon))
+            y += icon
+            bar = None
         else:
-            current_player = 0
-            for i in range(self.game.game_state.num_players):
-                if not self.game.game_state.player_is_ai[i]:
-                    current_player = i
-                    break
+            bar = pygame.Rect(pad, y, inner_w, max(10, int(round(12 * s))))
+            y += bar.h + 4 + small_h
+        height = y + pad
+        return {'border': border, 'pad': pad, 'inner_w': inner_w, 'name_y': name_y, 'rule1_y': rule1_y,
+                'body_y': body_y, 'rule2_y': rule2_y, 'portrait': pygame.Rect(pad, body_y, portrait, portrait),
+                'text_x': text_x, 'title_lines': title_lines, 'location': location, 'italic_h': italic_h,
+                'icons': icons, 'bar': bar, 'height': height, 'width': int(width)}
 
-        # Hero limit display (centered below header)
-        current_hero_count = len(self.game.game_state.hero_ownership[current_player])
-        hero_limit = self.game.game_state.player_hero_limit[current_player]
-        limit_text = self.get_cached_text(f"Hero Limit: {current_hero_count}/{hero_limit}", self.game.small_font, (200, 200, 100), "small")
-        limit_rect = limit_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y + 25)
-        self.game.screen.blit(limit_text, limit_rect)
+    def _compose_hero_card(self, kind, hero, info, lay, state):
+        """Static part of a hero card (frame, name, portrait, title, location, rules,
+        progress bar) on one cached surface; ability icons are drawn live on top."""
+        key = (kind, hero, info.get('keep'), info.get('remaining'), info.get('total'), lay['width'],
+               self.game.sidebar_widgets.scale, state)
+        cache = self.__dict__.setdefault('_hero_card_cache', OrderedDict())
+        surf = cache.get(key)
+        if surf is not None:
+            cache.move_to_end(key)
+            return surf
 
-        # Separator
-        pygame.draw.line(self.game.screen, (100, 100, 100),
-                        (sidebar_x + 30, header_y + 50),
-                        (sidebar_x + sidebar_width - 10, header_y + 50), 2)
+        game = self.game
+        w = game.sidebar_widgets
+        width, height = lay['width'], lay['height']
+        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        surf.blit(w.card('bronze', (width, height), lay['border'], self.HERO_CARD_FILL, state), (0, 0))
+        training = kind == 'training'
 
-        # Check for heroes
-        has_active = (current_player in self.game.game_state.heroes and
-                      len(self.game.game_state.heroes[current_player]) > 0)
+        # Name (prominent, gold) over a gold rule
+        name_color = (232, 196, 120) if training else (250, 222, 150)
+        name = w.text(w.fit_text(hero, 'heading', lay['inner_w']), 'heading', name_color)
+        surf.blit(name, name.get_rect(midtop=(width // 2, lay['name_y'])))
+        surf.blit(w.separator(lay['inner_w']), (lay['pad'], lay['rule1_y']))
 
-        has_training = False
-        for territory, keeps_dict in self.game.game_state.hero_training_queue.items():
-            if self.game.game_state.territory_owners.get(territory, -1) == current_player:
-                has_training = True
-                break
+        # Portrait (dimmed while in training) + title + location
+        portrait_rect = lay['portrait']
+        image = getattr(game, 'hero_images', {}).get(hero)
+        portrait = w.icon_surface(('hero', hero), image, portrait_rect.w, frame=True)
+        if training:
+            portrait = portrait.copy()
+            portrait.fill((150, 150, 150, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(portrait, portrait_rect.topleft)
+        ty = lay['body_y']
+        for line in lay['title_lines']:
+            surf.blit(w.text(line, 'italic', self.HERO_TITLE_COLOR), (lay['text_x'], ty))
+            ty += lay['italic_h']
+        surf.blit(w.text(lay['location'], 'small', (200, 188, 168)), (lay['text_x'], ty + 3))
+        surf.blit(w.separator(lay['inner_w'], color=(150, 112, 52)), (lay['pad'], lay['rule2_y']))
 
-        if not has_active and not has_training:
-            # Empty state
-            # FPS OPTIMIZATION 4.1: Use cached text for static messages
-            empty_text = self.get_cached_text("No heroes yet", self.game.small_font, (150, 150, 150), "small_font")
-            empty_rect = empty_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 100))
-            self.game.screen.blit(empty_text, empty_rect)
+        # Training: progress bar + turns remaining
+        if training and lay['bar'] is not None:
+            done = info['total'] - info['remaining']
+            frac = done / float(info['total'])
+            bar = lay['bar']
+            pygame.draw.rect(surf, (28, 20, 16), bar, border_radius=3)
+            if frac > 0:
+                fill = bar.inflate(-4, -4)
+                fill.w = max(1, int(fill.w * frac))
+                pygame.draw.rect(surf, (196, 150, 60), fill, border_radius=2)
+            pygame.draw.rect(surf, (120, 86, 34), bar, 1, border_radius=3)
+            remaining = info['remaining']
+            label = w.text(f"{remaining} {'turn' if remaining == 1 else 'turns'} remaining", 'small',
+                           (226, 210, 178))
+            surf.blit(label, label.get_rect(midtop=(width // 2, bar.bottom + 4)))
 
-            hint_text = self.get_cached_text("Train heroes from Keeps", self.game.small_font, (120, 120, 120), "small_font")
-            hint_rect = hint_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 130))
-            self.game.screen.blit(hint_text, hint_rect)
+        # Display alpha format: noticeably faster to blend every frame
+        surf = self.game.sidebar_widgets.display_alpha(surf)
+        cache[key] = surf
+        if len(cache) > 48:
+            cache.popitem(last=False)
+        return surf
+
+    def _hero_ability_sprite(self, hero, index, size, status, hovering, clicking, disabled):
+        """One ability icon composed once per look (shared draw helper, cached).
+
+        PERFORMANCE: drawing the icons live (icon, overlays, spell border, digits) for
+        three hero cards cost ~0.2 ms per frame; a composed sprite is one blit. Keyed
+        by everything that changes the look, so cooldowns / hover / flash stay exact.
+        """
+        key = (hero, index, size, status['type'], status['cooldown'], hovering, clicking, disabled,
+               self.game.sidebar_widgets.scale)
+        cache = self.__dict__.setdefault('_hero_icon_cache', OrderedDict())
+        sprite = cache.get(key)
+        if sprite is None:
+            sprite = pygame.Surface((size, size), pygame.SRCALPHA)
+            self.game.draw_hero_ability_icon(pygame.Rect(0, 0, size, size), hero, index, status, hovering,
+                                             clicking, self.game.sidebar_widgets.font('digits'),
+                                             disabled=disabled, surface=sprite)
+            sprite = self.game.sidebar_widgets.display_alpha(sprite)
+            cache[key] = sprite
+            if len(cache) > 96:
+                cache.popitem(last=False)
+        else:
+            cache.move_to_end(key)
+        return sprite
+
+    def _draw_heroes_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
+        """Heroes tab: the local player's heroes as bronze cards, then those in training.
+
+        Active hero card: name (gold, underlined) / portrait + title + Keep location /
+        the three ability icons - hoverable (tooltip after the usual delay) and castable
+        exactly like the bottom-bar Hero UI (shared helpers: get_hero_ability_status,
+        draw_hero_ability_icon, try_cast_hero_ability), dimmed when it's not your turn.
+        Clicking the card selects the hero (bottom-bar Hero UI), as before.
+        Training card: dimmed portrait, progress bar and turns remaining.
+        Scrolls (top-anchored ScrollState) when the cards don't fit.
+
+        Click rects: hero_selection_buttons {hero: rect}, sidebar_hero_ability_buttons
+        {(hero, i): rect}, hero_portrait_rects {hero: rect} - all clipped to the viewport.
+        """
+        from ui.sidebar_layout import content_geometry, SCROLLBAR_W
+        game = self.game
+        gs = game.game_state
+        w = game.sidebar_widgets
+        screen = game.screen
+        local_player = game.get_local_player()
+
+        game.hero_selection_buttons = {}
+        game.sidebar_hero_ability_buttons = {}
+        game.hero_portrait_rects = {}
+        current_hover = None
+
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Heroes", 2 * half, role='title')
+        screen.blit(header, (full.center_x - half, content_start_y))
+        y = content_start_y + header.get_height() + 4
+
+        # Hero limit (counts heroes in training too)
+        count = len(gs.hero_ownership.get(local_player, ())) if isinstance(gs.hero_ownership, dict) else 0
+        limit = gs.player_hero_limit[local_player] if 0 <= local_player < len(gs.player_hero_limit) else 0
+        limit_text = w.text(f"Hero Limit: {count}/{limit}", 'small_bold', (222, 200, 120))
+        screen.blit(limit_text, limit_text.get_rect(midtop=(full.center_x, y)))
+        list_top = y + limit_text.get_height() + 8
+
+        entries = self._hero_entries(local_player)
+        scroll = game.sidebar_scroll['heroes']
+        if not entries:
+            empty = w.text("No heroes yet", 'body', (200, 170, 150))
+            screen.blit(empty, empty.get_rect(center=(full.center_x, list_top + 30)))
+            hint = w.text("Train heroes from Keeps", 'italic', (170, 150, 130))
+            screen.blit(hint, hint.get_rect(center=(full.center_x, list_top + 54)))
+            scroll.set_content(0, 0)
+            game.update_button_hover(None, 'sidebar_hero_ability')
             return
 
-        hero_y = header_y + 70
+        geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
+                               footer_h=8, panel_width=sidebar_width, scrollbar=True)
+        viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
 
-        # Active Heroes Section
-        if has_active:
-            # FPS OPTIMIZATION 4.1: Use cached text for static section title
-            section_title = self.get_cached_text("Active Heroes:", self.game.font, (200, 200, 200), "font")
-            self.game.screen.blit(section_title, (sidebar_x + 30, hero_y))
-            hero_y += 30
+        # Lay out: section header, cards, (second section header, cards)
+        gap = 8
+        items, y, last_kind = [], 0, None
+        for kind, hero, info in entries:
+            if kind != last_kind:
+                label = "Active Heroes" if kind == 'active' else "Heroes in Training"
+                hdr = w.section_header(label, geo.width, role='heading')
+                items.append(('header', hdr, y, hdr.get_height()))
+                y += hdr.get_height() + 6
+                last_kind = kind
+            lay = self._hero_card_layout(kind, hero, info, geo.width)
+            items.append(('card', (kind, hero, info, lay), y, lay['height']))
+            y += lay['height'] + gap
+        scroll.set_content(max(0, y - gap), viewport.h)
+        top = viewport.y - scroll.view_top()
 
-            for hero_type, hero_data in self.game.game_state.heroes[current_player].items():
-                # Hero box - taller height for better text visibility
-                hero_rect = pygame.Rect(sidebar_x + 30, hero_y, sidebar_width - 60, 85)
-
-                # Check if this hero is selected
-                is_selected = (self.game.selected_hero == hero_type)
-
-                # Draw background with selection highlight
-                if is_selected:
-                    # Selected hero: darker background with thick gold border
-                    pygame.draw.rect(self.game.screen, (80, 80, 100), hero_rect, border_radius=5)
-                    pygame.draw.rect(self.game.screen, (218, 165, 32), hero_rect, 4, border_radius=5)
-                else:
-                    # Unselected hero: lighter background with thin blue border
-                    pygame.draw.rect(self.game.screen, (40, 40, 50), hero_rect, border_radius=5)
-                    pygame.draw.rect(self.game.screen, (100, 150, 200), hero_rect, 2, border_radius=5)
-
-                # Store rect for click detection
-                self.game.hero_selection_buttons[hero_type] = hero_rect
-
-                # Hero name
-                name_text = self.get_cached_text(hero_type, self.game.font, (200, 200, 100), "font")
-                self.game.screen.blit(name_text, (sidebar_x + 40, hero_y + 5))
-
-                # Keep location
-                location = f"Keep: {hero_data['keep_territory']}"
-                location_text = self.get_cached_text(location, self.game.small_font, (150, 150, 150), "small")
-                self.game.screen.blit(location_text, (sidebar_x + 40, hero_y + 28))
-
-                # Abilities: Coming Soon text removed per user request
-
-                hero_y += 95  # Adjusted spacing for taller button
-
-        # Training Heroes Section
-        if has_training:
-            # FPS OPTIMIZATION 4.1: Use cached text for static section title
-            section_title = self.get_cached_text("Training:", self.game.font, (200, 200, 200), "font")
-            self.game.screen.blit(section_title, (sidebar_x + 30, hero_y))
-            hero_y += 30
-
-            for territory, keeps_dict in self.game.game_state.hero_training_queue.items():
-                owner = self.game.game_state.territory_owners.get(territory, -1)
-                if owner != current_player:
+        # Casting from the sidebar follows the bottom bar's rules (see Game._can_cast_from_sidebar)
+        can_cast = game._can_cast_from_sidebar()
+        previous_clip = w.begin_clip(viewport)
+        try:
+            for item_kind, payload, item_y, item_h in items:
+                screen_y = top + item_y
+                if screen_y + item_h < viewport.top:
                     continue
+                if screen_y > viewport.bottom:
+                    break
+                if item_kind == 'header':
+                    screen.blit(payload, (viewport.x, screen_y))
+                    continue
+                kind, hero, info, lay = payload
+                rect = pygame.Rect(viewport.x, screen_y, viewport.w, item_h)
+                icon_rects = [r.move(rect.topleft) for r in lay['icons']]
+                over_icon = any(w.hover(r, viewport) for r in icon_rects)
+                if kind == 'active' and game.selected_hero == hero:
+                    state = 'selected'
+                elif kind == 'active' and getattr(game, 'clicked_element', None) == ('sidebar_hero_card', hero):
+                    state = 'flash'
+                elif kind == 'active' and w.hover(rect, viewport) and not over_icon:
+                    state = 'hover'
+                else:
+                    state = 'normal'
+                screen.blit(self._compose_hero_card(kind, hero, info, lay, state), rect.topleft)
 
-                for keep_plot, entry in keeps_dict.items():
-                    # H4 fix: handle 3-tuple (hero_type, turns, paid_cost)
-                    hero_type, turns_remaining = entry[0], entry[1]
-                    # Training box
-                    training_rect = pygame.Rect(sidebar_x + 30, hero_y, sidebar_width - 60, 60)
-                    pygame.draw.rect(self.game.screen, (60, 50, 50), training_rect, border_radius=5)
-                    pygame.draw.rect(self.game.screen, (200, 150, 100), training_rect, 2, border_radius=5)
+                hit = w.clip_hit(rect, viewport)
+                portrait_hit = w.clip_hit(lay['portrait'].move(rect.topleft), viewport)
+                if portrait_hit is not None:
+                    game.hero_portrait_rects[hero] = portrait_hit
+                if kind != 'active':
+                    continue
+                if hit is not None:
+                    game.hero_selection_buttons[hero] = hit
 
-                    # Hero name
-                    name_text = self.get_cached_text(hero_type, self.game.font, (200, 150, 100), "font")
-                    self.game.screen.blit(name_text, (sidebar_x + 40, hero_y + 5))
+                # Ability icons: live (cooldowns / hover / click flash change every turn)
+                for i, icon_rect in enumerate(icon_rects):
+                    status = gs.get_hero_ability_status(local_player, hero, i)
+                    if status is None:
+                        continue
+                    hovering = w.hover(icon_rect, viewport)
+                    if hovering:
+                        current_hover = ('sidebar_hero_ability', (hero, i))
+                    clicking = (status['castable'] and can_cast
+                                and getattr(game, 'clicked_element', None) == ('sidebar_hero_ability', (hero, i)))
+                    disabled = status['type'] == 'active' and not (status['castable'] and can_cast)
+                    screen.blit(self._hero_ability_sprite(hero, i, icon_rect.w, status, hovering, clicking,
+                                                          disabled), icon_rect.topleft)
+                    icon_hit = w.clip_hit(icon_rect, viewport)
+                    if icon_hit is not None:
+                        game.sidebar_hero_ability_buttons[(hero, i)] = icon_hit
+        finally:
+            w.end_clip(previous_clip)
 
-                    # Progress. No "Training:" prefix - the panel is already the
-                    # hero training list, and the full label overran its column.
-                    # Singular/plural so the last turn does not read "1 turns".
-                    progress = "%d %s remaining" % (
-                        turns_remaining,
-                        "turn" if turns_remaining == 1 else "turns")
-                    progress_text = self.get_cached_text(progress, self.game.small_font, (150, 150, 150), "small")
-                    self.game.screen.blit(progress_text, (sidebar_x + 40, hero_y + 28))
-
-                    # Location
-                    location = f"Keep: {territory}"
-                    location_text = self.get_cached_text(location, self.game.small_font, (120, 120, 120), "small")
-                    self.game.screen.blit(location_text, (sidebar_x + 40, hero_y + 45))
-
-                    hero_y += 70
+        w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
+        # Tooltip for the hovered ability (own hover type: the bottom bar's 'hero_ability'
+        # tracker releases its hover every frame and would cancel ours)
+        game.update_button_hover(current_hover, 'sidebar_hero_ability')
 
     def _draw_technology_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """Draw Technology tab content with 3x7 button grid."""

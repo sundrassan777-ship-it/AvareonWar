@@ -308,6 +308,39 @@ class HeroMixin:
 
         return len(heroes_to_remove)
 
+    def get_hero_ability_status(self, player, hero_name, ability_index):
+        """Display / cast status of one hero ability for `player`.
+
+        Single source for the availability rules shared by the bottom-bar Hero UI and
+        the sidebar Heroes tab (they used to inline the same checks separately):
+        an ACTIVE ability is castable when it is off cooldown and the player's heroes
+        are not silenced; passive abilities are never cast.
+
+        Returns:
+            dict with keys ability, name, type ('active'|'passive'), cooldown (turns
+            left, 0 = ready), silenced (bool), castable (bool) - or None when the hero
+            has no ability at that index.
+        """
+        hero_info = self.HERO_TYPES.get(hero_name)
+        if not hero_info:
+            return None
+        abilities = hero_info.get('abilities', [])
+        if not 0 <= ability_index < len(abilities):
+            return None
+        ability = abilities[ability_index]
+        name = ability.get('name', 'Unknown')
+        ability_type = ability.get('type', 'active')
+        cooldown = self.hero_ability_cooldowns.get(player, {}).get(hero_name, {}).get(name, 0)
+        silenced = self.hero_silence_status.get(player, 0) > 0
+        return {
+            'ability': ability,
+            'name': name,
+            'type': ability_type,
+            'cooldown': cooldown,
+            'silenced': silenced,
+            'castable': ability_type == 'active' and cooldown == 0 and not silenced,
+        }
+
     def activate_hero_ability(self, hero_name, ability_index):
         """
         Activate a hero ability.
