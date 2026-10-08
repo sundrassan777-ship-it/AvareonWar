@@ -15358,6 +15358,10 @@ class Game:
                 if not tech:
                     return False
 
+                # Click flash on the tech tile (the renderer already reads
+                # ('technology_button', id) from clicked_element, but nothing set it)
+                self.trigger_click_flash('technology_button', tech_id)
+
                 # Check if this tech is being researched
                 is_researching = False
                 if self.game_state.current_player in self.game_state.research_in_progress:

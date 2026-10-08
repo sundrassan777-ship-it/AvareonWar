@@ -674,6 +674,46 @@ class SidebarWidgets:
         surf.blit(text, text.get_rect(center=(w // 2, h // 2)))
         return surf
 
+    # Technology tree connectors: state -> (shaft/head colour, outline colour, glow colour or None)
+    TECH_ARROW_STYLE = {
+        'locked': ((196, 152, 72), (52, 32, 12), None),          # bronze: path still closed
+        'open': ((120, 225, 120), (20, 60, 20), (90, 235, 90)),  # green + glow: next tech researchable
+        'done': ((96, 168, 96), (22, 48, 22), None),             # muted green: both researched
+    }
+
+    def tech_arrow(self, length, state):
+        """Downward connector between two tech buttons (shaft + chevron head), cached.
+
+        Replaces the plain grey line + triangle. 'open' (prerequisite researched) is
+        green with a soft glow so a newly available path stands out at a glance.
+        """
+        length = max(6, int(length))
+        key = ('tech_arrow', length, state)
+        cached = self._get(key)
+        if cached is not None:
+            return cached
+        color, outline, glow = self.TECH_ARROW_STYLE.get(state, self.TECH_ARROW_STYLE['locked'])
+        width = 20
+        cx = width // 2
+        head = max(4, min(8, length // 3))
+        shaft_end = length - head
+        surf = pygame.Surface((width, length), pygame.SRCALPHA)
+        if glow:
+            # Soft glow under the arrow: wide translucent strokes, blended in
+            halo = pygame.Surface((width, length), pygame.SRCALPHA)
+            for stroke, alpha in ((12, 40), (8, 70)):
+                pygame.draw.line(halo, (*glow, alpha), (cx, 0), (cx, length - 2), stroke)
+            surf.blit(halo, (0, 0))
+        # Shaft: dark outline then the coloured core
+        pygame.draw.rect(surf, outline, pygame.Rect(cx - 3, 0, 6, max(1, shaft_end)))
+        pygame.draw.rect(surf, color, pygame.Rect(cx - 2, 0, 4, max(1, shaft_end)))
+        # Chevron head pointing down
+        tip = (cx, length - 1)
+        points = [(cx - 7, shaft_end - 1), tip, (cx + 7, shaft_end - 1)]
+        pygame.draw.polygon(surf, color, points)
+        pygame.draw.polygon(surf, outline, points, 1)
+        return self._put(key, self.display_alpha(surf))
+
     def pulse_ring(self, size, color=(100, 255, 100)):
         """Tutorial highlight ring, cached; the caller sets its alpha per frame."""
         key = ('ring', int(size[0]), int(size[1]), color)

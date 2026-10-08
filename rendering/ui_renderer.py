@@ -2674,63 +2674,46 @@ class UIRenderer:
         # Store hovered tech info for tooltip drawing at the end
         hovered_tech_info = None
 
-        # Header (FPS OPTIMIZATION 4.1: cached)
-        header_y = content_start_y
-        header_text = self.get_cached_text("Technology Tree", self.game.font, WHITE, "font")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
+        # Whose tree is shown: the LOCAL player (was recomputed inline for every tile)
+        local_player = self.game.get_local_player()
+        w = self.game.sidebar_widgets
 
-        # Separator
-        pygame.draw.line(self.game.screen, RED_SEPARATOR,
-                        (sidebar_x + 30, header_y + 30),
-                        (sidebar_x + sidebar_width - 10, header_y + 30), 2)
+        # Header, centred on the visible tapestry like the other tabs
+        from ui.sidebar_layout import content_geometry
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Technology Tree", 2 * half, role='title')
+        self.game.screen.blit(header, (full.center_x - half, content_start_y))
 
-        # Calculate button grid layout to fill available space
-        grid_start_y = header_y + 50
-        available_height = sidebar_y + sidebar_height - grid_start_y - 10  # Leave 10px margin at bottom
-
-        # Button dimensions (reduced by 15% for smaller icons, square buttons)
-        button_width = 54  # Reduced from 64 to make tech icons 15% smaller
+        # Grid sized to the panel height. Fixed 54 px buttons + 32 px gaps need ~635 px,
+        # so at 1280x720 (a 500 px panel) the bottom rows sat under the bottom UI and
+        # could not be clicked. Buttons shrink to fit (min 30 px), gaps too (min 12 px).
+        grid_start_y = content_start_y + header.get_height() + 12
+        available_height = sidebar_y + sidebar_height - grid_start_y - 10  # 10px bottom margin
+        button_width = max(30, min(54, int((available_height - 6 * 18) / 7)))
         button_height = button_width  # Square icons
-
-        # Spacing between buttons (increased by additional 75% from 9)
-        v_spacing = 32
+        v_spacing = max(12, min(32, (available_height - 7 * button_height) // 6))
         h_spacing = 10
 
-        # Calculate starting X to center the 3-column grid (move right for centering)
+        # Centre the 3-column grid on the tapestry
         total_grid_width = (button_width * 3) + (h_spacing * 2)
-        grid_start_x = sidebar_x + (sidebar_width - total_grid_width) // 2 + 9  # +9 pixels to the right (5+4)
+        grid_start_x = full.center_x - total_grid_width // 2
 
-        # Draw arrows connecting technologies in columns (drawn first, so buttons appear on top)
-        arrow_color = (150, 150, 150)
+        # Connector arrows, drawn first so the buttons sit on top. Each column is a chain:
+        # tech_c_{r+1} needs tech_c_r. Bronze = still locked; green with a glow = the path
+        # is open (prerequisite researched); muted green = both researched. Cached sprites
+        # (sidebar_widgets.tech_arrow) instead of 36 line/polygon calls per frame.
+        researched = self.game.game_state.player_tech_researched.get(local_player, set())
         for col in range(3):
-            for row in range(6):  # Only rows 0-5 have arrows (not the bottom row)
-                # Calculate positions for current and next button
-                current_x = grid_start_x + col * (button_width + h_spacing)
-                current_y = grid_start_y + row * (button_height + v_spacing)
-                next_y = grid_start_y + (row + 1) * (button_height + v_spacing)
-
-                # Arrow starts at bottom center of current button
-                arrow_start_x = current_x + button_width // 2
-                arrow_start_y = current_y + button_height
-
-                # Arrow ends at top center of next button
-                arrow_end_x = current_x + button_width // 2
-                arrow_end_y = next_y
-
-                # Draw the arrow line
-                pygame.draw.line(self.game.screen, arrow_color,
-                                (arrow_start_x, arrow_start_y),
-                                (arrow_end_x, arrow_end_y), 2)
-
-                # Draw arrowhead (small triangle pointing down, increased by additional 75% to match spacing)
-                arrowhead_size = 7
-                arrowhead_points = [
-                    (arrow_end_x, arrow_end_y),  # Tip
-                    (arrow_end_x - arrowhead_size, arrow_end_y - arrowhead_size),  # Left
-                    (arrow_end_x + arrowhead_size, arrow_end_y - arrowhead_size)   # Right
-                ]
-                pygame.draw.polygon(self.game.screen, arrow_color, arrowhead_points)
+            arrow_x = grid_start_x + col * (button_width + h_spacing) + button_width // 2
+            for row in range(6):  # rows 0-5 lead to the next row
+                arrow_y = grid_start_y + row * (button_height + v_spacing) + button_height
+                if f"tech_{col}_{row}" in researched:
+                    state = 'done' if f"tech_{col}_{row + 1}" in researched else 'open'
+                else:
+                    state = 'locked'
+                sprite = w.tech_arrow(v_spacing, state)
+                self.game.screen.blit(sprite, (arrow_x - sprite.get_width() // 2, arrow_y))
 
         # Draw 3 columns x 7 rows of technology buttons
         for col in range(3):
@@ -2752,15 +2735,7 @@ class UIRenderer:
 
                 # Determine button color based on state (LOCAL player only)
                 tech_id = tech['id']
-                # Show LOCAL player's tech status
-                if self.game.multiplayer_mode:
-                    local_player = self.game.local_player_index if self.game.local_player_index is not None else 0
-                else:
-                    local_player = 0
-                    for i in range(self.game.game_state.num_players):
-                        if not self.game.game_state.player_is_ai[i]:
-                            local_player = i
-                            break
+                # Show LOCAL player's tech status (local_player computed once, above)
                 is_researched = tech_id in self.game.game_state.player_tech_researched[local_player]
                 is_available = tech_id in self.game.game_state.player_tech_available[local_player]
 
@@ -2841,9 +2816,10 @@ class UIRenderer:
                     pulse = 0.5 + 0.5 * math.sin(time.time() * 4.0)
                     glow_alpha = int(150 + 100 * pulse)
                     glow_rect = button_rect.inflate(6, 6)
-                    glow_surface = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
-                    pygame.draw.rect(glow_surface, (100, 255, 100, glow_alpha), glow_surface.get_rect(), 3, border_radius=4)
-                    self.game.screen.blit(glow_surface, glow_rect.topleft)
+                    # One cached ring, alpha set per frame (was a new Surface every frame)
+                    ring = w.pulse_ring(glow_rect.size)
+                    ring.set_alpha(glow_alpha)
+                    self.game.screen.blit(ring, glow_rect.topleft)
 
                 # Store button rect for click detection
                 self.game.technology_buttons[tech['id']] = button_rect
@@ -2861,7 +2837,12 @@ class UIRenderer:
 
                 # Draw technology icon if available
                 icon_path = tech.get('icon')
-                if icon_path and os.path.exists(icon_path):
+                # PERFORMANCE: the existence check is cached per path - 21 os.path.exists()
+                # disk stats a frame were ~0.34 ms, a third of the whole tab's draw time
+                exists_cache = self.__dict__.setdefault('_tech_icon_exists', {})
+                if icon_path and icon_path not in exists_cache:
+                    exists_cache[icon_path] = os.path.exists(icon_path)
+                if icon_path and exists_cache[icon_path]:
                     try:
                         # Load and cache the icon
                         if not hasattr(self, 'tech_icons'):
@@ -2871,7 +2852,9 @@ class UIRenderer:
                         # Cache key includes size so icons recalculate when dimensions change
                         cache_key = f"{icon_path}_{button_width}_{button_height}"
                         if cache_key not in self.tech_icons:
-                            icon = pygame.image.load(icon_path)
+                            # convert_alpha: display pixel format, so the 21 per-frame blits
+                            # don't convert on the fly (the load was never converted)
+                            icon = pygame.image.load(icon_path).convert_alpha()
                             self.tech_icons[cache_key] = pygame.transform.scale(icon, (button_width, button_height))
 
                         # FPS OPT: Determine tint state, cache tinted icon variants
@@ -2964,10 +2947,8 @@ class UIRenderer:
                     # Draw semi-transparent background for better visibility
                     bg_rect = pygame.Rect(turns_rect.x - 2, turns_rect.y - 1,
                                          turns_rect.width + 4, turns_rect.height + 2)
-                    bg_surface = pygame.Surface((bg_rect.width, bg_rect.height))
-                    bg_surface.set_alpha(180)
-                    bg_surface.fill((0, 0, 0))
-                    self.game.screen.blit(bg_surface, bg_rect)
+                    band, band_area = w.band(bg_rect.width, bg_rect.height, (0, 0, 0, 180))
+                    self.game.screen.blit(band, bg_rect, band_area)
                     self.game.screen.blit(turns_surface, turns_rect)
                 elif not icon_path:
                     # Draw technology name if no icon (for placeholder techs)
@@ -3041,7 +3022,7 @@ class UIRenderer:
 
                     # Add special requirements
                     if tech.get('requires_castle', False):
-                        has_castle = self.game.game_state.player_has_castle(current_player)
+                        has_castle = self.game.game_state.player_has_castle(local_player)
                         if has_castle:
                             tooltip_lines.append([("small", "Requires: Castle", (100, 255, 100))])
                         else:
@@ -3224,28 +3205,28 @@ class UIRenderer:
 
     def _draw_quests_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """Draw quest log content for the Quests tab (used by tutorial missions)."""
-        # Title
+        # Header: the shared gold-ruled section header, centred on the visible tapestry
+        # like the other tabs (was centred on the whole panel incl. the carved pillar)
+        from ui.sidebar_layout import content_geometry
+        w = self.game.sidebar_widgets
         title_y = content_start_y
-        title_text = self.get_cached_text("Quests", self.game.font, WHITE, "font")
-        title_rect = title_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=title_y)
-        self.game.screen.blit(title_text, title_rect)
-
-        # Separator
-        pygame.draw.line(self.game.screen, (100, 100, 100),
-                        (sidebar_x + 30, title_y + 30),
-                        (sidebar_x + sidebar_width - 10, title_y + 30), 2)
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Quests", 2 * half, role='title')
+        self.game.screen.blit(header, (full.center_x - half, title_y))
+        body_top = title_y + header.get_height() + 10
 
         # Get quest log from tutorial mission
         tutorial = self.game.game_state.tutorial_mission
         if not tutorial or not tutorial.active:
             # No active tutorial — show placeholder
             msg_text = self.get_cached_text("No active quests", self.game.small_font, (150, 150, 150), "small_font")
-            msg_rect = msg_text.get_rect(center=(sidebar_x + sidebar_width // 2, title_y + 60))
+            msg_rect = msg_text.get_rect(center=(full.center_x, body_top + 15))
             self.game.screen.blit(msg_text, msg_rect)
             return
 
         quest_log = tutorial.get_quest_log()
-        y = title_y + 45
+        y = body_top
         padding_x = sidebar_x + 35
 
         # Max text width for word wrapping (sidebar width minus padding on both sides)
