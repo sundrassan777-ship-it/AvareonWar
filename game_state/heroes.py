@@ -48,30 +48,30 @@ class HeroMixin:
 
         # 1. Validate hero type
         if hero_type not in self.HERO_TYPES:
-            self.add_message(f"Invalid hero type: {hero_type}")
+            self.add_player_message(self.current_player, f"Invalid hero type: {hero_type}")
             return False
 
         # 2. Check ownership
         if self.territory_owners.get(territory, -1) != self.current_player:
-            self.add_message("You don't own this territory!")
+            self.add_player_message(self.current_player, "You don't own this territory!")
             return False
 
         # 3. Verify this is a Keep
         if (territory not in self.buildings or
             keep_plot_index not in self.buildings[territory] or
             self.buildings[territory][keep_plot_index] != 'Keep'):
-            self.add_message("This is not a Keep!")
+            self.add_player_message(self.current_player, "This is not a Keep!")
             return False
 
         # 4. Check if Keep is upgrading to Castle (blocks new training)
         if self.is_upgrading_to_castle(territory, keep_plot_index):
-            self.add_message("Cannot train hero while Keep is upgrading to Castle!")
+            self.add_player_message(self.current_player, "Cannot train hero while Keep is upgrading to Castle!")
             return False
 
         # 5. Check if Keep already training
         if (territory in self.hero_training_queue and
             keep_plot_index in self.hero_training_queue[territory]):
-            self.add_message("This Keep is already training a hero!")
+            self.add_player_message(self.current_player, "This Keep is already training a hero!")
             return False
 
         # 5b. Check if Keep already has a trained hero residing in it
@@ -79,19 +79,19 @@ class HeroMixin:
             for hero_name, hero_data in self.heroes[self.current_player].items():
                 if (hero_data['keep_territory'] == territory and
                     hero_data['keep_plot'] == keep_plot_index):
-                    self.add_message(f"This Keep already has {hero_name}!")
+                    self.add_player_message(self.current_player, f"This Keep already has {hero_name}!")
                     return False
 
         # 6. Check global uniqueness
         if hero_type in self.hero_ownership[self.current_player]:
-            self.add_message(f"You already have {hero_type}!")
+            self.add_player_message(self.current_player, f"You already have {hero_type}!")
             return False
 
         # 6b. Check hero limit
         current_hero_count = len(self.hero_ownership[self.current_player])
         hero_limit = self.player_hero_limit[self.current_player]
         if current_hero_count >= hero_limit:
-            self.add_message(f"Hero limit reached! ({current_hero_count}/{hero_limit})")
+            self.add_player_message(self.current_player, f"Hero limit reached! ({current_hero_count}/{hero_limit})")
             self.last_action_error = "hero_limit"
             return False
 
@@ -104,7 +104,7 @@ class HeroMixin:
             hero_cost = int(hero_cost * (100 - discount_percent) / 100)
 
         if self.player_gold[self.current_player] < hero_cost:
-            self.add_message(f"Not enough gold! (Need {hero_cost})")
+            self.add_player_message(self.current_player, f"Not enough gold! (Need {hero_cost})")
             self.last_action_error = "gold"
             return False
 
@@ -155,7 +155,7 @@ class HeroMixin:
         # 5. Remove from ownership (allow retraining)
         self.hero_ownership[owner].discard(hero_type)
 
-        self.add_message(f"Hero training canceled, {hero_cost} gold refunded (100%)")
+        self.add_player_message(owner, f"Hero training canceled, {hero_cost} gold refunded (100%)")
         self._training_version += 1  # FPS OPT: Production glow sync
         return True
 
@@ -190,7 +190,7 @@ class HeroMixin:
                     # Keep destroyed - lose training (no refund)
                     keeps_to_remove.append(keep_plot_index)
                     self.hero_ownership[owner].discard(hero_type)
-                    self.add_message(f"{territory}: {hero_type} training lost (Keep destroyed)")
+                    self.add_player_message(owner, f"{territory}: {hero_type} training lost (Keep destroyed)")
                     continue
 
                 # Decrement timer
@@ -307,6 +307,39 @@ class HeroMixin:
                 self._battle_hero_deaths.append((previous_owner, hero_type, territory))
 
         return len(heroes_to_remove)
+
+    def get_hero_ability_status(self, player, hero_name, ability_index):
+        """Display / cast status of one hero ability for `player`.
+
+        Single source for the availability rules shared by the bottom-bar Hero UI and
+        the sidebar Heroes tab (they used to inline the same checks separately):
+        an ACTIVE ability is castable when it is off cooldown and the player's heroes
+        are not silenced; passive abilities are never cast.
+
+        Returns:
+            dict with keys ability, name, type ('active'|'passive'), cooldown (turns
+            left, 0 = ready), silenced (bool), castable (bool) - or None when the hero
+            has no ability at that index.
+        """
+        hero_info = self.HERO_TYPES.get(hero_name)
+        if not hero_info:
+            return None
+        abilities = hero_info.get('abilities', [])
+        if not 0 <= ability_index < len(abilities):
+            return None
+        ability = abilities[ability_index]
+        name = ability.get('name', 'Unknown')
+        ability_type = ability.get('type', 'active')
+        cooldown = self.hero_ability_cooldowns.get(player, {}).get(hero_name, {}).get(name, 0)
+        silenced = self.hero_silence_status.get(player, 0) > 0
+        return {
+            'ability': ability,
+            'name': name,
+            'type': ability_type,
+            'cooldown': cooldown,
+            'silenced': silenced,
+            'castable': ability_type == 'active' and cooldown == 0 and not silenced,
+        }
 
     def activate_hero_ability(self, hero_name, ability_index):
         """
@@ -449,15 +482,15 @@ class HeroMixin:
         current_player = self.current_player
 
         # Silence all enemy players until end of caster's next turn
-        for player_index in range(self.num_players):
-            if player_index != current_player:
-                # Counter = 2 regardless of player count:
-                # Decrement happens at start of each player's own turn (sequential)
-                # or once per round for all players (simultaneous).
-                # 1st decrement: 2->1 (silenced during their turn)
-                # 2nd decrement: 1->0 (silence expires after caster's next turn ends)
-                # Old bug: used num_players, which made silence last num_players-1 rounds
-                self.hero_silence_status[player_index] = 2
+        # Enemies only: allies (same team) were silenced too (every player != caster)
+        for player_index in self.ability_enemies(current_player):
+            # Counter = 2 regardless of player count:
+            # Decrement happens at start of each player's own turn (sequential)
+            # or once per round for all players (simultaneous).
+            # 1st decrement: 2->1 (silenced during their turn)
+            # 2nd decrement: 1->0 (silence expires after caster's next turn ends)
+            # Old bug: used num_players, which made silence last num_players-1 rounds
+            self.hero_silence_status[player_index] = 2
 
         # M5 fix: Guard pygame import for headless (test) environments
         try:
@@ -472,7 +505,19 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {current_player + 1}: {caster_hero_name} casts Vow of Silence!")
-        self.add_message("All enemy heroes are silenced until next turn!")
+        # Indented sub-line naming the silenced players: the Action Log shows the whole
+        # block to every player it names, so the victims learn who silenced them
+        self.add_message(self.ability_victims_line("Heroes silenced until next turn",
+                                                   self.ability_enemies(current_player)))
+
+    def ability_enemies(self, caster):
+        """Players an "all enemies" hero ability hits (Vow of Silence, Embargo).
+
+        Everyone except the caster, their allies (same team) and eliminated players.
+        Both abilities used to hit every player but the caster, allies included.
+        """
+        return [p for p in range(self.num_players)
+                if p != caster and not self.are_allies(p, caster) and p not in self.eliminated_players]
 
     def _activate_master_negotiator(self, player_index):
         """
@@ -502,7 +547,8 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {player_index + 1}: Master Negotiator activated!")
-        self.add_message("Farms, Mines, and Squares cost 75% less this turn!")
+        # Named like the line above - unnamed, it told every player about the discount
+        self.add_player_message(player_index, "Farms, Mines, and Squares cost 75% less this turn!")
 
     def _activate_embargo(self, player_index):
         """
@@ -511,11 +557,11 @@ class HeroMixin:
         Args:
             player_index: Player index activating the ability
         """
-        # Mark all enemy players to have income blocked on their next turn
-        for i in range(self.num_players):
-            if i != player_index:
-                if i not in self.embargo_blocked_players:
-                    self.embargo_blocked_players.append(i)
+        # Mark all enemy players to have income blocked on their next turn.
+        # Enemies only: allies (same team) used to lose their income too.
+        for i in self.ability_enemies(player_index):
+            if i not in self.embargo_blocked_players:
+                self.embargo_blocked_players.append(i)
 
         # Play spell sound effect
         from global_sound import play_spell_sound
@@ -523,7 +569,9 @@ class HeroMixin:
 
         # Add message to action log
         self.add_message(f"Player {player_index + 1}: Embargo activated!")
-        self.add_message("All enemies will receive no income at the start of their next turn!")
+        # Indented sub-line naming the blocked players (shown to them, see Vow of Silence)
+        self.add_message(self.ability_victims_line("No income at the start of their next turn",
+                                                   self.ability_enemies(player_index)))
 
     def execute_relentless_charge(self, target_territory, owner):
         """
@@ -799,7 +847,9 @@ class HeroMixin:
             )
 
         # Build message
-        message = f"Player {owner + 1}: Aggressive Diplomacy conquers {target_territory}!"
+        # "from Player N" so the player losing the territory sees it in their Action Log
+        lost_by = f" from Player {current_owner + 1}" if current_owner is not None and current_owner >= 0 else ""
+        message = f"Player {owner + 1}: Aggressive Diplomacy conquers {target_territory}{lost_by}!"
         self.add_message(message)
 
         if armies_destroyed > 0:
@@ -1290,7 +1340,10 @@ class HeroMixin:
 
         # Add message to action log
         haste_msg = " (Haste - Ready to Move!)" if has_haste else ""
-        self.add_message(f"Player {owner + 1}: Royal Charisma stole {units_to_steal} units from {target_territory} to {narn_keep_territory}{haste_msg}!")
+        # Name the robbed players so they see it in their Action Log
+        robbed = sorted({garrison_owner for garrison_owner, _unit in stolen_units if garrison_owner != owner})
+        robbed_msg = f" ({', '.join(f'Player {p + 1}' for p in robbed)})" if robbed else ""
+        self.add_message(f"Player {owner + 1}: Royal Charisma stole {units_to_steal} units from {target_territory}{robbed_msg} to {narn_keep_territory}{haste_msg}!")
 
         # Player Level: award XP for using active hero ability (targeted)
         self._track_stat(owner, 'xp_earned', 2)
@@ -1365,7 +1418,9 @@ class HeroMixin:
         else:
             # No hero found - ability is wasted (still a success: the cooldown is spent,
             # by design). Record a notice so the caster gets the toast explaining the miss.
-            self.add_message(f"Player {owner + 1}: Regicide failed in {target_territory} - no hero present!")
+            # Name the targeted player: they should know a Regicide was attempted on them
+            self.add_message(f"Player {owner + 1}: Regicide failed in {target_territory} "
+                             f"(Player {territory_owner + 1}) - no hero present!")
             self.last_action_error = 'regicide_no_hero'
 
         # Player Level: award XP for using active hero ability (targeted)

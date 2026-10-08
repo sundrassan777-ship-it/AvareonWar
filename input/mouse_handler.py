@@ -199,7 +199,9 @@ class MouseHandler:
                 if handled:
                     return handled
             elif self.game.game_state.active_sidebar_tab == 'action_log':
-                # Action log is read-only — consume click to prevent map interaction
+                # Only the filter chips are clickable (handled with the other sidebar
+                # controls); any other click is consumed so it never reaches the map
+                self.game.handle_order_sidebar_click(pos)
                 return True
             elif self.game.game_state.active_sidebar_tab == 'heroes':
                 # MULTIPLAYER: Block hero tab clicks for spectators

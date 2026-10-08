@@ -1623,6 +1623,8 @@ class MapRenderer:
                 route_first_order[route] = order  # Store first order for this route
             route_counts[route] += order.army_count
         
+        hovered_route = getattr(self.game, 'sidebar_hovered_route', None)
+
         # Draw one arrow per unique route with total count
         for (from_territory, to_territory), total_count in route_counts.items():
             # Get territory centers in world coordinates (already scaled!)
@@ -1673,8 +1675,11 @@ class MapRenderer:
             from_x, from_y = self.game.world_to_screen(from_world)
             to_x, to_y = self.game.world_to_screen(to_world)
 
-            # Arrow color - green for movement orders
+            # Arrow color - green for movement orders; gold while its Action Queue card
+            # is under the mouse (line, head and count badge all take the colour)
             arrow_color = COLOR_ARROW_MOVEMENT
+            if hovered_route == (from_territory, to_territory):
+                arrow_color = COLOR_ARROW_HOVERED
 
             if intermediate_world:
                 # Captain 2-hop: draw bent arrow from→intermediate→destination
@@ -1901,6 +1906,8 @@ class MapRenderer:
                 route_counts[key] = (0, player_id)
             route_counts[key] = (route_counts[key][0] + count, player_id)
 
+        hovered_route = getattr(self.game, 'sidebar_hovered_route', None)
+
         # Draw arrows
         for (from_territory, to_territory, is_ally), (total_count, order_player) in route_counts.items():
             if from_territory not in self.game.scaled_centers or to_territory not in self.game.scaled_centers:
@@ -1936,9 +1943,12 @@ class MapRenderer:
             from_x, from_y = self.game.world_to_screen(from_world)
             to_x, to_y = self.game.world_to_screen(to_world)
 
-            # Arrow color - green for own orders, cyan for allied orders
+            # Arrow color - green for own orders, cyan for allied orders; an own order
+            # turns gold while its Action Queue card is under the mouse
             if is_ally:
                 arrow_color = (0, 180, 200)  # Cyan for allies
+            elif hovered_route == (from_territory, to_territory):
+                arrow_color = COLOR_ARROW_HOVERED
             else:
                 arrow_color = (0, 200, 0)  # Green for own
 

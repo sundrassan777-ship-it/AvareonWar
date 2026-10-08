@@ -114,11 +114,24 @@ class UIConstants:
     # ===== TAB SYSTEM =====
     TAB_WIDTH = 40           # Width of vertical tab buttons sticking out from sidebar
     TAB_PADDING_TOP = 45     # Padding at top of tab button area
-    TAB_PADDING_BOTTOM = 45  # Padding at bottom of tab button area
+    # Bottom padding was 45 (empty space); 12 gives the six tabs ~6 px more each so
+    # their labels fit with padding ("Action Queue" used to touch the tab borders)
+    TAB_PADDING_BOTTOM = 12  # Padding at bottom of tab button area
+    # Bookmark look: 'ribbon' (tapestry cut + gold trim) or 'plaque' (gold-framed)
+    # - see rendering/sidebar_widgets.py tab_sprite()
+    SIDEBAR_TAB_STYLE = 'ribbon'
+    TAB_ACTIVE_EXTEND = 6    # The active ribbon is drawn this much further out (left)
 
     # ===== COLLAPSE / EXPAND (ui/sidebar_layout.py) =====
     SIDEBAR_SLIDE_MS = 150       # Duration of the collapse/expand slide
     SIDEBAR_TOGGLE_HEIGHT = 37   # Collapse button above the tabs (fits in TAB_PADDING_TOP)
+
+    # ===== SIDEBAR EXTRAS (each benchmarked; switch off here if one costs too much) =====
+    SIDEBAR_ROUTE_HIGHLIGHT = True   # Hovering an Action Queue card highlights its map arrow
+    SIDEBAR_CAMERA_PAN = True        # Clicking an order card / hero portrait pans the map there
+    SIDEBAR_CAMERA_PAN_SECONDS = 0.45
+    SIDEBAR_LOG_FILTERS = True       # Filter chips (All / Battles / Economy / Heroes) in the Action Log
+    SIDEBAR_UNREAD_BADGES = True     # Unread counts on the Chat / Action Log bookmarks
     
     # ===== SCROLLBAR =====
     SCROLLBAR_WIDTH = 4        # Width of scrollbar track and thumb

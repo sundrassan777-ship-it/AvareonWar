@@ -29,6 +29,7 @@ import random
 from collections import OrderedDict
 from config.constants import *
 from ui.scaler import UIConstants
+from ui.sidebar_layout import compute_tab_rects
 from utils.logger import get_logger
 import map_data
 
@@ -1649,643 +1650,1061 @@ class UIRenderer:
                 self.game.resolution_option_buttons.append((option_rect, resolution))
                 option_y += 32
     
-    def _draw_action_queue_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Draw Action Queue tab content (movement orders)."""
-        # Header (Phase 2: Use SemiBold for section header)
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        header_y = content_start_y
-        header_text = self.get_cached_text("Action Queue", self.game.font_bold, WHITE, "font_bold")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
-        
-        # Draw separator line
-        pygame.draw.line(self.game.screen, RED_SEPARATOR, 
-                        (sidebar_x + 30, header_y + 30),
-                        (sidebar_x + sidebar_width - 10, header_y + 30), 2)
-        
-        # Determine LOCAL player
-        if self.game.multiplayer_mode:
-            local_player = self.game.local_player_index if self.game.local_player_index is not None else 0
+    # ========================================================================
+    # ACTION QUEUE (sidebar overhaul P2)
+    # ========================================================================
+    # kind -> (label, title colour, text colour, card fill gradient (top, bottom))
+    ORDER_KIND_STYLE = {
+        # Fills kept dark and slightly muted so the cards sit on the tapestry, not on it
+        'attack': ('Attack', (255, 128, 104), (255, 216, 202), ((62, 24, 20), (34, 12, 10))),
+        'own': ('Move', (146, 186, 255), (210, 225, 255), ((26, 34, 62), (13, 17, 34))),
+        'ally': ('Reinforce Ally', (140, 224, 140), (210, 245, 210), ((24, 50, 30), (11, 27, 15))),
+    }
+    ORDER_KIND_ICONS = {'attack': 'assets/mapicons/BattleIcon1.png', 'ally': 'assets/mapicons/AllianceIcon1.png'}
+    UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
+    UNIT_PLURALS = {'Swordsman': 'Swordsmen', 'Archer': 'Archers', 'Pikeman': 'Pikemen',
+                    'Cavalry': 'Cavalry', 'Captain': 'Captains'}
+    CANCEL_TINT = (255, 108, 96)
+
+    def _order_kind(self, player, to_territory):
+        """'own' / 'ally' / 'attack' — mirrors game_state/military.py (create order).
+
+        The old card was red whenever the target owner differed from the player, so a
+        reinforcement into an ally's territory looked like an attack.
+        """
+        gs = self.game.game_state
+        owner = gs.territory_owners.get(to_territory, -1)
+        if owner == player:
+            return 'own'
+        if owner is not None and owner >= 0 and player is not None and player >= 0 and gs.are_allies(player, owner):
+            return 'ally'
+        return 'attack'
+
+    def _order_composition(self, from_territory, player, unit_ids, army_count):
+        """[(unit_type, count)] for an order, or [(None, army_count)] when unknown.
+
+        Orders carry unit ids; their types live on the source garrison's unit dicts.
+        Count-only orders (no unit_ids) fall back to the plain army count.
+        """
+        counts = {}
+        if unit_ids:
+            wanted = set(unit_ids)
+            garrison = self.game.game_state.territory_garrisons.get(from_territory, {}).get(player, {}) or {}
+            for unit in garrison.get('units', []) or []:
+                if unit.get('id') in wanted:
+                    unit_type = unit.get('type') or 'Swordsman'
+                    counts[unit_type] = counts.get(unit_type, 0) + 1
+        if not counts:
+            return [(None, army_count)]
+        ordered = [(t, counts.pop(t)) for t in self.UNIT_ORDER if t in counts]
+        return ordered + sorted(counts.items(), key=lambda item: str(item[0]))
+
+    def _queue_entries(self, local_player):
+        """Cards to show: queued orders, then (simultaneous mode, after Ready) the
+        orders already submitted — read-only, since sim_state refuses changes then."""
+        from types import SimpleNamespace
+        gs = self.game.game_state
+        entries = []
+        for i, order in enumerate(o for o in gs.movement_orders if o.player == local_player):
+            entries.append(SimpleNamespace(
+                order=order, index=i, submitted=False, player=order.player,
+                from_territory=order.from_territory, to_territory=order.to_territory,
+                army_count=order.army_count, unit_ids=getattr(order, 'unit_ids', None) or [],
+                via=getattr(order, 'intermediate_territory', None)))
+        sim_state = getattr(self.game, 'sim_state', None)
+        if sim_state is not None and getattr(sim_state, 'players_ready', {}).get(local_player, False):
+            for order in sim_state.player_orders.get(local_player, []) or []:
+                if order.get('type') != 'movement':
+                    continue
+                # Sim order dicts don't carry the Captain 2-hop via-territory
+                entries.append(SimpleNamespace(
+                    order=None, index=None, submitted=True, player=local_player,
+                    from_territory=order.get('from_territory'), to_territory=order.get('to_territory'),
+                    army_count=order.get('army_count', 0), unit_ids=order.get('unit_ids') or [], via=None))
+        return entries
+
+    def _queue_entry_key(self, entry):
+        """Everything a card's look depends on (changes -> the card is re-laid out)."""
+        owner = self.game.game_state.territory_owners.get(entry.to_territory, -1)
+        return (id(entry.order) if entry.order is not None else None, entry.from_territory,
+                entry.to_territory, entry.army_count, tuple(entry.unit_ids), entry.via,
+                entry.submitted, owner)
+
+    def _order_card_layout(self, entry, width):
+        """Measure one card (memoised per entry key + width + text scale)."""
+        w = self.game.sidebar_widgets
+        key = (self._queue_entry_key(entry), int(width), w.scale)
+        cache = self.__dict__.setdefault('_queue_layout_cache', OrderedDict())
+        lay = cache.get(key)
+        if lay is not None:
+            cache.move_to_end(key)
+            return lay
+        lay = self._measure_order_card(entry, width)
+        lay['key'] = key
+        cache[key] = lay
+        if len(cache) > 256:
+            cache.popitem(last=False)
+        return lay
+
+    def _measure_order_card(self, entry, width):
+        """Layout of one card. Returns a dict the compose step uses unchanged."""
+        w = self.game.sidebar_widgets
+        s = w.scale
+        border = max(7, int(round(8 * s)))
+        pad = border + 5
+        inner_w = width - 2 * pad
+        body_h = w.font('body').get_linesize()
+        small_h = w.font('small_bold').get_linesize()
+        kind = self._order_kind(entry.player, entry.to_territory)
+
+        # Route: "From ➜ To" on one line when it fits, else "From" / "➜ To"
+        arrow_w = int(16 * s) + 8
+        from_name, to_name = str(entry.from_territory), str(entry.to_territory)
+        one_line = w.font('body').size(from_name)[0] + arrow_w + w.font('body').size(to_name)[0] <= inner_w
+        if one_line:
+            route = [(from_name, to_name)]
         else:
-            local_player = 0
-            for i in range(self.game.game_state.num_players):
-                if not self.game.game_state.player_is_ai[i]:
-                    local_player = i
-                    break
+            route = [(w.fit_text(from_name, 'body', inner_w), None),
+                     (None, w.fit_text(to_name, 'body', inner_w - arrow_w))]
 
-        # Filter orders to show only LOCAL player's orders
-        local_orders = [order for order in self.game.game_state.movement_orders if order.player == local_player]
+        # Unit composition chips, wrapped into rows
+        icon = int(round(20 * s))
+        rows, row_w = [[]], 0
+        for unit_type, count in self._order_composition(entry.from_territory, entry.player,
+                                                        entry.unit_ids, entry.army_count):
+            label = f"×{count}" if unit_type else f"{count} unit{'s' if count != 1 else ''}"
+            chip_w = (icon + 3 if unit_type else 0) + w.font('small_bold').size(label)[0] + 8
+            if rows[-1] and row_w + chip_w > inner_w:
+                rows.append([])
+                row_w = 0
+            rows[-1].append((unit_type, label, chip_w))
+            row_w += chip_w
+        chip_row_h = max(icon, small_h)
 
-        # Reset every frame, BEFORE the empty-list early return: otherwise the X of the
-        # last cancelled order stayed clickable and hit whatever order came next.
-        self.game.order_cancel_buttons = []
+        icon_px = max(small_h, int(16 * s))
+        button_h = 0 if entry.submitted else max(20, int(round(22 * s)))
+        height = (pad + icon_px + 4 + body_h * len(route)
+                  + (body_h if entry.via else 0) + 5 + chip_row_h * len(rows) + 3 * (len(rows) - 1)
+                  + (6 + button_h if button_h else 0) + pad)
+
+        # Hover areas of the unit chips (card-local), for the "6× Swordsmen" tooltip.
+        # Mirrors the chip placement in _compose_order_card exactly.
+        chip_hits = []
+        chip_y = pad + icon_px + 4 + body_h * len(route) + (body_h if entry.via else 0) + 5
+        for row in rows:
+            x = pad
+            for chip in row:          # chip = (unit_type, label, chip_w)
+                if chip[0]:
+                    chip_hits.append((pygame.Rect(x, chip_y, chip[2] - 8, chip_row_h), chip[0], chip[1]))
+                x += chip[2]
+            chip_y += chip_row_h + 3
+
+        return {'kind': kind, 'border': border, 'pad': pad, 'route': route, 'arrow_w': arrow_w,
+                'rows': rows, 'icon': icon, 'icon_px': icon_px, 'chip_row_h': chip_row_h,
+                'button_h': button_h, 'body_h': body_h, 'small_h': small_h, 'height': height,
+                'width': int(width), 'chip_hits': chip_hits}
+
+    @staticmethod
+    def _order_button_rect(lay, card_rect, scale):
+        """Cancel Order button inside a card (same rect for drawing and clicking)."""
+        pad = lay['pad']
+        bw = min(card_rect.w - 2 * pad, int(round(118 * scale)))
+        button = pygame.Rect(0, 0, bw, lay['button_h'])
+        button.midbottom = (card_rect.centerx, card_rect.bottom - pad + 2)
+        return button
+
+    @staticmethod
+    def _draw_route_arrow(surface, x, cy, length, color):
+        """Small drawn arrow (shaft + chevron head) between territory names."""
+        head = max(4, length // 3)
+        pygame.draw.line(surface, color, (x, cy), (x + length - 2, cy), 2)
+        pygame.draw.lines(surface, color, False, [(x + length - head - 1, cy - head), (x + length - 1, cy),
+                                                  (x + length - head - 1, cy + head)], 2)
+
+    def _compose_order_card(self, entry, lay, card_state, button_state, cancel_locked):
+        """One card fully drawn onto its own surface, cached per interaction state.
+
+        PERFORMANCE: drawing a card piece by piece (frame, ~10 texts, icons, button)
+        every frame cost ~0.65 ms with 40 orders; a composed card is one blit. The
+        cache holds a handful of states per visible card (normal / hover / button
+        hover / flash / locked) and is keyed by the card's layout key.
+        """
+        key = (lay['key'], card_state, button_state, cancel_locked)
+        cache = self.__dict__.setdefault('_queue_card_cache', OrderedDict())
+        surf = cache.get(key)
+        if surf is not None:
+            cache.move_to_end(key)
+            return surf
+
+        game = self.game
+        w = game.sidebar_widgets
+        label, title_color, text_color, fill = self.ORDER_KIND_STYLE[lay['kind']]
+        width, height, pad = lay['width'], lay['height'], lay['pad']
+        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        surf.blit(w.card('wood', (width, height), lay['border'], fill, card_state), (0, 0))
+        rect = surf.get_rect()
+
+        x0, y = pad, pad
+        # Title row: kind icon + kind label (+ "Submitted" marker)
+        icon_px = lay['icon_px']
+        icon_path = self.ORDER_KIND_ICONS.get(lay['kind'])
+        if icon_path:
+            icon = w.icon(icon_path, icon_px, crop=True)
+        else:
+            flags = getattr(game, 'army_flag_icons', {}).get(entry.player, {}) or {}
+            icon = w.icon_surface(('flag', entry.player), flags.get(1), icon_px, crop=True)
+        if icon is not None:
+            surf.blit(icon, icon.get_rect(midleft=(x0, y + icon_px // 2)))
+        title = label.upper() + ('  •  SUBMITTED' if entry.submitted else '')
+        title_surf = w.text(w.fit_text(title, 'small_bold', width - 2 * pad - icon_px - 6), 'small_bold', title_color)
+        surf.blit(title_surf, title_surf.get_rect(midleft=(x0 + icon_px + 6, y + icon_px // 2)))
+        y += icon_px + 4
+
+        # Route
+        for from_name, to_name in lay['route']:
+            x = x0
+            if from_name:
+                text = w.text(from_name, 'body', text_color)
+                surf.blit(text, (x, y))
+                x += text.get_width() + 4
+            if to_name:
+                self._draw_route_arrow(surf, x, y + lay['body_h'] // 2, lay['arrow_w'] - 8, title_color)
+                x += lay['arrow_w']
+                text = w.text(w.fit_text(to_name, 'body', width - pad - x), 'body', text_color)
+                surf.blit(text, (x, y))
+            y += lay['body_h']
+        if entry.via:
+            via = w.text(w.fit_text(f"via {entry.via}", 'italic', width - 2 * pad), 'italic', (200, 190, 170))
+            surf.blit(via, (x0 + 4, y))
+            y += lay['body_h']
+        y += 5
+
+        # Unit composition chips
+        for row in lay['rows']:
+            x = x0
+            for unit_type, chip_label, chip_w in row:
+                if unit_type:
+                    icon = w.icon_surface(('unit', unit_type), getattr(game, 'unit_icons', {}).get(unit_type),
+                                          lay['icon'], frame=True)
+                    surf.blit(icon, (x, y + (lay['chip_row_h'] - lay['icon']) // 2))
+                    x += lay['icon'] + 3
+                count = w.text(chip_label, 'small_bold', (236, 226, 204))
+                surf.blit(count, count.get_rect(midleft=(x, y + lay['chip_row_h'] // 2)))
+                x += count.get_width() + 8
+            y += lay['chip_row_h'] + 3
+
+        # Cancel Order (queued orders only)
+        if lay['button_h']:
+            button = self._order_button_rect(lay, rect, w.scale)
+            w.blit_button(surf, button, 'Cancel Order', art='campaign', tint=self.CANCEL_TINT,
+                          state='locked' if cancel_locked else button_state, role='small_bold')
+
+        # Display alpha format: noticeably faster to blend every frame
+        surf = self.game.sidebar_widgets.display_alpha(surf)
+        cache[key] = surf
+        if len(cache) > 96:
+            cache.popitem(last=False)
+        return surf
+
+    def _draw_order_card(self, entry, lay, rect, viewport, cancel_locked):
+        """Blit one (cached) card at `rect`; returns the clipped Cancel Order rect or None."""
+        game = self.game
+        w = game.sidebar_widgets
+        button = self._order_button_rect(lay, rect, w.scale) if lay['button_h'] else None
+        over_button = button is not None and not cancel_locked and w.hover(button, viewport)
+        over_card = w.hover(rect, viewport)
+        card_state = 'hover' if (over_card and not over_button) else 'normal'
+        if getattr(game, 'clicked_element', None) == ('sidebar_order_card', (entry.from_territory, entry.to_territory)):
+            card_state = 'flash'    # clicked: the map pans to the destination
+        if over_card and UIConstants.SIDEBAR_ROUTE_HIGHLIGHT:
+            # The map draws this order's arrow in gold (map_renderer, COLOR_ARROW_HOVERED)
+            game.sidebar_hovered_route = (entry.from_territory, entry.to_territory)
+        button_state = 'normal'
+        if button is not None and not cancel_locked:
+            flash_key = ('sidebar_cancel_order', getattr(entry.order, 'order_id', None))
+            if getattr(game, 'clicked_element', None) == flash_key:
+                button_state = 'flash'
+            elif over_button:
+                button_state = 'hover'
+        game.screen.blit(self._compose_order_card(entry, lay, card_state, button_state, cancel_locked),
+                         rect.topleft)
+        return w.clip_hit(button, viewport) if button is not None else None
+
+    def _draw_action_queue_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
+        """Action Queue tab: the local player's queued orders as wooden cards.
+
+        Each card: order kind (Attack / Move / Reinforce Ally, coloured fill + icon),
+        "From ➜ To" (plus "via X" for Captain 2-hop moves), unit composition chips and a
+        Cancel Order button. The list scrolls (mouse wheel, pixel ScrollState) inside a
+        clipped viewport that ends above the pinned CANCEL ALL footer — the old cards
+        could run underneath it. In simultaneous mode, orders already submitted with
+        Ready are listed read-only ("Submitted").
+
+        PERFORMANCE: card layouts are memoised per order and each visible card is a
+        pre-composed surface (see _compose_order_card), so a frame costs one blit per
+        visible card regardless of queue length.
+
+        Click rects (consumed by Game.handle_order_sidebar_click):
+            order_cancel_buttons: [(clipped rect, order, player_order_index)] - visible only
+            cancel_all_button:    rect or None
+            order_card_rects:     [(clipped rect, entry)] - visible cards
+        """
+        from ui.sidebar_layout import content_geometry, SCROLLBAR_W
+        game = self.game
+        w = game.sidebar_widgets
+        screen = game.screen
+        local_player = game.get_local_player()
+
+        # Reset every frame, BEFORE any early return: otherwise the X of the last
+        # cancelled order stayed clickable and hit whatever order came next.
+        game.order_cancel_buttons = []
+        game.order_card_rects = []
+        game.cancel_all_button = None
         # Player whose orders this sidebar shows — the CANCEL ALL button cancels only these
-        self.game.order_sidebar_player = local_player
+        game.order_sidebar_player = local_player
 
-        # Check if there are any orders
-        if len(local_orders) == 0:
-            # Show empty message
-            # FPS OPTIMIZATION 4.1: Use cached text for static message
-            empty_text = self.get_cached_text("No actions queued", self.game.small_font, RED_TEXT_DIM, "small_font")
-            empty_rect = empty_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 80))
-            self.game.screen.blit(empty_text, empty_rect)
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Action Queue", 2 * half, role='title')
+        screen.blit(header, (full.center_x - half, content_start_y))
+        list_top = content_start_y + header.get_height() + 8
+
+        entries = self._queue_entries(local_player)
+        if not entries:
+            empty = w.text("No orders queued", 'body', (200, 170, 150))
+            screen.blit(empty, empty.get_rect(center=(full.center_x, list_top + 30)))
+            hint_y = list_top + 50
+            for line in w.wrap("Select an army, then right-click a territory to give an order.", 'italic',
+                               full.width - 10):
+                hint = w.text(line, 'italic', (170, 150, 130))
+                screen.blit(hint, hint.get_rect(midtop=(full.center_x, hint_y)))
+                hint_y += hint.get_height()
+            game.sidebar_scroll['action_queue'].set_content(0, 0)
             return
 
-        # Tutorial/mission lock on cancelling: the click is refused, so grey the X buttons
-        mission = getattr(self.game, 'tutorial_mission', None)
+        # Tutorial/mission locks: the clicks are refused, so the buttons look locked
+        mission = getattr(game, 'tutorial_mission', None)
         cancel_locked = bool(mission and mission.active and not mission.is_action_allowed('cancel_order'))
+        cancel_all_locked = bool(mission and mission.active and not mission.is_action_allowed('cancel_all_orders'))
 
-        # Draw each order (LOCAL player only)
-        order_y = header_y + UIConstants.HEADER_OFFSET
-        order_height = 60
+        has_queued = any(not e.submitted for e in entries)
+        btn_h = max(28, int(round(34 * w.scale)))
+        footer_h = (btn_h + 18) if has_queued else 8
+        geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
+                               footer_h=footer_h, panel_width=sidebar_width, scrollbar=True)
+        viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
 
-        for i, order in enumerate(local_orders):
-            if order_y + order_height > sidebar_y + sidebar_height - 10:
-                # Too many orders to fit, show scroll indicator
-                # FPS OPTIMIZATION 4.1: Use cached text for static indicator
-                scroll_text = self.get_cached_text("...", self.game.small_font, WHITE, "small_font")
-                self.game.screen.blit(scroll_text, (sidebar_x + sidebar_width // 2 - 10, order_y))
-                break
+        # Lay the cards out top-down (layouts memoised, so this is cheap per frame)
+        gap = 6
+        items = []
+        y = 0
+        submitted_started = False
+        for entry in entries:
+            if entry.submitted and not submitted_started:
+                submitted_started = True
+                sub_hdr = w.section_header("Submitted", geo.width, role='heading')
+                items.append(('header', sub_hdr, y, sub_hdr.get_height()))
+                y += sub_hdr.get_height() + gap
+            lay = self._order_card_layout(entry, geo.width)
+            items.append(('card', (entry, lay), y, lay['height']))
+            y += lay['height'] + gap
+        content_h = max(0, y - gap)
 
-            # Determine if this is an attack (red) or reinforcement (blue)
-            target_owner = self.game.game_state.territory_owners.get(order.to_territory)
-            is_attack = target_owner is not None and target_owner != order.player
+        scroll = game.sidebar_scroll['action_queue']
+        scroll.set_content(content_h, viewport.h)
+        top = viewport.y - scroll.view_top()
 
-            # Color based on movement type
-            movement_color = (255, 100, 100) if is_attack else (100, 150, 255)  # Red for attack, blue for reinforcement
-            border_color = (200, 50, 50) if is_attack else (50, 100, 200)
+        previous_clip = w.begin_clip(viewport)
+        try:
+            for kind, payload, item_y, item_h in items:
+                screen_y = top + item_y
+                if screen_y + item_h < viewport.top:
+                    continue
+                if screen_y > viewport.bottom:
+                    break
+                if kind == 'header':
+                    screen.blit(payload, (viewport.x, screen_y))
+                    continue
+                entry, lay = payload
+                rect = pygame.Rect(viewport.x, screen_y, viewport.w, item_h)
+                cancel_rect = self._draw_order_card(entry, lay, rect, viewport, cancel_locked)
+                card_hit = w.clip_hit(rect, viewport)
+                if card_hit is not None:
+                    game.order_card_rects.append((card_hit, entry))
+                    # Unit chip tooltip ("6× Swordsmen"), drawn at the end of the frame
+                    if w.hover(card_hit, viewport):
+                        mx, my = game.mouse_pos
+                        for hit, unit_type, chip_label in lay['chip_hits']:
+                            if hit.move(rect.topleft).collidepoint(mx, my):
+                                count = chip_label.lstrip('×')
+                                name = unit_type if count == '1' else self.UNIT_PLURALS.get(unit_type, unit_type)
+                                game.sidebar_tooltip = (f"{count}× {name}", (mx, my))
+                                break
+                if cancel_rect is not None and entry.order is not None:
+                    # Format: (rect, order, player_order_index). The order object identifies
+                    # the order to cancel locally; the index (among this player's orders) is
+                    # what the ORDER_REMOVE network message carries.
+                    game.order_cancel_buttons.append((cancel_rect, entry.order, entry.index))
+        finally:
+            w.end_clip(previous_clip)
 
-            # Order background
-            order_rect = pygame.Rect(sidebar_x + 30, order_y, sidebar_width - 60, order_height - 5)
-            pygame.draw.rect(self.game.screen, (60, 60, 60), order_rect, border_radius=5)
-            pygame.draw.rect(self.game.screen, border_color, order_rect, 2, border_radius=5)
+        w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
 
-            # Movement text: "Origin -> Target" format in single line
-            movement_text = f"{order.from_territory} -> {order.to_territory}"
-
-            # Truncate if too long
-            max_width = sidebar_width - 100
-            movement_surface = self.get_cached_text(movement_text, self.game.small_font, movement_color, "small")
-            if movement_surface.get_width() > max_width:
-                # Try shortening territory names
-                from_short = order.from_territory[:10] + "..." if len(order.from_territory) > 10 else order.from_territory
-                to_short = order.to_territory[:10] + "..." if len(order.to_territory) > 10 else order.to_territory
-                movement_text = f"{from_short} -> {to_short}"
-                movement_surface = self.get_cached_text(movement_text, self.game.small_font, movement_color, "small")
-
-            self.game.screen.blit(movement_surface, (sidebar_x + 40, order_y + 8))
-
-            # Army count below
-            count_text = self.get_cached_text(f"Units: {order.army_count}", self.game.small_font, (200, 200, 200), "small")
-            self.game.screen.blit(count_text, (sidebar_x + 40, order_y + 28))
-
-            # Cancel button (X) - ASCII character for better font compatibility
-            # FPS OPTIMIZATION 4.1: Use cached text for static button label
-            cancel_button_rect = pygame.Rect(sidebar_x + sidebar_width - 45, order_y + 18, 30, 25)
-            # Grey when the tutorial/mission blocks cancelling (it used to look clickable)
-            cancel_color = (110, 110, 110) if cancel_locked else (200, 50, 50)
-            pygame.draw.rect(self.game.screen, cancel_color, cancel_button_rect, border_radius=3)
-            cancel_text = self.get_cached_text("X", self.game.font, WHITE, "font")
-            cancel_text_rect = cancel_text.get_rect(center=cancel_button_rect.center)
-            self.game.screen.blit(cancel_text, cancel_text_rect)
-
-            # Store (rect, order object, per-player index) for click detection.
-            # Format: (rect, order, player_order_index). The order object identifies the
-            # order to cancel locally; i (its index among this player's orders) is what the
-            # ORDER_REMOVE network message carries. The old format stored only i and used
-            # it on the full movement_orders list, cancelling the wrong order.
-            self.game.order_cancel_buttons.append((cancel_button_rect, order, i))
-
-            order_y += order_height
+        # CANCEL ALL — pinned below the list, centred on the visible tapestry
+        if has_queued:
+            bw = min(full.width, int(round(190 * w.scale)))
+            cancel_all = pygame.Rect(0, 0, bw, btn_h)
+            cancel_all.midbottom = (full.center_x, sidebar_y + sidebar_height - 10)
+            w.draw_button(cancel_all, 'Cancel All', art='campaign', tint=self.CANCEL_TINT,
+                          flash_key=('sidebar_cancel_all', None), locked=cancel_all_locked, role='heading')
+            game.cancel_all_button = cancel_all
     
+    # ========================================================================
+    # ACTION LOG + CHAT (sidebar overhaul P3)
+    # ========================================================================
+    # category -> marker / tint colour
+    LOG_CATEGORY_COLORS = {
+        'battle': (236, 120, 100), 'conquest': (236, 172, 92), 'economy': (226, 198, 112),
+        'construction': (204, 178, 136), 'training': (160, 196, 232), 'research': (140, 196, 255),
+        'hero': (206, 156, 240), 'orders': (176, 188, 202), 'victory': (245, 214, 140),
+        'error': (255, 104, 86), 'other': (200, 190, 176),
+    }
+    LOG_CHILD_COLOR = (172, 160, 144)
+
+    @staticmethod
+    def _mix(a, b, t):
+        return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+    def _layout_log_row(self, row, width, first):
+        """Pixel layout of one model row: (height, draw spec). Pure measuring, no drawing."""
+        w = self.game.sidebar_widgets
+        if row.kind in ('section', 'turn'):
+            line_h = w.font('heading').get_linesize()
+            top = 0 if first else 10
+            return top + line_h + 8, {'kind': 'band', 'text': row.text.upper(), 'top': top, 'h': line_h + 8}
+        if row.kind == 'subturn':
+            line_h = w.font('italic').get_linesize()
+            top = 0 if first else 4
+            return top + line_h + 2, {'kind': 'subturn', 'text': row.text, 'top': top}
+        if row.kind == 'victory':
+            line_h = w.font('heading').get_linesize()
+            lines = []
+            for text in row.text.split('\n'):
+                lines.extend(w.wrap(text, 'heading', width - 16))
+            top = 0 if first else 8
+            return top + 12 + line_h * len(lines), {'kind': 'victory', 'lines': lines, 'top': top, 'line_h': line_h}
+        if row.kind == 'banner':
+            line_h = w.font('body_bold').get_linesize()
+            lines = w.wrap(row.text, 'body_bold', width - 14)
+            top = 0 if first else 7
+            return top + line_h * len(lines) + 1, {'kind': 'banner', 'lines': lines, 'top': top,
+                                                   'line_h': line_h, 'category': row.category}
+        # 'entry'
+        if row.indent == 0:
+            role, dx = 'body', 14
+            top = 0 if first else 6
+        else:
+            role, dx = 'small', 14 + 10 * (row.indent - 1)
+            top = 1
+        line_h = w.font(role).get_linesize()
+        lines = w.wrap(row.text, role, width - dx)
+        return top + line_h * len(lines), {'kind': 'entry', 'lines': lines, 'top': top, 'line_h': line_h,
+                                           'role': role, 'dx': dx, 'indent': row.indent,
+                                           'category': row.category}
+
+    def _update_log_layout(self, width):
+        """Bring the Action Log model + its pixel layout up to date (incremental).
+
+        Returns (items, ys, total_h, grew_px): items[i] = (height, spec, row) and
+        ys[i] = its content-space y. Only rows changed since the last frame are
+        measured; nothing scans the whole history per frame any more.
+        """
+        from rendering.action_log_model import ActionLogModel
+        game = self.game
+        gs = game.game_state
+        w = game.sidebar_widgets
+        state = self.__dict__.setdefault('_log_state', {'model': ActionLogModel(), 'items': [], 'ys': [],
+                                                        'total': 0, 'key': None})
+        model = state['model']
+        names = [gs.get_player_name(i) for i in range(gs.num_players)]
+        changed = model.update(gs.messages, game.get_local_player(), names,
+                               getattr(game, 'sidebar_log_filter', None))
+        key = (int(width), w.scale)
+        if key != state['key']:
+            state['key'] = key
+            changed = 0
+            state['items'], state['ys'], state['total'] = [], [], 0
+        if changed is None:
+            return state['items'], state['ys'], state['total'], 0
+        rows = model.rows
+        old_total = state['total']
+        rebuilt = changed == 0
+        items = state['items'][:changed]
+        ys = state['ys'][:changed]
+        y = (ys[-1] + items[-1][0]) if items else 0
+        for i in range(changed, len(rows)):
+            height, spec = self._layout_log_row(rows[i], width, first=(i == 0))
+            items.append((height, spec, rows[i]))
+            ys.append(y)
+            y += height
+        state['items'], state['ys'], state['total'] = items, ys, y
+        grew = 0 if rebuilt else max(0, y - old_total)
+        return items, ys, y, grew
+
+    def _draw_log_item(self, spec, x, y, width):
+        """Draw one laid-out Action Log row at content-column x, screen y."""
+        game = self.game
+        w = game.sidebar_widgets
+        screen = game.screen
+        kind = spec['kind']
+        y += spec['top']
+        if kind == 'band':
+            surf, area = w.band(width, spec['h'], (212, 170, 80, 38))
+            screen.blit(surf, (x, y), area)
+            pygame.draw.line(screen, (150, 112, 52), (x, y), (x + width - 1, y), 1)
+            pygame.draw.line(screen, (150, 112, 52), (x, y + spec['h'] - 1), (x + width - 1, y + spec['h'] - 1), 1)
+            label = w.text(spec['text'], 'heading', (245, 214, 140))
+            screen.blit(label, label.get_rect(center=(x + width // 2, y + spec['h'] // 2)))
+        elif kind == 'subturn':
+            label = w.text(w.fit_text(spec['text'], 'italic', width - 30), 'italic', (186, 170, 150))
+            screen.blit(label, (x + 2, y))
+            line_y = y + label.get_height() // 2
+            if x + label.get_width() + 10 < x + width:
+                pygame.draw.line(screen, (110, 84, 48), (x + label.get_width() + 8, line_y), (x + width - 1, line_y), 1)
+        elif kind == 'victory':
+            block = pygame.Rect(x, y, width, 12 + spec['line_h'] * len(spec['lines']))
+            surf, area = w.band(block.w, block.h, (60, 40, 14, 170))
+            screen.blit(surf, block.topleft, area)
+            pygame.draw.rect(screen, (212, 170, 80), block, 1, border_radius=3)
+            ly = y + 6
+            for line in spec['lines']:
+                label = w.text(line, 'heading', (245, 214, 140))
+                screen.blit(label, label.get_rect(midtop=(x + width // 2, ly)))
+                ly += spec['line_h']
+        elif kind == 'banner':
+            color = self.LOG_CATEGORY_COLORS.get(spec['category'], (220, 200, 170))
+            self._draw_log_marker(x + 4, y + spec['line_h'] // 2, color, big=True)
+            ly = y
+            for line in spec['lines']:
+                screen.blit(w.text(line, 'body_bold', self._mix(color, (255, 240, 215), 0.35)), (x + 14, ly))
+                ly += spec['line_h']
+        else:  # entry
+            color = self.LOG_CATEGORY_COLORS.get(spec['category'], (220, 200, 170))
+            if spec['indent'] == 0:
+                self._draw_log_marker(x + 4, y + spec['line_h'] // 2, color)
+                text_color = self._mix(color, (238, 226, 204), 0.55)
+            else:
+                text_color = self.LOG_CHILD_COLOR
+            ly = y
+            for line in spec['lines']:
+                screen.blit(w.text(line, spec['role'], text_color), (x + spec['dx'], ly))
+                ly += spec['line_h']
+
+    def _draw_log_marker(self, cx, cy, color, big=False):
+        """Small category diamond in front of a log line."""
+        r = 4 if big else 3
+        pygame.draw.polygon(self.game.screen, color, [(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)])
+
+    def _draw_scrolling_list(self, items, ys, total_h, viewport, scroll, draw_item):
+        """Draw the rows of a bottom-anchored list that intersect the viewport."""
+        import bisect
+        w = self.game.sidebar_widgets
+        scroll.set_content(total_h, viewport.h)
+        view_top = scroll.view_top()
+        # Short lists sit at the top of the viewport
+        origin = viewport.y - view_top
+        first = max(0, bisect.bisect_right(ys, view_top) - 1)
+        previous_clip = w.begin_clip(viewport)
+        try:
+            for i in range(first, len(items)):
+                screen_y = origin + ys[i]
+                if screen_y > viewport.bottom:
+                    break
+                draw_item(items[i], screen_y)
+        finally:
+            w.end_clip(previous_clip)
+
     def _draw_action_log_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """
-        Draw Action Log tab content (Phase C: Migration from bottom panel).
+        Action Log tab: the game's event log, organised and readable.
 
-        Shows all game messages in the sidebar tab instead of overlay.
-        Messages include:
-        - Battle results
-        - Building completions
-        - Army training completions
-        - Territory captures
-        - Income updates
+        Grouped by turn ("Turn k" bands, "<Name>'s turn" sub-headings), each entry with
+        a category colour + marker (battle, conquest, economy, buildings, training,
+        research, heroes, orders, warnings), battle details nested under their battle
+        heading, victory/elimination as one block. Model: rendering/action_log_model.py.
+
+        Scrolling: pixel ScrollState anchored at the bottom - the newest entry is always
+        visible at offset 0, and the view holds still while new entries arrive if the
+        reader has scrolled back. (The old message-count offset used the UNFILTERED
+        count, so it scrolled past the end, and could hide the newest lines.)
         """
-        # Header (Phase 2: Use SemiBold for section header)
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        header_y = content_start_y
-        header_text = self.get_cached_text("Action Log", self.game.font_bold, WHITE, "font_bold")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
-        
-        # Draw separator line
-        pygame.draw.line(self.game.screen, (100, 100, 100),
-                        (sidebar_x + 30, header_y + 30),
-                        (sidebar_x + sidebar_width - 10, header_y + 30), 2)
+        from ui.sidebar_layout import content_geometry, SCROLLBAR_W
+        game = self.game
+        w = game.sidebar_widgets
+        screen = game.screen
 
-        # Determine LOCAL player (for filtering messages)
-        # Purpose: Show only LOCAL player's messages, not opponents' actions
-        if self.game.multiplayer_mode:
-            local_player = self.game.local_player_index if self.game.local_player_index is not None else 0
-        else:
-            local_player = 0
-            for i in range(self.game.game_state.num_players):
-                if not self.game.game_state.player_is_ai[i]:
-                    local_player = i
-                    break
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Action Log", 2 * half, role='title')
+        screen.blit(header, (full.center_x - half, content_start_y))
+        list_top = content_start_y + header.get_height() + 8
 
-        # Helper function to check if message belongs to local player
-        # Purpose: Parse player indices from messages (supports both "Player X" and custom names)
-        def is_local_player_message(msg, local_player_num):
-            """
-            Check if a message belongs to the local player.
-            Returns True if:
-            - Message contains "Player X" where X = local_player_num + 1
-            - Message contains the local player's custom name (e.g., "Editoreus")
-            - Message doesn't contain any player identification (global messages)
-            Returns False if:
-            - Message only mentions other players
-            """
-            import re
+        # Filter chips (All / Battles / Economy / Heroes) under the header
+        game.sidebar_log_chips = {}
+        if UIConstants.SIDEBAR_LOG_FILTERS:
+            list_top = self._draw_log_filter_chips(full, list_top) + 8
 
-            # Get local player's custom name (if any)
-            local_player_name = self.game.game_state.get_player_name(local_player_num)
+        geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
+                               footer_h=8, panel_width=sidebar_width, scrollbar=True)
+        viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
+        items, ys, total_h, grew = self._update_log_layout(geo.width)
+        scroll = game.sidebar_scroll['action_log']
+        if grew:
+            scroll.on_content_grew(grew)
 
-            # Method 1: Check for "Player X" pattern (used in most messages)
-            player_matches = re.findall(r'Player (\d+)', msg)
-
-            # Method 2: Check if message contains local player's custom name
-            # (for messages that might use custom names instead of "Player X")
-            has_local_name = local_player_name in msg if local_player_name else False
-
-            # If no player identification found, it's a global message
-            if not player_matches and not has_local_name:
-                # Check if message contains ANY player name (not just local)
-                # If it contains other player names but not ours, filter it out
-                for i in range(self.game.game_state.num_players):
-                    if i != local_player_num:
-                        other_name = self.game.game_state.get_player_name(i)
-                        if other_name and other_name in msg:
-                            return False  # Message about another player
-                # No player identification - global message
-                return True
-
-            # If we found local player's name, include message
-            if has_local_name:
-                return True
-
-            # Check if "Player X" matches local player (convert 0-indexed to 1-indexed)
-            local_player_id = str(local_player_num + 1)
-            for player_id in player_matches:
-                if player_id == local_player_id:
-                    return True  # Message involves local player
-
-            # Message only involves other players
-            return False
-
-        # Check if there are any messages
-        if len(self.game.game_state.messages) == 0:
-            # Show empty message
-            # FPS OPTIMIZATION 4.1: Use cached text for static message
-            empty_text = self.get_cached_text("No actions yet", self.game.small_font, (150, 150, 150), "small_font")
-            empty_rect = empty_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 80))
-            self.game.screen.blit(empty_text, empty_rect)
+        if not items:
+            empty = w.text("No events yet", 'body', (200, 170, 150))
+            screen.blit(empty, empty.get_rect(center=(full.center_x, list_top + 30)))
+            scroll.set_content(0, viewport.h)
             return
 
-        # Helper function to replace "Player X" with actual player names
-        # Purpose: Convert generic "Player 1", "Player 2" to custom names like "Editoreus"
-        def replace_player_names_in_message(msg):
-            """
-            Replace all "Player X" patterns in message with actual player names.
-            Example: "Player 1 earned 100 gold" -> "Editoreus earned 100 gold"
-            """
-            import re
+        self._draw_scrolling_list(items, ys, total_h, viewport, scroll,
+                                  lambda item, y: self._draw_log_item(item[1], viewport.x, y, viewport.w))
+        w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
 
-            # Find all "Player X" patterns
-            def replace_match(match):
-                player_num = int(match.group(1))  # Extract number (1-indexed)
-                player_index = player_num - 1  # Convert to 0-indexed
+    def _draw_log_filter_chips(self, full, top):
+        """One row of filter chips across the tapestry; returns the row's bottom y.
 
-                # Get actual player name
-                if 0 <= player_index < self.game.game_state.num_players:
-                    return self.game.game_state.get_player_name(player_index)
-                else:
-                    return match.group(0)  # Keep original if invalid
-
-            # Replace all "Player X" with actual names
-            return re.sub(r'Player (\d+)', replace_match, msg)
-
-        # Get messages to display (oldest to newest), filtered by local player
-        # Purpose: Only show messages that involve the local player or are global
-        # Also replace "Player X" with actual player names
-        all_messages = [replace_player_names_in_message(msg)
-                       for msg in self.game.game_state.messages
-                       if is_local_player_message(msg, local_player)]
-        total_messages = len(all_messages)
-        
-        # Calculate approximate visible messages
-        # Use generous estimate for selection - rendering loop will stop when full
-        available_height = sidebar_y + sidebar_height - (header_y + UIConstants.HEADER_OFFSET) - UIConstants.BOTTOM_RESERVE
-        approx_messages_visible = max(5, available_height // UIConstants.PIXELS_PER_MESSAGE_SELECTION)
-        
-        # Calculate which messages to show based on scroll offset
-        # When scroll_offset = 0: Show newest messages (end of list)
-        # When scroll_offset > 0: Scroll back in history
-        
-        # End index is total minus scroll offset
-        end_index = total_messages - self.game.action_log_scroll_offset
-        # Start index ensures we don't show more than fits
-        start_index = max(0, end_index - approx_messages_visible)
-        
-        messages_to_show = all_messages[start_index:end_index]
-        start_msg_index = start_index
-        
-        # Draw messages (oldest to newest, top to bottom)
-        msg_y = header_y + UIConstants.HEADER_OFFSET
-        messages_rendered = 0
-        
-        for message in messages_to_show:
-            # Check if we're out of space
-            if msg_y + 40 > sidebar_y + sidebar_height - UIConstants.BOTTOM_RESERVE:
-                break
-
-            messages_rendered += 1
-
-            # Determine message color (dark gold for turn start messages)
-            dark_gold = (200, 160, 0)  # Dark gold color
-            if "Turn ---" in message or "'s Turn" in message:
-                # Turn start message - use dark gold color
-                msg_color = dark_gold
+        The active chip is gold-filled; hover brightens and a click flashes like every
+        other sidebar control. Click handling: main.py handle_order_sidebar_click.
+        """
+        from rendering.action_log_model import FILTERS
+        game = self.game
+        w = game.sidebar_widgets
+        gap = 4
+        height = max(16, int(round(20 * w.scale)))
+        width = full.right - full.x
+        # Each chip as wide as its label + padding, the spare width shared out evenly
+        # (equal widths cut "Economy" to "Econ..." at 1600x900)
+        font = w.font('small_bold')
+        widths = [font.size(label)[0] + 12 for _fid, label, _cats in FILTERS]
+        spare = width - gap * (len(FILTERS) - 1) - sum(widths)
+        widths = [cw + max(0, spare) // len(FILTERS) for cw in widths]
+        active_id = getattr(game, 'sidebar_log_filter_id', 'all')
+        clicked = getattr(game, 'clicked_element', None)
+        x = full.x + max(0, width - (sum(widths) + gap * (len(FILTERS) - 1))) // 2
+        for (filter_id, label, _categories), chip_w in zip(FILTERS, widths):
+            rect = pygame.Rect(x, top, chip_w, height)
+            if clicked == ('sidebar_log_filter', filter_id):
+                state = 'flash'
+            elif w.hover(rect):
+                state = 'hover'
             else:
-                # Regular message - use normal color
-                msg_color = (200, 200, 200)
+                state = 'normal'
+            game.screen.blit(w.chip(label, rect.size, filter_id == active_id, state), rect.topleft)
+            game.sidebar_log_chips[filter_id] = rect
+            x += chip_w + gap
+        return top + height
 
-            # Word wrap for long messages (fit in sidebar)
-            max_chars = UIConstants.MESSAGE_MAX_CHARS
-            if len(message) > max_chars:
-                words = message.split()
-                line = ""
-                for word in words:
-                    test_line = line + " " + word if line else word
-                    if len(test_line) > max_chars:
-                        # FPS OPT: Cache action log text renders
-                        msg_text = self.get_cached_text(line, self.game.small_font, msg_color, "small")
-                        self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                        msg_y += 18
-                        line = word
+    def _update_chat_layout(self, width):
+        """Chat messages laid out in pixels; re-filtered only when a message arrives."""
+        game = self.game
+        gs = game.game_state
+        w = game.sidebar_widgets
+        viewer = game.get_local_player()
+        source = gs.chat_messages
+        key = (id(source), viewer, int(width), w.scale)
+        state = self.__dict__.setdefault('_chat_state', {'key': None, 'count': 0, 'items': [], 'ys': [],
+                                                         'total': 0, 'visible': 0})
+        if state['key'] != key or len(source) < state['count']:
+            state.update(key=key, count=0, items=[], ys=[], total=0, visible=0)
+        if len(source) == state['count']:
+            return state['items'], state['ys'], state['total'], 0
 
-                        # Check space again
-                        if msg_y + 40 > sidebar_y + sidebar_height - UIConstants.BOTTOM_RESERVE:
-                            break
-                    else:
-                        line = test_line
+        # Team chat is filtered per viewer; filtering is per message, so the visible
+        # list only grows at its end and new entries can be appended
+        visible = gs.get_visible_chat_messages(viewer)
+        old_total = state['total']
+        y = state['total']
+        name_h = w.font('small_bold').get_linesize()
+        body_h = w.font('body').get_linesize()
+        for message in visible[state['visible']:]:
+            # Format: (timestamp, player_id, message[, channel]) - index access (old saves: 3-tuple)
+            timestamp, player_id, text = message[0], message[1], message[2]
+            channel = message[3] if len(message) > 3 else 'all'
+            lines = w.wrap(text, 'body', width - 6)
+            height = 6 + name_h + body_h * len(lines)
+            state['items'].append((height, {'time': timestamp, 'player': player_id, 'team': channel == 'team',
+                                            'lines': lines, 'name_h': name_h, 'body_h': body_h}))
+            state['ys'].append(y)
+            y += height
+        grew = 0 if state['visible'] == 0 else max(0, y - old_total)
+        state.update(count=len(source), visible=len(visible), total=y)
+        return state['items'], state['ys'], state['total'], grew
 
-                # Draw last line
-                if line and msg_y + 20 < sidebar_y + sidebar_height - 40:
-                    msg_text = self.get_cached_text(line, self.game.small_font, msg_color, "small")
-                    self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                    msg_y += 18
-            else:
-                # Short message - draw directly
-                msg_text = self.get_cached_text(message, self.game.small_font, msg_color, "small")
-                self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                msg_y += 18
-
-            # Add small gap between messages
-            msg_y += 5
-        
-        # Calculate actual end index based on what we rendered
-        actual_end_index = start_msg_index + messages_rendered
-        
-        # Draw scroll position indicator on right side
-        if total_messages > messages_rendered:
-            # Calculate scroll position
-            max_scroll = total_messages - messages_rendered
-            scroll_percentage = 1.0 - (self.game.action_log_scroll_offset / max_scroll) if max_scroll > 0 else 1.0
-            
-            # Scrollbar dimensions
-            scrollbar_x = sidebar_x + sidebar_width - UIConstants.SCROLLBAR_OFFSET
-            scrollbar_top = header_y + UIConstants.HEADER_OFFSET
-            scrollbar_height = sidebar_y + sidebar_height - scrollbar_top - 10
-            
-            # Draw scrollbar track
-            pygame.draw.rect(self.game.screen, (60, 60, 60), 
-                           (scrollbar_x, scrollbar_top, UIConstants.SCROLLBAR_WIDTH, scrollbar_height))
-            
-            # Draw scrollbar thumb
-            thumb_height = max(UIConstants.SCROLLBAR_THUMB_MIN, int(scrollbar_height * (messages_rendered / total_messages)))
-            thumb_y = scrollbar_top + int((scrollbar_height - thumb_height) * scroll_percentage)
-            pygame.draw.rect(self.game.screen, (150, 150, 150), 
-                           (scrollbar_x, thumb_y, UIConstants.SCROLLBAR_WIDTH, thumb_height))
-            
-            # Draw position text
-            position_text = f"{actual_end_index}/{total_messages}"
-            pos_text_surface = self.get_cached_text(position_text, self.game.small_font, (120, 120, 120), "small")
-            pos_rect = pos_text_surface.get_rect(right=sidebar_x + sidebar_width - 15,
-                                                  bottom=sidebar_y + sidebar_height - 5)
-            self.game.screen.blit(pos_text_surface, pos_rect)
+    def _draw_chat_item(self, spec, x, y, width):
+        """One chat message: '[time] [TEAM] Name:' line, then the wrapped text."""
+        game = self.game
+        gs = game.game_state
+        w = game.sidebar_widgets
+        screen = game.screen
+        y += 6
+        time_surf = w.text(f"[{spec['time']}]", 'small', (150, 140, 128))
+        screen.blit(time_surf, (x, y))
+        nx = x + time_surf.get_width() + 5
+        if spec['team']:
+            team = w.text("[TEAM]", 'small_bold', (110, 210, 110))
+            screen.blit(team, (nx, y))
+            nx += team.get_width() + 5
+        name = w.text(w.fit_text(f"{gs.get_player_name(spec['player'])}:", 'small_bold', x + width - nx),
+                      'small_bold', gs.get_player_color(spec['player']))
+        screen.blit(name, (nx, y))
+        ly = y + spec['name_h']
+        for line in spec['lines']:
+            screen.blit(w.text(line, 'body', (226, 216, 196)), (x + 6, ly))
+            ly += spec['body_h']
 
     def _draw_chat_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """
-        Draw Chat tab content with message history and scrolling.
+        Chat tab: message history, newest at the bottom.
 
-        Format: [timestamp] [TEAM]? PlayerName: message
-        Supports scrolling with mouse wheel to view older messages.
-        Filters team messages based on viewer's team membership.
+        Format: [timestamp] [TEAM]? PlayerName: message. Team messages are filtered by
+        the viewer's alliance (get_visible_chat_messages, local player). Pixel scrolling
+        anchored at the bottom, like the Action Log - the old offset used the
+        unfiltered message count and scrolled past the end.
         """
-        # Header (Phase 2: Use SemiBold for section header)
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        header_y = content_start_y
-        header_text = self.get_cached_text("Chat", self.game.font_bold, WHITE, "font_bold")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
+        from ui.sidebar_layout import content_geometry, SCROLLBAR_W
+        game = self.game
+        w = game.sidebar_widgets
+        screen = game.screen
 
-        # Draw separator line
-        pygame.draw.line(self.game.screen, (100, 100, 100),
-                        (sidebar_x + 30, header_y + 30),
-                        (sidebar_x + sidebar_width - 10, header_y + 30), 2)
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Chat", 2 * half, role='title')
+        screen.blit(header, (full.center_x - half, content_start_y))
+        list_top = content_start_y + header.get_height() + 8
 
-        # Get viewer's player index for message filtering
-        if self.game.multiplayer_mode:
-            viewer_player = getattr(self.game, 'local_player_index', 0)
-        else:
-            viewer_player = self.game.game_state.current_player
+        geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
+                               footer_h=8, panel_width=sidebar_width, scrollbar=True)
+        viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
+        items, ys, total_h, grew = self._update_chat_layout(geo.width)
+        scroll = game.sidebar_scroll['chat']
+        if grew:
+            scroll.on_content_grew(grew)
 
-        # Get visible messages (filters team chat by alliance)
-        all_messages = self.game.game_state.get_visible_chat_messages(viewer_player)
-        total_messages = len(all_messages)
-
-        # Check if there are any visible messages
-        if total_messages == 0:
-            # Show empty message
-            # FPS OPTIMIZATION 4.1: Use cached text for static messages
-            empty_text = self.get_cached_text("No messages yet", self.game.small_font, (150, 150, 150), "small_font")
-            empty_rect = empty_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 80))
-            self.game.screen.blit(empty_text, empty_rect)
-
-            # Instructions
-            hint_text = self.get_cached_text("Press ENTER to chat", self.game.small_font, (120, 120, 120), "small_font")
-            hint_rect = hint_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 110))
-            self.game.screen.blit(hint_text, hint_rect)
+        if not items:
+            empty = w.text("No messages yet", 'body', (200, 170, 150))
+            screen.blit(empty, empty.get_rect(center=(full.center_x, list_top + 30)))
+            hint = w.text("Press ENTER to chat", 'italic', (170, 150, 130))
+            screen.blit(hint, hint.get_rect(center=(full.center_x, list_top + 54)))
+            scroll.set_content(0, viewport.h)
             return
-        
-        # Calculate approximate visible messages
-        # Use generous estimate for selection - rendering loop will stop when full
-        available_height = sidebar_y + sidebar_height - (header_y + UIConstants.HEADER_OFFSET) - UIConstants.BOTTOM_RESERVE
-        approx_messages_visible = max(5, available_height // UIConstants.PIXELS_PER_MESSAGE_SELECTION)
-        
-        # Calculate which messages to show based on scroll offset
-        # When scroll_offset = 0: Show newest messages (end of list)
-        # When scroll_offset > 0: Scroll back in history
-        
-        # End index is total minus scroll offset
-        end_index = total_messages - self.game.chat_scroll_offset
-        # Start index ensures we don't show more than fits
-        start_index = max(0, end_index - approx_messages_visible)
-        
-        messages_to_show = all_messages[start_index:end_index]
-        start_msg_index = start_index
-        
-        # Draw messages (oldest to newest, top to bottom)
-        msg_y = header_y + UIConstants.HEADER_OFFSET
-        messages_rendered = 0
-        
-        for idx, msg_tuple in enumerate(messages_to_show):
-            # Check if we're out of space
-            if msg_y + 40 > sidebar_y + sidebar_height - UIConstants.BOTTOM_RESERVE:
-                break
 
-            messages_rendered += 1
+        self._draw_scrolling_list(items, ys, total_h, viewport, scroll,
+                                  lambda item, y: self._draw_chat_item(item[1], viewport.x, y, viewport.w))
+        w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
 
-            # Handle both 3-tuple (old format) and 4-tuple (new format with channel)
-            if len(msg_tuple) == 4:
-                timestamp, player_id, message, channel = msg_tuple
-            else:
-                timestamp, player_id, message = msg_tuple
-                channel = 'all'
+    # ========================================================================
+    # HEROES (sidebar overhaul P4)
+    # ========================================================================
+    HERO_CARD_FILL = ((36, 26, 23, 238), (20, 14, 13, 238))
+    HERO_TITLE_COLOR = (214, 160, 96)
 
-            # Format: [timestamp] [TEAM]? PlayerName: message
-            player_color = self.game.game_state.get_player_color(player_id)
-            player_name = self.game.game_state.get_player_name(player_id)
+    def _hero_entries(self, local_player):
+        """(kind, hero, info) for the local player's active heroes, then those in training."""
+        gs = self.game.game_state
+        entries = []
+        for hero, data in (gs.heroes.get(local_player, {}) or {}).items():
+            entries.append(('active', hero, {'keep': data.get('keep_territory', '?')}))
+        for territory, keeps in gs.hero_training_queue.items():
+            if gs.territory_owners.get(territory, -1) != local_player:
+                continue
+            for keep_plot, entry in keeps.items():
+                # Format: (hero_type, turns_remaining[, paid_cost]) - index access (old saves: 2-tuple)
+                hero, remaining = entry[0], entry[1]
+                total = max(1, int(gs.HERO_TYPES.get(hero, {}).get('training_time', remaining) or 1))
+                entries.append(('training', hero, {'keep': territory, 'remaining': int(remaining),
+                                                   'total': max(total, int(remaining))}))
+        return entries
 
-            # FPS OPT: Cache all chat text renders
-            time_text = self.get_cached_text(f"[{timestamp}]", self.game.small_font, (150, 150, 150), "small")
-            self.game.screen.blit(time_text, (sidebar_x + 30, msg_y))
-            name_x = sidebar_x + 30 + time_text.get_width() + 5
+    def _hero_card_layout(self, kind, hero, info, width):
+        """Measure one hero card (memoised: text wrapping/fitting is the costly part)."""
+        key = (kind, hero, info.get('keep'), info.get('remaining'), info.get('total'), int(width),
+               self.game.sidebar_widgets.scale)
+        cache = self.__dict__.setdefault('_hero_layout_cache', OrderedDict())
+        lay = cache.get(key)
+        if lay is None:
+            lay = self._measure_hero_card(kind, hero, info, width)
+            cache[key] = lay
+            if len(cache) > 64:
+                cache.popitem(last=False)
+        return lay
 
-            # Draw [TEAM] indicator for team messages (green color)
-            if channel == 'team':
-                team_text = self.get_cached_text("[TEAM]", self.game.small_font, (100, 200, 100), "small")
-                self.game.screen.blit(team_text, (name_x, msg_y))
-                name_x += team_text.get_width() + 5
+    def _measure_hero_card(self, kind, hero, info, width):
+        """Measure one hero card (card-local rects for portrait / ability icons)."""
+        w = self.game.sidebar_widgets
+        s = w.scale
+        border = max(8, int(round(9 * s)))
+        pad = border + 6
+        inner_w = width - 2 * pad
+        name_h = w.font('heading').get_linesize()
+        italic_h = w.font('italic').get_linesize()
+        small_h = w.font('small').get_linesize()
+        portrait = int(round(46 * s))
+        text_x = pad + portrait + 8
+        text_w = width - pad - text_x
+        title = ' '.join(self.game.game_state.HERO_TYPES.get(hero, {}).get('description', []) or [])
+        # Up to three lines (owner feedback: "High Commander of Affrancian Union" needs
+        # three); anything longer ends the third line with an ellipsis, never vanishes
+        title_lines = w.wrap(title, 'italic', text_w) if title else []
+        if len(title_lines) > 3:
+            title_lines = title_lines[:2] + [w.fit_text(' '.join(title_lines[2:]), 'italic', text_w)]
+        location = w.fit_text(f"Keep: {info['keep']}", 'small', text_w)
+        body_h = max(portrait, italic_h * len(title_lines) + 3 + small_h)
 
-            # Draw player name in their color
-            name_text = self.get_cached_text(player_name + ":", self.game.small_font, player_color, "small")
-            self.game.screen.blit(name_text, (name_x, msg_y))
-            msg_y += 18
+        y = pad
+        name_y = y
+        y += name_h + 2
+        rule1_y = y
+        y += 7 + 5
+        body_y = y
+        y += body_h + 5
+        rule2_y = y
+        y += 7 + 6
+        icons = []
+        if kind == 'active':
+            icon = int(round(32 * s))
+            gap = max(6, int(round(10 * s)))
+            total = 3 * icon + 2 * gap
+            start = (width - total) // 2
+            for i in range(3):
+                icons.append(pygame.Rect(start + i * (icon + gap), y, icon, icon))
+            y += icon
+            bar = None
+        else:
+            bar = pygame.Rect(pad, y, inner_w, max(10, int(round(12 * s))))
+            y += bar.h + 4 + small_h
+        height = y + pad
+        return {'border': border, 'pad': pad, 'inner_w': inner_w, 'name_y': name_y, 'rule1_y': rule1_y,
+                'body_y': body_y, 'rule2_y': rule2_y, 'portrait': pygame.Rect(pad, body_y, portrait, portrait),
+                'text_x': text_x, 'title_lines': title_lines, 'location': location, 'italic_h': italic_h,
+                'icons': icons, 'bar': bar, 'height': height, 'width': int(width)}
 
-            # Draw message (word wrapped)
-            max_chars = UIConstants.MESSAGE_MAX_CHARS
-            if len(message) > max_chars:
-                words = message.split()
-                line = ""
-                for word in words:
-                    test_line = line + " " + word if line else word
-                    if len(test_line) > max_chars:
-                        msg_text = self.get_cached_text(line, self.game.small_font, (200, 200, 200), "small")
-                        self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                        msg_y += 16
-                        line = word
+    def _compose_hero_card(self, kind, hero, info, lay, state):
+        """Static part of a hero card (frame, name, portrait, title, location, rules,
+        progress bar) on one cached surface; ability icons are drawn live on top."""
+        key = (kind, hero, info.get('keep'), info.get('remaining'), info.get('total'), lay['width'],
+               self.game.sidebar_widgets.scale, state)
+        cache = self.__dict__.setdefault('_hero_card_cache', OrderedDict())
+        surf = cache.get(key)
+        if surf is not None:
+            cache.move_to_end(key)
+            return surf
 
-                        # Check space again
-                        if msg_y + 30 > sidebar_y + sidebar_height - 40:
-                            break
-                    else:
-                        line = test_line
+        game = self.game
+        w = game.sidebar_widgets
+        width, height = lay['width'], lay['height']
+        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        surf.blit(w.card('bronze', (width, height), lay['border'], self.HERO_CARD_FILL, state), (0, 0))
+        training = kind == 'training'
 
-                # Draw last line
-                if line and msg_y + 20 < sidebar_y + sidebar_height - 40:
-                    msg_text = self.get_cached_text(line, self.game.small_font, (200, 200, 200), "small")
-                    self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                    msg_y += 16
-            else:
-                # Short message - draw directly
-                msg_text = self.get_cached_text(message, self.game.small_font, (200, 200, 200), "small")
-                self.game.screen.blit(msg_text, (sidebar_x + 30, msg_y))
-                msg_y += 16
-            
-            # Add gap between messages
-            msg_y += 8
-        
-        # Calculate actual end index based on what we rendered
-        actual_end_index = start_msg_index + messages_rendered
-        
-        # Draw scroll position indicator on right side
-        if total_messages > messages_rendered:
-            # Calculate scroll position
-            max_scroll = total_messages - messages_rendered
-            scroll_percentage = 1.0 - (self.game.chat_scroll_offset / max_scroll) if max_scroll > 0 else 1.0
-            
-            # Scrollbar dimensions
-            scrollbar_x = sidebar_x + sidebar_width - UIConstants.SCROLLBAR_OFFSET
-            scrollbar_top = header_y + UIConstants.HEADER_OFFSET
-            scrollbar_height = sidebar_y + sidebar_height - scrollbar_top - 10
-            
-            # Draw scrollbar track
-            pygame.draw.rect(self.game.screen, (60, 60, 60), 
-                           (scrollbar_x, scrollbar_top, UIConstants.SCROLLBAR_WIDTH, scrollbar_height))
-            
-            # Draw scrollbar thumb
-            thumb_height = max(UIConstants.SCROLLBAR_THUMB_MIN, int(scrollbar_height * (messages_rendered / total_messages)))
-            thumb_y = scrollbar_top + int((scrollbar_height - thumb_height) * scroll_percentage)
-            pygame.draw.rect(self.game.screen, (150, 150, 150), 
-                           (scrollbar_x, thumb_y, UIConstants.SCROLLBAR_WIDTH, thumb_height))
-            
-            # Draw position text
-            position_text = f"{actual_end_index}/{total_messages}"
-            pos_text_surface = self.get_cached_text(position_text, self.game.small_font, (120, 120, 120), "small")
-            pos_rect = pos_text_surface.get_rect(right=sidebar_x + sidebar_width - 15,
-                                                  bottom=sidebar_y + sidebar_height - 5)
-            self.game.screen.blit(pos_text_surface, pos_rect)
+        # Name (prominent, gold) over a gold rule
+        name_color = (232, 196, 120) if training else (250, 222, 150)
+        name = w.text(w.fit_text(hero, 'heading', lay['inner_w']), 'heading', name_color)
+        surf.blit(name, name.get_rect(midtop=(width // 2, lay['name_y'])))
+        surf.blit(w.separator(lay['inner_w']), (lay['pad'], lay['rule1_y']))
+
+        # Portrait (dimmed while in training) + title + location
+        portrait_rect = lay['portrait']
+        image = getattr(game, 'hero_images', {}).get(hero)
+        portrait = w.icon_surface(('hero', hero), image, portrait_rect.w, frame=True)
+        if training:
+            portrait = portrait.copy()
+            portrait.fill((150, 150, 150, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(portrait, portrait_rect.topleft)
+        ty = lay['body_y']
+        for line in lay['title_lines']:
+            surf.blit(w.text(line, 'italic', self.HERO_TITLE_COLOR), (lay['text_x'], ty))
+            ty += lay['italic_h']
+        surf.blit(w.text(lay['location'], 'small', (200, 188, 168)), (lay['text_x'], ty + 3))
+        surf.blit(w.separator(lay['inner_w'], color=(150, 112, 52)), (lay['pad'], lay['rule2_y']))
+
+        # Training: progress bar + turns remaining
+        if training and lay['bar'] is not None:
+            done = info['total'] - info['remaining']
+            frac = done / float(info['total'])
+            bar = lay['bar']
+            pygame.draw.rect(surf, (28, 20, 16), bar, border_radius=3)
+            if frac > 0:
+                fill = bar.inflate(-4, -4)
+                fill.w = max(1, int(fill.w * frac))
+                pygame.draw.rect(surf, (196, 150, 60), fill, border_radius=2)
+            pygame.draw.rect(surf, (120, 86, 34), bar, 1, border_radius=3)
+            remaining = info['remaining']
+            label = w.text(f"{remaining} {'turn' if remaining == 1 else 'turns'} remaining", 'small',
+                           (226, 210, 178))
+            surf.blit(label, label.get_rect(midtop=(width // 2, bar.bottom + 4)))
+
+        # Display alpha format: noticeably faster to blend every frame
+        surf = self.game.sidebar_widgets.display_alpha(surf)
+        cache[key] = surf
+        if len(cache) > 48:
+            cache.popitem(last=False)
+        return surf
+
+    def _hero_ability_sprite(self, hero, index, size, status, hovering, clicking, disabled):
+        """One ability icon composed once per look (shared draw helper, cached).
+
+        PERFORMANCE: drawing the icons live (icon, overlays, spell border, digits) for
+        three hero cards cost ~0.2 ms per frame; a composed sprite is one blit. Keyed
+        by everything that changes the look, so cooldowns / hover / flash stay exact.
+        """
+        key = (hero, index, size, status['type'], status['cooldown'], hovering, clicking, disabled,
+               self.game.sidebar_widgets.scale)
+        cache = self.__dict__.setdefault('_hero_icon_cache', OrderedDict())
+        sprite = cache.get(key)
+        if sprite is None:
+            sprite = pygame.Surface((size, size), pygame.SRCALPHA)
+            self.game.draw_hero_ability_icon(pygame.Rect(0, 0, size, size), hero, index, status, hovering,
+                                             clicking, self.game.sidebar_widgets.font('digits'),
+                                             disabled=disabled, surface=sprite)
+            sprite = self.game.sidebar_widgets.display_alpha(sprite)
+            cache[key] = sprite
+            if len(cache) > 96:
+                cache.popitem(last=False)
+        else:
+            cache.move_to_end(key)
+        return sprite
 
     def _draw_heroes_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
-        """Draw Heroes tab content showing active heroes and training progress."""
-        # Initialize hero button storage for click detection
-        if not hasattr(self.game, 'hero_selection_buttons'):
-            self.game.hero_selection_buttons = {}
-        self.game.hero_selection_buttons = {}
+        """Heroes tab: the local player's heroes as bronze cards, then those in training.
 
-        # Header
-        # FPS OPTIMIZATION 4.1: Use cached text for static header
-        header_y = content_start_y
-        header_text = self.get_cached_text("Heroes", self.game.font, WHITE, "font")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
+        Active hero card: name (gold, underlined) / portrait + title + Keep location /
+        the three ability icons - hoverable (tooltip after the usual delay) and castable
+        exactly like the bottom-bar Hero UI (shared helpers: get_hero_ability_status,
+        draw_hero_ability_icon, try_cast_hero_ability), dimmed when it's not your turn.
+        Clicking the card selects the hero (bottom-bar Hero UI), as before.
+        Training card: dimmed portrait, progress bar and turns remaining.
+        Scrolls (top-anchored ScrollState) when the cards don't fit.
 
-        # Show LOCAL player's heroes (not current turn player)
-        if self.game.multiplayer_mode:
-            current_player = self.game.local_player_index if self.game.local_player_index is not None else 0
-        else:
-            current_player = 0
-            for i in range(self.game.game_state.num_players):
-                if not self.game.game_state.player_is_ai[i]:
-                    current_player = i
-                    break
+        Click rects: hero_selection_buttons {hero: rect}, sidebar_hero_ability_buttons
+        {(hero, i): rect}, hero_portrait_rects {hero: rect} - all clipped to the viewport.
+        """
+        from ui.sidebar_layout import content_geometry, SCROLLBAR_W
+        game = self.game
+        gs = game.game_state
+        w = game.sidebar_widgets
+        screen = game.screen
+        local_player = game.get_local_player()
 
-        # Hero limit display (centered below header)
-        current_hero_count = len(self.game.game_state.hero_ownership[current_player])
-        hero_limit = self.game.game_state.player_hero_limit[current_player]
-        limit_text = self.get_cached_text(f"Hero Limit: {current_hero_count}/{hero_limit}", self.game.small_font, (200, 200, 100), "small")
-        limit_rect = limit_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y + 25)
-        self.game.screen.blit(limit_text, limit_rect)
+        game.hero_selection_buttons = {}
+        game.sidebar_hero_ability_buttons = {}
+        game.hero_portrait_rects = {}
+        current_hover = None
 
-        # Separator
-        pygame.draw.line(self.game.screen, (100, 100, 100),
-                        (sidebar_x + 30, header_y + 50),
-                        (sidebar_x + sidebar_width - 10, header_y + 50), 2)
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Heroes", 2 * half, role='title')
+        screen.blit(header, (full.center_x - half, content_start_y))
+        y = content_start_y + header.get_height() + 4
 
-        # Check for heroes
-        has_active = (current_player in self.game.game_state.heroes and
-                      len(self.game.game_state.heroes[current_player]) > 0)
+        # Hero limit (counts heroes in training too)
+        count = len(gs.hero_ownership.get(local_player, ())) if isinstance(gs.hero_ownership, dict) else 0
+        limit = gs.player_hero_limit[local_player] if 0 <= local_player < len(gs.player_hero_limit) else 0
+        limit_text = w.text(f"Hero Limit: {count}/{limit}", 'small_bold', (222, 200, 120))
+        screen.blit(limit_text, limit_text.get_rect(midtop=(full.center_x, y)))
+        list_top = y + limit_text.get_height() + 8
 
-        has_training = False
-        for territory, keeps_dict in self.game.game_state.hero_training_queue.items():
-            if self.game.game_state.territory_owners.get(territory, -1) == current_player:
-                has_training = True
-                break
-
-        if not has_active and not has_training:
-            # Empty state
-            # FPS OPTIMIZATION 4.1: Use cached text for static messages
-            empty_text = self.get_cached_text("No heroes yet", self.game.small_font, (150, 150, 150), "small_font")
-            empty_rect = empty_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 100))
-            self.game.screen.blit(empty_text, empty_rect)
-
-            hint_text = self.get_cached_text("Train heroes from Keeps", self.game.small_font, (120, 120, 120), "small_font")
-            hint_rect = hint_text.get_rect(center=(sidebar_x + sidebar_width // 2, header_y + 130))
-            self.game.screen.blit(hint_text, hint_rect)
+        entries = self._hero_entries(local_player)
+        scroll = game.sidebar_scroll['heroes']
+        if not entries:
+            empty = w.text("No heroes yet", 'body', (200, 170, 150))
+            screen.blit(empty, empty.get_rect(center=(full.center_x, list_top + 30)))
+            hint = w.text("Train heroes from Keeps", 'italic', (170, 150, 130))
+            screen.blit(hint, hint.get_rect(center=(full.center_x, list_top + 54)))
+            scroll.set_content(0, 0)
+            game.update_button_hover(None, 'sidebar_hero_ability')
             return
 
-        hero_y = header_y + 70
+        geo = content_geometry(sidebar_x, sidebar_y, sidebar_height, header_h=list_top - sidebar_y,
+                               footer_h=8, panel_width=sidebar_width, scrollbar=True)
+        viewport = pygame.Rect(geo.x, geo.top, geo.width, max(1, geo.bottom - geo.top))
 
-        # Active Heroes Section
-        if has_active:
-            # FPS OPTIMIZATION 4.1: Use cached text for static section title
-            section_title = self.get_cached_text("Active Heroes:", self.game.font, (200, 200, 200), "font")
-            self.game.screen.blit(section_title, (sidebar_x + 30, hero_y))
-            hero_y += 30
+        # Lay out: section header, cards, (second section header, cards)
+        gap = 8
+        items, y, last_kind = [], 0, None
+        for kind, hero, info in entries:
+            if kind != last_kind:
+                label = "Active Heroes" if kind == 'active' else "Heroes in Training"
+                hdr = w.section_header(label, geo.width, role='heading')
+                items.append(('header', hdr, y, hdr.get_height()))
+                y += hdr.get_height() + 6
+                last_kind = kind
+            lay = self._hero_card_layout(kind, hero, info, geo.width)
+            items.append(('card', (kind, hero, info, lay), y, lay['height']))
+            y += lay['height'] + gap
+        scroll.set_content(max(0, y - gap), viewport.h)
+        top = viewport.y - scroll.view_top()
 
-            for hero_type, hero_data in self.game.game_state.heroes[current_player].items():
-                # Hero box - taller height for better text visibility
-                hero_rect = pygame.Rect(sidebar_x + 30, hero_y, sidebar_width - 60, 85)
-
-                # Check if this hero is selected
-                is_selected = (self.game.selected_hero == hero_type)
-
-                # Draw background with selection highlight
-                if is_selected:
-                    # Selected hero: darker background with thick gold border
-                    pygame.draw.rect(self.game.screen, (80, 80, 100), hero_rect, border_radius=5)
-                    pygame.draw.rect(self.game.screen, (218, 165, 32), hero_rect, 4, border_radius=5)
-                else:
-                    # Unselected hero: lighter background with thin blue border
-                    pygame.draw.rect(self.game.screen, (40, 40, 50), hero_rect, border_radius=5)
-                    pygame.draw.rect(self.game.screen, (100, 150, 200), hero_rect, 2, border_radius=5)
-
-                # Store rect for click detection
-                self.game.hero_selection_buttons[hero_type] = hero_rect
-
-                # Hero name
-                name_text = self.get_cached_text(hero_type, self.game.font, (200, 200, 100), "font")
-                self.game.screen.blit(name_text, (sidebar_x + 40, hero_y + 5))
-
-                # Keep location
-                location = f"Keep: {hero_data['keep_territory']}"
-                location_text = self.get_cached_text(location, self.game.small_font, (150, 150, 150), "small")
-                self.game.screen.blit(location_text, (sidebar_x + 40, hero_y + 28))
-
-                # Abilities: Coming Soon text removed per user request
-
-                hero_y += 95  # Adjusted spacing for taller button
-
-        # Training Heroes Section
-        if has_training:
-            # FPS OPTIMIZATION 4.1: Use cached text for static section title
-            section_title = self.get_cached_text("Training:", self.game.font, (200, 200, 200), "font")
-            self.game.screen.blit(section_title, (sidebar_x + 30, hero_y))
-            hero_y += 30
-
-            for territory, keeps_dict in self.game.game_state.hero_training_queue.items():
-                owner = self.game.game_state.territory_owners.get(territory, -1)
-                if owner != current_player:
+        # Casting from the sidebar follows the bottom bar's rules (see Game._can_cast_from_sidebar)
+        can_cast = game._can_cast_from_sidebar()
+        previous_clip = w.begin_clip(viewport)
+        try:
+            for item_kind, payload, item_y, item_h in items:
+                screen_y = top + item_y
+                if screen_y + item_h < viewport.top:
                     continue
+                if screen_y > viewport.bottom:
+                    break
+                if item_kind == 'header':
+                    screen.blit(payload, (viewport.x, screen_y))
+                    continue
+                kind, hero, info, lay = payload
+                rect = pygame.Rect(viewport.x, screen_y, viewport.w, item_h)
+                icon_rects = [r.move(rect.topleft) for r in lay['icons']]
+                over_icon = any(w.hover(r, viewport) for r in icon_rects)
+                if kind == 'active' and game.selected_hero == hero:
+                    state = 'selected'
+                elif kind == 'active' and getattr(game, 'clicked_element', None) == ('sidebar_hero_card', hero):
+                    state = 'flash'
+                elif kind == 'active' and w.hover(rect, viewport) and not over_icon:
+                    state = 'hover'
+                else:
+                    state = 'normal'
+                screen.blit(self._compose_hero_card(kind, hero, info, lay, state), rect.topleft)
 
-                for keep_plot, entry in keeps_dict.items():
-                    # H4 fix: handle 3-tuple (hero_type, turns, paid_cost)
-                    hero_type, turns_remaining = entry[0], entry[1]
-                    # Training box
-                    training_rect = pygame.Rect(sidebar_x + 30, hero_y, sidebar_width - 60, 60)
-                    pygame.draw.rect(self.game.screen, (60, 50, 50), training_rect, border_radius=5)
-                    pygame.draw.rect(self.game.screen, (200, 150, 100), training_rect, 2, border_radius=5)
+                hit = w.clip_hit(rect, viewport)
+                portrait_hit = w.clip_hit(lay['portrait'].move(rect.topleft), viewport)
+                if portrait_hit is not None:
+                    game.hero_portrait_rects[hero] = portrait_hit
+                if kind != 'active':
+                    continue
+                if hit is not None:
+                    game.hero_selection_buttons[hero] = hit
 
-                    # Hero name
-                    name_text = self.get_cached_text(hero_type, self.game.font, (200, 150, 100), "font")
-                    self.game.screen.blit(name_text, (sidebar_x + 40, hero_y + 5))
+                # Ability icons: live (cooldowns / hover / click flash change every turn)
+                for i, icon_rect in enumerate(icon_rects):
+                    status = gs.get_hero_ability_status(local_player, hero, i)
+                    if status is None:
+                        continue
+                    hovering = w.hover(icon_rect, viewport)
+                    if hovering:
+                        current_hover = ('sidebar_hero_ability', (hero, i))
+                    clicking = (status['castable'] and can_cast
+                                and getattr(game, 'clicked_element', None) == ('sidebar_hero_ability', (hero, i)))
+                    disabled = status['type'] == 'active' and not (status['castable'] and can_cast)
+                    screen.blit(self._hero_ability_sprite(hero, i, icon_rect.w, status, hovering, clicking,
+                                                          disabled), icon_rect.topleft)
+                    icon_hit = w.clip_hit(icon_rect, viewport)
+                    if icon_hit is not None:
+                        game.sidebar_hero_ability_buttons[(hero, i)] = icon_hit
+        finally:
+            w.end_clip(previous_clip)
 
-                    # Progress. No "Training:" prefix - the panel is already the
-                    # hero training list, and the full label overran its column.
-                    # Singular/plural so the last turn does not read "1 turns".
-                    progress = "%d %s remaining" % (
-                        turns_remaining,
-                        "turn" if turns_remaining == 1 else "turns")
-                    progress_text = self.get_cached_text(progress, self.game.small_font, (150, 150, 150), "small")
-                    self.game.screen.blit(progress_text, (sidebar_x + 40, hero_y + 28))
-
-                    # Location
-                    location = f"Keep: {territory}"
-                    location_text = self.get_cached_text(location, self.game.small_font, (120, 120, 120), "small")
-                    self.game.screen.blit(location_text, (sidebar_x + 40, hero_y + 45))
-
-                    hero_y += 70
+        w.draw_scrollbar(pygame.Rect(geo.right + 2, viewport.y, SCROLLBAR_W, viewport.h), scroll)
+        # Tooltip for the hovered ability (own hover type: the bottom bar's 'hero_ability'
+        # tracker releases its hover every frame and would cancel ours)
+        game.update_button_hover(current_hover, 'sidebar_hero_ability')
 
     def _draw_technology_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """Draw Technology tab content with 3x7 button grid."""
@@ -2300,63 +2719,46 @@ class UIRenderer:
         # Store hovered tech info for tooltip drawing at the end
         hovered_tech_info = None
 
-        # Header (FPS OPTIMIZATION 4.1: cached)
-        header_y = content_start_y
-        header_text = self.get_cached_text("Technology Tree", self.game.font, WHITE, "font")
-        header_rect = header_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=header_y)
-        self.game.screen.blit(header_text, header_rect)
+        # Whose tree is shown: the LOCAL player (was recomputed inline for every tile)
+        local_player = self.game.get_local_player()
+        w = self.game.sidebar_widgets
 
-        # Separator
-        pygame.draw.line(self.game.screen, RED_SEPARATOR,
-                        (sidebar_x + 30, header_y + 30),
-                        (sidebar_x + sidebar_width - 10, header_y + 30), 2)
+        # Header, centred on the visible tapestry like the other tabs
+        from ui.sidebar_layout import content_geometry
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Technology Tree", 2 * half, role='title')
+        self.game.screen.blit(header, (full.center_x - half, content_start_y))
 
-        # Calculate button grid layout to fill available space
-        grid_start_y = header_y + 50
-        available_height = sidebar_y + sidebar_height - grid_start_y - 10  # Leave 10px margin at bottom
-
-        # Button dimensions (reduced by 15% for smaller icons, square buttons)
-        button_width = 54  # Reduced from 64 to make tech icons 15% smaller
+        # Grid sized to the panel height. Fixed 54 px buttons + 32 px gaps need ~635 px,
+        # so at 1280x720 (a 500 px panel) the bottom rows sat under the bottom UI and
+        # could not be clicked. Buttons shrink to fit (min 30 px), gaps too (min 12 px).
+        grid_start_y = content_start_y + header.get_height() + 12
+        available_height = sidebar_y + sidebar_height - grid_start_y - 10  # 10px bottom margin
+        button_width = max(30, min(54, int((available_height - 6 * 18) / 7)))
         button_height = button_width  # Square icons
-
-        # Spacing between buttons (increased by additional 75% from 9)
-        v_spacing = 32
+        v_spacing = max(12, min(32, (available_height - 7 * button_height) // 6))
         h_spacing = 10
 
-        # Calculate starting X to center the 3-column grid (move right for centering)
+        # Centre the 3-column grid on the tapestry
         total_grid_width = (button_width * 3) + (h_spacing * 2)
-        grid_start_x = sidebar_x + (sidebar_width - total_grid_width) // 2 + 9  # +9 pixels to the right (5+4)
+        grid_start_x = full.center_x - total_grid_width // 2
 
-        # Draw arrows connecting technologies in columns (drawn first, so buttons appear on top)
-        arrow_color = (150, 150, 150)
+        # Connector arrows, drawn first so the buttons sit on top. Each column is a chain:
+        # tech_c_{r+1} needs tech_c_r. Bronze = still locked; green with a glow = the path
+        # is open (prerequisite researched); muted green = both researched. Cached sprites
+        # (sidebar_widgets.tech_arrow) instead of 36 line/polygon calls per frame.
+        researched = self.game.game_state.player_tech_researched.get(local_player, set())
         for col in range(3):
-            for row in range(6):  # Only rows 0-5 have arrows (not the bottom row)
-                # Calculate positions for current and next button
-                current_x = grid_start_x + col * (button_width + h_spacing)
-                current_y = grid_start_y + row * (button_height + v_spacing)
-                next_y = grid_start_y + (row + 1) * (button_height + v_spacing)
-
-                # Arrow starts at bottom center of current button
-                arrow_start_x = current_x + button_width // 2
-                arrow_start_y = current_y + button_height
-
-                # Arrow ends at top center of next button
-                arrow_end_x = current_x + button_width // 2
-                arrow_end_y = next_y
-
-                # Draw the arrow line
-                pygame.draw.line(self.game.screen, arrow_color,
-                                (arrow_start_x, arrow_start_y),
-                                (arrow_end_x, arrow_end_y), 2)
-
-                # Draw arrowhead (small triangle pointing down, increased by additional 75% to match spacing)
-                arrowhead_size = 7
-                arrowhead_points = [
-                    (arrow_end_x, arrow_end_y),  # Tip
-                    (arrow_end_x - arrowhead_size, arrow_end_y - arrowhead_size),  # Left
-                    (arrow_end_x + arrowhead_size, arrow_end_y - arrowhead_size)   # Right
-                ]
-                pygame.draw.polygon(self.game.screen, arrow_color, arrowhead_points)
+            arrow_x = grid_start_x + col * (button_width + h_spacing) + button_width // 2
+            for row in range(6):  # rows 0-5 lead to the next row
+                arrow_y = grid_start_y + row * (button_height + v_spacing) + button_height
+                if f"tech_{col}_{row}" in researched:
+                    state = 'done' if f"tech_{col}_{row + 1}" in researched else 'open'
+                else:
+                    state = 'locked'
+                sprite = w.tech_arrow(v_spacing, state)
+                self.game.screen.blit(sprite, (arrow_x - sprite.get_width() // 2, arrow_y))
 
         # Draw 3 columns x 7 rows of technology buttons
         for col in range(3):
@@ -2378,15 +2780,7 @@ class UIRenderer:
 
                 # Determine button color based on state (LOCAL player only)
                 tech_id = tech['id']
-                # Show LOCAL player's tech status
-                if self.game.multiplayer_mode:
-                    local_player = self.game.local_player_index if self.game.local_player_index is not None else 0
-                else:
-                    local_player = 0
-                    for i in range(self.game.game_state.num_players):
-                        if not self.game.game_state.player_is_ai[i]:
-                            local_player = i
-                            break
+                # Show LOCAL player's tech status (local_player computed once, above)
                 is_researched = tech_id in self.game.game_state.player_tech_researched[local_player]
                 is_available = tech_id in self.game.game_state.player_tech_available[local_player]
 
@@ -2467,9 +2861,10 @@ class UIRenderer:
                     pulse = 0.5 + 0.5 * math.sin(time.time() * 4.0)
                     glow_alpha = int(150 + 100 * pulse)
                     glow_rect = button_rect.inflate(6, 6)
-                    glow_surface = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
-                    pygame.draw.rect(glow_surface, (100, 255, 100, glow_alpha), glow_surface.get_rect(), 3, border_radius=4)
-                    self.game.screen.blit(glow_surface, glow_rect.topleft)
+                    # One cached ring, alpha set per frame (was a new Surface every frame)
+                    ring = w.pulse_ring(glow_rect.size)
+                    ring.set_alpha(glow_alpha)
+                    self.game.screen.blit(ring, glow_rect.topleft)
 
                 # Store button rect for click detection
                 self.game.technology_buttons[tech['id']] = button_rect
@@ -2487,7 +2882,12 @@ class UIRenderer:
 
                 # Draw technology icon if available
                 icon_path = tech.get('icon')
-                if icon_path and os.path.exists(icon_path):
+                # PERFORMANCE: the existence check is cached per path - 21 os.path.exists()
+                # disk stats a frame were ~0.34 ms, a third of the whole tab's draw time
+                exists_cache = self.__dict__.setdefault('_tech_icon_exists', {})
+                if icon_path and icon_path not in exists_cache:
+                    exists_cache[icon_path] = os.path.exists(icon_path)
+                if icon_path and exists_cache[icon_path]:
                     try:
                         # Load and cache the icon
                         if not hasattr(self, 'tech_icons'):
@@ -2497,7 +2897,9 @@ class UIRenderer:
                         # Cache key includes size so icons recalculate when dimensions change
                         cache_key = f"{icon_path}_{button_width}_{button_height}"
                         if cache_key not in self.tech_icons:
-                            icon = pygame.image.load(icon_path)
+                            # convert_alpha: display pixel format, so the 21 per-frame blits
+                            # don't convert on the fly (the load was never converted)
+                            icon = pygame.image.load(icon_path).convert_alpha()
                             self.tech_icons[cache_key] = pygame.transform.scale(icon, (button_width, button_height))
 
                         # FPS OPT: Determine tint state, cache tinted icon variants
@@ -2590,10 +2992,8 @@ class UIRenderer:
                     # Draw semi-transparent background for better visibility
                     bg_rect = pygame.Rect(turns_rect.x - 2, turns_rect.y - 1,
                                          turns_rect.width + 4, turns_rect.height + 2)
-                    bg_surface = pygame.Surface((bg_rect.width, bg_rect.height))
-                    bg_surface.set_alpha(180)
-                    bg_surface.fill((0, 0, 0))
-                    self.game.screen.blit(bg_surface, bg_rect)
+                    band, band_area = w.band(bg_rect.width, bg_rect.height, (0, 0, 0, 180))
+                    self.game.screen.blit(band, bg_rect, band_area)
                     self.game.screen.blit(turns_surface, turns_rect)
                 elif not icon_path:
                     # Draw technology name if no icon (for placeholder techs)
@@ -2667,7 +3067,7 @@ class UIRenderer:
 
                     # Add special requirements
                     if tech.get('requires_castle', False):
-                        has_castle = self.game.game_state.player_has_castle(current_player)
+                        has_castle = self.game.game_state.player_has_castle(local_player)
                         if has_castle:
                             tooltip_lines.append([("small", "Requires: Castle", (100, 255, 100))])
                         else:
@@ -2850,28 +3250,30 @@ class UIRenderer:
 
     def _draw_quests_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """Draw quest log content for the Quests tab (used by tutorial missions)."""
-        # Title
+        # Header: the shared gold-ruled section header, centred on the visible tapestry
+        # like the other tabs (was centred on the whole panel incl. the carved pillar)
+        from ui.sidebar_layout import content_geometry
+        w = self.game.sidebar_widgets
         title_y = content_start_y
-        title_text = self.get_cached_text("Quests", self.game.font, WHITE, "font")
-        title_rect = title_text.get_rect(centerx=sidebar_x + sidebar_width // 2, y=title_y)
-        self.game.screen.blit(title_text, title_rect)
-
-        # Separator
-        pygame.draw.line(self.game.screen, (100, 100, 100),
-                        (sidebar_x + 30, title_y + 30),
-                        (sidebar_x + sidebar_width - 10, title_y + 30), 2)
+        full = content_geometry(sidebar_x, sidebar_y, sidebar_height, panel_width=sidebar_width)
+        half = min(full.center_x - full.x, full.right - full.center_x)
+        header = w.section_header("Quests", 2 * half, role='title')
+        self.game.screen.blit(header, (full.center_x - half, title_y))
+        body_top = title_y + header.get_height() + 10
 
         # Get quest log from tutorial mission
         tutorial = self.game.game_state.tutorial_mission
         if not tutorial or not tutorial.active:
-            # No active tutorial — show placeholder
-            msg_text = self.get_cached_text("No active quests", self.game.small_font, (150, 150, 150), "small_font")
-            msg_rect = msg_text.get_rect(center=(sidebar_x + sidebar_width // 2, title_y + 60))
+            # No active tutorial — show placeholder. Deliberately italic (owner's choice in
+            # the P8 audit; it used to be italic only through the shared-font bug)
+            msg_text = self.get_cached_text("No active quests", self.game.small_font_italic, (150, 150, 150),
+                                            "small_font_italic")
+            msg_rect = msg_text.get_rect(center=(full.center_x, body_top + 15))
             self.game.screen.blit(msg_text, msg_rect)
             return
 
         quest_log = tutorial.get_quest_log()
-        y = title_y + 45
+        y = body_top
         padding_x = sidebar_x + 35
 
         # Max text width for word wrapping (sidebar width minus padding on both sides)
@@ -2941,39 +3343,31 @@ class UIRenderer:
     
     def _draw_sidebar_tab_buttons(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height):
         """
-        Draw tab buttons on the LEFT SIDE of sidebar (Phase B: Vertical Tab System).
-        
-        Tabs stick out from the left edge like vertical bookmarks:
-        - Technology
-        - Heroes  
-        - Action Queue
-        - Action Log
-        - Quests
-        - Chat
-        
-        Each tab is a vertical button with 90-degree rotated text.
-        Active tab is highlighted. Clicking a tab makes it active.
-        
-        These tabs cover the full height of the sidebar, distributed evenly.
+        Draw the bookmark tabs on the LEFT side of the sidebar.
+
+        Tabs stick out from the panel's left edge (or sit at the screen edge when the
+        sidebar is collapsed): Technology, Heroes, Action Queue, Action Log, Quests, Chat.
+
+        Each tab is a pre-rendered sprite from SidebarWidgets.tab_sprite() in the style
+        UIConstants.SIDEBAR_TAB_STYLE ('ribbon' by default): label fitted with padding
+        (it used to touch the borders - "Action Queue" was 89 px in a 93 px tab), hover
+        highlight, click flash ('sidebar_tab', id) and an always-visible active state
+        (lit, inner gold glow, merging into the panel). Tutorial-highlighted tabs get a
+        green trim plus a pulsing ring; locked tabs are dimmed.
+
+        Geometry comes from sidebar_layout.compute_tab_rects() - the same rects the
+        panel border uses to leave a gap beside the active tab.
         """
-        # Tab dimensions
+        widgets = self.game.sidebar_widgets
         tab_width = UIConstants.TAB_WIDTH
-        num_tabs = len(self.game.game_state.sidebar_tabs)
-        
-        # Distribute tabs evenly across sidebar height
-        # Adjust padding to ensure all tabs fit with equal height
-        padding_top = UIConstants.TAB_PADDING_TOP
-        padding_bottom = UIConstants.TAB_PADDING_BOTTOM
-        available_height = sidebar_height - padding_top - padding_bottom
-        
-        # Calculate exact height for each tab (no spacing between tabs)
-        exact_tab_height = available_height / num_tabs
-        actual_tab_height = int(exact_tab_height)  # Round down for consistent height
-        tab_spacing = 0  # No spacing - tabs are adjacent
-        
+        tabs = self.game.game_state.sidebar_tabs
+        rects = [pygame.Rect(r) for r in compute_tab_rects(
+            sidebar_x - tab_width, sidebar_y, sidebar_height, len(tabs), tab_width,
+            UIConstants.TAB_PADDING_TOP, UIConstants.TAB_PADDING_BOTTOM)]
+
         # Store tab button rects for click detection
         self.game.sidebar_tab_buttons = {}
-        
+
         # Tab display names
         tab_names = {
             'technology': 'Technology',
@@ -2983,69 +3377,66 @@ class UIRenderer:
             'quests': 'Quests',
             'chat': 'Chat'
         }
-        
-        current_y = sidebar_y + padding_top
-        
-        for tab_id in self.game.game_state.sidebar_tabs:
+
+        mission = self.game.tutorial_mission if getattr(self.game, 'tutorial_mission', None) else None
+        mission_active = bool(mission and mission.active)
+        panel_image = getattr(self.game, 'right_panel_image', None)
+        clicked = getattr(self.game, 'clicked_element', None)
+        style = UIConstants.SIDEBAR_TAB_STYLE
+        # One label size for the whole column (consistent; see common_label_px)
+        label_px = None
+        if rects:
+            max_len, max_thick = widgets.tab_label_space(tab_width, rects[0].h)
+            label_px = widgets.common_label_px([tab_names[t] for t in tabs], max_len, max_thick)
+
+        for tab_id, tab_rect in zip(tabs, rects):
             is_active = (tab_id == self.game.game_state.active_sidebar_tab)
-            
-            # Tab button rectangle - STICKS OUT to the LEFT of sidebar
-            tab_x = sidebar_x - tab_width  # Left of sidebar
-            tab_rect = pygame.Rect(tab_x, current_y, tab_width, actual_tab_height)
-            
-            # Different colors for active/inactive
-            if is_active:
-                bg_color = (80, 120, 180)  # Blue for active
-                border_color = (120, 160, 220)
-            else:
-                bg_color = (50, 50, 50)  # Dark gray for inactive
-                border_color = (100, 100, 100)
-            
-            # Tutorial highlighting for sidebar tabs
-            tutorial_tab_highlight = False
             tab_locked = False
-            if (hasattr(self.game, 'tutorial_mission') and self.game.tutorial_mission
-                    and self.game.tutorial_mission.active):
-                btn_id = f'sidebar_{tab_id}'
-                if self.game.tutorial_mission.should_highlight_button(btn_id):
-                    tutorial_tab_highlight = True
-                    bg_color = (80, 180, 80)  # Green for highlighted
-                    border_color = (120, 220, 120)
-                elif not is_active and not self.game.tutorial_mission.is_action_allowed('sidebar_tab', tab_name=tab_id):
-                    # Locked tab (the click is refused): greyed out with dimmed text —
-                    # it used to look exactly like any other inactive tab
+            highlight = False
+            if mission_active:
+                if mission.should_highlight_button(f'sidebar_{tab_id}'):
+                    highlight = True
+                elif not is_active and not mission.is_action_allowed('sidebar_tab', tab_name=tab_id):
+                    # Locked tab (the click is refused): dimmed, not just "inactive"
                     tab_locked = True
-                    bg_color = (30, 30, 30)
-                    border_color = (60, 60, 60)
 
-            # Draw tab button
-            pygame.draw.rect(self.game.screen, bg_color, tab_rect)
-            pygame.draw.rect(self.game.screen, border_color, tab_rect, 2)
+            hovering = (not tab_locked) and widgets.hover(tab_rect)
+            if tab_locked:
+                state = 'locked'
+            elif clicked == ('sidebar_tab', tab_id):
+                state = 'flash'
+            elif highlight and not is_active:
+                state = 'highlight'
+            elif is_active:
+                state = 'active_hover' if hovering else 'active'
+            else:
+                state = 'hover' if hovering else 'inactive'
 
-            # Tutorial highlight: draw pulsing glow border
-            if tutorial_tab_highlight:
+            # Ribbon fill: the tapestry at this tab's own height, so the pattern runs on
+            # from the panel (cut once per size/state - cached)
+            # The active ribbon sticks out further than the others (drawn wider to the
+            # left) - the click rect stays the same size
+            extra = UIConstants.TAB_ACTIVE_EXTEND if (style == 'ribbon' and is_active) else 0
+            draw_rect = pygame.Rect(tab_rect.x - extra, tab_rect.y, tab_rect.w + extra, tab_rect.h)
+            texture_src = None
+            if panel_image is not None:
+                rel_y = max(0, tab_rect.y - sidebar_y)
+                texture_src = (panel_image, (30, rel_y, draw_rect.w, tab_rect.h))
+            sprite = widgets.tab_sprite(style, tab_names[tab_id], draw_rect.size, state, texture_src, label_px)
+            self.game.screen.blit(sprite, draw_rect.topleft)
+            # Keep the shared rotated-label cache populated (other code inspects it)
+            self.game._rotated_tab_text_cache.setdefault(tab_id, sprite)
+
+            # Tutorial highlight: pulsing ring from ONE cached surface (alpha set per
+            # frame) instead of a new Surface every frame
+            if highlight:
                 pulse = 0.5 + 0.5 * math.sin(time.time() * 4.0)
-                glow_alpha = int(150 + 100 * pulse)
-                glow_rect = tab_rect.inflate(4, 4)
-                glow_surface = pygame.Surface((glow_rect.width, glow_rect.height), pygame.SRCALPHA)
-                pygame.draw.rect(glow_surface, (100, 255, 100, glow_alpha), glow_surface.get_rect(), 3)
-                self.game.screen.blit(glow_surface, glow_rect.topleft)
-
-            # R3 fix: cache rotated tab text (font.render + rotate are expensive per-frame)
-            # Locked tabs use a dimmed text variant, cached under its own key
-            text_key = f"{tab_id}__locked" if tab_locked else tab_id
-            if text_key not in self.game._rotated_tab_text_cache:
-                text_color = (110, 110, 110) if tab_locked else WHITE
-                tab_text = self.game._get_cached_text(tab_names[tab_id], self.game.small_font, text_color)
-                self.game._rotated_tab_text_cache[text_key] = pygame.transform.rotate(tab_text, -90)
-            rotated_text = self.game._rotated_tab_text_cache[text_key]
-            text_rect = rotated_text.get_rect(center=(tab_x + tab_width // 2, current_y + actual_tab_height // 2))
-            self.game.screen.blit(rotated_text, text_rect)
+                ring = widgets.pulse_ring(tab_rect.inflate(4, 4).size)
+                ring.set_alpha(int(150 + 100 * pulse))
+                self.game.screen.blit(ring, tab_rect.inflate(4, 4).topleft)
 
             # Store for click detection
             self.game.sidebar_tab_buttons[tab_id] = tab_rect
-            
-            current_y += actual_tab_height
-        
+
         # Return Y position where content should start (just below sidebar top, since tabs are on left)
         return sidebar_y + 15

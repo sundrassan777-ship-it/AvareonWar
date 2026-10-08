@@ -4,6 +4,82 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## A New Look for the Right-Hand Panel
+
+*8 October 2026*
+
+### Bookmarks
+
+The panel's bookmarks are now tapestry ribbons trimmed in gold. The open one is lit and
+reaches into the panel, so you can see at a glance which tab you're on. Every bookmark and
+button in the panel now lights up when you point at it and flashes when you click it.
+
+### Action Queue
+
+- **One card per order**, coloured by what it does: Attack (red), Move (blue) or Reinforce
+  Ally (green). Reinforcing an ally used to show as an attack.
+- Each card shows the units on the march (point at a unit's portrait to see its name), the
+  stop-over for Captain moves, and its own **Cancel Order** button.
+- **Point at a card** and its arrow on the map turns gold. **Click a card** and the map
+  glides to its destination.
+- **Cancel All** sits at the bottom of the tab and never covers your orders. Long queues now
+  scroll with the mouse wheel instead of being cut off.
+- In simultaneous games, orders you've already sent with Ready stay listed as "Submitted".
+
+### Action Log
+
+- **Organised by turn**, with each kind of event in its own colour: battles, conquests, gold,
+  buildings, training, research, heroes, orders and warnings. A battle's details are listed
+  under it, and victories stand out in their own frame. Simultaneous games are split into
+  turns too.
+- **Filter buttons** at the top: All, Battles, Economy or Heroes.
+- **The newest entries are always at the bottom.** Scrolling back stays where you put it
+  while new events arrive, and no longer runs past the start.
+- **The log only tells you about your own affairs.** It used to show other players' research,
+  failed purchases, refunds and orders, so you could see an enemy researching (in one
+  game it looked as if your research had started and finished twice). That is no longer
+  shown.
+- **You now see enemy hero abilities that hit you:** Vow of Silence, Embargo, Aggressive
+  Diplomacy taking one of your lands, Royal Charisma stealing your troops, and Regicide
+  attempts on your territory.
+
+### Heroes
+
+- A card for each hero with their portrait, title and Keep, and their **ability icons, which
+  you can cast straight from the panel** on your turn. They show cooldowns, silence and the
+  same tooltips as the hero bar below.
+- Heroes in training show a progress bar and the turns remaining.
+- **Click a hero's portrait** to glide the map to their Keep.
+
+### Technology
+
+- The arrows between technologies turn **green once the technology before them is
+  researched**, so you can see at a glance what you can research next.
+- On smaller screens (1280x720) the whole tree now fits. The bottom two rows used to hide
+  behind the bottom panel and couldn't be clicked.
+
+### Chat and new events
+
+Gold badges on the Chat and Action Log bookmarks count new messages from other players and
+new battles, conquests and hero events you haven't looked at yet.
+
+### Also
+
+- The mouse wheel over the panel scrolls the open tab and no longer zooms the map hidden
+  underneath it.
+- Text in the panel is easier to read and no longer grows too large on big screens.
+- **Small text is no longer slanted by accident.** Numbers in the top bar, the bottom panels,
+  tooltips, the options menu, the chat line and the battle screen were all in italics
+  (on 1280x720 screens even more text was). They are upright now; only lore, hero titles,
+  descriptions and the "No active quests" note stay in italics.
+
+### Balance fix
+
+- **Vow of Silence and Embargo no longer hit your allies.** They now silence the heroes and
+  block the income of your enemies only, as their descriptions always said.
+
+---
+
 ## More Room for the Map
 
 *7 October 2026*

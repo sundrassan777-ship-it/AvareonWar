@@ -2,6 +2,158 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-08 - Right sidebar overhaul + Action Log privacy
+
+Branch `feature/sidebar-overhaul`. A visual and UX pass over every tab of the right sidebar,
+plus two game-logic fixes found along the way (Action Log privacy, ally-hitting abilities).
+Developer guide: "Right sidebar: tab content, widget kit and extras" and "Action Log privacy"
+in CODE_GUIDE.md.
+
+**Foundation (P1):**
+- New `rendering/sidebar_widgets.py` (`SidebarWidgets`, `game.sidebar_widgets`), a cached
+  drawing kit: 9-sliced frames (ResourceSlot wood, TableBorder bronze; source insets
+  measured from the images), cards with baked hover/flash/locked states, CampaignBTN /
+  BattleBar buttons, chips, headers, separators, progress bars, scrollbars and clip helpers.
+- Sidebar text is capped at `SIDEBAR_TEXT_MAX_SCALE = 1.15` (the panel never grows wider),
+  with a 9 px floor. The kit builds its own `Font` objects, because `FontManager` returns
+  one shared object for `small_font` / `small_font_italic` (see P8).
+- `ui/sidebar_layout.py`: `content_geometry()` and `ScrollState`. The panel art has a
+  ~24 px carved pillar on its left, so content is centred on `panel_x + 135`, not `+125`.
+- Bookmarks are tapestry ribbons with gold trim (`'plaque'` kept as an alternative; the flat
+  classic tabs were removed). Labels are fitted with padding at one common size
+  (`TAB_PADDING_BOTTOM` 45 → 12). The open bookmark is lit, sticks out 6 px and merges into
+  the panel through a gap in its new bronze border. Bookmarks highlight on hover and flash
+  on click.
+
+**Action Queue (P2):**
+- Wooden cards per order, coloured by kind: Attack / Move / Reinforce Ally. Allied
+  reinforcements used to be coloured as attacks; the kind now uses `are_allies()` like
+  military.py.
+- Each card shows unit portraits with counts (hover names the unit), a "via" row for
+  Captain 2-hop moves, and its own Cancel Order button. Before, the X button stuck out of
+  the card.
+- CANCEL ALL is a pinned footer centred on the tapestry; the cards used to run underneath
+  it.
+- The list scrolls. Before, orders past the visible space were hidden behind "...".
+- In simultaneous mode, orders submitted with Ready show read-only as "Submitted"; the
+  queue used to go blank.
+- Generic `handle_sidebar_wheel()`: the wheel over the panel scrolls the open tab and never
+  zooms the map underneath. It also works under the tutorial's camera lock.
+
+**Action Log and Chat (P3):**
+- New pure `rendering/action_log_model.py`:
+  - classifies ~270 message templates into categories;
+  - groups battle details under their battle;
+  - shows victory/elimination blocks as one block (the old filter left orphan `=====`
+    banners);
+  - bands entries by turn (`--- Player N's Turn ---`, and the new once-per-round
+    `--- Round N ---` written by `sim_state` in simultaneous mode);
+  - processes only new messages.
+- Pixel scrolling anchored at the bottom. Fixes:
+  - the log and chat scrolled past their start (the limit used the unfiltered message
+    count);
+  - the newest lines could be cut off;
+  - a regex filter ran over the whole history every frame;
+  - lines were wrapped by character count.
+
+**Heroes (P4):**
+- Bronze hero cards: name, portrait, title (up to 3 lines) and Keep, castable ability icons,
+  and training cards with a progress bar.
+- Shared with the bottom Hero UI: `HeroMixin.get_hero_ability_status()`,
+  `Game.draw_hero_ability_icon()`, `Game.try_cast_hero_ability()`.
+- `draw_ability_tooltip(..., player=)` now takes a `player` parameter.
+- Fix: `hero_ability_buttons` was never cleared when the Hero UI was hidden, leaving stale
+  click rects.
+
+**Technology and hover/flash audit (P5):**
+- Tech arrows are cached sprites in three states: bronze (locked), green with a glow (next
+  tech is researchable), muted green (both researched).
+- The grid fits the panel height. At 1280x720 the two bottom rows sat under the bottom panel
+  and could not be clicked.
+- Tech tiles flash on click (the renderer read the flash but nothing set it).
+- Icon existence is cached: 21 `os.path.exists()` calls per frame were a third of the tab's
+  cost. Icons are loaded with `convert_alpha()`.
+- Quests header centred like the other tabs.
+- New `tests/test_sidebar_feedback.py`: a pixel audit that every sidebar control highlights
+  on hover and flashes on click.
+
+**Action Log privacy (game logic):**
+- The log shows a line to the players it names, and to everyone if it names nobody. Many
+  per-player messages named nobody, so every player saw other players' research,
+  refusals ("Not enough gold!"), refunds, castle upgrades, orders and Farm/Mine level-ups.
+- Reported symptom: in a simultaneous game, the AI researching Master Planner I one round
+  after the player read as the player's research starting and completing twice.
+- New `GameState.add_player_message(player, text)` ("Player N: text") is used for all of
+  these. The classifier strips the prefix.
+- Abilities that hit other players now name them:
+  - Vow of Silence and Embargo: an indented `ability_victims_line()` sub-line.
+  - Aggressive Diplomacy: "from Player N".
+  - Royal Charisma: the robbed players.
+  - A failed Regicide: the targeted player.
+
+**Ally-hitting abilities (game logic):**
+- Vow of Silence and Embargo hit every player except the caster, allies included. New
+  `HeroMixin.ability_enemies()` targets enemies only, skipping allies and eliminated
+  players. It is used by the local cast and the network Vow of Silence handler. The AI
+  already scored both as enemy-only.
+
+**Extras (P6, each with a `UIConstants` flag):**
+- Hovering an order card turns its map arrow gold (`SIDEBAR_ROUTE_HIGHLIGHT`, `COLOR_ARROW_HOVERED`).
+- Clicking an order card or a hero portrait pans the map there (`SIDEBAR_CAMERA_PAN`).
+- Action Log filter chips (`SIDEBAR_LOG_FILTERS`).
+- Unread badges on the Chat and Action Log bookmarks (`SIDEBAR_UNREAD_BADGES`).
+
+**Accidental italic text (P8):**
+- `Game.small_font_italic` was `font_manager.get_font(12 * ui_scale)` + `set_italic(True)`.
+  `get_font()` returns one cached object per (size, weight), so all regular 12 px text was
+  italic, and likewise all 16 px text through the lore font. Affected: the top bar numbers
+  and FPS counter, "Elapsed Game Time", the territory / Barracks / Keep / Hero / army
+  panels, territory, building, ability and tech tooltips, the options menu, the chat input
+  and the battle screen. At 1280x720 the normal-size font was hit too (planning timer, the
+  "Click a building plot" hint, build panel title, End Turn). A resolution change left the
+  old sizes italic as well.
+- Audit first: every italic text was recorded per screen at 1600x900 / 1280x720 /
+  1920x1080, with before/after screenshots. The owner then chose: everything upright
+  except "No active quests".
+- New `FontManager.get_italic_font(size, weight)` builds and caches a separate object
+  under `(size, weight, 'italic')`. `small_font_italic` / `lore_font_italic` use it, in
+  `__init__` and `apply_display_settings`. Deliberately italic now: the hero title,
+  territory lore, tooltip description lines, "No active quests".
+- `get_cache_info()` reads keys by index (3-part italic keys).
+- New `tests/test_font_italic.py` (8).
+
+**Other fixes:**
+- Action Queue card / Cancel Order click rects were not cleared on other tabs. Once the
+  Action Log shared the click handler (for its chips), a click on the log over an old Cancel
+  Order position could have cancelled that order. The rects are now cleared off the Action
+  Queue tab, and order clicks only answer on that tab.
+- `get_player_name()` crashed on a named AI difficulty ('Normal', used by some test
+  fixtures).
+
+**Performance.** Sidebar draw time per frame, best of 7 × 200 frames, main vs branch
+worktrees at 1600x900:
+
+| Tab / extra | Before | After |
+|---|---|---|
+| Action Queue (40 orders) | 0.28 ms | 0.34 ms |
+| Action Log (2000 messages) | 3.5 ms | 0.27 ms |
+| Chat (500 messages) | ≈ same | ≈ same |
+| Heroes (3 active + 2 training) | 0.18 ms | 0.30 ms |
+| Technology | 0.86 ms | 0.50 ms |
+| Bookmarks | same | same |
+| + filter chips / unread badges / route highlight while hovering | - | +0.023 / +0.02 / +0.017 ms |
+
+Full-frame Heroes scenario, interleaved runs of Step 0 (old sidebar) vs now: 6.27 → 6.41 ms
+average (≈ −3.5 FPS at 160 FPS). Compared with the saved baseline JSON from the start of the
+branch it looked like −18 FPS, which was machine-state drift. Compare interleaved runs, not
+old files.
+
+**Tests:** new `test_sidebar_widgets.py` (25), `test_sidebar_action_queue.py` (29),
+`test_action_log_model.py` (61), `test_sidebar_heroes.py` (17), `test_sidebar_tech.py` (7),
+`test_sidebar_feedback.py` (10). `test_action_feedback_phase3.py` checks the locked bookmark
+and CANCEL ALL by brightness instead of exact pixels. Full suite: 1025 passed; only the 3
+known pre-existing `TestDominationVictory` failures.
+
 ## 2026-10-07 - Collapsible right sidebar + east map extension
 
 Branch `feature/collapsible-sidebar`. The right sidebar covered real map area (Azincournean

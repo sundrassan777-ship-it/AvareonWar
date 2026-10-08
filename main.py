@@ -62,13 +62,14 @@ from network_config import MessageType
 # Import refactored modules
 from config.constants import *
 from ui.scaler import UIScaler, UIConstants
-from ui.sidebar_layout import sidebar_progress, reverse_anim_start, compute_sidebar_layout
+from ui.sidebar_layout import sidebar_progress, reverse_anim_start, compute_sidebar_layout, ScrollState
 from utils.colors import lighten_color, brighten_color
 from rendering.helpers import DrawingHelpers
 from rendering.map_renderer import MapRenderer
 from rendering.ui_renderer import UIRenderer
 from rendering.panel_renderer import PanelRenderer
 from rendering.map_extension import MapEastExtension, east_extension_override_path
+from rendering.sidebar_widgets import SidebarWidgets
 from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
@@ -754,6 +755,7 @@ class Game:
         # Every game starts with the sidebar expanded (the new GameState below sets
         # sidebar_expanded=True); drop any slide left over from a previous game.
         self._sidebar_anim_start_ms = None
+        self._reset_sidebar_scroll()
 
         # Game state - use configuration from setup UI with skip_setup_phase=True
         game_mode = setup_config.get('game_mode', 'sequential')
@@ -1302,8 +1304,7 @@ class Game:
         self.chat_input_active = False  # Is chat input box open?
         self.chat_input_text = ""  # Current text being typed
         self.chat_channel = 'all'  # Current chat channel: 'all' or 'team' (TAB to toggle)
-        self.chat_scroll_offset = 0  # How many messages to scroll (0 = bottom/newest)
-        self.action_log_scroll_offset = 0  # Scroll offset for action log
+        # (Chat / Action Log scrolling: pixel ScrollStates in self.sidebar_scroll)
         
         # Gameplay Settings (configurable via Options menu)
         # MUST be defined BEFORE hover_delay system since hover_delay references tooltip_delay_ms
@@ -1461,13 +1462,13 @@ class Game:
         self.font_bold = self.font_manager.get_bold_font(int(15 * self.ui_scale))
         self.large_font_bold = self.font_manager.get_bold_font(int(24 * self.ui_scale))
 
-        # Italic font — Cinzel has no italic TTF, so synthesize slant via pygame set_italic()
-        self.small_font_italic = self.font_manager.get_font(int(12 * self.ui_scale))
-        self.small_font_italic.set_italic(True)
+        # Italic font — Cinzel has no italic TTF, so the slant is synthetic. Its own Font
+        # object (get_italic_font): set_italic() on the shared get_font() object used to
+        # make ALL regular text of that size italic (P8 audit, CHANGELOG 2026-10-08)
+        self.small_font_italic = self.font_manager.get_italic_font(int(12 * self.ui_scale))
 
         # Larger italic font for territory lore text in the bottom UI preview region
-        self.lore_font_italic = self.font_manager.get_font(int(16 * self.ui_scale))
-        self.lore_font_italic.set_italic(True)
+        self.lore_font_italic = self.font_manager.get_italic_font(int(16 * self.ui_scale))
 
         # Extra small font for 720p overflow prevention (Hero Info, tooltips)
         # At 720p, use even smaller font (8px) to prevent text overflow
@@ -1500,6 +1501,9 @@ class Game:
             self.separator_width,
             small_font_bold=self.small_font_bold
         )
+        # Right-sidebar widget kit: cached frames, buttons, bookmarks and capped-scale
+        # text (rendering/sidebar_widgets.py). Cleared on resolution change.
+        self.sidebar_widgets = SidebarWidgets(self)
         
         # Camera system (Phase 2D: Camera/Zoom implementation)
         self.camera_offset = [0.0, 0.0]  # [x, y] in world coordinates
@@ -1538,6 +1542,20 @@ class Game:
         # All sidebar geometry is derived from it by get_sidebar_layout()
         # (ui/sidebar_layout.py) — nothing caches sidebar coordinates any more.
         self._sidebar_anim_start_ms = None
+        # Pixel scroll position per scrollable sidebar tab (see handle_sidebar_wheel)
+        self._reset_sidebar_scroll()
+        self.order_card_rects = []  # (clipped rect, entry) of visible Action Queue cards
+        # (from, to) of the Action Queue card under the mouse; the map renderer draws that
+        # route's arrow with a gold highlight (UIConstants.SIDEBAR_ROUTE_HIGHLIGHT)
+        self.sidebar_hovered_route = None
+        # Camera pan started from the sidebar (order card / hero portrait click):
+        # a CameraPanAnimation plus the camera offset it last set - anything else that
+        # moves the camera (drag, keys, edge scroll, wheel zoom) cancels the pan
+        self._sidebar_pan = None
+        self._sidebar_pan_offset = None
+        self.sidebar_hero_ability_buttons = {}  # {(hero, i): rect} ability icons on sidebar hero cards
+        self.hero_portrait_rects = {}           # {hero: rect} portraits on sidebar hero cards
+        self.sidebar_tooltip = None  # (text, mouse_pos) hover label, drawn at frame end
 
         # Track previous player and phase for AI turn optimization
         self.previous_ai_check = -1
@@ -2373,12 +2391,16 @@ class Game:
                             else:
                                 logger.error(f"[NETWORK] Reinforce failed for player {player_id}: {error_msg}")
                         elif ability_name == 'Vow of Silence':
-                            # Silence all enemy players (counter=2: lasts until end of caster's next turn)
-                            for enemy_id in range(self.game_state.num_players):
-                                if enemy_id != player_id:
-                                    self.game_state.hero_silence_status[enemy_id] = 2
+                            # Silence all enemy players (counter=2: lasts until end of caster's next turn).
+                            # Same target set as the local path: allies are not silenced.
+                            for enemy_id in self.game_state.ability_enemies(player_id):
+                                self.game_state.hero_silence_status[enemy_id] = 2
                             self.game_state.add_message(f"Player {player_id + 1}: {hero_name} casts Vow of Silence!")
-                            self.game_state.add_message("All enemy heroes are silenced until next turn!")
+                            # Same sub-line as the local path (heroes._activate_vow_of_silence):
+                            # names the silenced players so they see the cast
+                            self.game_state.add_message(self.game_state.ability_victims_line(
+                                "Heroes silenced until next turn",
+                                self.game_state.ability_enemies(player_id)))
                             logger.info(f"[NETWORK] Executed Vow of Silence for player {player_id}")
                         elif ability_name == 'Extort Populace':
                             success, error_msg = self.game_state.execute_extort_populace(player_id)
@@ -4560,6 +4582,9 @@ class Game:
             self._text_cache = {}
             self._rotated_tab_text_cache = {}
             self._sidebar_toggle_sprites = {}  # Rebuilt from CircleBorder in the new display format
+            # Sidebar widget sprites/fonts follow ui_scale and the display format
+            if getattr(self, 'sidebar_widgets', None) is not None:
+                self.sidebar_widgets.invalidate()
             self._hero_overlay_cache = {}
             # Close the unit context menu: its anchor rect belongs to the old layout
             self.unit_context_menu = None
@@ -4589,10 +4614,9 @@ class Game:
             self.small_font_bold = self.font_manager.get_bold_font(int(12 * self.ui_scale))
             self.font_bold = self.font_manager.get_bold_font(int(15 * self.ui_scale))
             self.large_font_bold = self.font_manager.get_bold_font(int(24 * self.ui_scale))
-            self.small_font_italic = self.font_manager.get_font(int(12 * self.ui_scale))
-            self.small_font_italic.set_italic(True)  # synthetic italic (no italic TTF available)
-            self.lore_font_italic = self.font_manager.get_font(int(16 * self.ui_scale))
-            self.lore_font_italic.set_italic(True)
+            # Separate italic objects - never set_italic() on a shared get_font() result
+            self.small_font_italic = self.font_manager.get_italic_font(int(12 * self.ui_scale))
+            self.lore_font_italic = self.font_manager.get_italic_font(int(16 * self.ui_scale))
             extra_small_size = 8 if actual_height == 720 else int(10 * self.ui_scale)
             self.extra_small_font = self.font_manager.get_font(extra_small_size)
 
@@ -6972,6 +6996,57 @@ class Game:
             particles.clear()
         return True
 
+    def _reset_sidebar_scroll(self):
+        """Fresh scroll positions for every scrollable sidebar tab (new game).
+
+        Action Log and Chat are anchored at the bottom: offset 0 shows the newest
+        entries and the wheel moves back into history.
+        """
+        self.sidebar_scroll = {
+            'action_queue': ScrollState('top'),
+            'heroes': ScrollState('top'),
+            'action_log': ScrollState('bottom'),
+            'chat': ScrollState('bottom'),
+        }
+        # Action Log filter chip (rendering/action_log_model.FILTERS): its id and the
+        # category set the log model shows (None = all)
+        self.sidebar_log_filter_id = 'all'
+        self.sidebar_log_filter = None
+        self.sidebar_log_chips = {}   # filter id -> screen rect, filled by the renderer
+        # Unread badges on the Chat / Action Log bookmarks: how many countable items the
+        # viewer has already seen per tab (None = take the current total as read, so a
+        # loaded save's history doesn't start out as "unread")
+        self.sidebar_seen = {'chat': None, 'action_log': None}
+        self._unread_cache = {}
+
+    def set_sidebar_log_filter(self, filter_id):
+        """Switch the Action Log filter chip; the log jumps back to the newest entry."""
+        from rendering.action_log_model import FILTERS
+        categories = next((cats for fid, _label, cats in FILTERS if fid == filter_id), None)
+        self.sidebar_log_filter_id = filter_id
+        self.sidebar_log_filter = set(categories) if categories else None
+        self.sidebar_scroll['action_log'].offset = 0
+
+    def handle_sidebar_wheel(self, delta):
+        """Mouse wheel over the sidebar panel. Returns True when the panel took it.
+
+        Over the panel body the wheel scrolls the active tab's list (3 text lines per
+        notch) and is ALWAYS consumed there — before, on tabs without scrolling it
+        zoomed the map hidden under the panel. Off the panel (or while it slides) it
+        returns False and the caller zooms the map as usual.
+        """
+        if not self.game_state or not self.game_state.sidebar_expanded or self.is_sidebar_animating():
+            return False
+        if not self.is_point_over_sidebar_panel(pygame.mouse.get_pos()):
+            return False
+        tab = self.game_state.active_sidebar_tab
+        scroll = getattr(self, 'sidebar_scroll', {}).get(tab)
+        if scroll is not None and delta:
+            step = 3 * self.sidebar_widgets.font('body').get_linesize()
+            # Wheel up (delta > 0) = towards the start of the list
+            scroll.scroll(-step if delta > 0 else step)
+        return True
+
     def is_point_on_sidebar_chrome(self, pos):
         """True on the collapse button or a bookmark tab (visible in every state)."""
         toggle = self.sidebar_toggle_button
@@ -7026,6 +7101,11 @@ class Game:
         # Forget a finished slide so is_sidebar_animating() stays cheap and exact
         if self._sidebar_anim_start_ms is not None and not self.is_sidebar_animating():
             self._sidebar_anim_start_ms = None
+        # Hover label for this frame (set by tab content, drawn in update_frame_tooltips)
+        self.sidebar_tooltip = None
+        # Re-set by the Action Queue card under the mouse (read by the map renderer,
+        # which draws before the sidebar - so it shows the previous frame's hover)
+        self.sidebar_hovered_route = None
 
         layout = self.get_sidebar_layout()
         sidebar_width = UIConstants.SIDEBAR_WIDTH
@@ -7042,11 +7122,14 @@ class Game:
                 self.screen.blit(self.right_panel_image, (sidebar_x, sidebar_y))
             else:
                 pygame.draw.rect(self.screen, (40, 40, 40), sidebar_rect)
-            # Border around sidebar (drawn over image)
-            pygame.draw.rect(self.screen, (100, 100, 100), sidebar_rect, 3)
 
         # Bookmark tabs: always drawn, they travel with the panel's left edge
         content_start_y = self.ui_renderer._draw_sidebar_tab_buttons(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
+
+        # Bronze border, drawn after the tabs: its left edge leaves a gap beside the
+        # active bookmark so that tab visibly merges into the panel
+        if layout.panel_visible:
+            self._draw_sidebar_border(pygame.Rect(sidebar_x, sidebar_y, sidebar_width, sidebar_height))
 
         # Collapse / expand button above the tabs (also travels with them)
         self._draw_sidebar_toggle_button(layout)
@@ -7054,6 +7137,9 @@ class Game:
         # Order-count badge on the Action Queue bookmark while the panel is closed
         if not self.game_state.sidebar_expanded:
             self._draw_sidebar_order_badge()
+        # Unread counts on the Chat / Action Log bookmarks
+        if UIConstants.SIDEBAR_UNREAD_BADGES:
+            self._draw_sidebar_unread_badges(layout)
 
         if not layout.panel_visible:
             # Fully collapsed: no content is drawn, so clear its click rects — stale
@@ -7061,11 +7147,20 @@ class Game:
             self.technology_buttons = {}
             self.hero_selection_buttons = {}
             self.order_cancel_buttons = []
+            self.order_card_rects = []
+            self.sidebar_hero_ability_buttons = {}
+            self.hero_portrait_rects = {}
             self.cancel_all_button = None
+            self.update_button_hover(None, 'sidebar_hero_ability')
             return
 
         # Draw content based on active tab (Phase 4D: inlined delegates)
         active_tab = self.game_state.active_sidebar_tab
+        if active_tab != 'heroes':
+            # Hero-card rects/hover belong to the Heroes tab only
+            self.sidebar_hero_ability_buttons = {}
+            self.hero_portrait_rects = {}
+            self.update_button_hover(None, 'sidebar_hero_ability')
 
         if active_tab == 'action_queue':
             self.ui_renderer._draw_action_queue_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
@@ -7080,23 +7175,38 @@ class Game:
         elif active_tab == 'chat':
             self.ui_renderer._draw_chat_content(sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y)
 
-        # Cancel All button at bottom (only show in Action Queue tab, and only when the
-        # sidebar's player has orders — it cancels only that player's orders)
-        if active_tab == 'action_queue' and any(
-                order.player == self.order_sidebar_player for order in self.game_state.movement_orders):
-            cancel_all_y = sidebar_y + sidebar_height - 50
-            cancel_all_rect = pygame.Rect(sidebar_x + 20, cancel_all_y, sidebar_width - 40, 35)
-            # Grey when the tutorial/mission blocks cancelling (it used to look clickable)
-            cancel_all_locked = bool(self.tutorial_mission and self.tutorial_mission.active
-                                     and not self.tutorial_mission.is_action_allowed('cancel_all_orders'))
-            cancel_all_color = (110, 110, 110) if cancel_all_locked else (150, 50, 50)
-            pygame.draw.rect(self.screen, cancel_all_color, cancel_all_rect, border_radius=5)
-            cancel_all_text = self._get_cached_text("CANCEL ALL", self.font, WHITE)
-            cancel_all_text_rect = cancel_all_text.get_rect(center=cancel_all_rect.center)
-            self.screen.blit(cancel_all_text, cancel_all_text_rect)
-            self.cancel_all_button = cancel_all_rect
-        else:
+        # CANCEL ALL is drawn by the Action Queue renderer (pinned footer, centred on the
+        # tapestry); other tabs have no such button.
+        if active_tab != 'action_queue':
             self.cancel_all_button = None
+            # Card / Cancel Order rects belong to the Action Queue only: stale ones would
+            # still match clicks on the Action Log (whose chips share the click handler)
+            self.order_cancel_buttons = []
+            self.order_card_rects = []
+        if active_tab != 'action_log':
+            self.sidebar_log_chips = {}
+
+    def _draw_sidebar_border(self, rect):
+        """Bronze 3 px panel border (was flat grey), open beside the active tab.
+
+        The gap lines up with the active bookmark's rect (sidebar_tab_buttons, filled by
+        the tab renderer this frame), so the lit tab reads as part of the panel.
+        """
+        color = (138, 98, 50)
+        width = 3
+        pygame.draw.line(self.screen, color, rect.topleft, (rect.right - 1, rect.top), width)
+        pygame.draw.line(self.screen, color, (rect.left, rect.bottom - 2), (rect.right - 1, rect.bottom - 2), width)
+        pygame.draw.line(self.screen, color, (rect.right - 2, rect.top), (rect.right - 2, rect.bottom - 1), width)
+        active = (self.sidebar_tab_buttons or {}).get(self.game_state.active_sidebar_tab)
+        x = rect.left + 1
+        if active is not None and self.game_state.sidebar_expanded:
+            # Left edge in two pieces around the active tab
+            if active.top > rect.top:
+                pygame.draw.line(self.screen, color, (x, rect.top), (x, active.top), width)
+            if active.bottom < rect.bottom:
+                pygame.draw.line(self.screen, color, (x, active.bottom - 1), (x, rect.bottom - 1), width)
+        else:
+            pygame.draw.line(self.screen, color, (x, rect.top), (x, rect.bottom - 1), width)
 
     def _draw_sidebar_toggle_button(self, layout):
         """Round collapse / expand button, in the tab column just above the bookmarks.
@@ -7186,11 +7296,70 @@ class Game:
                           if order.player == local_player)
         if order_count <= 0:
             return
-        center = (tab_rect.x, tab_rect.y + 12)
-        pygame.draw.circle(self.screen, (200, 50, 50), center, 10)
-        pygame.draw.circle(self.screen, WHITE, center, 10, 2)
-        count_text = self._get_cached_text(str(order_count), self.small_font, WHITE)
-        self.screen.blit(count_text, count_text.get_rect(center=center))
+        self._draw_tab_badge(tab_rect, order_count, (200, 50, 50), WHITE, WHITE)
+
+    def _draw_tab_badge(self, tab_rect, count, fill, rim, text_color):
+        """Count badge on a bookmark's outer edge near its top, clear of the label.
+
+        A circle for one digit, a pill for more ("99+" caps it). Shared by the Action
+        Queue order badge (red) and the unread badges (gold).
+        """
+        label = str(count) if count < 100 else "99+"
+        text = self.sidebar_widgets.text(label, 'small_bold', text_color)
+        radius = 10
+        width = max(2 * radius, text.get_width() + 10)
+        rect = pygame.Rect(0, 0, width, 2 * radius)
+        rect.center = (tab_rect.x, tab_rect.y + 12)
+        pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
+        pygame.draw.rect(self.screen, rim, rect, 2, border_radius=radius)
+        self.screen.blit(text, text.get_rect(center=rect.center))
+
+    def _sidebar_unread_totals(self):
+        """Countable items per badge tab: {'chat': n, 'action_log': n}.
+
+        Chat: visible messages from OTHER players (team chat filtered as in the tab).
+        Action Log: visible top-level entries in BADGE_CATEGORIES, from a log model of
+        its own (same privacy rules as the tab). Both are recomputed only when their
+        message list grows - a frame with no new message costs two length checks.
+        """
+        from rendering.action_log_model import ActionLogModel, BADGE_CATEGORIES
+        gs = self.game_state
+        cache = self._unread_cache
+        viewer = self.get_local_player()
+        chat_key = (id(gs.chat_messages), len(gs.chat_messages), viewer)
+        if cache.get('chat_key') != chat_key:
+            cache['chat_key'] = chat_key
+            # Format: (timestamp, player_id, message[, channel]) - index access
+            cache['chat'] = sum(1 for m in gs.get_visible_chat_messages(viewer) if m[1] != viewer)
+        log_key = (id(gs.messages), len(gs.messages), viewer)
+        if cache.get('log_key') != log_key:
+            cache['log_key'] = log_key
+            model = cache.setdefault('log_model', ActionLogModel())
+            names = [gs.get_player_name(i) for i in range(gs.num_players)]
+            if model.update(gs.messages, viewer, names, BADGE_CATEGORIES) is not None:
+                cache['action_log'] = sum(1 for r in model.rows
+                                          if r.kind in ('entry', 'banner', 'victory') and r.indent == 0)
+            cache.setdefault('action_log', 0)
+        return {'chat': cache['chat'], 'action_log': cache['action_log']}
+
+    def _draw_sidebar_unread_badges(self, layout):
+        """Gold unread counts on the Chat / Action Log bookmarks.
+
+        The open tab counts as read (its count is marked seen every frame it shows);
+        a badge appears on a closed tab - or any tab while the panel is collapsed -
+        when new items arrived since.
+        """
+        totals = self._sidebar_unread_totals()
+        seen = self.sidebar_seen
+        open_tab = self.game_state.active_sidebar_tab if layout.panel_visible and self.game_state.sidebar_expanded else None
+        for tab_id, total in totals.items():
+            if seen.get(tab_id) is None or tab_id == open_tab or total < seen[tab_id]:
+                seen[tab_id] = total
+                continue
+            unread = total - seen[tab_id]
+            tab_rect = (self.sidebar_tab_buttons or {}).get(tab_id)
+            if unread > 0 and tab_rect is not None:
+                self._draw_tab_badge(tab_rect, unread, (214, 168, 64), (255, 236, 180), (40, 24, 8))
 
     def _handle_sidebar_hotkey(self):
         """F2: collapse / expand the sidebar, unless something modal is open.
@@ -7649,14 +7818,18 @@ class Game:
                              border_color=(200, 200, 200),
                              padding=7, line_spacing=4)
 
-    def draw_ability_tooltip(self, mouse_pos, hero_name, ability_index):
-        """Draw tooltip for hero ability buttons"""
+    def draw_ability_tooltip(self, mouse_pos, hero_name, ability_index, player=None):
+        """Draw tooltip for hero ability buttons.
+
+        `player` whose cooldown / silence to show: defaults to the acting player (bottom
+        bar); the sidebar Heroes tab passes the local player.
+        """
         # Check if tooltips are enabled
         if not self.tooltips_enabled:
             return
 
         # Get hero info
-        current_player = self.game_state.current_player
+        current_player = self.game_state.current_player if player is None else player
         if hero_name not in self.game_state.HERO_TYPES:
             return
 
@@ -9250,6 +9423,9 @@ class Game:
         self.cancel_button = None
         self.demolish_button = None
         self.territory_info_plot_buttons = []
+        # Hero ability slots were only reset inside draw_hero_ui, so after the Hero UI
+        # closed their rects stayed clickable over whatever the bottom panel showed next
+        self.hero_ability_buttons = {}
 
         # Always draw player info section (left side)
         self._draw_player_info_section()
@@ -9292,6 +9468,102 @@ class Game:
         if self.selected_plot:
             self._draw_building_ui_section()
             return
+
+    def draw_hero_ability_icon(self, rect, hero_name, ability_index, status, hovering, clicking,
+                               digit_font, disabled=None, surface=None):
+        """Draw one hero ability button (icon, spell border, overlays, cooldown digits).
+
+        Shared by the bottom-bar Hero UI (60 px) and the sidebar Heroes tab (~30 px).
+        `status` comes from game_state.get_hero_ability_status(). `disabled` defaults to
+        "active ability that can't be cast now"; the sidebar passes True when it is not
+        the viewer's turn. `surface` defaults to the screen (the sidebar draws into a
+        cached sprite instead and blits that).
+        """
+        size = rect.w
+        target = self.screen if surface is None else surface
+        if disabled is None:
+            disabled = status['type'] == 'active' and not status['castable']
+        image = self.ability_images.get((hero_name, ability_index)) if hasattr(self, 'ability_images') else None
+        if image:
+            # PERFORMANCE: cached scaled icon / border / overlays (keyed by size)
+            icon = self._get_cached_ui_icon(image, f'ability_{hero_name}_{ability_index}', size)
+            target.blit(icon, rect.topleft)
+            if disabled:
+                target.blit(self._get_hero_overlay(size, 'dark'), rect.topleft)
+            if clicking:
+                target.blit(self._get_hero_overlay(size, 'bright'), rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+            elif hovering:
+                target.blit(self._get_hero_overlay(size, 'light'), rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+            border, border_id = ((self.passive_spell_border, 'passive_spell_border') if status['type'] == 'passive'
+                                 else (self.active_spell_border, 'active_spell_border'))
+            if border:
+                target.blit(self._get_cached_ui_icon(border, border_id, size), rect.topleft)
+                # Hover/click also brighten the border
+                if clicking:
+                    target.blit(self._get_hero_overlay(size, 'bright'), rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+                elif hovering:
+                    target.blit(self._get_hero_overlay(size, 'light'), rect.topleft, special_flags=pygame.BLEND_RGB_ADD)
+        else:
+            # Fallback: ability number
+            number = self._get_cached_text(str(ability_index + 1), self.font, GRAY if disabled else WHITE)
+            target.blit(number, number.get_rect(center=rect.center))
+
+        # Cooldown turns, with a shadow for readability
+        if status['cooldown'] > 0:
+            text = str(status['cooldown'])
+            digits = self._get_cached_text(text, digit_font, (255, 200, 200))
+            digits_rect = digits.get_rect(center=(rect.centerx, rect.bottom - max(8, size // 4)))
+            shadow = self._get_cached_text(text, digit_font, BLACK)
+            offset = 2 if size >= 40 else 1
+            target.blit(shadow, (digits_rect.x + offset, digits_rect.y + offset))
+            target.blit(digits, digits_rect)
+
+    def try_cast_hero_ability(self, hero_name, ability_index, flash_type='hero_ability'):
+        """Cast a hero ability exactly as the bottom-bar button does. Returns True if cast.
+
+        Shared by the bottom-bar Hero UI and the sidebar Heroes tab so both behave
+        identically: targeted abilities enter targeting mode; immediate ones run, are
+        broadcast in multiplayer (SIM_HERO_ABILITY) and play their map effect; a refusal
+        shows its toast. Uses game_state.current_player (the acting player) - callers
+        gate on whose turn it is.
+        """
+        current_player = self.game_state.current_player
+        status = self.game_state.get_hero_ability_status(current_player, hero_name, ability_index)
+        if status is None or not status['castable']:
+            return False
+        ability_name = status['name']
+        self.trigger_click_flash(flash_type, (hero_name, ability_index))
+
+        result = self.game_state.activate_hero_ability(hero_name, ability_index)
+        if result == 'requires_targeting':
+            # Enter targeting mode
+            self.ability_targeting_active = True
+            self.ability_targeting_hero = hero_name
+            self.ability_targeting_ability_index = ability_index
+            self.ability_targeting_ability_name = ability_name
+        elif result is True:
+            # Immediate ability executed - broadcast to other players in multiplayer
+            # Sync fix: send in both sequential and simultaneous modes (not just sim)
+            if self.multiplayer_mode:
+                self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
+                    'player_id': current_player,
+                    'hero_name': hero_name,
+                    'ability_index': ability_index,
+                    'ability_name': ability_name,
+                    'target': None  # No target for immediate abilities
+                })
+                logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name}")
+            # Trigger visual effect for immediate abilities
+            self.map_renderer.trigger_ability_effect(ability_name, None, current_player)
+        elif isinstance(result, str):
+            # An immediate ability refused with a reason (Reinforce: its Keep territory is
+            # full). The refusal recorded its message code.
+            if self.game_state.last_action_error:
+                self._show_action_failure_feedback()
+            else:
+                self.show_action_error(message=result)
+        self.clear_button_tooltip()
+        return True
 
     def draw_hero_ui(self):
         """Draw Hero UI when a hero is selected from Heroes tab"""
@@ -9400,100 +9672,17 @@ class Game:
             # Store button rect for click detection
             self.hero_ability_buttons[(hero_name, i)] = ability_rect
 
-            # Check if ability exists at this index
-            if i < len(abilities):
-                ability = abilities[i]
-                ability_type = ability.get('type', 'active')
-                ability_name = ability.get('name', 'Unknown')
-
-                # Check if ability is on cooldown
-                cooldown_remaining = 0
-                if hero_name in self.game_state.hero_ability_cooldowns.get(current_player, {}):
-                    cooldown_remaining = self.game_state.hero_ability_cooldowns[current_player][hero_name].get(ability_name, 0)
-
-                # Check if hero is silenced (only affects active abilities)
-                is_silenced = self.game_state.hero_silence_status.get(current_player, 0) > 0
-
-                # Determine button state
-                is_disabled = False
-                if ability_type == 'active':
-                    is_disabled = (cooldown_remaining > 0) or is_silenced
-
-                # Check for hover/click effects
+            # Availability + drawing are shared with the sidebar Heroes tab
+            # (game_state.get_hero_ability_status / draw_hero_ability_icon)
+            status = self.game_state.get_hero_ability_status(current_player, hero_name, i)
+            if status is not None:
                 is_hovering = ability_rect.collidepoint(self.mouse_pos)
                 if is_hovering:
                     # Track hover for tooltip (both active and passive abilities)
                     current_ability_hover = ('hero_ability', (hero_name, i))
-
-                is_clicking = False
-                if ability_type == 'active' and not is_disabled:
-                    is_clicking = (self.clicked_element and
-                                  self.clicked_element[0] == 'hero_ability' and
-                                  self.clicked_element[1] == (hero_name, i))
-
-                # Try to draw ability icon
-                if (hero_name, i) in self.ability_images and self.ability_images[(hero_name, i)]:
-                    ability_image = self.ability_images[(hero_name, i)]
-
-                    # PERFORMANCE OPTIMIZATION: Use cached scaled ability icon (fixes FPS drop)
-                    icon_size = ability_size
-                    ability_icon_id = f'ability_{hero_name}_{i}'
-                    cached_ability = self._get_cached_ui_icon(ability_image, ability_icon_id, icon_size)
-
-                    # Draw cached icon at button position
-                    self.screen.blit(cached_ability, (ability_rect.x, ability_rect.y))
-
-                    # Apply grayscale/darkening overlay if disabled (using cached overlay)
-                    if is_disabled:
-                        dark_overlay = self._get_hero_overlay(icon_size, 'dark')
-                        self.screen.blit(dark_overlay, (ability_rect.x, ability_rect.y))
-
-                    # Apply hover/click brightness effects (using cached overlays)
-                    if is_clicking:
-                        bright_overlay = self._get_hero_overlay(icon_size, 'bright')
-                        self.screen.blit(bright_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-                    elif is_hovering:
-                        light_overlay = self._get_hero_overlay(icon_size, 'light')
-                        self.screen.blit(light_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-
-                    # PERFORMANCE OPTIMIZATION: Cache spell border scaling
-                    if ability_type == 'passive' and self.passive_spell_border:
-                        cached_border = self._get_cached_ui_icon(self.passive_spell_border, 'passive_spell_border', ability_size)
-                        self.screen.blit(cached_border, (ability_rect.x, ability_rect.y))
-
-                        # Apply hover/click effects to border on screen
-                        if is_clicking:
-                            bright_overlay = self._get_hero_overlay(ability_size, 'bright')
-                            self.screen.blit(bright_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-                        elif is_hovering:
-                            light_overlay = self._get_hero_overlay(ability_size, 'light')
-                            self.screen.blit(light_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-
-                    elif ability_type == 'active' and self.active_spell_border:
-                        cached_border = self._get_cached_ui_icon(self.active_spell_border, 'active_spell_border', ability_size)
-                        self.screen.blit(cached_border, (ability_rect.x, ability_rect.y))
-
-                        # Apply hover/click effects to border on screen
-                        if is_clicking:
-                            bright_overlay = self._get_hero_overlay(ability_size, 'bright')
-                            self.screen.blit(bright_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-                        elif is_hovering:
-                            light_overlay = self._get_hero_overlay(ability_size, 'light')
-                            self.screen.blit(light_overlay, (ability_rect.x, ability_rect.y), special_flags=pygame.BLEND_RGB_ADD)
-                else:
-                    # Fallback: Draw ability number
-                    number_text = self._get_cached_text(str(i + 1), self.font, WHITE if not is_disabled else GRAY)
-                    number_rect = number_text.get_rect(center=ability_rect.center)
-                    self.screen.blit(number_text, number_rect)
-
-                # Draw cooldown number if on cooldown
-                if cooldown_remaining > 0:
-                    cooldown_text = self._get_cached_text(str(cooldown_remaining), self.large_font, (255, 200, 200))
-                    cooldown_rect = cooldown_text.get_rect(center=(ability_rect.centerx, ability_rect.bottom - 15))
-                    # Draw shadow for readability
-                    shadow_text = self._get_cached_text(str(cooldown_remaining), self.large_font, BLACK)
-                    self.screen.blit(shadow_text, (cooldown_rect.x + 2, cooldown_rect.y + 2))
-                    self.screen.blit(cooldown_text, cooldown_rect)
+                is_clicking = status['castable'] and self.clicked_element == ('hero_ability', (hero_name, i))
+                self.draw_hero_ability_icon(ability_rect, hero_name, i, status, is_hovering, is_clicking,
+                                            self.large_font)
             else:
                 # No ability at this slot - draw empty placeholder
                 pygame.draw.rect(self.screen, (60, 60, 60), ability_rect, border_radius=5)
@@ -11438,6 +11627,9 @@ class Game:
                 self.camera_offset = self.camera.offset.copy()
                 self.camera_zoom = self.camera.zoom
 
+            # Camera pan requested from the sidebar (runs even when paused - visual only)
+            self._update_sidebar_pan(delta_time)
+
             # FPS OPT: Set is_zoom_animating flag for rendering pipeline to use fast paths.
             # Covers start animation, campaign mission zoom, and mouse-wheel zoom settling.
             _start_anim_active = (self.start_camera_animation is not None
@@ -11894,6 +12086,9 @@ class Game:
                                 handled, should_quit = handled_result
                                 if should_quit:
                                     running = False
+                    elif event.type == pygame.MOUSEWHEEL and not (self.game_menu_visible or self.options_menu_visible):
+                        # The camera is locked, but reading the sidebar is not: scroll it
+                        self.handle_sidebar_wheel(event.y)
                     continue  # Block all other input
 
                 # Block action input during AI player turns (but allow hovering and menu)
@@ -14112,76 +14307,57 @@ class Game:
         if self.selected_hero and self.hero_ability_buttons:
             for (hero_name, ability_index), button_rect in self.hero_ability_buttons.items():
                 if button_rect.collidepoint(pos):
-                    # Check if this hero is the selected one
+                    # Only the selected hero's abilities; a click on a slot is always
+                    # consumed (cooldown / silence / passive simply do nothing)
                     if hero_name == self.selected_hero:
-                        # Get ability info
-                        current_player = self.game_state.current_player
-                        hero_info = self.game_state.HERO_TYPES[hero_name]
-                        abilities = hero_info.get('abilities', [])
-
-                        if ability_index < len(abilities):
-                            ability = abilities[ability_index]
-                            ability_type = ability.get('type', 'active')
-                            ability_name = ability.get('name', 'Unknown')
-
-                            # Only handle active abilities
-                            if ability_type == 'active':
-                                # Check if ability is on cooldown
-                                cooldown_remaining = 0
-                                if hero_name in self.game_state.hero_ability_cooldowns.get(current_player, {}):
-                                    cooldown_remaining = self.game_state.hero_ability_cooldowns[current_player][hero_name].get(ability_name, 0)
-
-                                # Check if hero is silenced
-                                is_silenced = self.game_state.hero_silence_status.get(current_player, 0) > 0
-
-                                # Only activate if not on cooldown and not silenced
-                                if cooldown_remaining == 0 and not is_silenced:
-                                    # Trigger click flash
-                                    self.trigger_click_flash('hero_ability', (hero_name, ability_index))
-
-                                    # Activate ability
-                                    result = self.game_state.activate_hero_ability(hero_name, ability_index)
-
-                                    # Check if ability requires targeting
-                                    if result == 'requires_targeting':
-                                        # Enter targeting mode
-                                        self.ability_targeting_active = True
-                                        self.ability_targeting_hero = hero_name
-                                        self.ability_targeting_ability_index = ability_index
-                                        self.ability_targeting_ability_name = ability_name
-                                    elif result is True:
-                                        # Immediate ability executed - broadcast to other players in multiplayer
-                                        # Sync fix: send in both sequential and simultaneous modes (not just sim)
-                                        if self.multiplayer_mode:
-
-                                            self._send_action_to_remote(MessageType.SIM_HERO_ABILITY, {
-                                                'player_id': current_player,
-                                                'hero_name': hero_name,
-                                                'ability_index': ability_index,
-                                                'ability_name': ability_name,
-                                                'target': None  # No target for immediate abilities
-                                            })
-                                            logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name}")
-
-                                        # Trigger visual effect for immediate abilities
-                                        self.map_renderer.trigger_ability_effect(
-                                            ability_name, None, current_player)
-                                    elif isinstance(result, str):
-                                        # An immediate ability refused with a reason (Reinforce:
-                                        # its Keep territory is full). This used to be dropped
-                                        # silently. The refusal recorded its message code.
-                                        if self.game_state.last_action_error:
-                                            self._show_action_failure_feedback()
-                                        else:
-                                            self.show_action_error(message=result)
-
-                                    self.clear_button_tooltip()
-                                    return True
+                        self.try_cast_hero_ability(hero_name, ability_index)
                     return True
 
         # Click not handled by any bottom UI element
         return False
     
+    def start_sidebar_camera_pan(self, territory):
+        """Smoothly pan the map to `territory` (order card / hero portrait click).
+
+        Centres the territory in the VISIBLE map - left of the sidebar panel when it is
+        open (layout.panel_x), the full width when it is collapsed. Refused (returns
+        False) while the tutorial locks the camera or another camera animation runs
+        (start-of-game zoom, a mission's scripted camera).
+        """
+        center = self.scaled_centers.get(territory)
+        if center is None or self._is_tutorial_blocking('camera'):
+            return False
+        if self.start_camera_animation is not None and self.start_camera_animation.active:
+            return False
+        mission_anim = getattr(self.tutorial_mission, 'camera_animation', None) if self.tutorial_mission else None
+        if mission_anim is not None and getattr(mission_anim, 'active', False):
+            return False
+        from campaign_utils import CameraPanAnimation
+        # Make the handler current first (the Game keeps its own offset/zoom mirrors)
+        self.camera.offset = list(self.camera_offset)
+        self.camera.zoom = self.camera_zoom
+        self._sidebar_pan = CameraPanAnimation(
+            self.camera, center, UIConstants.SIDEBAR_CAMERA_PAN_SECONDS,
+            self.get_sidebar_layout().panel_x, MAP_HEIGHT)
+        self._sidebar_pan_offset = list(self.camera.offset)
+        return True
+
+    def _update_sidebar_pan(self, delta_time):
+        """Advance the sidebar camera pan; cancelled when anything else moved the camera."""
+        pan = self._sidebar_pan
+        if pan is None:
+            return
+        if list(self.camera_offset) != self._sidebar_pan_offset or self.camera.zoom != self.camera_zoom:
+            # Dragged / scrolled / zoomed since our last step: the player took over
+            self._sidebar_pan = None
+            return
+        self.camera.offset = list(self.camera_offset)
+        still_active = pan.update(min(delta_time, 0.05))
+        self.camera_offset = list(self.camera.offset)
+        self._sidebar_pan_offset = list(self.camera_offset)
+        if not still_active:
+            self._sidebar_pan = None
+
     def handle_order_sidebar_click(self, pos):
         """
         Handle clicks on order sidebar buttons (Phase 2B extraction).
@@ -14225,6 +14401,8 @@ class Game:
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('sidebar_tab', tab_name=tab_id)):
                         return True  # Silently consume click
+                    # Click flash on the bookmark (its sprite brightens briefly)
+                    self.trigger_click_flash('sidebar_tab', tab_id)
                     # A bookmark on the collapsed sidebar opens it on that tab
                     if not self.game_state.sidebar_expanded:
                         self.toggle_sidebar(expand=True)
@@ -14238,7 +14416,10 @@ class Game:
                     return True
         
         # Check individual order cancel buttons (only if expanded)
-        if self.game_state.sidebar_expanded and self.order_cancel_buttons:
+        # Order controls answer only on the Action Queue tab (belt and braces: their
+        # rects are also cleared on other tabs by draw_order_sidebar)
+        on_queue = self.game_state.active_sidebar_tab == 'action_queue'
+        if self.game_state.sidebar_expanded and on_queue and self.order_cancel_buttons:
             # Format: (rect, order, player_order_index) — index access, see ui_renderer
             for button in self.order_cancel_buttons:
                 if button[0].collidepoint(pos):
@@ -14250,6 +14431,7 @@ class Game:
                     # Find the clicked order by identity: its position in the full list can
                     # differ from its position among this player's orders
                     order = button[1]
+                    self.trigger_click_flash('sidebar_cancel_order', getattr(order, 'order_id', None))
                     full_index = next((i for i, o in enumerate(self.game_state.movement_orders)
                                        if o is order), None)
                     if full_index is not None and self.game_state.cancel_movement_order(full_index):
@@ -14271,6 +14453,7 @@ class Game:
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('cancel_all_orders')):
                     return True  # Silently block
+                self.trigger_click_flash('sidebar_cancel_all', None)
                 # Cancel only the orders the sidebar shows — other players' orders
                 # (e.g. AI orders in the same planning phase) must survive
                 self.game_state.cancel_all_orders(player=self.order_sidebar_player)
@@ -14281,6 +14464,23 @@ class Game:
                         'player_index': self.local_player_index
                     })
                 return True
+
+        # Action Log filter chips
+        if self.game_state.sidebar_expanded and self.game_state.active_sidebar_tab == 'action_log':
+            for filter_id, chip_rect in (getattr(self, 'sidebar_log_chips', None) or {}).items():
+                if chip_rect.collidepoint(pos):
+                    self.trigger_click_flash('sidebar_log_filter', filter_id)
+                    self.set_sidebar_log_filter(filter_id)
+                    return True
+
+        # Order card body (not its Cancel Order button, checked above): flash the card
+        # and pan the map to the order's destination
+        if self.game_state.sidebar_expanded and on_queue and UIConstants.SIDEBAR_CAMERA_PAN:
+            for card_rect, entry in (self.order_card_rects or []):
+                if card_rect.collidepoint(pos):
+                    self.trigger_click_flash('sidebar_order_card', (entry.from_territory, entry.to_territory))
+                    self.start_sidebar_camera_pan(entry.to_territory)
+                    return True
         
         return False
     
@@ -15204,6 +15404,26 @@ class Game:
 
         return True  # Consume clicks inside popup
 
+    def _can_cast_from_sidebar(self):
+        """May the viewer cast hero abilities from the sidebar right now?
+
+        Mirrors the bottom-bar Hero UI: the game is in play, it is the viewer's turn to
+        act (casting uses game_state.current_player, and in sequential single-player
+        is_local_player_active() is True even during AI turns), the viewer is active
+        (multiplayer / simultaneous Ready), and no battle resolution is under way (the
+        bottom bar hides the Hero UI then).
+        """
+        gs = self.game_state
+        if gs is None or gs.phase != 'playing':
+            return False
+        if gs.current_player != self.get_local_player() or not self.is_local_player_active():
+            return False
+        if self._is_sim_resolving():
+            return False
+        if gs.turn_phase == 'battles' and gs.pending_battles:
+            return False
+        return True
+
     def handle_heroes_tab_click(self, pos):
         """
         Handle clicks on hero selection buttons in the Heroes sidebar tab.
@@ -15222,6 +15442,14 @@ class Game:
             - Sets self.selected_hero to the clicked hero name
             - Clears other UI selections (territory, plot, barracks, keep)
         """
+        # Ability icons on the hero cards: cast exactly like the bottom-bar buttons
+        # (shared try_cast_hero_ability), only when it's the viewer's turn to act
+        for (hero_name, ability_index), icon_rect in (getattr(self, 'sidebar_hero_ability_buttons', None) or {}).items():
+            if icon_rect.collidepoint(pos):
+                if self._can_cast_from_sidebar():
+                    self.try_cast_hero_ability(hero_name, ability_index, flash_type='sidebar_hero_ability')
+                return True
+
         # Check if we have hero selection buttons stored
         if not self.hero_selection_buttons:
             return False
@@ -15229,8 +15457,16 @@ class Game:
         # Check each hero button
         for hero_name, hero_rect in self.hero_selection_buttons.items():
             if hero_rect.collidepoint(pos):
-                # Hero clicked - select it
+                # Hero clicked - select it (click flash on the card)
+                self.trigger_click_flash('sidebar_hero_card', hero_name)
                 self.selected_hero = hero_name
+
+                # The portrait also pans the map to the hero's Keep
+                portrait = (getattr(self, 'hero_portrait_rects', None) or {}).get(hero_name)
+                if portrait is not None and portrait.collidepoint(pos) and UIConstants.SIDEBAR_CAMERA_PAN:
+                    hero_data = self.game_state.heroes.get(self.get_local_player(), {}).get(hero_name, {})
+                    if hero_data.get('keep_territory'):
+                        self.start_sidebar_camera_pan(hero_data['keep_territory'])
 
                 # Play hero selection voice line
                 from global_sound import play_hero_select_sound
@@ -15293,6 +15529,10 @@ class Game:
 
                 if not tech:
                     return False
+
+                # Click flash on the tech tile (the renderer already reads
+                # ('technology_button', id) from clicked_element, but nothing set it)
+                self.trigger_click_flash('technology_button', tech_id)
 
                 # Check if this tech is being researched
                 is_researching = False
@@ -15774,11 +16014,32 @@ class Game:
             else:
                 # Regular button tooltip (buildings, training, army units, etc.)
                 self.draw_button_tooltip(self.mouse_pos, self.show_tooltip_button)
+        elif (self.show_tooltip_button and self.show_tooltip_button[0] == 'sidebar_hero_ability'
+              and self.is_point_over_sidebar_panel(self.mouse_pos)):
+            # Ability icon on a sidebar hero card: the LOCAL player's cooldowns
+            hero_name, ability_index = self.show_tooltip_button[1]
+            self.draw_ability_tooltip(self.mouse_pos, hero_name, ability_index, player=self.get_local_player())
         elif self.show_tooltip_button and self.show_tooltip_button[0] == 'territory_lore':
             # Territory preview tooltip — drawn even past sidebar_x since the preview
             # image extends into that region of the bottom panel
             if self.mouse_pos[1] >= BOTTOM_UI_Y:
                 self.draw_button_tooltip(self.mouse_pos, self.show_tooltip_button)
+
+        # Sidebar hover label (e.g. "6× Swordsmen" over an order card's unit chip),
+        # set by the sidebar renderer this frame and drawn on top of everything
+        self._draw_sidebar_tooltip()
+
+    def _draw_sidebar_tooltip(self):
+        """Draw the short sidebar hover label set this frame, left of the cursor
+        (the panel sits at the screen's right edge), kept on screen."""
+        tooltip = getattr(self, 'sidebar_tooltip', None)
+        if not tooltip:
+            return
+        text, (mx, my) = tooltip
+        surf = self.sidebar_widgets.tooltip(text)
+        x = max(4, min(mx - surf.get_width() - 10, WINDOW_WIDTH - surf.get_width() - 4))
+        y = max(4, min(my - surf.get_height() - 6, WINDOW_HEIGHT - surf.get_height() - 4))
+        self.screen.blit(surf, (x, y))
     
     # ========================================
     # PHASE 2D: CAMERA MOVEMENT METHODS
@@ -15893,47 +16154,11 @@ class Game:
             Part of Phase 2D camera system.
             Makes camera fully controllable (pan + zoom).
         """
-        # Check if mouse is over sidebar and a scrollable tab is active
-        mouse_pos = pygame.mouse.get_pos()
+        # Sidebar first: over the panel the wheel scrolls the tab (or does nothing),
+        # never the map underneath
+        if self.handle_sidebar_wheel(delta):
+            return
 
-        # If the mouse is over the sidebar's panel body (live layout; bounded to the
-        # map's height so the wheel over the bottom UI's right end zooms as usual)
-        if self.game_state.sidebar_expanded and self.is_point_over_sidebar_panel(mouse_pos):
-            active_tab = self.game_state.active_sidebar_tab
-            
-            # Handle scrolling for scrollable tabs
-            if active_tab == 'chat':
-                # Calculate approximate visible messages based on sidebar height
-                sidebar_height = UIConstants.SIDEBAR_HEIGHT
-                content_height = sidebar_height - UIConstants.SIDEBAR_CONTENT_PADDING  # Minus header and padding
-                approx_visible = max(5, content_height // UIConstants.PIXELS_PER_MESSAGE_SCROLL)
-                
-                # Max scroll = total messages minus what fits on screen
-                total_msgs = len(self.game_state.chat_messages)
-                max_scroll = max(0, total_msgs - approx_visible)
-                
-                if delta > 0:  # Scroll up (see older messages)
-                    self.chat_scroll_offset = min(self.chat_scroll_offset + 1, max_scroll)
-                else:  # Scroll down (see newer messages)
-                    self.chat_scroll_offset = max(self.chat_scroll_offset - 1, 0)
-                return  # Don't zoom camera
-            
-            elif active_tab == 'action_log':
-                # Calculate approximate visible messages based on sidebar height
-                sidebar_height = UIConstants.SIDEBAR_HEIGHT
-                content_height = sidebar_height - UIConstants.SIDEBAR_CONTENT_PADDING  # Minus header and padding
-                approx_visible = max(5, content_height // UIConstants.PIXELS_PER_MESSAGE_SCROLL)
-                
-                # Max scroll = total messages minus what fits on screen
-                total_msgs = len(self.game_state.messages)
-                max_scroll = max(0, total_msgs - approx_visible)
-                
-                if delta > 0:  # Scroll up (see older messages)
-                    self.action_log_scroll_offset = min(self.action_log_scroll_offset + 1, max_scroll)
-                else:  # Scroll down (see newer messages)
-                    self.action_log_scroll_offset = max(self.action_log_scroll_offset - 1, 0)
-                return  # Don't zoom camera
-        
         # Sync state to camera handler before zoom
         self.camera.offset = self.camera_offset
         self.camera.zoom = self.camera_zoom

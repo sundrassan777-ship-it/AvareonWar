@@ -201,11 +201,14 @@ class TestLockedSidebarControls:
         game.ui_renderer._draw_sidebar_tab_buttons(sidebar_x, main.TOP_PANEL_HEIGHT, main.UIConstants.SIDEBAR_WIDTH, 500)
         heroes = game.sidebar_tab_buttons['heroes']
         other = game.sidebar_tab_buttons['technology']
-        # Sample inside the tab, away from the border and the rotated label
-        heroes_px = game.screen.get_at((heroes.x + 4, heroes.y + 4))[:3]
-        other_px = game.screen.get_at((other.x + 4, other.y + 4))[:3]
-        assert heroes_px == (30, 30, 30)
-        assert other_px == (50, 50, 50)
+        # The bookmarks are textured sprites now (sidebar overhaul), so compare the
+        # tabs' average brightness instead of one exact pixel: locked < inactive.
+        import pygame
+
+        def brightness(rect):
+            return sum(pygame.transform.average_color(game.screen, rect)[:3])
+
+        assert brightness(heroes) < brightness(other) * 0.85
 
     def test_locked_cancel_all_is_greyed(self, game):
         game.game_state.sidebar_expanded = True
@@ -215,7 +218,15 @@ class TestLockedSidebarControls:
         game.draw_order_sidebar()
         rect = game.cancel_all_button
         assert rect is not None
-        assert game.screen.get_at((rect.x + 6, rect.y + 6))[:3] == (110, 110, 110)
+        # CANCEL ALL is ornate button art now (sidebar overhaul): the locked look is a
+        # dimmed sprite, so compare it with the unlocked one instead of one pixel.
+        import pygame
+        locked = sum(pygame.transform.average_color(game.screen, rect)[:3])
+        game.tutorial_mission = None
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+        normal = sum(pygame.transform.average_color(game.screen, game.cancel_all_button)[:3])
+        assert locked < normal * 0.85
 
 
 class TestSaveFeedback:

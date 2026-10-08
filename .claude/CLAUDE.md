@@ -154,6 +154,13 @@ AvareonWar/
 - [tests/test_action_feedback_bugfixes.py](tests/test_action_feedback_bugfixes.py) + `test_action_feedback_phase2.py`…`phase7.py` - Action error toasts: stale-code reset, re-order rollback, order cancel by identity, hidden territories, shared build/train path, tints, message table, army-order/hero-ability/other refusals
 - [tests/test_hero_slain_notification.py](tests/test_hero_slain_notification.py) - "Our Hero, X, has been slain in Y!" toast (battle, Regicide, multiplayer defender via Battle Report)
 - [tests/test_sidebar_collapse.py](tests/test_sidebar_collapse.py) - Collapsible right sidebar (layout math, hit-testing, round button / F2 / bookmarks, slide, tutorial lock, order badge), east map extension, bottom-strip hover/tooltip fix
+- [tests/test_sidebar_widgets.py](tests/test_sidebar_widgets.py) - Sidebar widget kit: 9-slice, cards, label fitting, `content_geometry`, `ScrollState`, ribbon bookmarks
+- [tests/test_sidebar_action_queue.py](tests/test_sidebar_action_queue.py) - Action Queue cards (order kind incl. allies, composition, scrolling, CANCEL ALL, Submitted), sidebar mouse wheel, route highlight, camera pan
+- [tests/test_action_log_model.py](tests/test_action_log_model.py) - Action Log model (classification, grouping, turn bands, incremental), log/chat scrolling, per-player message privacy, ability victims / enemy-only abilities, filter chips, unread badges
+- [tests/test_sidebar_heroes.py](tests/test_sidebar_heroes.py) - Heroes tab cards, shared ability status/cast with the bottom Hero UI, portrait pan
+- [tests/test_sidebar_tech.py](tests/test_sidebar_tech.py) - Tech arrow states, grid fit at 720p/900p/1080p, centring
+- [tests/test_sidebar_feedback.py](tests/test_sidebar_feedback.py) - Pixel audit: every sidebar control highlights on hover and flashes on click
+- [tests/test_font_italic.py](tests/test_font_italic.py) - Italic only where intended: separate italic font objects, no shared font left italic after resolution changes
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -168,6 +175,8 @@ AvareonWar/
 - [rendering/panel_renderer.py](rendering/panel_renderer.py) - Panel layout
 - [rendering/helpers.py](rendering/helpers.py) (~527 lines) - Drawing utilities
 - [rendering/map_extension.py](rendering/map_extension.py) - Fills the strip past the map's east edge at low zoom (generated edge-stretch fading into fog, or a painted `<background>_east.png`)
+- [rendering/sidebar_widgets.py](rendering/sidebar_widgets.py) - `SidebarWidgets` (`game.sidebar_widgets`): cached drawing kit for the right sidebar (capped text, 9-sliced wood/bronze frames, cards, buttons, chips, ribbons, tech arrows, scrollbars, clip helpers)
+- [rendering/action_log_model.py](rendering/action_log_model.py) - Pure Action Log model: message classification, grouping by turn, per-player visibility, filter chips (`FILTERS`), badge categories
 
 **Input Handling:**
 - [input/mouse_handler.py](input/mouse_handler.py) (~236 lines) - Mouse input delegator
@@ -186,12 +195,12 @@ AvareonWar/
 
 **UI & Effects:**
 - [ui/scaler.py](ui/scaler.py) - Dynamic UI scaling
-- [ui/sidebar_layout.py](ui/sidebar_layout.py) - Right sidebar geometry + collapse slide (single source of truth for "is this point over the sidebar")
+- [ui/sidebar_layout.py](ui/sidebar_layout.py) - Right sidebar geometry + collapse slide (single source of truth for "is this point over the sidebar"), tab content area (`content_geometry`), pixel `ScrollState`
 - [ui/effects/](ui/effects/) - 14 effect modules (battle, sparkles, turn announcements, hero ability burst/arc/polygon/silence wave, alliance markers, castle upgrade, production glow, chat notifications, etc.)
 
 **Configuration:**
 - [config/constants.py](config/constants.py) - All game constants (window, colors, timing, camera)
-- [config/font_manager.py](config/font_manager.py) - Font loading and caching
+- [config/font_manager.py](config/font_manager.py) - Font loading and caching (one shared object per size/weight; italic via `get_italic_font()`, never `set_italic()` on a `get_font()` result)
 - [config/action_error_messages.py](config/action_error_messages.py) - Every player-facing "action refused" toast text (+ `hero_slain`), edited by the owner — each entry commented with when it shows
 
 ### Data Files (JSON)
@@ -434,6 +443,10 @@ After making code changes, ask yourself:
 - Modify camera/zoom → `input/camera_handler.py`
 - Collapse/expand the right sidebar, its bookmarks, F2, or test whether a point is over it → `ui/sidebar_layout.py` + `main.py` `get_sidebar_layout()` / `is_point_over_sidebar()` / `toggle_sidebar()` / `draw_order_sidebar()`. **Never hardcode `WINDOW_WIDTH - 250`** — wrong while collapsed or sliding. See "Right sidebar" in CODE_GUIDE.md
 - Change what fills the strip past the map's east edge → `rendering/map_extension.py` + `MAP_EAST_*` in `config/constants.py`, or paint `<map background>_east.png`. Anything that changes `map_image_original` (incl. drawing into it in place) must call `Game._invalidate_map_background_caches()`
+- Change a sidebar tab's content / look → `rendering/ui_renderer.py` `_draw_<tab>_content()` using `rendering/sidebar_widgets.py`; layout via `ui/sidebar_layout.content_geometry()` (tapestry centre `panel_x + 135`), scrolling via `game.sidebar_scroll[tab]` (`ScrollState`). Every clickable control needs hover + click flash and a row in `tests/test_sidebar_feedback.py`. See "Right sidebar: tab content, widget kit and extras" in CODE_GUIDE.md
+- Sidebar extras (route highlight, camera pan, log filter chips, unread badges) → `UIConstants.SIDEBAR_*` flags in `ui/scaler.py`; code in `main.py` (`start_sidebar_camera_pan`, `_sidebar_unread_totals`, `set_sidebar_log_filter`) + `map_renderer.draw_movement_arrows` (`COLOR_ARROW_HOVERED`)
+- Change Action Log grouping / categories / colours → `rendering/action_log_model.py` (`_RULES`, `FILTERS`, `BADGE_CATEGORIES`) + `ui_renderer.LOG_CATEGORY_COLORS`
+- **Log a message about one player's own action** → `gs.add_player_message(player, text)`, never a bare unnamed `add_message` (the Action Log shows unnamed lines to EVERY player). Ability hitting other players → name them (`gs.ability_victims_line`). "All enemies" abilities → `gs.ability_enemies(caster)`. See "Action Log privacy" in CODE_GUIDE.md
 - Change edge scrolling / Map Edge start delay → `input/camera_handler.py` (`handle_edge_scrolling()`, `MAP_EDGE_SCROLL_DELAY`)
 - Modify army/banner selection or hover → `main.py` `get_army_banner_rect()` / `get_army_at_pos()` / `handle_mouse_motion()` + `rendering/map_renderer.py` (all three must share the helpers)
 - Modify unit right-click context menu (bottom UI army strip) → `main.py` `handle_unit_context_menu_right_click()` / `_get_unit_context_menu_rect()` / `draw_unit_context_menu()` / `handle_unit_context_menu_click()` + `input/mouse_handler.py` (Priority 0)

@@ -34,6 +34,12 @@
 - Collapsed: the bookmarks stay at the screen edge - click one to open the panel on that tab
 - Collapsed: the Action Queue bookmark shows your queued-order count
 - Every game starts with the sidebar open; the tutorial keeps it open
+- Mouse wheel over the panel: scroll the open tab (never zooms the map)
+- Action Queue: hover a card = its arrow turns gold on the map; click a card = pan to the
+  destination; Cancel Order on each card, CANCEL ALL at the bottom
+- Heroes: click an ability icon to cast it (your turn); click the portrait = pan to the Keep
+- Action Log: filter chips All / Battles / Economy / Heroes
+- Gold bookmark badges: unread chat messages / new battles, conquests and hero events
 
 ---
 
@@ -594,8 +600,25 @@ SIDEBAR_WIDTH = 250
 TAB_WIDTH = 40
 SIDEBAR_SLIDE_MS = 150        # collapse / expand slide
 SIDEBAR_TOGGLE_HEIGHT = 37    # round collapse button (fits in TAB_PADDING_TOP = 45)
+TAB_PADDING_BOTTOM = 12       # was 45: room for the bookmark labels
+SIDEBAR_TAB_STYLE = 'ribbon'  # or 'plaque'
+TAB_ACTIVE_EXTEND = 6         # the open bookmark sticks out further
+# Extras - set False to switch one off
+SIDEBAR_ROUTE_HIGHLIGHT = True
+SIDEBAR_CAMERA_PAN = True
+SIDEBAR_CAMERA_PAN_SECONDS = 0.45
+SIDEBAR_LOG_FILTERS = True
+SIDEBAR_UNREAD_BADGES = True
 ```
+Sidebar text: `rendering/sidebar_widgets.py` `SIDEBAR_TEXT_MAX_SCALE = 1.15` (text grows
+with the screen at most 15%). Content area: `ui/sidebar_layout.content_geometry()` -
+tapestry centre is `panel_x + 135` (carved pillar on the left).
 Is a point over the sidebar? `game.is_point_over_sidebar(pos)` - never `WINDOW_WIDTH - 250`.
+
+**Action Log messages:** a line naming players is shown only to them; a line naming nobody
+is shown to everyone. One player's own action -> `gs.add_player_message(player, text)`.
+Ability victims -> `gs.ability_victims_line(text, players)`. "All enemies" abilities ->
+`gs.ability_enemies(caster)` (skips allies and eliminated players).
 
 **Painted east extension (optional):** `<map background>_east.png` beside the map image, e.g.
 `maps/azincournean_highlands/map_east.png` - map height (3072 px or same ratio), ~500-600 px

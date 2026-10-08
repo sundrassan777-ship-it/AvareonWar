@@ -573,12 +573,13 @@ class TestOrderBadge:
             [MovementOrder(territory, territory, 1, 0, [0]) for _ in range(2)]
             + [MovementOrder(territory, territory, 1, 1, [0]) for _ in range(3)])
         _collapse(game)
-        texts = []
-        original = game._get_cached_text
-        monkeypatch.setattr(game, '_get_cached_text',
-                            lambda text, *a, **k: texts.append(text) or original(text, *a, **k))
+        # The badge is drawn by the shared _draw_tab_badge (also used by the unread badges)
+        counts = []
+        monkeypatch.setattr(game, '_draw_tab_badge',
+                            lambda rect, count, *a: counts.append((rect, count)))
         game.draw_order_sidebar()
-        assert '2' in texts and '5' not in texts
+        assert (game.sidebar_tab_buttons['action_queue'], 2) in counts
+        assert not any(count == 5 for _rect, count in counts)
 
     def test_no_badge_while_expanded(self, game, monkeypatch):
         from game_state import MovementOrder
