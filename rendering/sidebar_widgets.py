@@ -395,6 +395,19 @@ class SidebarWidgets:
         surf.blit(rule, (0, label.get_height() + 3))
         return self._put(key, surf)
 
+    def tooltip(self, text):
+        """Small dark label with a gold border (hover hints), cached per text."""
+        key = ('tooltip', text, self.scale)
+        cached = self._get(key)
+        if cached is not None:
+            return cached
+        label = self.text(text, 'body_bold', PARCHMENT)
+        surf = pygame.Surface((label.get_width() + 14, label.get_height() + 8), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (24, 16, 14, 238), surf.get_rect(), border_radius=4)
+        pygame.draw.rect(surf, GOLD_DARK, surf.get_rect(), 1, border_radius=4)
+        surf.blit(label, (7, 4))
+        return self._put(key, surf)
+
     def draw_progress_bar(self, rect, frac, fill=(196, 150, 60), track=(28, 20, 16)):
         """Gold-bordered progress bar (two rect fills, no surfaces)."""
         frac = max(0.0, min(1.0, float(frac)))

@@ -1662,6 +1662,8 @@ class UIRenderer:
     }
     ORDER_KIND_ICONS = {'attack': 'assets/mapicons/BattleIcon1.png', 'ally': 'assets/mapicons/AllianceIcon1.png'}
     UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
+    UNIT_PLURALS = {'Swordsman': 'Swordsmen', 'Archer': 'Archers', 'Pikeman': 'Pikemen',
+                    'Cavalry': 'Cavalry', 'Captain': 'Captains'}
     CANCEL_TINT = (255, 108, 96)
 
     def _order_kind(self, player, to_territory):
@@ -1784,10 +1786,23 @@ class UIRenderer:
         height = (pad + icon_px + 4 + body_h * len(route)
                   + (body_h if entry.via else 0) + 5 + chip_row_h * len(rows) + 3 * (len(rows) - 1)
                   + (6 + button_h if button_h else 0) + pad)
+
+        # Hover areas of the unit chips (card-local), for the "6× Swordsmen" tooltip.
+        # Mirrors the chip placement in _compose_order_card exactly.
+        chip_hits = []
+        chip_y = pad + icon_px + 4 + body_h * len(route) + (body_h if entry.via else 0) + 5
+        for row in rows:
+            x = pad
+            for chip in row:          # chip = (unit_type, label, chip_w)
+                if chip[0]:
+                    chip_hits.append((pygame.Rect(x, chip_y, chip[2] - 8, chip_row_h), chip[0], chip[1]))
+                x += chip[2]
+            chip_y += chip_row_h + 3
+
         return {'kind': kind, 'border': border, 'pad': pad, 'route': route, 'arrow_w': arrow_w,
                 'rows': rows, 'icon': icon, 'icon_px': icon_px, 'chip_row_h': chip_row_h,
                 'button_h': button_h, 'body_h': body_h, 'small_h': small_h, 'height': height,
-                'width': int(width)}
+                'width': int(width), 'chip_hits': chip_hits}
 
     @staticmethod
     def _order_button_rect(lay, card_rect, scale):
@@ -2008,6 +2023,15 @@ class UIRenderer:
                 card_hit = w.clip_hit(rect, viewport)
                 if card_hit is not None:
                     game.order_card_rects.append((card_hit, entry))
+                    # Unit chip tooltip ("6× Swordsmen"), drawn at the end of the frame
+                    if w.hover(card_hit, viewport):
+                        mx, my = game.mouse_pos
+                        for hit, unit_type, chip_label in lay['chip_hits']:
+                            if hit.move(rect.topleft).collidepoint(mx, my):
+                                count = chip_label.lstrip('×')
+                                name = unit_type if count == '1' else self.UNIT_PLURALS.get(unit_type, unit_type)
+                                game.sidebar_tooltip = (f"{count}× {name}", (mx, my))
+                                break
                 if cancel_rect is not None and entry.order is not None:
                     # Format: (rect, order, player_order_index). The order object identifies
                     # the order to cancel locally; the index (among this player's orders) is

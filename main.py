@@ -1546,6 +1546,7 @@ class Game:
         # Pixel scroll position per scrollable sidebar tab (see handle_sidebar_wheel)
         self._reset_sidebar_scroll()
         self.order_card_rects = []  # (clipped rect, entry) of visible Action Queue cards
+        self.sidebar_tooltip = None  # (text, mouse_pos) hover label, drawn at frame end
 
         # Track previous player and phase for AI turn optimization
         self.previous_ai_check = -1
@@ -7070,6 +7071,8 @@ class Game:
         # Forget a finished slide so is_sidebar_animating() stays cheap and exact
         if self._sidebar_anim_start_ms is not None and not self.is_sidebar_animating():
             self._sidebar_anim_start_ms = None
+        # Hover label for this frame (set by tab content, drawn in update_frame_tooltips)
+        self.sidebar_tooltip = None
 
         layout = self.get_sidebar_layout()
         sidebar_width = UIConstants.SIDEBAR_WIDTH
@@ -15843,6 +15846,22 @@ class Game:
             # image extends into that region of the bottom panel
             if self.mouse_pos[1] >= BOTTOM_UI_Y:
                 self.draw_button_tooltip(self.mouse_pos, self.show_tooltip_button)
+
+        # Sidebar hover label (e.g. "6× Swordsmen" over an order card's unit chip),
+        # set by the sidebar renderer this frame and drawn on top of everything
+        self._draw_sidebar_tooltip()
+
+    def _draw_sidebar_tooltip(self):
+        """Draw the short sidebar hover label set this frame, left of the cursor
+        (the panel sits at the screen's right edge), kept on screen."""
+        tooltip = getattr(self, 'sidebar_tooltip', None)
+        if not tooltip:
+            return
+        text, (mx, my) = tooltip
+        surf = self.sidebar_widgets.tooltip(text)
+        x = max(4, min(mx - surf.get_width() - 10, WINDOW_WIDTH - surf.get_width() - 4))
+        y = max(4, min(my - surf.get_height() - 6, WINDOW_HEIGHT - surf.get_height() - 4))
+        self.screen.blit(surf, (x, y))
     
     # ========================================
     # PHASE 2D: CAMERA MOVEMENT METHODS

@@ -182,6 +182,43 @@ class TestQueueDrawing:
         assert game.order_cancel_buttons == []
 
 
+class TestUnitChipTooltip:
+
+    def _hover_chip(self, game, index):
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+        rect, entry = game.order_card_rects[0]
+        lay = game.ui_renderer._order_card_layout(entry, rect.w)
+        hit = lay['chip_hits'][index][0].move(rect.topleft)
+        game.mouse_pos = hit.center
+        game.draw_order_sidebar()
+
+    def test_hovering_a_unit_chip_names_the_units(self, game):
+        _order(game, 2, n_units=3)            # 2 Swordsmen + 1 Archer
+        self._hover_chip(game, 0)
+        assert game.sidebar_tooltip[0] == "2× Swordsmen"
+        self._hover_chip(game, 1)
+        assert game.sidebar_tooltip[0] == "1× Archer"
+
+    def test_no_tooltip_off_the_chips(self, game):
+        _order(game, 2, n_units=3)
+        game.mouse_pos = (0, 0)
+        game.draw_order_sidebar()
+        assert game.sidebar_tooltip is None
+
+    def test_tooltip_is_drawn_at_frame_end(self, game):
+        import pygame
+        _order(game, 2, n_units=3)
+        self._hover_chip(game, 0)
+        game.screen.fill((0, 0, 0))
+        game._draw_sidebar_tooltip()
+        x, y = game.mouse_pos
+        surf = game.sidebar_widgets.tooltip("2× Swordsmen")
+        # Drawn left of / above the cursor
+        area = pygame.Rect(x - surf.get_width() - 10, y - surf.get_height() - 6, surf.get_width(), surf.get_height())
+        assert sum(pygame.transform.average_color(game.screen, area)[:3]) > 0
+
+
 class TestSubmittedOrders:
 
     def test_submitted_sim_orders_are_listed_read_only(self, game):
