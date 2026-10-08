@@ -98,7 +98,7 @@ in CODE_GUIDE.md.
   already scored both as enemy-only.
 
 **Extras (P6, each with a `UIConstants` flag):**
-- Hovering an order card frames its map arrow in gold (`SIDEBAR_ROUTE_HIGHLIGHT`).
+- Hovering an order card turns its map arrow gold (`SIDEBAR_ROUTE_HIGHLIGHT`, `COLOR_ARROW_HOVERED`).
 - Clicking an order card or a hero portrait pans the map there (`SIDEBAR_CAMERA_PAN`).
 - Action Log filter chips (`SIDEBAR_LOG_FILTERS`).
 - Unread badges on the Chat and Action Log bookmarks (`SIDEBAR_UNREAD_BADGES`).

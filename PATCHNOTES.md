@@ -20,7 +20,7 @@ button in the panel now lights up when you point at it and flashes when you clic
   Ally (green). Reinforcing an ally used to show as an attack.
 - Each card shows the units on the march (point at a unit's portrait to see its name), the
   stop-over for Captain moves, and its own **Cancel Order** button.
-- **Point at a card** and its arrow lights up gold on the map. **Click a card** and the map
+- **Point at a card** and its arrow on the map turns gold. **Click a card** and the map
   glides to its destination.
 - **Cancel All** sits at the bottom of the tab and never covers your orders. Long queues now
   scroll with the mouse wheel instead of being cut off.

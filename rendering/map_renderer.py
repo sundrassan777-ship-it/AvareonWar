@@ -1675,16 +1675,11 @@ class MapRenderer:
             from_x, from_y = self.game.world_to_screen(from_world)
             to_x, to_y = self.game.world_to_screen(to_world)
 
-            # Arrow color - green for movement orders
+            # Arrow color - green for movement orders; gold while its Action Queue card
+            # is under the mouse (line, head and count badge all take the colour)
             arrow_color = COLOR_ARROW_MOVEMENT
-
-            # Action Queue card under the mouse: gold underlay beneath this arrow
             if hovered_route == (from_territory, to_territory):
-                path = [(from_x, from_y)]
-                if intermediate_world:
-                    path.append(self.game.world_to_screen(intermediate_world))
-                path.append((to_x, to_y))
-                self._draw_route_glow(path, ARROW_LINE_WIDTH, ARROW_HEAD_SIZE)
+                arrow_color = COLOR_ARROW_HOVERED
 
             if intermediate_world:
                 # Captain 2-hop: draw bent arrow from→intermediate→destination
@@ -1744,42 +1739,6 @@ class MapRenderer:
 
         # Draw cascade cancel animations (red shaking arrows that fade out)
         self._draw_cancelling_arrows()
-
-    def _draw_route_glow(self, path, line_width, head_size):
-        """Gold highlight for the order arrow whose Action Queue card is hovered.
-
-        Drawn just before the arrow itself: a dark outline, then a wide gold band and a
-        larger gold head, so the normal green arrow sits in a clearly visible gold frame
-        (gold alone barely shows on the parchment-coloured map). Only one route is ever
-        highlighted, so this is a handful of draw calls per frame.
-
-        Args:
-            path: screen points from source (via the Captain 2-hop point) to the tip
-            line_width / head_size: the arrow's own sizes (the highlight is larger)
-        """
-        points = [(int(x), int(y)) for x, y in path]
-        (sx, sy), (tx, ty) = path[-2], path[-1]
-        dx, dy = tx - sx, ty - sy
-        length = math.hypot(dx, dy)
-        cos_a, sin_a = math.cos(ARROW_HEAD_ANGLE_RAD), math.sin(ARROW_HEAD_ANGLE_RAD)
-        # (colour, extra width) - outline first, gold band on top
-        for color, extra in (((64, 38, 12), 14), ((255, 210, 90), 8)):
-            width = line_width + extra
-            for start, end in zip(points, points[1:]):
-                pygame.draw.line(self.game.screen, color, start, end, width)
-            for joint in points[:-1]:
-                # Round joints/ends so the band has no notches at the bend
-                pygame.draw.circle(self.game.screen, color, joint, width // 2)
-            if length > 0:
-                ux, uy = dx / length, dy / length
-                grow = extra * 0.9
-                size = head_size + grow
-                tip_x, tip_y = tx + ux * grow * 0.6, ty + uy * grow * 0.6
-                pygame.draw.polygon(self.game.screen, color, [
-                    (int(tip_x), int(tip_y)),
-                    (int(tip_x - size * (ux * cos_a - uy * sin_a)), int(tip_y - size * (uy * cos_a + ux * sin_a))),
-                    (int(tip_x - size * (ux * cos_a + uy * sin_a)), int(tip_y - size * (uy * cos_a - ux * sin_a))),
-                ])
 
     def _draw_cancelling_arrows(self):
         """Draw red shaking arrows for orders that were auto-cancelled due to overflow.
@@ -1984,13 +1943,12 @@ class MapRenderer:
             from_x, from_y = self.game.world_to_screen(from_world)
             to_x, to_y = self.game.world_to_screen(to_world)
 
-            # Action Queue card under the mouse (own orders only): gold underlay
-            if not is_ally and hovered_route == (from_territory, to_territory):
-                self._draw_route_glow([(from_x, from_y), (to_x, to_y)], 4, 15)
-
-            # Arrow color - green for own orders, cyan for allied orders
+            # Arrow color - green for own orders, cyan for allied orders; an own order
+            # turns gold while its Action Queue card is under the mouse
             if is_ally:
                 arrow_color = (0, 180, 200)  # Cyan for allies
+            elif hovered_route == (from_territory, to_territory):
+                arrow_color = COLOR_ARROW_HOVERED
             else:
                 arrow_color = (0, 200, 0)  # Green for own
 

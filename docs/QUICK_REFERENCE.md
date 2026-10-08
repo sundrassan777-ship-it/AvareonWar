@@ -35,7 +35,7 @@
 - Collapsed: the Action Queue bookmark shows your queued-order count
 - Every game starts with the sidebar open; the tutorial keeps it open
 - Mouse wheel over the panel: scroll the open tab (never zooms the map)
-- Action Queue: hover a card = its arrow glows gold on the map; click a card = pan to the
+- Action Queue: hover a card = its arrow turns gold on the map; click a card = pan to the
   destination; Cancel Order on each card, CANCEL ALL at the bottom
 - Heroes: click an ability icon to cast it (your turn); click the portrait = pan to the Keep
 - Action Log: filter chips All / Battles / Economy / Heroes

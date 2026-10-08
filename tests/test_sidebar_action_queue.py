@@ -316,17 +316,22 @@ class TestRouteHighlight:
         self._hover_first_card(game)
         assert game.sidebar_hovered_route is None
 
-    def test_map_glows_only_the_hovered_route(self, game, monkeypatch):
+    def test_only_the_hovered_route_turns_gold(self, game, monkeypatch):
+        """The hovered order's own arrow changes colour - no extra frame around it."""
+        import pygame
+        from config.constants import COLOR_ARROW_HOVERED, COLOR_ARROW_MOVEMENT
         first = _order(game, to_owner=2)
         _order(game, to_owner=1, src_skip=1)
-        calls = []
-        monkeypatch.setattr(game.map_renderer, '_draw_route_glow', lambda *a: calls.append(a))
+        colors = []
+        real_line = pygame.draw.line
+        monkeypatch.setattr(pygame.draw, 'line', lambda surf, color, *a, **k: colors.append(tuple(color)) or real_line(surf, color, *a, **k))
         game.sidebar_hovered_route = None
         game.map_renderer.draw_movement_arrows()
-        assert calls == []
+        assert COLOR_ARROW_HOVERED not in colors and COLOR_ARROW_MOVEMENT in colors
+        colors.clear()
         game.sidebar_hovered_route = (first.from_territory, first.to_territory)
         game.map_renderer.draw_movement_arrows()
-        assert len(calls) == 1
+        assert colors.count(COLOR_ARROW_HOVERED) == 1 and COLOR_ARROW_MOVEMENT in colors
 
 
 # ============================================================================

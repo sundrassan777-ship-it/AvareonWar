@@ -990,7 +990,7 @@ section above.)
 | `rendering/action_log_model.py` | Pure Python: `classify()`, `ActionLogModel`, `FILTERS`, `BADGE_CATEGORIES` |
 | `rendering/ui_renderer.py` | `_draw_sidebar_tab_buttons()` and one `_draw_<tab>_content()` per tab |
 | `main.py` | `draw_order_sidebar()`, click handlers, `handle_sidebar_wheel()`, camera pan, badges |
-| `rendering/map_renderer.py` | `_draw_route_glow()` (route highlight) |
+| `rendering/map_renderer.py` | Hovered order's arrow drawn in `COLOR_ARROW_HOVERED` (route highlight) |
 
 **Where content goes.** `RightPanel.jpg` has a carved pillar ~24 px wide on its left, so the
 visible tapestry is `panel_x + 24 … panel_x + 247` and its centre is `panel_x + 135`, not
@@ -1097,7 +1097,7 @@ or one system would clear the other's hover (the bottom Hero UI uses `'hero_abil
 
 | Flag | What | Notes |
 |---|---|---|
-| `SIDEBAR_ROUTE_HIGHLIGHT` | Hovering an order card frames its map arrow in gold | The card sets `game.sidebar_hovered_route = (from, to)`. Both map arrow renderers (sequential and simultaneous) call `_draw_route_glow()` for that route. The map draws before the sidebar, so it shows the previous frame's hover |
+| `SIDEBAR_ROUTE_HIGHLIGHT` | Hovering an order card turns its map arrow gold | The card sets `game.sidebar_hovered_route = (from, to)`. Both map arrow renderers (sequential and simultaneous) draw that route's line, head and count badge in `COLOR_ARROW_HOVERED` (config/constants.py) instead of green - same width and shape. A wider gold frame around the arrow was tried first and judged too cartoonish. The map draws before the sidebar, so it shows the previous frame's hover |
 | `SIDEBAR_CAMERA_PAN` (+ `_SECONDS`) | Order card / hero portrait click pans the map | `start_sidebar_camera_pan(territory)` → `CameraPanAnimation` centred on the visible width (`layout.panel_x`) and clamped like any camera move. `_update_sidebar_pan()` runs in the main loop. Anything else moving the camera (drag, keys, edge scroll, wheel zoom) cancels it: detected by the offset differing from the one the pan last set. Refused under the tutorial camera lock or another camera animation |
 | `SIDEBAR_LOG_FILTERS` | All / Battles / Economy / Heroes chips | `action_log_model.FILTERS` (warnings, orders and other only under All). `set_sidebar_log_filter()` → `game.sidebar_log_filter` (the model's category filter) and jumps to the newest entry |
 | `SIDEBAR_UNREAD_BADGES` | Gold counts on the Chat / Action Log bookmarks | `_sidebar_unread_totals()`: Chat counts other players' visible messages. The log uses a second `ActionLogModel` filtered to `BADGE_CATEGORIES` (battle, conquest, hero, victory), counting only top-level rows. Both are recomputed only when their list grows. The open tab is marked seen every frame; `sidebar_seen = None` makes existing history count as read. `_draw_tab_badge()` also draws the red Action Queue order badge |

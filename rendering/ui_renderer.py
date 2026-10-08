@@ -1917,7 +1917,7 @@ class UIRenderer:
         if getattr(game, 'clicked_element', None) == ('sidebar_order_card', (entry.from_territory, entry.to_territory)):
             card_state = 'flash'    # clicked: the map pans to the destination
         if over_card and UIConstants.SIDEBAR_ROUTE_HIGHLIGHT:
-            # The map draws this order's arrow highlighted (map_renderer._draw_route_glow)
+            # The map draws this order's arrow in gold (map_renderer, COLOR_ARROW_HOVERED)
             game.sidebar_hovered_route = (entry.from_territory, entry.to_territory)
         button_state = 'normal'
         if button is not None and not cancel_locked:
