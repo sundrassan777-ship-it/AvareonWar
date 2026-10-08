@@ -46,6 +46,8 @@ CATEGORIES = ('battle', 'conquest', 'economy', 'construction', 'training', 'rese
               'hero', 'orders', 'victory', 'error', 'other')
 
 _TURN_RE = re.compile(r"^--- Player (\d+)'s Turn ---$")
+# Simultaneous mode: one marker per round for everyone (simultaneous/sim_state.py)
+_ROUND_RE = re.compile(r"^--- Round (\d+) ---$")
 _RULE_RE = re.compile(r"^=+$")
 _BANNER_RE = re.compile(r"^=== (.+?) ===$")
 _PLAYER_RE = re.compile(r'Player (\d+)')
@@ -186,7 +188,12 @@ class ActionLogModel:
         turn = _TURN_RE.match(stripped)
         if turn:
             self._groups.append({'kind': 'turn', 'parent': stripped, 'children': [],
-                                 'player': int(turn.group(1)) - 1})
+                                 'player': int(turn.group(1)) - 1, 'round': None})
+            return
+        round_marker = _ROUND_RE.match(stripped)
+        if round_marker:
+            self._groups.append({'kind': 'turn', 'parent': stripped, 'children': [],
+                                 'player': None, 'round': int(round_marker.group(1))})
             return
         indent = len(message) - len(message.lstrip(' '))
         last = self._groups[-1] if self._groups else None
@@ -244,7 +251,11 @@ class ActionLogModel:
             self._group_state.append((turn_count, pending))
             kind = group['kind']
             if kind == 'turn':
-                if group['player'] == self.local_player:
+                if group.get('round') is not None:
+                    # Simultaneous round: everyone's turn at once - a numbered band
+                    turn_count = group['round']
+                    pending = (('turn', f"Turn {turn_count}"),)
+                elif group['player'] == self.local_player:
                     # A new round: earlier headings that never got content are dropped
                     turn_count += 1
                     pending = (('turn', f"Turn {turn_count}"),)

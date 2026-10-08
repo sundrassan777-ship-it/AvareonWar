@@ -127,6 +127,34 @@ class TestTurnSections:
         assert any(r.kind == 'banner' for r in rows)
 
 
+class TestSimultaneousRounds:
+    """Simultaneous mode logs '--- Round N ---' once per round (sim_state.start_planning_phase);
+    the log shows them as 'Turn N' bands like sequential turns (owner feedback: the log
+    used to be one endless 'Start of game' section in simultaneous games)."""
+
+    def test_round_markers_become_turn_bands(self):
+        rows = _rows(["--- Round 1 ---", "Player 1 earned 85 gold from 12 territories",
+                      "--- Round 2 ---"] + BATTLE_OWN)
+        headings = [(r.kind, r.text) for r in rows if r.kind in ('section', 'turn', 'subturn')]
+        assert headings == [('turn', 'Turn 1'), ('turn', 'Turn 2')]
+
+    def test_sim_state_logs_one_marker_per_round(self):
+        import map_data
+        from game_state import GameState
+        from simultaneous.sim_state import SimultaneousGameState
+        map_data.load_polygons()
+        gs = GameState(num_players=2, player_is_ai=[False, True], player_ai_difficulty=[None, 1],
+                       skip_setup_phase=True, game_mode='simultaneous')
+        gs.phase = 'playing'
+        sim = SimultaneousGameState(gs)
+        sim.start_planning_phase()
+        sim.start_planning_phase()        # repeated call for the same round: no duplicate
+        sim.round_number = 2              # what complete_round / the network client do
+        sim.start_planning_phase()
+        markers = [m for m in gs.messages if m.startswith('--- Round')]
+        assert markers == ['--- Round 1 ---', '--- Round 2 ---']
+
+
 class TestIncremental:
 
     SAMPLE = (["Player 1 started building Farm (40 gold, 2 turns)", "--- Player 1's Turn ---",

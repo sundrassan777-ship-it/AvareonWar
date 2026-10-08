@@ -74,6 +74,8 @@ class SimultaneousGameState:
 
         # Round tracking (replaces turn_number for simultaneous mode)
         self.round_number = 1
+        # Round whose "--- Round N ---" Action Log marker was already written
+        self._logged_round = None
 
         # Simultaneous mode phase
         # 'planning' - All players can queue orders
@@ -207,6 +209,16 @@ class SimultaneousGameState:
 
         # Check for auto-ready (players with no valid moves)
         self._check_auto_ready()
+
+        # Action Log turn marker. Sequential games log "--- Player N's Turn ---"; rounds
+        # logged nothing, so the sidebar log showed one endless "Start of game" section.
+        # Written here because both the host/single-player path (complete_round) and the
+        # multiplayer client (SIM_ROUND_COMPLETE) start every round through this method
+        # - messages are not synced over the network, each side logs its own. Guarded so
+        # a repeated call for the same round doesn't log twice.
+        if self._logged_round != self.round_number:
+            self._logged_round = self.round_number
+            self.gs.add_message(f"--- Round {self.round_number} ---")
 
     def _reset_unit_movement_status(self):
         """Reset all units to unmoved status for the new planning phase."""
