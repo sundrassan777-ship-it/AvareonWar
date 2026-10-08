@@ -16,7 +16,8 @@ STRUCTURE
   "Turn k" band; another player's header becomes a small "<Name>'s turn" sub-heading.
   Headers are emitted lazily — only when a visible group follows — so a turn whose
   messages are all filtered away leaves no empty heading. Lines before the first
-  header sit under "Start of game"; simultaneous mode (no headers) is a flat list.
+  header sit under "Start of game". Simultaneous mode has no per-player headers; its
+  "--- Round N ---" markers (sim_state.start_planning_phase) become "Turn N" bands.
 
 VISIBILITY (replaces ui_renderer's is_local_player_message)
 - A group is shown if its parent or ANY child mentions the local player ("Player N"
@@ -24,6 +25,10 @@ VISIBILITY (replaces ui_renderer's is_local_player_message)
   The old per-line rule hid an indented detail that only named the opponent even
   inside the local player's own battle, and showed other players' battle details
   orphaned under a hidden header.
+  Consequence for message writers: a line about one player's own action must name
+  that player (GameState.add_player_message), or every player sees it; an ability
+  that hits other players must name them (ability_victims_line). CODE_GUIDE:
+  "Action Log privacy".
 - Victory / elimination blocks are always shown (the old filter hid "Player 2
   ELIMINATED!" but kept its "=====" lines, leaving an empty banner).
 - An optional category filter (chips, P6) keeps only groups of those categories.

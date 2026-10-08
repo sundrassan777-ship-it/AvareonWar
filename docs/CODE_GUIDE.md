@@ -946,10 +946,12 @@ clamp and culling use the window width), so collapsing it needs no viewport chan
 (`ui_renderer._draw_sidebar_tab_buttons(panel_x, …)`) → round button
 (`_draw_sidebar_toggle_button` / cached `_get_sidebar_toggle_sprite`, built from
 `assets/mapicons/CircleBorder.png` over a solid underlay) → order badge on the Action Queue
-bookmark while collapsed (`_draw_sidebar_order_badge`, **local player's** orders only) →
-content only while `panel_visible`. When fully collapsed it clears `technology_buttons`,
-`hero_selection_buttons`, `order_cancel_buttons` and `cancel_all_button` — stale rects would
-otherwise still catch clicks on the map beneath.
+bookmark while collapsed (`_draw_sidebar_order_badge` → `_draw_tab_badge`, **local
+player's** orders only) → unread badges → content only while `panel_visible`. When fully
+collapsed it clears every content click rect (`technology_buttons`, `hero_selection_buttons`,
+`order_cancel_buttons`, `order_card_rects`, `sidebar_hero_ability_buttons`,
+`hero_portrait_rects`, `cancel_all_button`) — stale rects would otherwise still catch clicks
+on the map beneath.
 
 **During the slide** panel-body clicks are consumed but not dispatched, and the tech tooltip
 and tech particles are skipped (the content moves under a still cursor).
@@ -959,7 +961,8 @@ and tech particles are skipped (the content moves under a still cursor).
 ✅ **Add a new sidebar tab:** add it to `game_state.sidebar_tabs`, both `tab_names` dicts
 (`ui_renderer._draw_sidebar_tab_buttons`), a `_draw_*_content(sidebar_x, …)` branch in
 `draw_order_sidebar()` and, if clickable, a branch in mouse_handler Priority 7. Position
-everything relative to `sidebar_x` — it moves during the slide.
+everything relative to `sidebar_x` — it moves during the slide. Content, scrolling and
+hover/flash: see the next section.
 
 ✅ **Anything that must know whether a point is "over the sidebar":** call
 `is_point_over_sidebar()` / `is_point_over_sidebar_panel()`. Do not compare with
@@ -973,6 +976,180 @@ everything relative to `sidebar_x` — it moves during the slide.
 
 ⚠️ Click/hover rects are rebuilt in `draw_order_sidebar()`, so tests must draw the sidebar
 before hit-testing it. Tests: `tests/test_sidebar_collapse.py`.
+
+### Right sidebar: tab content, widget kit and extras
+
+Everything inside the panel: the six tabs' content, the shared drawing kit, scrolling,
+hover/flash feedback and the four optional extras. (Geometry, collapse and bookmarks: the
+section above.)
+
+| File | Role |
+|---|---|
+| `rendering/sidebar_widgets.py` | `SidebarWidgets` (`game.sidebar_widgets`): fonts / text, 9-sliced frames, cards, buttons, chips, headers, separators, progress bars, scrollbars, bookmark sprites, tech arrows, clip helpers. Everything cached; `invalidate()` is called by `apply_display_settings()` |
+| `ui/sidebar_layout.py` | Also `content_geometry()`, `ScrollState`, `compute_tab_rects()` (pure, unit-tested) |
+| `rendering/action_log_model.py` | Pure Python: `classify()`, `ActionLogModel`, `FILTERS`, `BADGE_CATEGORIES` |
+| `rendering/ui_renderer.py` | `_draw_sidebar_tab_buttons()` and one `_draw_<tab>_content()` per tab |
+| `main.py` | `draw_order_sidebar()`, click handlers, `handle_sidebar_wheel()`, camera pan, badges |
+| `rendering/map_renderer.py` | `_draw_route_glow()` (route highlight) |
+
+**Where content goes.** `RightPanel.jpg` has a carved pillar ~24 px wide on its left, so the
+visible tapestry is `panel_x + 24 … panel_x + 247` and its centre is `panel_x + 135`, not
+`+125`. Use `content_geometry(panel_x, top, height, header_h, footer_h, scrollbar=…)` →
+`x`, `right`, `width`, `center_x`, `top`, `bottom`. Centre headers with
+`w.section_header(text, width, role='title')` on `center_x`.
+
+**Text.** `w.text(text, role, color)` with roles `title / heading / body / body_bold / small /
+small_bold / italic / digits`. Sidebar text grows with `ui_scale` but is capped at
+`SIDEBAR_TEXT_MAX_SCALE = 1.15` (the panel is always 250 px wide), with a 9 px floor. The
+kit builds its **own** `Font` objects: `FontManager` returns one shared object per
+(size, weight), so `game.small_font` and `game.small_font_italic` are the same font (P8).
+
+**Frames.** `w.nine_slice('wood' | 'bronze', size, border, fill)` keeps the art's border at a
+fixed thickness at any size. Source insets were measured from the images (`FRAMES`).
+ResourceSlot's middle is opaque black, so the fill always replaces it. `w.card(..., state)`
+bakes `normal / hover / flash / locked` once — never `.copy()` + tint per frame.
+
+**Scrolling.**
+- `game.sidebar_scroll[tab]` is a `ScrollState` (pixel offset), reset per new game by
+  `_reset_sidebar_scroll()`. Action Queue and Heroes are anchored at the top. Action Log
+  and Chat are anchored at the bottom: offset 0 shows the newest entry, and
+  `on_content_grew()` keeps the view still while new lines arrive if you scrolled back.
+- `handle_sidebar_wheel(delta)` runs first in `handle_camera_zoom()` and in the tutorial
+  camera-lock wheel branch. Over the panel body it always consumes the wheel, so the map
+  never zooms under the panel.
+
+**Hover and click flash — every clickable control has both.**
+- Hover: `w.hover(rect, viewport)`, which is False while the sidebar slides.
+- Flash: the click handler calls `trigger_click_flash(type, id)`; the renderer compares
+  `game.clicked_element` with the same key.
+- `tests/test_sidebar_feedback.py` renders each control idle / hovered / flashed and
+  compares pixels. **Add every new control to it.**
+
+| Control | Flash key | Click handler |
+|---|---|---|
+| Bookmark | `('sidebar_tab', tab_id)` | `handle_order_sidebar_click` |
+| Collapse button | `('sidebar_toggle', 'toggle')` | mouse_handler Priority 7 |
+| Order card | `('sidebar_order_card', (from, to))` | `handle_order_sidebar_click` (pans the map) |
+| Cancel Order | `('sidebar_cancel_order', order_id)` | `handle_order_sidebar_click` |
+| CANCEL ALL | `('sidebar_cancel_all', None)` | `handle_order_sidebar_click` |
+| Log filter chip | `('sidebar_log_filter', filter_id)` | `handle_order_sidebar_click` |
+| Hero card | `('sidebar_hero_card', hero)` | `handle_heroes_tab_click` (portrait pans the map) |
+| Ability icon | `('sidebar_hero_ability', (hero, i))` | `handle_heroes_tab_click` |
+| Tech tile | `('technology_button', tech_id)` | `handle_technology_tab_click` |
+
+Hover labels: content sets `game.sidebar_tooltip`, which is reset each frame and drawn last in
+`update_frame_tooltips()`. Ability icons use the shared hover-ownership helper with their own
+type, `update_button_hover(..., 'sidebar_hero_ability')`. Types must be unique per system,
+or one system would clear the other's hover (the bottom Hero UI uses `'hero_ability'`).
+
+**Performance pattern.**
+- Memoise each item's layout by (content key, width, `w.scale`).
+- Pre-compose each card into a cached surface (`w.display_alpha()` for faster blending), so
+  a frame is one blit per visible card.
+- Long lists bisect to the first visible row.
+- Measured with a draw-time micro-benchmark (main vs branch worktrees, best of 7 × 200
+  frames): the full-frame FPS benchmark is too noisy on this machine to judge a 0.1 ms
+  change. Always compare runs interleaved, never against an old JSON file.
+
+| Tab | Old | New |
+|---|---|---|
+| Action Queue (40 orders) | 0.28 ms | 0.34 ms |
+| Action Log (2000 messages) | 3.5 ms | 0.27 ms (+0.02 ms with chips) |
+| Heroes (3 active + 2 training) | 0.18 ms | 0.30 ms |
+| Technology | 0.86 ms | 0.50 ms (icon existence cached) |
+
+#### The tabs
+
+- **Action Queue** (`_draw_action_queue_content`):
+  - Entries: `_queue_entries(local)` lists the local player's orders, plus, in
+    simultaneous mode after Ready, the submitted orders read-only (no Cancel buttons).
+  - Order type: `_order_kind()` is attack / own / ally, using `are_allies()` like
+    military.py (allied reinforcements used to show as attacks).
+  - Composition comes from `unit_ids`. Simultaneous-mode order dicts have no
+    `intermediate_territory`, so submitted cards have no "via" row.
+  - Click rects: `order_card_rects` = `(clipped rect, entry)` and `order_cancel_buttons` =
+    `(rect, order, per-player index)`. `draw_order_sidebar()` clears both on other tabs:
+    the Action Log shares `handle_order_sidebar_click`, and stale Cancel Order rects could
+    otherwise cancel orders from a click on the log.
+- **Action Log** (`_draw_action_log_content` + `ActionLogModel`, see the model's docstring):
+  - Grouping: a line plus its indented details is one group, and a `=====` block is one
+    victory group.
+  - Turn bands come from `--- Player N's Turn ---` (sequential) and `--- Round N ---`
+    (simultaneous, written once per round by `sim_state.start_planning_phase()`).
+  - Updates are incremental: only new messages are processed.
+  - Categories: `classify()` (first matching `_RULES` entry wins; the hero rule is built
+    from `HERO_TYPES`). Colours: `ui_renderer.LOG_CATEGORY_COLORS`.
+- **Heroes** (`_draw_heroes_content`):
+  - Bronze cards for active heroes and training cards with progress (`training_time` −
+    remaining).
+  - The ability icons and the bottom Hero UI share `draw_hero_ability_icon()`,
+    `try_cast_hero_ability()` and `game_state.get_hero_ability_status()`.
+  - The sidebar casts only when `_can_cast_from_sidebar()` (the local player's turn, in
+    planning).
+  - `draw_ability_tooltip(..., player=local)`.
+- **Technology** (`_draw_technology_content`):
+  - The grid shrinks to the panel height (min 30 px tiles, 12 px gaps); at 1280x720 the
+    bottom rows used to sit under the bottom panel.
+  - Arrows: `w.tech_arrow(length, state)`. Locked is bronze; open (prerequisite researched)
+    is green with a glow; done is muted green.
+
+#### Extras (each can be switched off in `UIConstants`, ui/scaler.py)
+
+| Flag | What | Notes |
+|---|---|---|
+| `SIDEBAR_ROUTE_HIGHLIGHT` | Hovering an order card frames its map arrow in gold | The card sets `game.sidebar_hovered_route = (from, to)`. Both map arrow renderers (sequential and simultaneous) call `_draw_route_glow()` for that route. The map draws before the sidebar, so it shows the previous frame's hover |
+| `SIDEBAR_CAMERA_PAN` (+ `_SECONDS`) | Order card / hero portrait click pans the map | `start_sidebar_camera_pan(territory)` → `CameraPanAnimation` centred on the visible width (`layout.panel_x`) and clamped like any camera move. `_update_sidebar_pan()` runs in the main loop. Anything else moving the camera (drag, keys, edge scroll, wheel zoom) cancels it: detected by the offset differing from the one the pan last set. Refused under the tutorial camera lock or another camera animation |
+| `SIDEBAR_LOG_FILTERS` | All / Battles / Economy / Heroes chips | `action_log_model.FILTERS` (warnings, orders and other only under All). `set_sidebar_log_filter()` → `game.sidebar_log_filter` (the model's category filter) and jumps to the newest entry |
+| `SIDEBAR_UNREAD_BADGES` | Gold counts on the Chat / Action Log bookmarks | `_sidebar_unread_totals()`: Chat counts other players' visible messages. The log uses a second `ActionLogModel` filtered to `BADGE_CATEGORIES` (battle, conquest, hero, victory), counting only top-level rows. Both are recomputed only when their list grows. The open tab is marked seen every frame; `sidebar_seen = None` makes existing history count as read. `_draw_tab_badge()` also draws the red Action Queue order badge |
+
+#### When to Modify
+
+✅ **Add a sidebar tab with a scrolling list:**
+1. Header via `w.section_header`, centred on `content_geometry(...).center_x`.
+2. Viewport from `content_geometry(..., scrollbar=True)` and a `ScrollState`, added to
+   `_reset_sidebar_scroll()` under the tab's id. `handle_sidebar_wheel()` finds it there by
+   the active tab, so the wheel works with no extra code.
+3. Draw inside `w.begin_clip(viewport)` / `w.end_clip()` (try/finally).
+4. Store click rects clipped with `w.clip_hit()`, and clear them in `draw_order_sidebar()`
+   when the tab is not active.
+5. Draw the scrollbar with `w.draw_scrollbar()`.
+
+✅ **Change a tab's look:** go through `SidebarWidgets` so the text cap, caches and
+hover/flash states come along. Don't create Surfaces or render fonts per frame in tab code.
+
+✅ **Add a log category or reclassify a message:** `_RULES` in action_log_model.py (order
+matters) + a colour in `LOG_CATEGORY_COLORS` + `CATEGORY_LABELS`. Per-player lines keep
+their `Player N: ` prefix; `classify()` strips it before matching.
+
+⚠️ Tests: `test_sidebar_widgets.py`, `test_sidebar_action_queue.py`,
+`test_action_log_model.py`, `test_sidebar_heroes.py`, `test_sidebar_tech.py`,
+`test_sidebar_feedback.py`.
+
+### Action Log privacy: who sees a message
+
+`game_state.messages` is one shared list of plain strings; every player's log is a filtered
+view of it (`ActionLogModel`). **A group is shown to a player if it names them ("Player N" or
+their name), or if it names nobody.** Consequences:
+
+- **A per-player action must name its player.** Use `add_player_message(player, text)`
+  ("Player N: text"). This covers anything about one player's own research, construction,
+  training, castle upgrades, refunds, orders, refusals ("Not enough gold!") and Farm/Mine
+  level-ups. An unnamed line is shown to everyone: an AI researching the same tech one
+  round after you read as your own research starting and completing twice, and every
+  player saw the AI's research.
+- **An ability that hits other players must name them**, or its victims never see it:
+  - Indented sub-line under the caster's line:
+    `ability_victims_line("Heroes silenced until next turn", players)`.
+  - Or put them in the caster's line: "Aggressive Diplomacy conquers X from Player N",
+    "Royal Charisma stole … (Player N)", "Regicide failed in X (Player N)".
+  - Caster-only effects (Master Negotiator) stay named to the caster alone.
+- **Public events** (battles, army movement, overflow, "Orders cancelled due to <ability>")
+  stay unnamed or name every participant.
+- **"All enemies" abilities target `ability_enemies(caster)`:** everyone except the
+  caster, their allies and eliminated players. Vow of Silence and Embargo used to hit
+  allies too. The network Vow of Silence handler in main.py uses the same helper.
+
+Tests: `TestPerPlayerMessages` in `test_action_log_model.py`.
 
 ### Battle Reports
 
@@ -1944,12 +2121,10 @@ if self.sim_state is not None:
 - Icons scale at 65% height, 1.4x wider (rectangular shape)
 - Text uses `small_font`, icons from `assets/mapicons/`
 
-✅ **Action Log Filtering (Lines 1106-1210):**
-- Filters messages to show only LOCAL player's events
-- Uses regex pattern matching for "Player X" references
-- Replaces "Player X" with actual player names (e.g., "Editoreus", "AI (Medium)")
-- Security: Prevents players from naming themselves "Player 2" to see opponent messages
-- Message storage: Plain strings in `game_state.messages[]`
+✅ **Action Log:** organised by `rendering/action_log_model.py` (grouping, turn bands,
+categories, visibility) and drawn by `_draw_action_log_content()`. Who sees which message:
+"Action Log privacy" under the right sidebar sections. Messages are plain strings in
+`game_state.messages[]`; "Player N" is replaced with the player's name for display.
 
 ### rendering/map_extension.py — the strip past the map's east edge
 

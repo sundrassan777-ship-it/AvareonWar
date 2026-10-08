@@ -637,11 +637,24 @@ Persistent player level that tracks progression across all game modes. XP is ear
 - Phase indicator
 
 **Right Sidebar:**
-- Technology tab
-- Heroes tab
-- Action Queue (orders)
-- Action Log (events)
-- Chat tab
+- Technology tab: the 3x7 tree. Arrows turn green once the tech before them is researched,
+  showing what you can research next. Tiles shrink to fit small screens.
+- Heroes tab: a card per hero (portrait, title, Keep) with castable ability icons (cooldowns,
+  silence and tooltips as in the bottom Hero UI). Training heroes show a progress bar.
+  Clicking a portrait pans the map to that hero's Keep.
+- Action Queue: a card per queued order (Attack / Move / Reinforce Ally, units, "via" for
+  Captain moves) with its own Cancel Order button and a CANCEL ALL at the bottom. Hovering a
+  card highlights its arrow on the map; clicking it pans the map to the destination. In
+  simultaneous mode, orders already submitted with Ready are listed as "Submitted".
+- Action Log: grouped by turn, coloured by kind (battles, conquests, economy, buildings,
+  training, research, heroes, orders, warnings), battle details under their battle. Filter
+  chips: All / Battles / Economy / Heroes. **It shows only what concerns you:** lines naming
+  another player (their research, buildings, refusals...) are hidden; enemy hero abilities
+  that hit you are shown.
+- Quests tab (tutorial) and Chat tab.
+- Every tab scrolls with the mouse wheel; the wheel never zooms the map under the panel.
+- Gold badges on the Chat and Action Log bookmarks count new messages from other players and
+  new battles, conquests and hero events you haven't seen yet.
 - Collapsible: the round button above the bookmarks (or F2) slides it off-screen, leaving the
   bookmarks at the screen edge; clicking a bookmark reopens it on that tab. While collapsed the
   Action Queue bookmark shows how many orders you have queued. Every game starts with it open;
@@ -726,6 +739,9 @@ Full 2-4 player multiplayer with AI slots, teams, and reconnection support.
 - Same team = allies
 - Different team = enemies
 - Team can be changed only in lobby
+- "All enemies" hero abilities - **Vow of Silence** (silences heroes) and **Embargo** (no
+  income next turn) - hit enemies only, never the caster's allies. (Before 2026-10-08 they
+  hit allies too.)
 
 ### Host Authority
 
