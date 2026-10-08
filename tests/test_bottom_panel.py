@@ -215,3 +215,23 @@ class TestInnerTint:
             px = (round(x * w / 1502.0), round(y * h / 297.0))
             assert art.get_at(px).g >= 150 and art.get_at(px).a == 255  # really gold
             assert tinted.get_at(px) == art.get_at(px)
+
+
+class TestTutorialOutline:
+
+    def test_band_traces_the_button_shape(self, game):
+        """The highlight hugs the pointed caps: corners empty, tips covered, inside empty."""
+        size = (220, 44)
+        t = 3
+        band = game.bottom_panel_kit.button_outline(size, thickness=t)
+        assert band.get_size() == (size[0] + 2 * t, size[1] + 2 * t)
+        w, h = band.get_size()
+        # A box ring would colour the corners; the traced band leaves them empty
+        assert band.get_at((1, 1)).a == 0 and band.get_at((w - 2, h - 2)).a == 0
+        # ...but does run around the left and right points (they sit above mid-height)
+        assert any(band.get_at((x, y)).a for x in range(0, 2 * t + 2) for y in range(h))
+        assert any(band.get_at((x, y)).a for x in range(w - 2 * t - 2, w) for y in range(h))
+        # The button itself is not covered
+        assert band.get_at((w // 2, h // 2)).a == 0
+        # Cached per size
+        assert game.bottom_panel_kit.button_outline(size, thickness=t) is band

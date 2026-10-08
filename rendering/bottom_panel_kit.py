@@ -308,6 +308,31 @@ class BottomPanelKit:
             self.blit_text(surf, pos, self.text(fitted, role, SHADOW))
         return state
 
+    def button_outline(self, size, color=(100, 255, 100), thickness=3):
+        """Tutorial highlight band that traces an ornate button's shape (pointed caps).
+
+        Built from the button art's alpha mask: the mask grown by `thickness` px in
+        every direction, minus the button itself, so the band hugs the outline instead
+        of boxing it. Returned surface is (w + 2t, h + 2t) - blit it at the button's
+        top-left minus (t, t). Cached per size; the caller sets its alpha per frame
+        (the same convention as SidebarWidgets.pulse_ring()).
+        """
+        w, h = int(size[0]), int(size[1])
+        t = max(1, int(thickness))
+
+        def build():
+            sprite = self.game.sidebar_widgets.button_sprite('campaign', (w, h))
+            button = pygame.mask.from_surface(sprite, 100)
+            grown = pygame.mask.Mask((w + 2 * t, h + 2 * t))
+            # Union of the mask shifted to every offset within a radius-t disc
+            for dx in range(-t, t + 1):
+                for dy in range(-t, t + 1):
+                    if dx * dx + dy * dy <= t * t:
+                        grown.draw(button, (t + dx, t + dy))
+            grown.erase(button, (t, t))
+            return grown.to_surface(setcolor=(*color, 255), unsetcolor=(0, 0, 0, 0))
+        return self._cache(('outline', w, h, color, t), build)
+
     # ------------------------------------------------------------------ BattleBar
 
     def battlebar_height(self, width):

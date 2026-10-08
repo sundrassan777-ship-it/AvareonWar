@@ -8808,11 +8808,12 @@ class Game:
         kit.ornate_button(end_turn_rect, label, tint, flash_key=('bottom_button', 'end_turn'),
                           locked=(state == 'locked'))
         if state == 'highlight':
-            # Tutorial hook: pulsing green ring around the highlighted End Turn button
-            ring_rect = end_turn_rect.inflate(6, 6)
-            ring = self.sidebar_widgets.pulse_ring(ring_rect.size)
+            # Tutorial hook: pulsing green band tracing the highlighted End Turn
+            # button's shape (pointed end caps included), not a box around it
+            thickness = max(2, kit.px(3))
+            ring = kit.button_outline(end_turn_rect.size, thickness=thickness)
             ring.set_alpha(int(150 + 105 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 200.0))))
-            self.screen.blit(ring, ring_rect.topleft)
+            self.screen.blit(ring, (end_turn_rect.x - thickness, end_turn_rect.y - thickness))
         self.end_turn_button = end_turn_rect
         y += button_h + gap
 
