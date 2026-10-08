@@ -2409,7 +2409,11 @@ class UIRenderer:
         text_x = pad + portrait + 8
         text_w = width - pad - text_x
         title = ' '.join(self.game.game_state.HERO_TYPES.get(hero, {}).get('description', []) or [])
-        title_lines = w.wrap(title, 'italic', text_w)[:2] if title else []
+        # Up to three lines (owner feedback: "High Commander of Affrancian Union" needs
+        # three); anything longer ends the third line with an ellipsis, never vanishes
+        title_lines = w.wrap(title, 'italic', text_w) if title else []
+        if len(title_lines) > 3:
+            title_lines = title_lines[:2] + [w.fit_text(' '.join(title_lines[2:]), 'italic', text_w)]
         location = w.fit_text(f"Keep: {info['keep']}", 'small', text_w)
         body_h = max(portrait, italic_h * len(title_lines) + 3 + small_h)
 
