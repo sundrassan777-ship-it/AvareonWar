@@ -9976,7 +9976,7 @@ class Game:
             "A Hero is slain when a Keep they are residing at is conquered.",
             "Hero can be re-summoned in a Keep after their death.",
         ] + (["Click the portrait to view the Hero's Keep on the map."]
-             if UIConstants.SIDEBAR_CAMERA_PAN else []), bullets=False)
+             if UIConstants.SIDEBAR_CAMERA_PAN else []))  # Bulleted, like Unit Selection Info
 
     def draw_training_ui(self):
         """Draw training interface when Barracks is selected"""
