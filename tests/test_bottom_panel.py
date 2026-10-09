@@ -397,3 +397,41 @@ class TestForcesHeroPortrait:
         self._with_hero(game, 1)
         game.draw_bottom_ui()
         assert game.forces_hero_button is None
+
+
+class TestForcesGridPlacement:
+    """Owner feedback 2026-10-09: fixed column slots (a lone column stays left),
+    columns spread across the section, rows from the top, hover shows the name."""
+
+    def _cells(self, game, unit_types):
+        gs = game.game_state
+        territory = _three_plot_territory(game, units=len(unit_types))
+        for unit, unit_type in zip(gs.territory_garrisons[territory][0]['units'], unit_types):
+            unit['type'] = unit_type
+        game.draw_bottom_ui()
+        return [rect for rect, _entry in game.forces_cells]
+
+    def test_lone_column_uses_the_left_slot(self, game):
+        one = self._cells(game, ['Swordsman'])
+        four = self._cells(game, ['Swordsman', 'Archer', 'Pikeman', 'Cavalry'])
+        assert one[0].topleft == four[0].topleft  # Same slot, same top row
+        assert four[3].left > four[0].left        # 4th entry starts the 2nd column
+
+    def test_columns_spread_across_the_section(self, game):
+        cells = self._cells(game, ['Swordsman', 'Archer', 'Pikeman', 'Cavalry'])
+        forces = game._territory_view_layout()['rects']['forces']
+        left_col, right_col = cells[0], cells[3]
+        assert left_col.left < forces.left + forces.w * 0.2
+        assert right_col.left > forces.centerx
+        for rect in cells:
+            assert forces.contains(rect)
+
+    def test_hover_label_names_the_unit(self, game):
+        cells = self._cells(game, ['Archer', 'Archer'])
+        game.mouse_pos = cells[0].center
+        game.draw_bottom_ui()
+        assert game.bottom_panel_tooltip[0] == "2\u00d7 Archers"
+        game._draw_bottom_panel_tooltip()  # Draws without errors
+        game.mouse_pos = (0, 0)
+        game.draw_bottom_ui()
+        assert game.bottom_panel_tooltip is None

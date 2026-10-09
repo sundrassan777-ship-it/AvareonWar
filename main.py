@@ -1572,6 +1572,7 @@ class Game:
         self.sidebar_hero_ability_buttons = {}  # {(hero, i): rect} ability icons on sidebar hero cards
         self.hero_portrait_rects = {}           # {hero: rect} portraits on sidebar hero cards
         self.sidebar_tooltip = None  # (text, mouse_pos) hover label, drawn at frame end
+        self.bottom_panel_tooltip = None  # Same, for the bottom panel (Forces icons)
 
         # Track previous player and phase for AI turn optimization
         self.previous_ai_check = -1
@@ -8197,6 +8198,7 @@ class Game:
         kit = self.bottom_panel_kit
         gs = self.game_state
         self.forces_hero_button = None
+        self.forces_cells = []  # (icon rect, entry) drawn this frame - hover + tests
         if not entries:
             kit.centered_text("No forces", 'body', (170, 165, 155), area.centerx,
                               area.top + (area.h - kit.line_height('body')) // 2)
@@ -8207,19 +8209,32 @@ class Game:
         row_gap = kit.px(3)
         icon = max(12, min(kit.px(34), (area.h - row_gap * (rows - 1)) // rows))
         text_gap = kit.px(5)
-        col_gap = kit.px(16)
         count_w = kit.font('body_bold').size("× 15")[0]
         cell_w = icon + text_gap + count_w
-        n_cols = (len(entries) + rows - 1) // rows
-        n_rows = min(rows, len(entries))
-        grid_w = n_cols * cell_w + (n_cols - 1) * col_gap
-        grid_h = n_rows * icon + (n_rows - 1) * row_gap
-        x0 = area.centerx - grid_w // 2
+        # Two FIXED column slots spread over ~78% of the section, and the 3-row grid
+        # anchored at its top: a lone column stays in the left slot and a short column
+        # starts at the top row (owner: centring each case read badly, and the two
+        # columns had too much empty wood either side)
+        span = min(area.w, max(2 * cell_w + kit.px(16), int(area.w * 0.78)))
+        x0 = area.centerx - span // 2
+        col_x = (x0, x0 + span - cell_w)
+        grid_h = rows * icon + (rows - 1) * row_gap
         y0 = area.top + max(0, (area.h - grid_h) // 2)
+        hover_pos = self.mouse_pos
 
         for i, entry in enumerate(entries):
             col, row = divmod(i, rows)
-            icon_rect = pygame.Rect(x0 + col * (cell_w + col_gap), y0 + row * (icon + row_gap), icon, icon)
+            icon_rect = pygame.Rect(col_x[col], y0 + row * (icon + row_gap), icon, icon)
+            self.forces_cells.append((icon_rect, entry))
+            # Hover label (unit / hero name, like the Action Queue's unit chips), drawn
+            # at the end of the frame by _draw_bottom_panel_tooltip()
+            if hover_pos is not None and icon_rect.collidepoint(hover_pos):
+                if entry['kind'] == 'unit':
+                    name = entry['name'] if entry['count'] == 1 else \
+                        self.ui_renderer.UNIT_PLURALS.get(entry['name'], entry['name'])
+                    self.bottom_panel_tooltip = (f"{entry['count']}× {name}", hover_pos)
+                else:
+                    self.bottom_panel_tooltip = (entry['name'], hover_pos)
 
             if entry['kind'] == 'unit':
                 unit_type = entry['name']
@@ -8335,35 +8350,40 @@ class Game:
         display_territory = map_data.get_display_name(territory)
         y = kit.header(info, display_territory, color=BROWN_TEXT_HEADING, role='title', max_lines=2)
         line_h = kit.line_height('body')
-
-        def info_line(text, color, role='body'):
-            """One fact, wrapped to 2 lines; stops at the section bottom (bounds check)."""
-            nonlocal y
-            for line in kit.wrap(text, role, info.w, max_lines=2):
-                if y + line_h > info.bottom:
-                    return
-                kit.left_text(line, role, color, info.left, y)
-                y += line_h
-            y += kit.px(2)
+        facts = []  # (text, color, role), drawn below in one pass
 
         if owner == -1:
-            info_line("Owner: Neutral", BROWN_TEXT_PRIMARY, role='body_bold')
+            facts.append(("Owner: Neutral", BROWN_TEXT_PRIMARY, 'body_bold'))
         else:
-            info_line(f"Owner: {self.game_state.get_player_name(owner)}",
-                      self.game_state.get_player_color(owner), role='body_bold')
-        info_line(f"Income: +{total_income}G/turn", BROWN_GOLD)
+            facts.append((f"Owner: {self.game_state.get_player_name(owner)}",
+                          self.game_state.get_player_color(owner), 'body_bold'))
+        facts.append((f"Income: +{total_income}G/turn", BROWN_GOLD, 'body'))
 
         # Territorial bonus (if territory has one). Format: "+3% Income" or "-5% Unit Cost"
         bonus_type = map_data.get_territory_bonus(territory)
         if bonus_type and bonus_type in self.game_state.BONUS_TYPES:
             bonus_info = self.game_state.BONUS_TYPES[bonus_type]
             formatted_bonus = f"{bonus_info['format'].format(bonus_info['value'])} {bonus_info['display']}"
-            info_line(f"Bonus: {formatted_bonus}", WHITE)
+            facts.append((f"Bonus: {formatted_bonus}", WHITE, 'body'))
 
         # Fortress defense indicator (brighter red than before: (150, 50, 50) was
         # unreadable on the wood)
         if map_data.is_fortress_territory(territory):
-            info_line("Fortress (+2 Defense)", (225, 95, 80))
+            facts.append(("Fortress (+2 Defense)", (225, 95, 80), 'body'))
+
+        # One fact per line (wrapped to 2), left-aligned. The space between facts grows
+        # to use the section's height (owner: the bottom was mostly empty), capped so
+        # a short list doesn't scatter; bounds-checked against the section bottom.
+        wrapped = [(kit.wrap(text, role, info.w, max_lines=2), color, role) for text, color, role in facts]
+        total_h = sum(len(lines) for lines, _c, _r in wrapped) * line_h
+        fact_gap = max(kit.px(2), min(kit.px(16), (info.bottom - y - total_h) // max(1, len(wrapped))))
+        for lines, color, role in wrapped:
+            for line in lines:
+                if y + line_h > info.bottom:
+                    break
+                kit.left_text(line, role, color, info.left, y)
+                y += line_h
+            y += fact_gap
 
         # === SECTION 2: BUILDING PLOTS ===
         # Plots are sized for 3 so that 3 plots fill the section (owner request); fewer
@@ -8663,13 +8683,13 @@ class Game:
                 kit.centered_text("Hover over the picture to learn more.", 'small', (190, 180, 160),
                                   lore.centerx, frame_y + border_height + 4)
             else:
-                # Italic lore text, centred vertically. Brighter than the old brass
+                # Italic lore text from the top of the section. Brighter than the old brass
                 # (205, 170, 110) with a drop shadow: owner found it hard to read on wood.
                 lore_text = map_data.get_territory_lore(territory) or "No lore available for this territory."
                 line_h = int(kit.font('lore').get_linesize() * 1.15)
                 max_lines = max(1, lore.h // max(1, line_h))
                 lore_lines = kit.wrap(lore_text, 'lore', lore.w, max_lines=max_lines)
-                ly = lore.top + max(0, (lore.h - line_h * len(lore_lines)) // 2)
+                ly = lore.top  # From the top (centring left an odd gap above short lore)
                 for ln in lore_lines:
                     if ly + line_h > lore.bottom + line_h // 3:
                         break  # bounds-check - never render past the container
@@ -9581,6 +9601,8 @@ class Game:
         # Territory view Forces section controls (drawn only in that view)
         self.select_army_button = None
         self.forces_hero_button = None
+        self.forces_cells = []
+        self.bottom_panel_tooltip = None  # Re-set by the hovered Forces icon
         # Hero ability slots were only reset inside draw_hero_ui, so after the Hero UI
         # closed their rects stayed clickable over whatever the bottom panel showed next
         self.hero_ability_buttons = {}
@@ -16194,6 +16216,19 @@ class Game:
         # Sidebar hover label (e.g. "6× Swordsmen" over an order card's unit chip),
         # set by the sidebar renderer this frame and drawn on top of everything
         self._draw_sidebar_tooltip()
+        self._draw_bottom_panel_tooltip()
+
+    def _draw_bottom_panel_tooltip(self):
+        """Draw the bottom panel's hover label (Forces icon name) above the cursor,
+        in the same style as the sidebar's, kept on screen."""
+        tooltip = getattr(self, 'bottom_panel_tooltip', None)
+        if not tooltip:
+            return
+        text, (mx, my) = tooltip
+        surf = self.sidebar_widgets.tooltip(text)
+        x = max(4, min(mx - surf.get_width() // 2, WINDOW_WIDTH - surf.get_width() - 4))
+        y = max(4, my - surf.get_height() - 10)
+        self.screen.blit(surf, (x, y))
 
     def _draw_sidebar_tooltip(self):
         """Draw the short sidebar hover label set this frame, left of the cursor
