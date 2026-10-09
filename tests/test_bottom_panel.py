@@ -235,3 +235,165 @@ class TestTutorialOutline:
         assert band.get_at((w // 2, h // 2)).a == 0
         # Cached per size
         assert game.bottom_panel_kit.button_outline(size, thickness=t) is band
+
+
+# ===========================================================================
+# Territory view
+# ===========================================================================
+
+def _three_plot_territory(game, owner=0, units=5):
+    """An owned territory with 3 plots, a garrison of `units` for `owner`, selected."""
+    gs = game.game_state
+    territory = next(t for t in sorted(gs.territory_owners) if len(game.scaled_plots.get(t, [])) == 3)
+    gs.territory_owners[territory] = owner
+    gs.territory_garrisons[territory] = {}
+    if units:
+        gs.add_garrison(territory, owner, unmoved=units)
+    game.selected_territory_info = territory
+    return territory
+
+
+class TestTerritoryLayout:
+
+    def test_sections_inside_panel_and_ordered(self, any_res_game):
+        g = any_res_game
+        layout = g._territory_view_layout()
+        rects = [layout['rects'][k] for k in ('info', 'plots', 'forces', 'lore')]
+        panel = _panel(g)
+        for rect in rects:
+            assert panel.contains(rect)
+        for left, right in zip(rects, rects[1:]):
+            assert left.right < right.left
+        # The first section starts after the End Turn section
+        assert rects[0].left > g._end_turn_section_rect().right
+
+    def test_three_plots_fill_the_section(self, any_res_game):
+        g = any_res_game
+        _three_plot_territory(g)
+        g.draw_bottom_ui()
+        plots = g._territory_view_layout()['rects']['plots']
+        buttons = [rect for rect, _t, _i in g.territory_info_plot_buttons]
+        assert len(buttons) == 3
+        for rect in buttons:
+            assert plots.contains(rect)
+        span = buttons[-1].right - buttons[0].left
+        # Width-limited sections fill >= 85%; height-limited ones (wide screens) use
+        # the full content height instead
+        height_limited = buttons[0].h >= plots.bottom - buttons[0].top - 1
+        assert span >= 0.85 * plots.w or height_limited
+        assert abs((buttons[0].left + buttons[-1].right) // 2 - plots.centerx) <= 2
+
+    def test_controls_inside_forces_section(self, any_res_game):
+        g = any_res_game
+        _three_plot_territory(g)
+        g.draw_bottom_ui()
+        forces = g._territory_view_layout()['rects']['forces']
+        assert forces.contains(g.select_army_button)
+
+
+class TestForces:
+
+    def test_entries_order_and_hero(self, game):
+        gs = game.game_state
+        territory = _three_plot_territory(game, units=4)
+        units = gs.territory_garrisons[territory][0]['units']
+        for unit, unit_type in zip(units, ['Captain', 'Archer', 'Swordsman', 'Archer']):
+            unit['type'] = unit_type
+        hero = list(gs.HERO_TYPES)[0]
+        gs.heroes.setdefault(1, {})[hero] = {'keep_territory': territory, 'keep_plot': 0}
+        entries = game._forces_entries(territory)
+        assert [(e['kind'], e['name']) for e in entries] == [
+            ('unit', 'Swordsman'), ('unit', 'Archer'), ('unit', 'Captain'), ('hero', hero)]
+        assert entries[1]['count'] == 2
+        assert entries[3]['player'] == 1
+
+    def test_army_limit_colours(self, game):
+        import main
+        assert game._army_limit_color(11) == main.BROWN_TEXT_PRIMARY
+        yellow, red = game._army_limit_color(12), game._army_limit_color(15)
+        assert yellow != main.BROWN_TEXT_PRIMARY and red != yellow
+        assert red[0] > red[1] and yellow[1] > 150  # red is red, yellow is yellow
+
+    def test_no_forces_draws_without_grid(self, game):
+        _three_plot_territory(game, units=0)
+        game.draw_bottom_ui()
+        assert game.forces_hero_button is None
+
+
+class TestSelectArmy:
+
+    def test_enabled_with_own_garrison(self, game):
+        territory = _three_plot_territory(game)
+        assert game._can_select_army_in(territory)
+
+    def test_greyed_without_own_units(self, game):
+        territory = _three_plot_territory(game, owner=1)
+        assert not game._can_select_army_in(territory)
+
+    def test_greyed_outside_planning(self, game):
+        territory = _three_plot_territory(game)
+        game.game_state.turn_phase = 'execution'
+        assert not game._can_select_army_in(territory)
+
+    def test_click_opens_own_garrison(self, game):
+        territory = _three_plot_territory(game)
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.select_army_button.center) is True
+        assert game.show_army_composition and game.army_composition_territory == territory
+        assert game.army_composition_player == 0
+        assert game.selected_territory_info is None  # Switched to the Army view
+        assert game.clicked_element == ('army', territory)  # The map banner flashes
+
+    def test_greyed_click_is_consumed_without_action(self, game):
+        _three_plot_territory(game, owner=1)
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.select_army_button.center) is True
+        assert not game.show_army_composition
+
+    def test_hover_and_flash_change_pixels(self, game):
+        _three_plot_territory(game)
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.select_army_button
+            return sum(sum(tuple(game.screen.get_at((rect.left + int(rect.w * f), rect.centery)))[:3])
+                       for f in (0.2, 0.24, 0.76, 0.8))
+
+        normal = pixels()
+        game.mouse_pos = game.select_army_button.center
+        hover = pixels()
+        game.clicked_element = ('bottom_button', 'select_army')
+        assert normal < hover < pixels()
+
+
+class TestForcesHeroPortrait:
+
+    def _with_hero(self, game, player):
+        gs = game.game_state
+        territory = _three_plot_territory(game, owner=player)
+        hero = list(gs.HERO_TYPES)[0]
+        gs.buildings.setdefault(territory, {})[0] = 'Keep'
+        gs.heroes.setdefault(player, {})[hero] = {'keep_territory': territory, 'keep_plot': 0,
+                                                  'ability_cooldowns': {}}
+        return hero
+
+    def test_own_hero_opens_hero_view(self, game, monkeypatch):
+        import global_sound
+        monkeypatch.setattr(global_sound, 'play_hero_select_sound', lambda name: None)
+        hero = self._with_hero(game, 0)
+        game.draw_bottom_ui()
+        rect, name = game.forces_hero_button
+        assert name == hero
+        forces = game._territory_view_layout()['rects']['forces']
+        assert forces.contains(rect)
+        assert game.handle_bottom_ui_click(rect.center) is True
+        assert game.selected_hero == hero
+        assert game.selected_territory_info is None
+        assert game.clicked_element == ('bottom_button', ('forces_hero', hero))
+        game.draw_bottom_ui()  # The Hero view draws for it
+
+    def test_enemy_hero_not_clickable(self, game):
+        self._with_hero(game, 1)
+        game.draw_bottom_ui()
+        assert game.forces_hero_button is None

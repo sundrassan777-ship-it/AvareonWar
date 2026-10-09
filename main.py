@@ -633,6 +633,10 @@ class Game:
         self.territory_info_plot_buttons = []
         self.select_all_button = None
         self.deselect_all_button = None
+        # Territory view Forces section: Select Army button rect, and (rect, hero_name)
+        # of the current player's clickable hero portrait (reset every frame)
+        self.select_army_button = None
+        self.forces_hero_button = None
         self.castle_upgrade_button = None
         self.castle_upgrade_cancel_button = None
         self.bonuses_button_rect = None
@@ -8069,6 +8073,219 @@ class Game:
                              padding=7, line_spacing=0,
                              use_transparency=True)
     
+    # Territory view section widths, as fractions of the panel right of the End Turn
+    # pillar: Info / Building Plots / Forces / Lore (260 / 400 / 315 / 315 px at
+    # 1600 wide - the pre-overhaul sizes, now proportional instead of fixed px)
+    TERRITORY_VIEW_WEIGHTS = (0.2016, 0.31, 0.2442, 0.2442)
+    # Unit order in the Forces grid (column-major), then the hero
+    FORCES_UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
+
+    def _territory_view_layout(self):
+        """
+        Pillar x positions and content rects of the Territory view's sections.
+
+        Returns {'pillars': [x, x, x], 'rects': {'info', 'plots', 'forces', 'lore'}}.
+        One source of geometry for drawing and the tests.
+        """
+        kit = self.bottom_panel_kit
+        start = int(WINDOW_WIDTH * self.END_TURN_SECTION_FRAC)
+        avail = WINDOW_WIDTH - start
+        edges = [start]
+        acc = float(start)
+        for weight in self.TERRITORY_VIEW_WEIGHTS[:-1]:
+            acc += avail * weight
+            edges.append(int(round(acc)))
+        # The last section ends at the screen edge (no pillar there)
+        edges.append(WINDOW_WIDTH + self.separator_width // 2)
+        names = ('info', 'plots', 'forces', 'lore')
+        rects = {name: kit.section_rect(edges[i], edges[i + 1]) for i, name in enumerate(names)}
+        return {'pillars': edges[1:-1], 'rects': rects}
+
+    def _army_limit_color(self, count):
+        """Colour of an "Army Limit" / "Total" count: red at the limit, yellow from 3
+        below it (12/15), cream otherwise. Shared by the Territory and Army views."""
+        max_armies = self.game_state.MAX_ARMIES_PER_TERRITORY
+        if count >= max_armies:
+            return (232, 82, 70)
+        if count >= max_armies - 3:
+            return (242, 202, 82)
+        return BROWN_TEXT_PRIMARY
+
+    def _can_select_army_in(self, territory):
+        """
+        True when the Forces section's Select Army button works for `territory`:
+        planning phase, the local player's turn, and the current player has a
+        garrison with units there (own or allied territory). Same garrison the map
+        banner opens (_select_army_garrison); greyed out otherwise (owner choice).
+        """
+        gs = self.game_state
+        if gs.phase != 'playing' or gs.turn_phase != 'planning':
+            return False
+        if not self.is_local_player_active():
+            return False
+        garrison = gs.territory_garrisons.get(territory, {}).get(gs.current_player)
+        return bool(garrison and garrison.get('units'))
+
+    def _forces_entries(self, territory):
+        """
+        Cells of the Forces grid, in display order.
+
+        Units of every garrison in the territory, one cell per type with a count
+        ({'kind': 'unit', 'name', 'count'}), then any hero residing in a Keep there
+        ({'kind': 'hero', 'name', 'player'}).
+        """
+        gs = self.game_state
+        entries = []
+        if gs.get_territory_total_armies(territory) > 0:
+            composition = gs.get_unit_composition(territory)
+            order = list(self.FORCES_UNIT_ORDER) + sorted(t for t in composition if t not in self.FORCES_UNIT_ORDER)
+            for unit_type in order:
+                if composition.get(unit_type, 0) > 0:
+                    entries.append({'kind': 'unit', 'name': unit_type, 'count': composition[unit_type]})
+        for player, heroes in gs.heroes.items():
+            for hero_name, hero_data in heroes.items():
+                if hero_data.get('keep_territory') == territory:
+                    entries.append({'kind': 'hero', 'name': hero_name, 'player': player})
+        return entries
+
+    def _draw_forces_section(self, rect, territory, armies):
+        """
+        Forces section of the Territory view:
+
+            Forces
+            ---<>---
+            [ Select Army ]      steel CampaignBTN, greyed when unavailable
+            [icon] x 2   [icon] x 1
+            [icon] x 2   [hero]          2 columns x 3 rows, column-major
+            ---<>---
+            Army Limit: 7/15     red at the limit, yellow from 12
+        """
+        kit = self.bottom_panel_kit
+        y = kit.header(rect, "Forces")
+
+        # Select Army: opens the current player's garrison here (the same path as
+        # clicking its banner on the map). Rect stored even when greyed; the click
+        # handler re-checks _can_select_army_in().
+        button_w = min(rect.w, kit.px(170))
+        button = pygame.Rect(0, y, button_w, kit.button_height(button_w))
+        button.centerx = rect.centerx
+        kit.ornate_button(button, "Select Army", TINT_SELECT_ARMY,
+                          flash_key=('bottom_button', 'select_army'),
+                          locked=not self._can_select_army_in(territory), role='body_bold')
+        self.select_army_button = button
+
+        # Bottom block (rule + Army Limit) anchored to the section bottom; the grid
+        # takes whatever is between
+        limit_h = kit.line_height('body_bold')
+        limit_y = rect.bottom - limit_h
+        rule_y = limit_y - kit.rule_gap() - kit.rule_height()
+        grid_top = button.bottom + kit.px(4)
+        grid_area = pygame.Rect(rect.left, grid_top, rect.w, max(1, rule_y - kit.rule_gap() - grid_top))
+        self._draw_forces_grid(grid_area, self._forces_entries(territory))
+
+        kit.rule(rect, rule_y)
+        kit.centered_text(f"Army Limit: {armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}",
+                          'body_bold', self._army_limit_color(armies), rect.centerx, limit_y)
+
+    def _draw_forces_grid(self, area, entries):
+        """
+        The Forces icon grid inside `area`: up to 2 columns x 3 rows, filled
+        column-major, centred. Units show "icon x N"; a hero shows its portrait
+        alone. The current player's own hero is clickable (opens its Hero view) and
+        its rect is stored in self.forces_hero_button as (rect, hero_name).
+        """
+        kit = self.bottom_panel_kit
+        gs = self.game_state
+        self.forces_hero_button = None
+        if not entries:
+            kit.centered_text("No forces", 'body', (170, 165, 155), area.centerx,
+                              area.top + (area.h - kit.line_height('body')) // 2)
+            return
+
+        rows = 3
+        entries = entries[:rows * 2]  # 5 unit types + a hero always fit
+        row_gap = kit.px(3)
+        icon = max(12, min(kit.px(34), (area.h - row_gap * (rows - 1)) // rows))
+        text_gap = kit.px(5)
+        col_gap = kit.px(16)
+        count_w = kit.font('body_bold').size("× 15")[0]
+        cell_w = icon + text_gap + count_w
+        n_cols = (len(entries) + rows - 1) // rows
+        n_rows = min(rows, len(entries))
+        grid_w = n_cols * cell_w + (n_cols - 1) * col_gap
+        grid_h = n_rows * icon + (n_rows - 1) * row_gap
+        x0 = area.centerx - grid_w // 2
+        y0 = area.top + max(0, (area.h - grid_h) // 2)
+
+        for i, entry in enumerate(entries):
+            col, row = divmod(i, rows)
+            icon_rect = pygame.Rect(x0 + col * (cell_w + col_gap), y0 + row * (icon + row_gap), icon, icon)
+
+            if entry['kind'] == 'unit':
+                unit_type = entry['name']
+                unit_icon = self.unit_icons.get(unit_type)
+                if unit_icon:
+                    self.screen.blit(self._get_cached_scaled_surface(
+                        unit_icon, f'unit_{unit_type}', icon - 2, icon - 2), (icon_rect.x + 1, icon_rect.y + 1))
+                    if self.icon_border:
+                        self.screen.blit(self._get_cached_scaled_surface(
+                            self.icon_border, 'icon_border', icon, icon), icon_rect.topleft)
+                else:
+                    # Fallback: letter tile
+                    pygame.draw.rect(self.screen, (90, 70, 50), icon_rect)
+                    pygame.draw.rect(self.screen, (212, 170, 80), icon_rect, 1)
+                    letter = self.game_state.UNIT_TYPES.get(unit_type, {}).get('letter', unit_type[0])
+                    kit.centered_text(letter, 'body_bold', WHITE, icon_rect.centerx,
+                                      icon_rect.centery - kit.line_height('body_bold') // 2)
+                count_text = kit.text(f"× {entry['count']}", 'body_bold', BROWN_TEXT_PRIMARY)
+                kit.blit_text(count_text, (icon_rect.right + text_gap, icon_rect.centery - count_text.get_height() // 2),
+                              kit.text(f"× {entry['count']}", 'body_bold', (12, 8, 4)))
+            else:
+                # Hero portrait, no count. Only the current player's own hero is
+                # clickable (draw_hero_ui shows the current player's heroes only).
+                hero_name = entry['name']
+                clickable = entry['player'] == gs.current_player
+                flash_key = ('bottom_button', ('forces_hero', hero_name))
+                is_clicking = clickable and self.clicked_element == flash_key
+                is_hovering = clickable and icon_rect.collidepoint(self.mouse_pos)
+                portrait = self.hero_images.get(hero_name)
+                if portrait:
+                    base = self._get_cached_scaled_surface(portrait, f'hero_{hero_name}', icon, icon)
+                    self.screen.blit(self._apply_icon_overlay(base, is_clicking, is_hovering), icon_rect.topleft)
+                else:
+                    pygame.draw.rect(self.screen, (150, 100, 200), icon_rect)
+                    letter = gs.HERO_TYPES.get(hero_name, {}).get('letter', hero_name[0])
+                    kit.centered_text(letter, 'body_bold', WHITE, icon_rect.centerx,
+                                      icon_rect.centery - kit.line_height('body_bold') // 2)
+                frame = (255, 232, 160) if (is_hovering or is_clicking) else (212, 170, 80)
+                pygame.draw.rect(self.screen, frame, icon_rect, 2 if clickable else 1)
+                if clickable:
+                    self.forces_hero_button = (icon_rect.copy(), hero_name)
+
+    def _select_hero(self, hero_name):
+        """
+        Open the Hero view for one of the current player's heroes.
+
+        Shared by the sidebar Heroes tab and the Territory view's Forces grid so both
+        behave the same: select it, play its voice line, clear every other
+        bottom-panel selection. Callers do their own click flash (and the sidebar its
+        camera pan).
+        """
+        self.selected_hero = hero_name
+
+        # Play hero selection voice line
+        from global_sound import play_hero_select_sound
+        play_hero_select_sound(hero_name)
+
+        # Deselect other UI elements
+        self.selected_plot = None
+        self.selected_barracks = None
+        self.selected_keep = None
+        self.selected_territory_info = None
+        self.game_state.selected_army = None  # Clear army selection
+        self.show_army_composition = False  # Close army composition UI
+        self.selected_army_units = []  # Clear unit selection
+
     def draw_territory_info_panel(self):
         """Draw territory information and building plots in bottom UI"""
         territory = self.selected_territory_info
@@ -8104,100 +8321,67 @@ class Game:
         # Get actual plot count for this territory
         plot_count = len(self.scaled_plots.get(territory, []))
 
-        # Panel starting position (left side) - dynamic (21.875% of width)
-        panel_x = int(WINDOW_WIDTH * 0.21875)  # Was 350 at 1600px width
-        panel_y = BOTTOM_UI_Y + 30
+        # Section geometry (pillars + content rects) - shared with the tests
+        kit = self.bottom_panel_kit
+        layout = self._territory_view_layout()
+        rects = layout['rects']
+        for pillar_x in layout['pillars']:
+            self.draw_separator(pillar_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
 
-        # Draw title (Phase 2: Use SemiBold for territory name header)
-        # Smart wrapping for long territory names (e.g., "South Affrancia")
-        # Use display name for campaign mission territory renaming
+        # === SECTION 1: TERRITORY INFO ===
+        # Centred name (display name for campaign renames) + rule, then one left-aligned
+        # line per fact. Long names / owners / bonuses wrap to two lines.
+        info = rects['info']
         display_territory = map_data.get_display_name(territory)
-        max_title_width = 200  # Maximum width for territory name before wrapping
-        title_lines = self.helpers.wrap_text_smart(display_territory, self.large_font_bold, max_title_width)
+        y = kit.header(info, display_territory, color=BROWN_TEXT_HEADING, role='title', max_lines=2)
+        line_h = kit.line_height('body')
 
-        for line in title_lines:
-            title_text = self._get_cached_text(line, self.large_font_bold, BROWN_TEXT_HEADING)
-            self.screen.blit(title_text, (panel_x, panel_y))
-            panel_y += 28  # Line height for wrapped titles
+        def info_line(text, color, role='body'):
+            """One fact, wrapped to 2 lines; stops at the section bottom (bounds check)."""
+            nonlocal y
+            for line in kit.wrap(text, role, info.w, max_lines=2):
+                if y + line_h > info.bottom:
+                    return
+                kit.left_text(line, role, color, info.left, y)
+                y += line_h
+            y += kit.px(2)
 
-        panel_y += 7  # Extra spacing after title
-
-        # Draw owner (with smart wrapping for long AI names like "Empire of X")
         if owner == -1:
-            owner_text = self._get_cached_text("Owner: Neutral", self.font, BROWN_TEXT_PRIMARY)
-            self.screen.blit(owner_text, (panel_x, panel_y))
-            panel_y += 28
+            info_line("Owner: Neutral", BROWN_TEXT_PRIMARY, role='body_bold')
         else:
-            owner_color = self.game_state.get_player_color(owner)
-            owner_name = self.game_state.get_player_name(owner)
-            full_owner_text = f"Owner: {owner_name}"
+            info_line(f"Owner: {self.game_state.get_player_name(owner)}",
+                      self.game_state.get_player_color(owner), role='body_bold')
+        info_line(f"Income: +{total_income}G/turn", BROWN_GOLD)
 
-            # Smart wrapping for long owner names
-            max_owner_width = 200  # Maximum width before wrapping
-            owner_lines = self.helpers.wrap_text_smart(full_owner_text, self.font, max_owner_width)
-
-            for line in owner_lines:
-                owner_text = self._get_cached_text(line, self.font, owner_color)
-                self.screen.blit(owner_text, (panel_x, panel_y))
-                panel_y += 22  # Line height for wrapped owner
-
-            panel_y += 6  # Extra spacing after owner
-
-        # Draw income
-        income_text = self._get_cached_text(f"Income: +{total_income}G/turn", self.small_font, BROWN_GOLD)
-        self.screen.blit(income_text, (panel_x, panel_y))
-        panel_y += 22  # Move down for next line
-
-        # Draw territorial bonus (if territory has one)
+        # Territorial bonus (if territory has one). Format: "+3% Income" or "-5% Unit Cost"
         bonus_type = map_data.get_territory_bonus(territory)
         if bonus_type and bonus_type in self.game_state.BONUS_TYPES:
             bonus_info = self.game_state.BONUS_TYPES[bonus_type]
-            # Format: "+3% Income" or "-5% Unit Cost"
             formatted_bonus = f"{bonus_info['format'].format(bonus_info['value'])} {bonus_info['display']}"
+            info_line(f"Bonus: {formatted_bonus}", WHITE)
 
-            # Wrap text if too long (max 200px width before wrapping)
-            max_bonus_width = 200
-            bonus_lines = self.helpers.wrap_text_smart(f"Bonus: {formatted_bonus}", self.small_font, max_bonus_width)
-
-            for line in bonus_lines:
-                bonus_text = self._get_cached_text(line, self.small_font, WHITE)
-                self.screen.blit(bonus_text, (panel_x, panel_y))
-                panel_y += 20  # Line height for wrapped bonus
-
-        # Draw fortress defense indicator (if territory is a fortress)
+        # Fortress defense indicator (brighter red than before: (150, 50, 50) was
+        # unreadable on the wood)
         if map_data.is_fortress_territory(territory):
-            fortress_text = self._get_cached_text("Fortress (+2 Defense)", self.small_font, (150, 50, 50))
-            self.screen.blit(fortress_text, (panel_x, panel_y))
-            panel_y += 20
+            info_line("Fortress (+2 Defense)", (225, 95, 80))
 
-        # Draw first vertical dividing line (between basic info and building plots)
-        divider_x = panel_x + 220
-        self.draw_separator(divider_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-        
-        # Draw building plots on the right side of divider
+        # === SECTION 2: BUILDING PLOTS ===
+        # Plots are sized for 3 so that 3 plots fill the section (owner request); fewer
+        # plots keep that size and are centred
+        plots = rects['plots']
+        y = kit.header(plots, "Building Plots")
+        self.territory_info_plot_buttons = []
         if owner != -1 and plot_count > 0:  # Only show plots for owned territories with plots
-            plots_x = divider_x + 20
-            plots_y = BOTTOM_UI_Y + 30
-            
-            # PERFORMANCE: Use cached static text
-            plots_title = self._get_cached_text("Building Plots:", self.font_bold, BROWN_TEXT_HEADING)
-            self.screen.blit(plots_title, (plots_x, plots_y))
-            plots_y += 30
-            
-            # Draw plots in a grid (as circles)
-            plot_size = 67  # 33% smaller than 100 (was 100, now ~67)
-            plot_spacing = 15  # Adjusted spacing
-            plots_per_row = 5  # Adjusted for new size
-
-            # Clear plot button storage
-            self.territory_info_plot_buttons = []
+            plot_spacing = kit.px(10)
+            slots = max(3, plot_count)
+            avail_h = plots.bottom - y
+            plot_size = max(24, min(avail_h, (plots.w - plot_spacing * (slots - 1)) // slots))
+            row_w = plot_count * plot_size + (plot_count - 1) * plot_spacing
+            plots_x = plots.centerx - row_w // 2
+            plot_y = y + max(0, (avail_h - plot_size) // 2)
 
             for plot_index in range(plot_count):  # Use actual plot count
-                row = plot_index // plots_per_row
-                col = plot_index % plots_per_row
-
-                plot_x = plots_x + col * (plot_size + plot_spacing)
-                plot_y = plots_y + row * (plot_size + plot_spacing)
+                plot_x = plots_x + plot_index * (plot_size + plot_spacing)
 
                 # Calculate circle center and radius
                 plot_radius = plot_size // 2
@@ -8433,131 +8617,64 @@ class Game:
                 
                 # Store plot button for click detection
                 self.territory_info_plot_buttons.append((plot_rect, territory, plot_index))
-        
-        # Draw second vertical dividing line (between building plots and army info)
-        divider_x2 = divider_x + 400  # Position after building plots
-        self.draw_separator(divider_x2, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-        
-        # Draw army info section on the right
-        army_info_x = divider_x2 + 20
-        army_info_y = BOTTOM_UI_Y + 30
-        
-        # Section title (Phase 2: Use SemiBold for section header)
-        # PERFORMANCE: Use cached static text
-        army_title = self._get_cached_text("Forces", self.font_bold, BROWN_TEXT_HEADING)
-        self.screen.blit(army_title, (army_info_x, army_info_y))
-        army_info_y += 32  # Increased spacing by 2px (was 30)
-
-        # Total armies - 25% larger text, bold font
-        armies_text = self._get_cached_text(f"Total: {armies}", self.font, BROWN_TEXT_PRIMARY)
-        self.screen.blit(armies_text, (army_info_x, army_info_y))
-        army_info_y += 24  # Increased spacing by 2px (was 22)
-
-        # Unit composition breakdown (if armies exist)
-        if armies > 0:
-            composition = self.game_state.get_unit_composition(territory)
-            if composition:
-                for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']:
-                    if unit_type in composition and composition[unit_type] > 0:
-                        count = composition[unit_type]
-                        # Use Battalion terminology
-                        battalion_name = f"{unit_type} Battalion" if count == 1 else f"{unit_type} Battalions"
-                        comp_text = self._get_cached_text(f"  {battalion_name}: {count}", self.small_font, BROWN_TEXT_SECONDARY)
-                        self.screen.blit(comp_text, (army_info_x, army_info_y))
-                        army_info_y += 20  # Increased spacing by 2px (was 18)
-
-        army_info_y += 7  # Increased spacing by 2px (was 5)
-
-        # Draw army limit indicator - same size and color as Total
-        if armies >= self.game_state.MAX_ARMIES_PER_TERRITORY:
-            limit_text = self._get_cached_text(f"Army Limit: {armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", self.font, (180, 0, 0))
         else:
-            limit_text = self._get_cached_text(f"Army Limit: {armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", self.font, BROWN_TEXT_PRIMARY)
-        self.screen.blit(limit_text, (army_info_x, army_info_y))
+            note = "Unclaimed territory" if owner == -1 else "No building plots"
+            kit.centered_text(note, 'body', (170, 165, 155), plots.centerx,
+                              y + (plots.bottom - y - kit.line_height('body')) // 2)
 
-        # --- Territory Preview Image Section ---
-        # Drawn to the right of the Forces section with a separator
-        divider_x3 = divider_x2 + 315  # Positioned to use available space right of Forces
-        available_preview_width = WINDOW_WIDTH - divider_x3 - 20  # 20px right margin
+        # === SECTION 3: FORCES ===
+        self._draw_forces_section(rects['forces'], territory, armies)
 
-        # Only draw if enough space (graceful degradation at low resolutions)
-        if available_preview_width >= 150:
-            self.draw_separator(divider_x3, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-
-            preview_x = divider_x3 + 20
-
-            # Image height from panel, width fills available space (capped by 16:9 ratio)
-            border_padding = 8
-            preview_img_height = int(BOTTOM_UI_HEIGHT * 0.70)
-            # Use available width, but don't exceed 16:9 ratio
-            max_width_from_ratio = int(preview_img_height * 16 / 9)
-            max_width_from_space = available_preview_width - 20 - border_padding * 2
-            preview_img_width = min(max_width_from_ratio, max_width_from_space)
-            border_width = preview_img_width + border_padding * 2
-            border_height = preview_img_height + border_padding * 2
-
-            # Position: left-aligned in available space
-            center_x = preview_x
-            # Vertically center the border + hint text in the panel, shifted down 10px to avoid overlap
-            total_content_height = border_height + 18  # border + gap + hint text
-            preview_y = BOTTOM_UI_Y + (BOTTOM_UI_HEIGHT - total_content_height) // 2 + 10
-
-            img_x = center_x + border_padding
-            img_y = preview_y + border_padding
-
+        # === SECTION 4: LORE (or the territory preview image) ===
+        lore = rects['lore']
+        self.territory_preview_rect = None
+        if lore.w >= kit.px(120):  # Graceful degradation on very narrow screens
             if SHOW_TERRITORY_PREVIEW_IMAGE:
+                # Framed preview image (16:9 at most) with a hint line under it
+                border_padding = 8
+                hint_h = kit.line_height('small')
+                border_height = max(20, lore.h - hint_h - 4)
+                preview_img_height = border_height - border_padding * 2
+                preview_img_width = max(16, min(int(preview_img_height * 16 / 9), lore.w - border_padding * 2))
+                border_width = preview_img_width + border_padding * 2
+                frame_x = lore.centerx - border_width // 2
+                frame_y = lore.top
+                img_x = frame_x + border_padding
+                img_y = frame_y + border_padding
+
                 # Draw border frame (cached by size to avoid per-frame scaling)
                 if self._preview_border_original:
                     if self._scaled_preview_border_size != (border_width, border_height):
                         self._scaled_preview_border = pygame.transform.smoothscale(
                             self._preview_border_original, (border_width, border_height))
                         self._scaled_preview_border_size = (border_width, border_height)
-                    self.screen.blit(self._scaled_preview_border, (center_x, preview_y))
+                    self.screen.blit(self._scaled_preview_border, (frame_x, frame_y))
 
-                # Draw territory preview image or black fallback inside the border
+                # Territory preview image or black fallback inside the border
                 preview_surface = self._get_territory_preview(territory, preview_img_width, preview_img_height)
                 if preview_surface:
                     self.screen.blit(preview_surface, (img_x, img_y))
                 else:
-                    # No preview image available — show black background
                     pygame.draw.rect(self.screen, (0, 0, 0),
                                      (img_x, img_y, preview_img_width, preview_img_height))
 
-                # Store rect for hover detection
+                # Store rect for hover detection (lore tooltip)
                 self.territory_preview_rect = pygame.Rect(img_x, img_y, preview_img_width, preview_img_height)
-
-                # Draw low-opacity hint text below the framed image
-                hint_y = preview_y + border_height + 4
-                hint_text = self._get_cached_text(
-                    "Hover over the picture to learn more.",
-                    self.small_font, (150, 140, 120))
-                # Center hint text under the border
-                hint_x = center_x + (border_width - hint_text.get_width()) // 2
-                self.screen.blit(hint_text, (hint_x, hint_y))
+                kit.centered_text("Hover over the picture to learn more.", 'small', (190, 180, 160),
+                                  lore.centerx, frame_y + border_height + 4)
             else:
-                # Preview image hidden — render italic lore text in the same region instead.
-                self.territory_preview_rect = None
-                bronze = (205, 170, 110)  # matches tooltip lore color
-                lore_text = map_data.get_territory_lore(territory)
-                if not lore_text:
-                    lore_text = "No lore available for this territory."
-                lore_font = self.lore_font_italic
-                lore_lines = self.helpers.wrap_text_smart(lore_text, lore_font, preview_img_width)
-                # Extra line spacing (1.35x) so the text breathes within the preview region
-                line_h = int(lore_font.get_linesize() * 1.35)
-                total_h = line_h * len(lore_lines)
-                # Vertically center within the would-be image region
-                ly = img_y + max(0, (preview_img_height - total_h) // 2)
-                max_y = img_y + preview_img_height
+                # Italic lore text, centred vertically. Brighter than the old brass
+                # (205, 170, 110) with a drop shadow: owner found it hard to read on wood.
+                lore_text = map_data.get_territory_lore(territory) or "No lore available for this territory."
+                line_h = int(kit.font('lore').get_linesize() * 1.15)
+                max_lines = max(1, lore.h // max(1, line_h))
+                lore_lines = kit.wrap(lore_text, 'lore', lore.w, max_lines=max_lines)
+                ly = lore.top + max(0, (lore.h - line_h * len(lore_lines)) // 2)
                 for ln in lore_lines:
-                    if ly >= max_y:
-                        break  # bounds-check — never render past container
-                    surf = self._get_cached_text(ln, lore_font, bronze)
-                    self.screen.blit(surf, (img_x, ly))
+                    if ly + line_h > lore.bottom + line_h // 3:
+                        break  # bounds-check - never render past the container
+                    kit.left_text(ln, 'lore', (238, 216, 172), lore.left, ly)
                     ly += line_h
-        else:
-            # Not enough space for preview section
-            self.territory_preview_rect = None
 
         # Track button hover for plot tooltips (will be drawn with delay in main loop)
         if owner == self.game_state.current_player and self.territory_info_plot_buttons:
@@ -9461,6 +9578,9 @@ class Game:
         self.cancel_button = None
         self.demolish_button = None
         self.territory_info_plot_buttons = []
+        # Territory view Forces section controls (drawn only in that view)
+        self.select_army_button = None
+        self.forces_hero_button = None
         # Hero ability slots were only reset inside draw_hero_ui, so after the Hero UI
         # closed their rects stayed clickable over whatever the bottom panel showed next
         self.hero_ability_buttons = {}
@@ -14197,6 +14317,25 @@ class Game:
                         self.selected_army_units = [unit_id]
                     return True
         
+        # Territory view Forces section: Select Army opens the current player's garrison
+        # here (same path as clicking its banner); greyed = consumed with no action
+        if self.selected_territory_info and self.select_army_button and self.select_army_button.collidepoint(pos):
+            territory = self.selected_territory_info
+            if self._can_select_army_in(territory):
+                # No button flash: the view switches at once, and _select_army_garrison()
+                # flashes the army's banner on the map instead
+                self._select_army_garrison((territory, self.game_state.current_player))
+            return True
+
+        # Territory view Forces section: own hero portrait opens its Hero view, exactly
+        # like selecting it in the sidebar Heroes tab
+        if self.selected_territory_info and self.forces_hero_button:
+            hero_rect, hero_name = self.forces_hero_button
+            if hero_rect.collidepoint(pos):
+                self.trigger_click_flash('bottom_button', ('forces_hero', hero_name))
+                self._select_hero(hero_name)
+                return True
+
         # Territory info plot buttons (only if no Keep or Barracks is already selected)
         if self.selected_territory_info and not self.selected_keep and not self.selected_barracks and self.territory_info_plot_buttons:
             for plot_rect, territory, plot_index in self.territory_info_plot_buttons:
@@ -15497,7 +15636,9 @@ class Game:
             if hero_rect.collidepoint(pos):
                 # Hero clicked - select it (click flash on the card)
                 self.trigger_click_flash('sidebar_hero_card', hero_name)
-                self.selected_hero = hero_name
+                # Select it (voice line + clear other selections) - shared with the
+                # bottom panel's Forces portrait
+                self._select_hero(hero_name)
 
                 # The portrait also pans the map to the hero's Keep
                 portrait = (getattr(self, 'hero_portrait_rects', None) or {}).get(hero_name)
@@ -15505,19 +15646,6 @@ class Game:
                     hero_data = self.game_state.heroes.get(self.get_local_player(), {}).get(hero_name, {})
                     if hero_data.get('keep_territory'):
                         self.start_sidebar_camera_pan(hero_data['keep_territory'])
-
-                # Play hero selection voice line
-                from global_sound import play_hero_select_sound
-                play_hero_select_sound(hero_name)
-
-                # Deselect other UI elements
-                self.selected_plot = None
-                self.selected_barracks = None
-                self.selected_keep = None
-                self.selected_territory_info = None
-                self.game_state.selected_army = None  # Clear army selection
-                self.show_army_composition = False  # Close army composition UI
-                self.selected_army_units = []  # Clear unit selection
 
                 return True
 
