@@ -639,6 +639,7 @@ class Game:
         self.select_army_button = None
         self.forces_hero_button = None
         self.hero_view_portrait_button = None  # Hero view: (portrait rect, hero_name)
+        self.keep_hero_button = None  # Keep view: (hero card rect, hero_name)
         self.castle_upgrade_button = None
         self.castle_upgrade_cancel_button = None
         self.bonuses_button_rect = None
@@ -9757,6 +9758,7 @@ class Game:
         self.forces_cells = []
         self.bottom_panel_tooltip = None  # Re-set by the hovered Forces icon
         self.hero_view_portrait_button = None  # Hero view portrait (pans to its Keep)
+        self.keep_hero_button = None  # Keep view: the Keep's hero card (opens the Hero view)
         # Hero ability slots were only reset inside draw_hero_ui, so after the Hero UI
         # closed their rects stayed clickable over whatever the bottom panel showed next
         self.hero_ability_buttons = {}
@@ -10389,6 +10391,59 @@ class Game:
         bar.centerx = rect.centerx
         return icon, bar
 
+    def _draw_keep_hero_card(self, area, hero_name):
+        """
+        Keep view: the hero residing at this Keep - portrait, then the name and title
+        (1-2 lines) to its right, the pair centred in `area`. The whole card opens the
+        Hero view like the Territory view's Forces portrait (_select_hero); hover and
+        click flash brighten the portrait and its frame. Stores self.keep_hero_button
+        = (card rect, hero_name) for handle_bottom_ui_click().
+        """
+        kit = self.bottom_panel_kit
+        gap = kit.px(12)
+        size = max(24, min(kit.px(90), area.h, int(area.w * 0.4)))
+        text_w = max(40, area.w - size - gap)
+        name_role = 'heading' if kit.font('heading').size(hero_name)[0] <= text_w else 'body_bold'
+        name = kit.fit(hero_name, name_role, text_w)
+        title = ' '.join(self.game_state.HERO_TYPES.get(hero_name, {}).get('description', []))
+        title_lines = kit.wrap(title, 'italic', text_w, max_lines=2) if title else []
+        block_w = max([kit.font(name_role).size(name)[0]] +
+                      [kit.font('italic').size(line)[0] for line in title_lines])
+        x = area.left + max(0, (area.w - size - gap - block_w) // 2)
+        # Spare height: a bit less above than below, like the portrait grid
+        top = area.top + max(0, int((area.h - size) * self.BARRACKS_UNIT_ROW_TOP_FRAC))
+        portrait_rect = pygame.Rect(x, top, size, size)
+        card = portrait_rect.union(pygame.Rect(portrait_rect.right, top, gap + block_w, size))
+
+        flash_key = ('bottom_button', ('keep_hero', hero_name))
+        is_clicking = self.clicked_element == flash_key
+        is_hovering = card.collidepoint(self.mouse_pos)
+        image = self.hero_images.get(hero_name)
+        if image:
+            base = self._get_cached_scaled_surface(image, f'hero_{hero_name}', size, size)
+            self.screen.blit(self._apply_icon_overlay(base, is_clicking, is_hovering), portrait_rect.topleft)
+        else:
+            # Fallback: letter tile
+            pygame.draw.rect(self.screen, (150, 100, 200), portrait_rect, border_radius=6)
+            letter = self.game_state.HERO_TYPES.get(hero_name, {}).get('letter', hero_name[0])
+            kit.centered_text(letter, 'title', WHITE, portrait_rect.centerx,
+                              portrait_rect.centery - kit.line_height('title') // 2)
+        frame = (255, 232, 160) if (is_hovering or is_clicking) else (212, 170, 80)
+        pygame.draw.rect(self.screen, frame, portrait_rect, max(2, kit.px(2)), border_radius=4)
+
+        # Name (gold) and title (bronze italic, as in the Hero view), centred on the portrait
+        name_h = kit.line_height(name_role)
+        title_h = kit.line_height('italic')
+        text_h = name_h + kit.px(3) + len(title_lines) * title_h
+        tx = portrait_rect.right + gap
+        ty = portrait_rect.centery - text_h // 2
+        kit.left_text(name, name_role, BOTTOM_GOLD_TEXT, tx, ty)
+        ty += name_h + kit.px(3)
+        for line in title_lines:
+            kit.left_text(line, 'italic', (232, 170, 100), tx, ty)
+            ty += title_h
+        self.keep_hero_button = (card, hero_name)
+
     def _draw_hero_training_progress(self, rect, hero_type, turns_remaining):
         """Keep view Training Status: the hero in a ResourceSlot row with its X, then a
         progress bar and "N turns remaining" - the sidebar Heroes tab's training card
@@ -10448,9 +10503,11 @@ class Game:
         is_training = (territory in gs.hero_training_queue and
                        keep_plot_index in gs.hero_training_queue[territory])
 
-        # Check if Keep already has a trained hero
-        keep_has_hero = any(hero_data['keep_territory'] == territory and hero_data['keep_plot'] == keep_plot_index
-                            for hero_data in gs.heroes.get(current_player, {}).values())
+        # The trained hero residing at this Keep, if any (one per Keep / Castle)
+        keep_hero = next((name for name, hero_data in gs.heroes.get(current_player, {}).items()
+                          if hero_data['keep_territory'] == territory
+                          and hero_data['keep_plot'] == keep_plot_index), None)
+        keep_has_hero = keep_hero is not None
 
         # Hero limit (3, or 4 with Heroic Fortitude - player_hero_limit holds the current value)
         current_hero_count = len(gs.hero_ownership[current_player])
@@ -10480,6 +10537,13 @@ class Game:
         y = kit.header(heroes_rect, display_name, spacing=header_spacing)
         # Filter out campaign-only heroes (trainable: False) from the training menu
         hero_types_list = [h for h in gs.HERO_TYPES.keys() if gs.HERO_TYPES[h].get('trainable', True)]
+        if keep_hero:
+            # This Keep's hero (owner request 2026-10-09): portrait + name + title,
+            # clickable like the Territory view's Forces portrait. It replaces the
+            # grid - a Keep holds one hero, so every portrait there would be red.
+            self._draw_keep_hero_card(pygame.Rect(heroes_rect.left, y, heroes_rect.w, heroes_rect.bottom - y),
+                                      keep_hero)
+            hero_types_list = []
         columns = self.KEEP_HERO_COLUMNS
         rows = max(1, -(-len(hero_types_list) // columns))
         spacing = kit.px(8)
@@ -10579,16 +10643,20 @@ class Game:
                 kit.centered_text(line2, 'small', BLACK, icon_rect.centerx, icon_rect.centery, shadow=False)
 
         if is_castle:
-            # Upgrade done (owner choice): the icon in full colour, not clickable, with a
-            # "Castle" caption in the bar's slot. No button rect, no tooltip.
+            # Upgrade done (owner choice): the icon in full colour, not clickable, with an
+            # "Upgrade Finished" caption in the bar's slot (not "Castle": the headline
+            # beside it already says that). No button rect, no tooltip.
             if self.castle_upgrade_icon:
                 self.screen.blit(self._get_cached_scaled_surface(
                     self.castle_upgrade_icon, 'castle_upgrade', icon_w, icon_w), icon_rect.topleft)
                 draw_border()
             else:
                 draw_fallback((200, 200, 100), "CASTLE", "")
-            kit.centered_text("Castle", 'body_bold', BOTTOM_GOLD_TEXT, bar_rect.centerx,
-                              bar_rect.centery - kit.line_height('body_bold') // 2)
+            # The section is narrow (107 px at 720p): small bold if body bold won't fit
+            caption = "Upgrade Finished"
+            role = 'body_bold' if kit.font('body_bold').size(caption)[0] <= castle_rect.w else 'small_bold'
+            kit.centered_text(kit.fit(caption, role, castle_rect.w), role, BOTTOM_GOLD_TEXT,
+                              bar_rect.centerx, bar_rect.centery - kit.line_height(role) // 2)
 
         elif is_upgrading:
             # Upgrading: yellow-tinted icon + "N turns" bar with a cancel X
@@ -14136,6 +14204,15 @@ class Game:
                         'keep_plot': keep_plot_index,
                         'player_index': self.game_state.current_player
                     })
+                return True
+
+        # Keep view: the Keep's own hero opens its Hero view, like the Territory view's
+        # Forces portrait and the sidebar Heroes tab
+        if self.selected_keep and self.keep_hero_button:
+            card_rect, hero_name = self.keep_hero_button
+            if card_rect.collidepoint(pos):
+                self.trigger_click_flash('bottom_button', ('keep_hero', hero_name))
+                self._select_hero(hero_name)
                 return True
 
         # Hero training buttons (only when Keep is actually selected)

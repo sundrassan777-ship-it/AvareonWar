@@ -1301,8 +1301,9 @@ class TestCastleStates:
         assert castle.contains(g.castle_upgrade_cancel_button)
 
     def test_castle_done_is_not_clickable(self, game, monkeypatch):
-        """Owner choice: the icon stays, in full colour, captioned "Castle"; no
-        button, no cancel, no tooltip."""
+        """Owner choice: the icon stays, in full colour, captioned "Upgrade
+        Finished" (not "Castle" - the headline says that); no button, no cancel,
+        no tooltip."""
         texts = []
         kit = game.bottom_panel_kit
         real = kit.centered_text
@@ -1311,7 +1312,7 @@ class TestCastleStates:
         game.game_state.castle_upgrades[territory] = {0: True}
         game.draw_bottom_ui()
         assert game.castle_upgrade_button is None and game.castle_upgrade_cancel_button is None
-        assert 'Castle' in texts
+        assert 'Upgrade Finished' in texts
         game.mouse_pos = game.castle_icon_rect.center
         game.draw_bottom_ui()
         assert game.castle_button_is_hovering is False
@@ -1447,3 +1448,69 @@ class TestKeepHeroInfo:
         game.draw_bottom_ui()
         assert game.handle_bottom_ui_click(game.hero_train_buttons[hero].center) is True
         assert game.game_state.hero_training_queue[territory][0][0] == hero
+
+
+class TestKeepHeroCard:
+    """Owner request 2026-10-09: a Keep whose hero is trained shows that hero
+    (portrait, name, title) under the headline instead of the training grid, and
+    clicking it opens the Hero view like the Territory view's Forces portrait."""
+
+    HERO = 'Neil Hévilneu'  # Longest title: two lines
+
+    def _give_keep_a_hero(self, game):
+        territory = _open_keep(game)
+        gs = game.game_state
+        gs.heroes.setdefault(0, {})[self.HERO] = {'keep_territory': territory, 'keep_plot': 0}
+        gs.hero_ownership[0] = {self.HERO}
+        return territory
+
+    def test_card_replaces_the_grid_and_fits(self, any_res_game):
+        g = any_res_game
+        self._give_keep_a_hero(g)
+        g.draw_bottom_ui()
+        assert g.hero_train_buttons == {}
+        card, name = g.keep_hero_button
+        assert name == self.HERO
+        assert g._keep_view_layout()['rects']['heroes'].contains(card)
+
+    def test_name_and_title_drawn(self, game, monkeypatch):
+        drawn = []
+        kit = game.bottom_panel_kit
+        real = kit.left_text
+        monkeypatch.setattr(kit, 'left_text', lambda t, *a, **k: drawn.append(t) or real(t, *a, **k))
+        self._give_keep_a_hero(game)
+        game.draw_bottom_ui()
+        assert self.HERO in drawn
+        assert any('Supreme Commander' in t for t in drawn)
+
+    def test_click_opens_the_hero_view(self, game):
+        self._give_keep_a_hero(game)
+        game.draw_bottom_ui()
+        card, _name = game.keep_hero_button
+        assert game.handle_bottom_ui_click(card.center) is True
+        assert game.selected_hero == self.HERO
+        assert game.selected_keep is None
+        assert game.clicked_element == ('bottom_button', ('keep_hero', self.HERO))
+
+    def test_hover_and_flash_brighten_the_portrait(self, game):
+        self._give_keep_a_hero(game)
+
+        def brightness():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            card, _name = game.keep_hero_button
+            size = card.h
+            return sum(sum(tuple(game.screen.get_at((card.left + int(size * fx), card.top + int(size * fy))))[:3])
+                       for fx in (0.3, 0.5, 0.7) for fy in (0.3, 0.5, 0.7))
+
+        normal = brightness()
+        game.mouse_pos = game.keep_hero_button[0].center
+        hover = brightness()
+        game.clicked_element = ('bottom_button', ('keep_hero', self.HERO))
+        assert normal < hover < brightness()
+
+    def test_no_card_without_a_hero(self, game):
+        _open_keep(game)
+        game.draw_bottom_ui()
+        assert game.keep_hero_button is None
+        assert len(game.hero_train_buttons) == len(_trainable_heroes(game))
