@@ -2,6 +2,16 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-09 - Territory lore for Avareon and the Azincournean Highlands
+
+- `maps/avareon/territory_lore.json`: lore for all 57 territories (written by the owner;
+  34 new). The "Lihan" key is now "Linan" - lore is looked up by exact territory name
+  (`map_data.get_territory_lore()`), so that text never showed. Five spelling fixes
+  (desert, trading, perilous, independence, "of Elletia's").
+- `maps/azincournean_highlands/territory_lore.json`: lore for all 55 territories (was `{}`).
+- Checked: every key matches `territory_polygons.json`, and every text fits the Territory
+  view's Lore section (7 lines) at 1280x720 and 1600x900.
+
 ## 2026-10-09 - Bottom panel: building views (plot, Barracks, Keep) + orphaned tooltips
 
 Branch `feature/building-views`. The building views get the bottom panel pattern of the
