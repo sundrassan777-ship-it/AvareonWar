@@ -4,6 +4,17 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Every Territory Has Its Story
+
+*9 October 2026*
+
+- All **57 territories of Avareon** now have lore — select a territory to read about it in
+  the Lore section of the bottom panel. Linan's description, which never appeared, now shows too.
+- The **55 territories of the Azincournean Highlands** (the map of *Tale I: Lack of Funds*)
+  have lore of their own as well.
+
+---
+
 ## Buildings Get the New Look Too
 
 *9 October 2026*
