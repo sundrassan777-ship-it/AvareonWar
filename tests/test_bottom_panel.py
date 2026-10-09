@@ -435,3 +435,49 @@ class TestForcesGridPlacement:
         game.mouse_pos = (0, 0)
         game.draw_bottom_ui()
         assert game.bottom_panel_tooltip is None
+
+
+# ===========================================================================
+# Empty plot view
+# ===========================================================================
+
+def _select_empty_plot(game):
+    territory = _three_plot_territory(game)
+    game.selected_territory_info = None
+    game.selected_plot = (territory, 1)
+    return territory
+
+
+class TestEmptyPlotView:
+
+    def test_buttons_fill_the_panel_and_fit_the_screen(self, any_res_game):
+        g = any_res_game
+        _select_empty_plot(g)
+        g.draw_bottom_ui()
+        buttons = list(g.building_buttons.values())
+        assert len(buttons) == len(g.game_state.building_types)
+        panel = _panel(g)
+        content_h = g.bottom_panel_kit.content_bottom() - g.bottom_panel_kit.content_top()
+        for rect in buttons:
+            assert panel.contains(rect)
+        for left, right in zip(buttons, buttons[1:]):
+            assert left.right < right.left
+        # As tall as the content area, unless the screen width is what limits them
+        size = buttons[0].h
+        width_limited = buttons[-1].right >= g.screen.get_width() - 3 * g.bottom_panel_kit.px(14)
+        assert size >= content_h - 1 or width_limited
+        # Clearly bigger than the old fixed 1.5 x BUTTON_SIZE_SQUARE circles
+        import main
+        assert size > int(main.BUTTON_SIZE_SQUARE * 1.5)
+
+    def test_limit_line_pushes_the_row_down(self, game):
+        territory = _select_empty_plot(game)
+        size, _gap, row_y, limit_y = game._empty_plot_button_layout(False)
+        size_l, _gap_l, row_y_l, limit_y_l = game._empty_plot_button_layout(True)
+        assert row_y_l + size_l <= game.bottom_panel_kit.content_bottom()
+        assert row_y_l > limit_y_l + game.bottom_panel_kit.line_height('body_bold') - 1
+        # Drawn without errors when the limit applies
+        started = game.game_state.buildings_started_this_turn
+        started.add(territory) if hasattr(started, 'add') else started.append(territory)
+        game.draw_bottom_ui()
+        assert all(r.top >= row_y_l for r in game.building_buttons.values())

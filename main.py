@@ -72,7 +72,7 @@ from rendering.map_extension import MapEastExtension, east_extension_override_pa
 from rendering.sidebar_widgets import SidebarWidgets
 from rendering.bottom_panel_kit import (BottomPanelKit, TINT_END_TURN, TINT_END_TURN_HIGHLIGHT,
                                         TINT_SELECT_ARMY, TINT_SELECT_ALL, TINT_DESELECT_ALL,
-                                        GOLD_TEXT as BOTTOM_GOLD_TEXT)
+                                        GOLD_TEXT as BOTTOM_GOLD_TEXT, EDGE_PAD_REF as EDGE_PAD_REF_PX)
 from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
 from input.mouse_handler import MouseHandler
@@ -9192,6 +9192,33 @@ class Game:
         
         return False  # Not handled
     
+    # Empty plot view: building buttons are separated by this fraction of their size
+    EMPTY_PLOT_GAP_FRAC = 0.4
+
+    def _empty_plot_button_layout(self, show_limit_line):
+        """
+        (button_size, gap, row_y, limit_y) of the empty plot view's building buttons.
+
+        The buttons start where the old title did (25% of the width) and are as big
+        as the panel's content height allows (owner: fill it vertically), shrinking
+        only if all building types would not fit the width. With the "Building limit
+        reached" line shown, it takes the top of the content area and the row sits
+        below it. One source of geometry for drawing and the tests.
+        """
+        kit = self.bottom_panel_kit
+        start_x = int(WINDOW_WIDTH * 0.25)
+        top, bottom = kit.content_top(), kit.content_bottom()
+        limit_y = top
+        if show_limit_line:
+            top += kit.line_height('body_bold') + kit.px(4)
+        count = max(1, len(self.game_state.building_types))
+        avail_w = WINDOW_WIDTH - start_x - kit.px(EDGE_PAD_REF_PX)
+        by_width = int(avail_w / (count + (count - 1) * self.EMPTY_PLOT_GAP_FRAC))
+        size = max(24, min(bottom - top, by_width))
+        gap = int(size * self.EMPTY_PLOT_GAP_FRAC)
+        row_y = top + max(0, (bottom - top - size) // 2)
+        return size, gap, row_y, limit_y
+
     def _draw_building_ui_section(self):
         """
         Draw building UI when plot is selected.
@@ -9393,24 +9420,22 @@ class Game:
             self.cancel_button = cancel_rect
 
         else:
-            # Empty plot - show building options
-            # Show plot title for empty plots only
-            plot_title = self._get_cached_text(f"{territory} - Plot {plot_index + 1}", self.font, BROWN_TEXT_HEADING)
-            self.screen.blit(plot_title, (build_ui_x, build_ui_y))
-            build_ui_y += 30
-
+            # Empty plot - show building options. No "Territory - Plot X" title any
+            # more (owner request): the buttons grow to fill the panel's height instead.
             # Check if can build this turn
             can_build = territory not in self.game_state.buildings_started_this_turn
-
-            if not can_build:
-                limit_text = self._get_cached_text("Building limit reached this turn", self.small_font, (180, 0, 0))
-                self.screen.blit(limit_text, (build_ui_x, build_ui_y))
-                build_ui_y += UI_LINE_SPACING_SMALL
-            
             current_gold = self.game_state.player_gold[self.game_state.current_player]
-            
+
+            # Geometry shared with the tests (_empty_plot_button_layout)
+            button_size, button_gap, row_y, limit_y = self._empty_plot_button_layout(not can_build)
+            if not can_build:
+                # Where the title used to be - only shown when it applies
+                self.bottom_panel_kit.left_text("Building limit reached this turn", 'body_bold',
+                                                (232, 82, 70), build_ui_x, limit_y)
+
             # Building options - arranged horizontally
             button_x = build_ui_x  # Start position for horizontal layout
+            build_ui_y = row_y
             for i, (building_name, info) in enumerate(self.game_state.building_types.items()):
                 # Use centralized cost with all discounts (fixes red tint persisting after discount)
                 cost = self.game_state.get_building_cost(building_name)
@@ -9446,8 +9471,7 @@ class Game:
                     elif self.tutorial_mission.should_highlight_button(btn_id):
                         button_color = (50, 255, 50)  # Bright green (highlighted)
 
-                # Calculate circular button center and radius (1.5x larger)
-                button_size = int(BUTTON_SIZE_SQUARE * 1.5)
+                # Circular button center and radius (size from _empty_plot_button_layout)
                 button_radius = button_size // 2
                 button_center_x = button_x + button_radius
                 button_center_y = build_ui_y + button_radius
@@ -9535,7 +9559,7 @@ class Game:
                     self.screen.blit(text_surf, text_rect)
 
                 self.building_buttons[building_name] = button_rect
-                button_x += button_size + 50  # Move right for next button with increased spacing
+                button_x += button_size + button_gap  # Move right for next button
     
     def draw_bottom_ui(self):
         """
