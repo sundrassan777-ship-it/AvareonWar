@@ -942,3 +942,263 @@ class TestBuildingXpView:
         _select_building_plot(game, building='Mine', xp={'xp': 240, 'level': 5})
         xp = game._building_xp_view(*game.selected_plot)
         assert (xp['label'], xp['fill'], xp['bonus_pct']) == ('MAX', 1.0, 50)
+
+
+# ===========================================================================
+# Barracks view - owner design 2026-10-09: Barracks (unit buttons) / Training
+# Queue (n/4) / Barracks Info (facts + hotkeys, Demolish)
+# ===========================================================================
+
+def _open_barracks(game, queue=()):
+    """Select a finished Barracks on plot 0 of an owned territory with `queue`."""
+    territory = _three_plot_territory(game)
+    game.selected_territory_info = None
+    gs = game.game_state
+    gs.buildings.setdefault(territory, {})[0] = 'Barracks'
+    gs.training_queue.setdefault(territory, {})[0] = list(queue)
+    game.selected_barracks = (territory, 0)
+    return territory
+
+
+FULL_QUEUE = [('Swordsman', 0, 30), ('Archer', 1, 30), ('Pikeman', 1, 30), ('Cavalry', 1, 50)]
+
+
+class TestBarracksLayout:
+
+    def test_sections_inside_panel_and_ordered(self, any_res_game):
+        g = any_res_game
+        rects = [g._barracks_view_layout()['rects'][k] for k in ('units', 'queue', 'info')]
+        for rect in rects:
+            assert _panel(g).contains(rect)
+        for left, right in zip(rects, rects[1:]):
+            assert left.right < right.left
+
+    def test_unit_buttons_fit_in_a_row(self, any_res_game):
+        g = any_res_game
+        _open_barracks(g)
+        g.draw_bottom_ui()
+        units = g._barracks_view_layout()['rects']['units']
+        buttons = [g.train_buttons[u] for u in g.TRAINING_UNIT_ORDER]
+        for rect in buttons:
+            assert units.contains(rect)
+            assert rect.w >= 40  # Readable at 720p too
+        for left, right in zip(buttons, buttons[1:]):
+            assert left.right < right.left and left.top == right.top
+
+    def test_full_queue_fits_its_section(self, any_res_game):
+        g = any_res_game
+        _open_barracks(g, FULL_QUEUE)
+        g.draw_bottom_ui()
+        queue = g._barracks_view_layout()['rects']['queue']
+        assert [i for _r, i in g.queue_cancel_buttons] == [0, 1, 2, 3]
+        for rect, _i in g.queue_cancel_buttons:
+            assert queue.contains(rect)
+        tops = [r.top for r, _i in g.queue_cancel_buttons]
+        assert tops == sorted(tops) and len(set(tops)) == 4
+
+    def test_demolish_inside_info_section(self, any_res_game):
+        g = any_res_game
+        _open_barracks(g)
+        g.draw_bottom_ui()
+        info = g._barracks_view_layout()['rects']['info']
+        assert info.contains(g.demolish_barracks_button)
+        assert abs(g.demolish_barracks_button.centerx - info.centerx) <= 1
+
+
+class TestBarracksContent:
+
+    def _texts(self, game, monkeypatch):
+        drawn = {}
+        kit = game.bottom_panel_kit
+        real_left, real_centered = kit.left_text, kit.centered_text
+
+        def left(text, role, color, x, y, shadow=True):
+            drawn[text] = color
+            return real_left(text, role, color, x, y, shadow)
+
+        def centered(text, role, color, cx, y, shadow=True):
+            drawn[text] = color
+            return real_centered(text, role, color, cx, y, shadow)
+
+        monkeypatch.setattr(kit, 'left_text', left)
+        monkeypatch.setattr(kit, 'centered_text', centered)
+        return drawn
+
+    def test_queue_count_in_the_headline(self, game, monkeypatch):
+        import main
+        drawn = self._texts(game, monkeypatch)
+        _open_barracks(game, FULL_QUEUE[1:3])
+        game.draw_bottom_ui()
+        assert drawn['(2/4)'] == main.BOTTOM_GOLD_TEXT
+        _open_barracks(game, FULL_QUEUE)
+        game.draw_bottom_ui()
+        assert drawn['(4/4)'] == (232, 82, 70)  # Red when full
+
+    def test_queue_texts(self, game, monkeypatch):
+        drawn = self._texts(game, monkeypatch)
+        _open_barracks(game, FULL_QUEUE)
+        game.draw_bottom_ui()
+        assert 'Swordsman (Army Limit Reached)' in drawn
+        assert 'Archer (waiting)' in drawn
+        _open_barracks(game, [('Archer', 1, 30)])
+        game.draw_bottom_ui()
+        assert 'Archer (training... 1 turn)' in drawn
+
+    def test_empty_queue(self, game, monkeypatch):
+        drawn = self._texts(game, monkeypatch)
+        _open_barracks(game)
+        game.draw_bottom_ui()
+        assert 'No units in queue' in drawn
+        assert game.queue_cancel_buttons == []
+
+    def test_info_lists_facts_and_every_hotkey(self, game, monkeypatch):
+        """Captain's hotkey (T) was missing from the old Controls list."""
+        drawn = self._texts(game, monkeypatch)
+        _open_barracks(game)
+        game.draw_bottom_ui()
+        for key, unit in (('S', 'Swordsman'), ('A', 'Archer'), ('P', 'Pikeman'),
+                          ('C', 'Cavalry'), ('T', 'Captain')):
+            assert f'[{key}] {unit}' in drawn
+        assert any(t.startswith('Gold: ') for t in drawn)
+        assert any(t.startswith('Armies: ') for t in drawn)
+        assert any(t.startswith('Command: ') for t in drawn)
+
+    def test_hotkeys_match_the_keyboard_handler(self):
+        import main
+        import pygame
+        from input.keyboard_handler import _TRAINING_SHORTCUTS
+        listed = {pygame.key.key_code(k.lower()): unit for k, unit in main.Game.TRAINING_HOTKEYS}
+        assert listed == _TRAINING_SHORTCUTS
+
+    def test_demolish_label_follows_the_refund(self, game, monkeypatch):
+        import main
+        drawn = _spy_buttons(game, monkeypatch)
+        _open_barracks(game)
+        game.draw_bottom_ui()
+        assert drawn['Demolish (50%)'][:2] == (main.TINT_DEMOLISH, False)
+        game.game_state.player_barracks_full_refund[0] = True  # Makeshift Barracks
+        game.draw_bottom_ui()
+        assert 'Demolish (100%)' in drawn
+
+
+class TestBarracksButtons:
+
+    def test_demolish_still_works(self, game):
+        territory = _open_barracks(game)
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.demolish_barracks_button.center) is True
+        assert 0 not in game.game_state.buildings.get(territory, {})
+        assert game.selected_barracks is None
+
+    def test_demolish_hover_and_flash_change_pixels(self, game):
+        _open_barracks(game)
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.demolish_barracks_button
+            return sum(sum(tuple(game.screen.get_at((rect.left + int(rect.w * f), rect.centery)))[:3])
+                       for f in (0.2, 0.24, 0.76, 0.8))
+
+        normal = pixels()
+        game.mouse_pos = game.demolish_barracks_button.center
+        hover = pixels()
+        game.clicked_element = ('demolish', 'barracks')
+        assert normal < hover < pixels()
+
+    def test_queue_cancel_still_works(self, game):
+        territory = _open_barracks(game, [('Archer', 1, 30), ('Pikeman', 1, 30)])
+        game.draw_bottom_ui()
+        rect, index = game.queue_cancel_buttons[1]
+        assert game.handle_bottom_ui_click(rect.center) is True
+        assert [e[0] for e in game.game_state.training_queue[territory][0]] == ['Archer']
+
+    def test_queue_cancel_hover_and_flash_change_pixels(self, game):
+        _open_barracks(game, [('Archer', 1, 30)])
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.queue_cancel_buttons[0][0]
+            return sum(sum(tuple(game.screen.get_at((rect.left + 2, rect.top + 2)))[:3]) for _ in (0,))
+
+        normal = pixels()
+        game.mouse_pos = game.queue_cancel_buttons[0][0].center
+        hover = pixels()
+        game.clicked_element = ('queue_cancel', 0)
+        assert normal < hover < pixels()
+
+    def test_train_button_still_trains(self, game):
+        territory = _open_barracks(game)
+        game.game_state.player_gold[0] = 1000
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.train_buttons['Archer'].center) is True
+        assert [e[0] for e in game.game_state.training_queue[territory][0]] == ['Archer']
+
+
+# ===========================================================================
+# Orphaned button tooltips: a hover whose buttons are no longer drawn is dropped
+# (owner report 2026-10-09: Territory view plot icon hovered + clicked -> the
+# tooltip stayed in the bottom panel and followed the mouse forever)
+# ===========================================================================
+
+class TestOrphanedTooltips:
+
+    def _hover_frames(self, game, monkeypatch, pos, frames=2):
+        import pygame
+        monkeypatch.setattr(pygame.mouse, 'get_pos', lambda: pos)
+        game.mouse_pos = pos
+        for _ in range(frames):
+            game.draw_bottom_ui()
+            game.update_frame_tooltips()
+
+    def test_territory_plot_tooltip_gone_after_the_click(self, game, monkeypatch):
+        territory = _three_plot_territory(game)
+        game.game_state.buildings.setdefault(territory, {})[0] = 'Barracks'
+        game.game_state.training_queue.setdefault(territory, {})[0] = []
+        game.draw_bottom_ui()
+        rect = next(r for r, _t, i in game.territory_info_plot_buttons if i == 0)
+        drawn = []
+        monkeypatch.setattr(game, 'draw_button_tooltip', lambda pos, data: drawn.append(data))
+        self._hover_frames(game, monkeypatch, rect.center)
+        assert game.hover_target_button and game.hover_target_button[0] == 'plot'
+        game.hover_start_time_button -= 5000  # Past the tooltip delay
+        self._hover_frames(game, monkeypatch, rect.center, frames=1)
+        assert drawn  # The plot tooltip is showing
+
+        assert game.handle_bottom_ui_click(rect.center) is True  # Opens the Barracks view
+        assert game.selected_barracks == (territory, 0)
+        drawn.clear()
+        # The cursor moves on over empty panel space (bottom of the empty queue) -
+        # where the old tooltip kept following it
+        queue = game._barracks_view_layout()['rects']['queue']
+        self._hover_frames(game, monkeypatch, (queue.centerx, queue.bottom - 2))
+        assert game.hover_target_button is None
+        assert not [d for d in drawn if d[0] == 'plot']
+
+    def test_map_training_icon_tooltip_gone_when_barracks_deselected(self, game, monkeypatch):
+        """Escape (or the turn passing) while the cursor is on a quick-access icon:
+        the icons stop drawing, so their hover must not survive."""
+        game.hover_target_button = ('map_training', 'Archer')
+        game.show_tooltip_button = ('map_training', 'Archer')
+        game.selected_barracks = None
+        self._hover_frames(game, monkeypatch, (400, 300), frames=1)
+        assert game.hover_target_button is None and game.show_tooltip_button is None
+
+    def test_forces_label_cleared_on_ai_turn(self, game):
+        """The Forces-icon label (bottom_panel_tooltip) is reset by draw_bottom_ui(),
+        which does not run during AI turns - the empty panel must reset it too."""
+        game.bottom_panel_tooltip = ("5x Swordsmen", (300, 800))
+        game.draw_empty_bottom_ui_panel()
+        assert game.bottom_panel_tooltip is None
+
+    def test_live_hover_survives_frames(self, game, monkeypatch):
+        """No false release: a button still drawn keeps its hover and timer."""
+        _open_barracks(game)
+        game.draw_bottom_ui()
+        rect = game.train_buttons['Archer']
+        self._hover_frames(game, monkeypatch, rect.center)
+        started = game.hover_start_time_button
+        self._hover_frames(game, monkeypatch, rect.center, frames=3)
+        assert game.hover_target_button == ('training', 'Archer')
+        assert game.hover_start_time_button == started

@@ -9,8 +9,8 @@ Keyboard Handler
 This module handles all keyboard input for the game:
 - Menu navigation (ESC to close)
 - Chat input (ENTER, text entry)
-- Building shortcuts (F, M, B, K, Q)
-- Training shortcuts (S, A, P, C)
+- Building shortcuts (F, M, B, K, Q, T)
+- Training shortcuts (S, A, P, C, T)
 
 Extracted from main.py during Phase 3 of refactoring.
 """
@@ -48,8 +48,9 @@ class KeyboardHandler:
     appropriate systems (menus, chat, building, training).
 
     Keyboard Shortcuts:
-        Building: F=Farm, M=Mine, B=Barracks, K=Keep, Q=Square
-        Training: S=Swordsman, A=Archer, P=Pikeman, C=Cavalry
+        Building: F=Farm, M=Mine, B=Barracks, K=Keep, Q=Square, T=Training Grounds
+        Training: S=Swordsman, A=Archer, P=Pikeman, C=Cavalry, T=Captain
+        (T depends on the selection: an empty plot builds, a Barracks trains)
         Menu: ESC=Close menu/dialog
         Chat: ENTER=Open/send, ESC=Cancel, BACKSPACE=Delete
     """
