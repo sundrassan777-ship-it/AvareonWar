@@ -4,6 +4,47 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Buildings Get the New Look Too
+
+*9 October 2026*
+
+The panels for your buildings now match the rest of the bottom panel.
+
+### Buildings on a plot
+
+- A building **under construction** shows its picture greyed out, what it will do, how
+  many turns are left, and a **Cancel** button.
+- A **finished** Farm, Mine, Square or Training Grounds shows its picture, what it does and
+  a **Demolish** button. Farms and Mines also show their **level** and an **experience bar**.
+- With **Erec Silvyr**, demolishing a Farm or Mine now correctly says **175%** (the refund
+  you actually get) on a blue button — it used to say 50%.
+
+### Barracks
+
+- The unit buttons sit under a **Barracks** title.
+- **Training Queue** shows how full it is (e.g. 2/4, red when full), with each unit in its
+  own row and an X to cancel it.
+- **Hotkeys** lists every training key, including **T for Captain**, above the Demolish button.
+
+### Keep and Castle
+
+- The Hero portraits sit under the **Keep** (or **Castle**) title. Once your Hero lives in
+  this Keep, you see that Hero instead — **click them to open the Hero**.
+- When the upgrade to a Castle is done, the picture stays with **Upgrade Finished** beneath it.
+- **Training Status** shows the Hero being trained with a **progress bar** and the turns left.
+- **Hero Info** shows your **Hero Limit** (red when you can't train more) above the rules
+  and the Demolish button.
+
+### Fixes
+
+- A tooltip no longer gets stuck following your mouse after you click something that
+  changes the bottom panel (for example a building in a territory's panel), or after you
+  deselect a plot or Barracks while pointing at one of its icons on the map.
+- A unit's name label in a territory's **Forces** no longer stays on screen during the
+  computer players' turns.
+
+---
+
 ## A New Look for the Bottom Panel
 
 *9 October 2026*

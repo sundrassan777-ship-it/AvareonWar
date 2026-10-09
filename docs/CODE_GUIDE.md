@@ -1149,7 +1149,7 @@ The bottom panel is split into **sections** by the wooden pillars (`Separator1.p
 | `rendering/bottom_panel_kit.py` | `BottomPanelKit` (`game.bottom_panel_kit`): `section_rect()`, `header()`, `rule()`, `vertical_rule()`, `ornate_button()`, `battlebar()`, `button_outline()`, fonts / text helpers. Cached; `invalidate()` is called by `apply_display_settings()` |
 | `rendering/sidebar_widgets.py` | Supplies the art: `separator()` (the gold rule) and `button_sprite(..., inner_tint=...)` |
 | `utils/surface_utils.py` | `tint_campaign_button_wood()` + `CAMPAIGN_BTN_WOOD_RECT`; BattleBar `BAR_FRAME_CROP` / `BAR_FILL_*` (shared with the Tales' Popularity bar) |
-| `main.py` | The views: `_draw_player_info_section()` (End Turn), `draw_territory_info_panel()`, `_draw_building_ui_section()` (empty plot), `draw_army_composition_ui()`, `draw_hero_ui()`; clicks in `handle_bottom_ui_click()` |
+| `main.py` | The views: `_draw_player_info_section()` (End Turn), `draw_territory_info_panel()`, `_draw_building_ui_section()` (empty plot + `_draw_plot_building_view()` for finished / under-construction buildings), `draw_training_ui()` (Barracks), `draw_keep_ui()` (Keep), `draw_army_composition_ui()`, `draw_hero_ui()`; clicks in `handle_bottom_ui_click()` |
 
 **Geometry — never hardcode x offsets.**
 - `END_TURN_SECTION_FRAC` (0.194) is the pillar after the End Turn section, in every view.
@@ -1157,7 +1157,12 @@ The bottom panel is split into **sections** by the wooden pillars (`Separator1.p
   `{'pillars': [x…], 'rects': {name: content rect}}`. Weights:
   `TERRITORY_VIEW_WEIGHTS` (info / plots / forces / lore), `ARMY_VIEW_WEIGHTS`
   (info / units / help), `HERO_VIEW_WEIGHTS` (= the Army weights, so pillars don't jump
-  when switching between the two views).
+  when switching between the two views), `BARRACKS_VIEW_WEIGHTS` (units / queue / info),
+  `KEEP_VIEW_WEIGHTS` (heroes / castle / training / info).
+- The plot view of a finished or under-construction building has no pillars:
+  `_plot_building_view_layout()` → `{'icon', 'column'}`. The icon reuses the first
+  empty-plot button's size and spot (`_empty_plot_button_layout()`), so it doesn't jump
+  when construction starts.
 - `kit.section_rect(left_x, right_x)` insets by half the pillar plus padding, and starts
   below the wooden beam (`CONTENT_TOP_FRAC`, ~12% of the panel height).
 - Tests use the same layout functions, so drawing and tests can't drift apart.
@@ -1171,10 +1176,15 @@ lore`. `kit.px(v)` scales lengths the same way.
 **Building blocks.**
 - `y = kit.header(rect, text, color=..., role=..., max_lines=..., spacing=...)` draws the
   headline + rule and returns where content starts. `spacing` adds room above and below
-  the rule (Territory Info, Army, Hero).
+  the rule (Territory Info, Army, Hero; `BARRACKS_HEADER_SPACING_REF` in the Barracks and
+  Keep views). `align='left'` puts the headline at the rect's left edge and stretches the
+  rule across the whole rect (plot building view, beside the icon).
 - `kit.ornate_button(rect, label, inner_tint, flash_key, locked, role, hover_pos)` —
   CampaignBTN with only its **wooden window** tinted (`TINT_END_TURN`,
-  `TINT_SELECT_ARMY`, `TINT_SELECT_ALL`, `TINT_DESELECT_ALL`); the gold frame stays gold.
+  `TINT_SELECT_ARMY`, `TINT_SELECT_ALL`, `TINT_DESELECT_ALL`, `TINT_DEMOLISH` (red: Demolish /
+  Cancel), `TINT_CONFISCATE` (blue: Farm/Mine demolish with Erec Silvyr)); the gold frame stays gold.
+  Building buttons are `BUILDING_BUTTON_W_REF` (210) wide: a label only gets 66% of the
+  button, and at 170 px "Demolish (100%)" was cut off.
   The wood is greyed before tinting (multiplying brown by blue gave mud). Locked buttons
   are always grey (`TINT_LOCKED`). Height from the art: `kit.button_height(width)`.
 - `kit.battlebar(rect, frac, color, text)` — BattleBar frame over a gradient fill (the
@@ -1185,7 +1195,18 @@ lore`. `kit.px(v)` scales lengths the same way.
   (it hugs the pointed caps); set its alpha per frame like `pulse_ring()`.
 - `_draw_info_list_section(rect, title, items, bullets=True)` — headline + wrapped items
   with a hanging indent (Unit Selection Info, Hero Info). Falls back to the small font and
-  stops at the section bottom.
+  stops at the section bottom. Its body is `_draw_info_list(area, items)`, where an item
+  may be `(text, colour, bulleted)` (the Keep's red "Hero Limit" line).
+- `_draw_section_button(rect, label, tint, flash_key, locked)` — rule + centred ornate
+  button at the bottom of a section; returns `(button_rect, y)` where `y` is the bottom
+  of the space left above the rule (Barracks Hotkeys, Keep Hero Info).
+- `_draw_queue_row(rect, text, colour, cancel_flash_key, cancel_locked)` — a queue entry
+  in a stretched `ResourceSlot.png` frame (`sidebar_widgets.nine_slice('wood', …)`, cached)
+  with a red X; returns the X's rect (Barracks queue, Keep Training Status).
+- `_draw_fact_columns(rect, columns)` — columns of `(text, colour)` lines centred
+  together with a fixed gap; body font, or small when the longest column doesn't fit.
+- `_header_with_count(rect, title, count, colour, spacing)` — a headline whose count has
+  its own colour ("Training Queue (4/4)", red when full).
 
 **The views.**
 - **End Turn** (all views): name, rule, End Turn button, rule, "Turn X:", BattleBar timer,
@@ -1206,6 +1227,25 @@ lore`. `kit.px(v)` scales lengths the same way.
     red at it).
 - **Empty plot:** no title; `_empty_plot_button_layout()` sizes the building buttons to
   the content height (narrower screens limit them by width).
+- **Finished / under-construction plot** (`_draw_plot_building_view()`; Farm, Mine,
+  Square, Training Grounds when finished, any type while building): round icon (a cached
+  greyscale copy while under construction), left headline (greyed while building), rule,
+  description (`_get_building_effect_text()`) + "Completes in N turns", rule, Cancel /
+  Demolish. Farm/Mine add a level row (cropped shields, income bonus) and a BattleBar XP
+  bar (`_building_xp_view()`). Spare height becomes the gaps between the blocks. A
+  finished Barracks or Keep never gets here — they open their own views.
+- **Barracks** (`draw_training_ui()`): Barracks (five unit buttons, 35% of the spare height
+  above them — `BARRACKS_UNIT_ROW_TOP_FRAC`), Training Queue (n/4) (four fixed
+  `_draw_queue_row()` slots), Hotkeys (`TRAINING_HOTKEYS` in two columns + Demolish).
+  `test_hotkeys_match_the_keyboard_handler` keeps the list in step with
+  `input/keyboard_handler._TRAINING_SHORTCUTS`.
+- **Keep** (`draw_keep_ui()`): Keep / Castle (8 trainable hero portraits in a fixed 4x2
+  grid — or, once the Keep's hero is trained, `_draw_keep_hero_card()`: portrait, name and
+  title, clickable → `_select_hero()`), Castle upgrade (no headline; the icon keeps one spot
+  in every state from `_castle_section_geometry()`; available / upgrading with a turns bar
+  and X / "Upgrade Finished", not clickable), Training Status (queue row + progress bar
+  from `training_time`, `_draw_hero_training_progress()`), Hero Info ("Hero Limit: n/limit",
+  red at `player_hero_limit` — 3, 4 with Heroic Fortitude — the rules, Demolish).
 - **Army:** Info with a T divider (status counts left, Select / Deselect All right),
   Units (5-wide grid sized so 15 units fit), Unit Selection Info.
 - **Hero:** General (portrait at a fixed 15% spot, text from its top; clicking it pans to
@@ -1222,11 +1262,28 @@ flash when `game.clicked_element` equals the control's key.
 | Forces hero portrait | `('bottom_button', ('forces_hero', hero))` | `handle_bottom_ui_click` → `_select_hero()` |
 | Hero view portrait | `('bottom_button', ('hero_portrait', hero))` | `handle_bottom_ui_click` → `start_sidebar_camera_pan()` |
 | Select All / Deselect All | `('army_comp', 'select_all' / 'deselect_all')` | `handle_bottom_ui_click` |
+| Plot view Demolish / Cancel | `('demolish', 'building')` / `('cancel', 'construction')` | `handle_bottom_ui_click` |
+| Barracks Demolish | `('demolish', 'barracks')` | `handle_bottom_ui_click` |
+| Queue row X (Barracks) | `('queue_cancel', index)` | `handle_bottom_ui_click` |
+| Keep Demolish | `('demolish', 'keep')` | `handle_bottom_ui_click` |
+| Keep Training Status X | `('hero_cancel', 'training')` | `handle_bottom_ui_click` |
+| Keep's hero card | `('bottom_button', ('keep_hero', hero))` | `handle_bottom_ui_click` → `_select_hero()` |
 
 **Button tooltips reach the whole panel width.** They used to be cut off in the rightmost
 250 px (a leftover from a full-height sidebar). The bigger empty-plot buttons put Training
-Grounds inside that strip and it lost its tooltip. Every bottom-panel hover system clears
-its own tooltip when the mouse leaves its buttons, so nothing lingers.
+Grounds inside that strip and it lost its tooltip.
+
+**Orphaned tooltips are dropped.** A hover system (`update_button_hover(current, type)`)
+only releases its own hover while its buttons are drawn. When a click or key switched
+the view (Territory view plot icon → Barracks / Keep / plot view; a map quick-access icon
+when Escape deselected the plot, or the multiplayer turn passed), the old hover stayed and
+its tooltip followed the mouse for good. `update_button_hover()` now records each system
+that ran this frame (`_hover_systems_this_frame`), and `update_frame_tooltips()` calls
+`_release_orphaned_button_hover()` after all drawing: a hover whose system did not run is
+cleared. **So a new hover system must call `update_button_hover()` every frame while its
+buttons are shown** (with `None` when nothing is hovered), or its tooltip never appears.
+The Forces hover label (`bottom_panel_tooltip`) is reset by `draw_bottom_ui()` and, during
+AI turns, by `draw_empty_bottom_ui_panel()`.
 
 #### When to Modify
 
@@ -1238,12 +1295,15 @@ using `kit.px()` and `kit.line_height()`. Stop at `rect.bottom`.
 its rect in an attribute reset at the top of `draw_bottom_ui()`, handle it in
 `handle_bottom_ui_click()`, and add a hover/flash pixel test to `test_bottom_panel.py`.
 
-✅ **Rework the building views (Barracks, Keep, finished / under-construction plots):**
-the next pass. They still use fixed offsets and flat `draw_feedback_button()` boxes.
+✅ **Change a building view:** plot → `_draw_plot_building_view()` (+ its layout),
+Barracks → `draw_training_ui()`, Keep → `draw_keep_ui()`. Refund labels must match
+`destroy_building()` (50%, Barracks 100% with Makeshift Barracks, Farm/Mine 175% with
+Confiscate). New hotkeys go in `TRAINING_HOTKEYS` and the keyboard handler together.
 
 ⚠️ Tests: `tests/test_bottom_panel.py` — layout at 1280x720 / 1600x900 / 1920x1080 /
 2560x1440 (resolutions forced with an offscreen surface, so the machine's monitor
-doesn't decide what gets tested), every view and control above.
+doesn't decide what gets tested), every view and control above, and the orphaned
+tooltip cases (`TestOrphanedTooltips`).
 
 ### Action Log privacy: who sees a message
 

@@ -72,6 +72,7 @@ from rendering.map_extension import MapEastExtension, east_extension_override_pa
 from rendering.sidebar_widgets import SidebarWidgets
 from rendering.bottom_panel_kit import (BottomPanelKit, TINT_END_TURN, TINT_END_TURN_HIGHLIGHT,
                                         TINT_SELECT_ARMY, TINT_SELECT_ALL, TINT_DESELECT_ALL,
+                                        TINT_DEMOLISH, TINT_CONFISCATE,
                                         GOLD_TEXT as BOTTOM_GOLD_TEXT, EDGE_PAD_REF as EDGE_PAD_REF_PX)
 from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
@@ -638,6 +639,7 @@ class Game:
         self.select_army_button = None
         self.forces_hero_button = None
         self.hero_view_portrait_button = None  # Hero view: (portrait rect, hero_name)
+        self.keep_hero_button = None  # Keep view: (hero card rect, hero_name)
         self.castle_upgrade_button = None
         self.castle_upgrade_cancel_button = None
         self.bonuses_button_rect = None
@@ -1360,7 +1362,10 @@ class Game:
         self.hover_start_time_button = None  # When button hover began (separate from map hover)
         self.hover_target_button = None  # What button we're hovering over (type, key)
         self.show_tooltip_button = None  # Button to show tooltip for (after delay)
-        
+        # Hover systems (update_button_hover types) that ran this frame - a hover whose
+        # system did not run is dropped in update_frame_tooltips() (orphaned tooltips)
+        self._hover_systems_this_frame = set()
+
         # Click flash feedback system
         self.clicked_element = None  # (type, identifier) tuple - element currently showing click flash
         self.click_flash_timer = 0  # Milliseconds remaining for click flash
@@ -5199,7 +5204,27 @@ class Game:
                 self.show_tooltip_button = None
                 self.hover_start_time_button = None
             # Otherwise: Don't touch hover_target_button - it's for another system
-    
+        # This system ran this frame (see _release_orphaned_button_hover)
+        self._hover_systems_this_frame.add(hover_type)
+
+    def _release_orphaned_button_hover(self):
+        """
+        Drop the button hover if the system that owns it did not run this frame.
+
+        A hover system only releases its hover while its buttons are drawn. When a
+        click or key switched to another view, the old system stopped running and its
+        hover stayed forever: the tooltip followed the mouse around the bottom panel
+        (Territory view plot icon clicked -> Barracks / Keep / plot view), or the map
+        (quick-access build / train icon hovered when Escape deselected the plot, or
+        the multiplayer turn passed). Every system calls update_button_hover() each
+        frame while its UI is shown, so "did not run" means "its buttons are gone".
+        Called once per frame by update_frame_tooltips(), after all drawing.
+        """
+        target = self.hover_target_button
+        if target and target[0] not in self._hover_systems_this_frame:
+            self.clear_button_tooltip()
+        self._hover_systems_this_frame = set()
+
     # ========================================
     
     def draw_silence_fog_overlay(self):
@@ -8123,14 +8148,27 @@ class Game:
         drops to the small font if the body font does not fit; bounds-checked.
         Shared by the Army view's Unit Selection Info and the Hero view's Hero Info.
         """
+        y = self.bottom_panel_kit.header(rect, title)
+        self._draw_info_list(pygame.Rect(rect.left, y, rect.w, rect.bottom - y), items, bullets)
+
+    def _draw_info_list(self, area, items, bullets=True):
+        """
+        The body of _draw_info_list_section() in `area` (also used under the Keep
+        view's Hero Info headline, above its Demolish button).
+
+        items: plain strings (bulleted when `bullets`, in the secondary colour), or
+        (text, colour, bulleted) tuples for a line of its own colour / without bullet.
+        """
         kit = self.bottom_panel_kit
-        y = kit.header(rect, title)
-        avail = rect.bottom - y
-        prefix = "- " if bullets else ""
+        y = area.top
+        avail = area.h
+        entries = [(item, BROWN_TEXT_SECONDARY, bullets) if isinstance(item, str) else item
+                   for item in items]
 
         def wrapped(role):
-            indent = kit.font(role).size(prefix)[0]
-            return indent, [kit.wrap(item, role, rect.w - indent, max_lines=4) for item in items]
+            indent = kit.font(role).size("- ")[0]
+            return indent, [kit.wrap(text, role, area.w - (indent if bulleted else 0), max_lines=4)
+                            for text, _color, bulleted in entries]
 
         role = 'body'
         indent, blocks = wrapped(role)
@@ -8140,15 +8178,16 @@ class Game:
         line_h = kit.line_height(role)
         n_lines = sum(len(b) for b in blocks)
         gap = max(0, min(kit.px(6), (avail - n_lines * line_h) // max(1, len(blocks))))
-        color = BROWN_TEXT_SECONDARY
-        for block in blocks:
+        for block, (_text, color, bulleted) in zip(blocks, entries):
             for i, line in enumerate(block):
-                if y + line_h > rect.bottom + 1:
+                if y + line_h > area.bottom + 1:
                     return  # bounds check - never render past the section
-                if i == 0 and prefix:
-                    kit.left_text(prefix + line, role, color, rect.left, y)
+                if not bulleted:
+                    kit.left_text(line, role, color, area.left, y)
+                elif i == 0:
+                    kit.left_text("- " + line, role, color, area.left, y)
                 else:
-                    kit.left_text(line, role, color, rect.left + indent, y)
+                    kit.left_text(line, role, color, area.left + indent, y)
                 y += line_h
             y += gap
 
@@ -9269,24 +9308,194 @@ class Game:
         row_y = top + max(0, (bottom - top - size) // 2)
         return size, gap, row_y, limit_y
 
+    # Building views' ornate Demolish / Cancel button width (reference px, scaled by the
+    # panel): wide enough for "Demolish (100%)" at every resolution, since a label only
+    # gets 66% of the button (measured 2026-10-09: 170 px ellipsized it)
+    BUILDING_BUTTON_W_REF = 210
+    # Plot building view: text column width cap (the longest description, Training
+    # Grounds, fits on one line) and the Farm/Mine XP BattleBar width
+    PLOT_VIEW_COLUMN_W_REF = 540
+    BUILDING_XP_BAR_W_REF = 280
+
+    def _plot_building_view_layout(self):
+        """
+        {'icon': rect, 'column': rect} of the plot view of a finished or
+        under-construction building.
+
+        The icon takes the size and spot of the empty plot view's first building button,
+        so it does not jump when construction starts; the text column starts right of it
+        and spans the content height. One source of geometry for drawing and the tests.
+        """
+        kit = self.bottom_panel_kit
+        size, _gap, row_y, _limit_y = self._empty_plot_button_layout(False)
+        icon = pygame.Rect(int(WINDOW_WIDTH * 0.25), row_y, size, size)
+        col_x = icon.right + kit.px(24)
+        col_w = max(40, min(kit.px(self.PLOT_VIEW_COLUMN_W_REF),
+                            WINDOW_WIDTH - col_x - kit.px(EDGE_PAD_REF_PX)))
+        top = kit.content_top()
+        return {'icon': icon, 'column': pygame.Rect(col_x, top, col_w, kit.content_bottom() - top)}
+
+    def _building_xp_view(self, territory, plot_index):
+        """Farm/Mine veterancy for the plot view: level, XP bar fill (0..1), bar label
+        and income bonus %. Same maths as the pre-redesign panel."""
+        gs = self.game_state
+        data = gs.get_building_xp_data(territory, plot_index)
+        level, xp = data['level'], data['xp']
+        if level < gs.MAX_LEVEL:
+            prev_t = gs.LEVEL_XP_CUMULATIVE[level - 1] if level > 0 else 0
+            next_t = gs.LEVEL_XP_CUMULATIVE[level]
+            in_level, needed = xp - prev_t, next_t - prev_t
+            fill = max(0.0, min(1.0, in_level / needed)) if needed > 0 else 0.0
+            label = f"{in_level}/{needed} XP"
+        else:
+            fill, label = 1.0, "MAX"
+        return {'level': level, 'fill': fill, 'label': label,
+                'bonus_pct': int(level * gs.BUILDING_LEVEL_INCOME_BONUS * 100)}
+
+    def _draw_plot_building_icon(self, building_type, rect, greyed):
+        """
+        The building's round icon in the plot view, drawn like the empty plot view's
+        buttons (icon at 80% of the circle + circle border). greyed (under
+        construction): a greyscale copy, slightly dimmed, cached per building and size.
+        """
+        radius = rect.w // 2
+        image = self.building_icons.get(building_type)
+        if image:
+            icon_size = int(radius * 1.6)
+            icon = self._get_cached_ui_icon(image, building_type, icon_size)
+            if greyed:
+                # PERFORMANCE: greyscale once per (building, size), never per frame.
+                # _ui_icon_cache is cleared on resolution change.
+                key = ('grey_building', building_type, icon_size)
+                grey = self._ui_icon_cache.get(key)
+                if grey is None:
+                    grey = pygame.transform.grayscale(icon)
+                    grey.fill((205, 205, 205, 255), special_flags=pygame.BLEND_RGBA_MULT)
+                    self._ui_icon_cache[key] = grey
+                icon = grey
+            self.screen.blit(icon, icon.get_rect(center=rect.center))
+            if self.circle_border:
+                border = self._get_cached_ui_icon(self.circle_border, 'circle_border', rect.w)
+                self.screen.blit(border, border.get_rect(center=rect.center))
+        else:
+            # Fallback when the icon art is missing: a letter disc
+            fill = (120, 120, 120) if greyed else (100, 160, 100)
+            pygame.draw.circle(self.screen, fill, rect.center, radius)
+            pygame.draw.circle(self.screen, BLACK, rect.center, radius, 2)
+            letter = self.game_state.building_types.get(building_type, {}).get('letter', '?')
+            letter_surf = self._get_cached_text(letter, self.font, WHITE)
+            self.screen.blit(letter_surf, letter_surf.get_rect(center=rect.center))
+
+    def _draw_building_level_row(self, xp, role, x, y):
+        """Farm/Mine level line in the plot view: one shield per level, "Level N" and
+        the income bonus (just "Level 0" before the first level)."""
+        kit = self.bottom_panel_kit
+        level = xp['level']
+        if level <= 0:
+            kit.left_text("Level 0", role, BROWN_TEXT_SECONDARY, x, y)
+            return
+        if self.level_shield_icon:
+            # The shield art has a wide transparent margin (it drew as dots at text
+            # height): crop it to the opaque shield once, then scale to the line
+            cropped = self._ui_icon_cache.get('level_shield_cropped')
+            if cropped is None:
+                from utils.surface_utils import crop_to_opaque
+                cropped = crop_to_opaque(self.level_shield_icon)
+                self._ui_icon_cache['level_shield_cropped'] = cropped
+            line_h = kit.line_height(role)
+            sh = max(8, int(line_h * 0.9))
+            sw = max(6, int(round(sh * cropped.get_width() / float(max(1, cropped.get_height())))))
+            shield = self._get_cached_scaled_surface(cropped, 'level_shield_bldg_view', sw, sh)
+            for _ in range(level):
+                self.screen.blit(shield, (x, y + (line_h - sh) // 2))
+                x += sw + kit.px(2)
+            x += kit.px(4)
+        x += kit.left_text(f"Level {level}", f"{role}_bold", (232, 180, 60), x, y)
+        if xp['bonus_pct'] > 0:
+            kit.left_text(f"  (+{xp['bonus_pct']}% income)", role, (150, 210, 140), x, y)
+
+    def _draw_plot_building_view(self, building_type, under_construction, lines, button_label,
+                                 button_tint, flash_key, locked=False, xp=None):
+        """
+        Plot view of a finished or under-construction building (owner-designed
+        2026-10-09): the building's icon on the left; right of it the name as a
+        headline, a rule, the description lines (+ the Farm/Mine level row and XP
+        BattleBar), a rule and the Demolish / Cancel button. Under construction, the
+        icon and headline are greyed out. The blocks are spread over the content height.
+
+        Returns the button rect (the caller stores it for handle_bottom_ui_click()).
+        """
+        kit = self.bottom_panel_kit
+        layout = self._plot_building_view_layout()
+        col = layout['column']
+        self._draw_plot_building_icon(building_type, layout['icon'], greyed=under_construction)
+
+        title_h = kit.header_height(building_type, role='title')
+        bar_w = min(col.w, kit.px(self.BUILDING_XP_BAR_W_REF))
+        bar_h = kit.battlebar_height(bar_w)
+        button_w = min(col.w, kit.px(self.BUILDING_BUTTON_W_REF))
+        button_h = kit.button_height(button_w)
+        rule_h = kit.rule_height() + kit.rule_gap()
+        level_gap = kit.px(3)  # Between the level row and its XP bar
+
+        def wrapped(role):
+            return [part for line in lines for part in kit.wrap(line, role, col.w, max_lines=2)]
+
+        def stack_height(role, text_lines):
+            line_h = kit.line_height(role)
+            height = title_h + len(text_lines) * line_h + rule_h + button_h
+            if xp is not None:
+                height += line_h + level_gap + bar_h
+            return height
+
+        # Body font, or the small one if the stack would not fit the content height
+        role = 'body'
+        text_lines = wrapped(role)
+        if stack_height(role, text_lines) > col.h:
+            role = 'small'
+            text_lines = wrapped(role)
+        line_h = kit.line_height(role)
+
+        # Spare height becomes the gaps before each block after the headline (text,
+        # XP, rule, button), capped; what is left over centres the stack vertically
+        blocks = 3 + (1 if xp is not None else 0)
+        spare = max(0, col.h - stack_height(role, text_lines))
+        gap = min(kit.px(10), spare // blocks)
+        y = col.top + (spare - gap * blocks) // 2
+
+        heading_color = (168, 160, 148) if under_construction else BROWN_TEXT_HEADING
+        y = kit.header(col, building_type, color=heading_color, role='title', y=y, align='left')
+        y += gap
+        for line in text_lines:
+            kit.left_text(line, role, BROWN_TEXT_SECONDARY, col.left, y)
+            y += line_h
+        if xp is not None:
+            y += gap
+            self._draw_building_level_row(xp, role, col.left, y)
+            y += line_h + level_gap
+            kit.battlebar(pygame.Rect(col.left, y, bar_w, bar_h), xp['fill'], (185, 155, 80),
+                          text=xp['label'])
+            y += bar_h
+        y = kit.rule(col, y + gap, width_frac=1.0)
+        button = pygame.Rect(col.left, y + gap, button_w, button_h)
+        kit.ornate_button(button, button_label, button_tint, flash_key=flash_key, locked=locked)
+        return button
+
     def _draw_building_ui_section(self):
         """
         Draw building UI when plot is selected.
         
         Phase 5: Extracted from draw_bottom_ui() for maintainability.
         Shows different content based on plot state:
-        - Completed building: Show info and demolish option
-        - Under construction: Show progress and cancel option
-        - Empty plot: Show building options
-        
-        Renders:
-        - Plot title (territory + plot number)
-        - Building info (if built)
-        - Construction info (if building)
-        - Building options (if empty)
-        - Demolish/Cancel buttons
-        
-        Location: Center-right of bottom UI
+        - Completed building (Farm, Mine, Square, Training Grounds): icon, headline,
+          description (+ level and XP bar for Farm/Mine), Demolish
+          (_draw_plot_building_view)
+        - Under construction (any type): greyed icon and headline, description,
+          turns left, Cancel (_draw_plot_building_view)
+        - Empty plot: the building buttons
+
+        A finished Barracks / Keep never gets here: it opens draw_training_ui() /
+        draw_keep_ui() instead.
         """
         territory, plot_index = self.selected_plot
         
@@ -9305,169 +9514,35 @@ class Game:
         build_ui_y = BOTTOM_UI_Y + 30
 
         if building:
-            # Show existing building info - polished format matching Keep/Barracks
+            # Finished building (Farm, Mine, Square, Training Grounds - Barracks and Keep
+            # have their own views): icon, headline, rule, description (+ level row and
+            # XP bar for Farm/Mine), rule, Demolish. Owner-designed 2026-10-09.
             building_info = self.game_state.building_types[building]
+            lines = [self._get_building_effect_text(building_info['effect'], building_info['value'])]
+            xp = self._building_xp_view(territory, plot_index) if building in ('Farm', 'Mine') else None
+            # Confiscate (Erec Silvyr): a Farm/Mine demolish refunds 175%, not 50% (the
+            # destroy_building() rule). The button used to say 50% either way.
+            has_confiscate = (building in ('Farm', 'Mine') and
+                              self.game_state.player_has_silvyr(self.game_state.current_player))
+            label, tint = (("Demolish (175%)", TINT_CONFISCATE) if has_confiscate
+                           else ("Demolish (50%)", TINT_DEMOLISH))
+            # Greyed while the tutorial/mission forbids it - the click handler checks the same
+            self.demolish_button = self._draw_plot_building_view(
+                building, False, lines, label, tint, ('demolish', 'building'),
+                locked=bool(self._is_tutorial_blocking('demolish')), xp=xp)
 
-            # Large building name (same format as Keep)
-            building_title = self._get_cached_text(building, self.large_font, BROWN_TEXT_HEADING)
-            self.screen.blit(building_title, (build_ui_x, build_ui_y))
-            build_ui_y += 40
-
-            # Show effect as bullet point with lighter color
-            effect_color = (200, 200, 200)  # Light gray for consistency
-            effect = building_info['effect']
-            value = building_info['value']
-
-            effect_text = self._get_cached_text(
-                self._get_building_effect_text(effect, value), self.small_font, effect_color)
-            self.screen.blit(effect_text, (build_ui_x, build_ui_y))
-            build_ui_y += 25
-
-            # --- Veterancy: Show XP bar and level info for Farms/Mines ---
-            if building in ('Farm', 'Mine'):
-                bldg_data = self.game_state.get_building_xp_data(territory, plot_index)
-                bldg_level = bldg_data['level']
-                bldg_xp = bldg_data['xp']
-
-                # Level text with shield icons
-                gold_color = (218, 165, 32)
-                if bldg_level > 0 and self.level_shield_icon:
-                    # Draw shield icons inline before level text
-                    s_size = self.scale(12)
-                    cached_s = self._get_cached_scaled_surface(
-                        self.level_shield_icon, 'level_shield_bldg_panel', s_size, s_size)
-                    sx = build_ui_x
-                    for lv in range(bldg_level):
-                        self.screen.blit(cached_s, (sx, build_ui_y))
-                        sx += s_size + 1
-                    # Level text after shields
-                    level_label = self._get_cached_text(f" Level {bldg_level}", self.small_font, gold_color)
-                    self.screen.blit(level_label, (sx, build_ui_y))
-                    # Income bonus text
-                    bonus_pct = int(bldg_level * self.game_state.BUILDING_LEVEL_INCOME_BONUS * 100)
-                    if bonus_pct > 0:
-                        bonus_text = self._get_cached_text(f"  (+{bonus_pct}% income)", self.small_font, (150, 200, 150))
-                        self.screen.blit(bonus_text, (sx + level_label.get_width(), build_ui_y))
-                else:
-                    level_label = self._get_cached_text(f"Level {bldg_level}", self.small_font, (200, 200, 200))
-                    self.screen.blit(level_label, (build_ui_x, build_ui_y))
-                build_ui_y += 22
-
-                # XP progress bar
-                bar_w = 180
-                bar_h = self.scale(6)
-                bar_x = build_ui_x
-                bar_y = build_ui_y
-
-                # Calculate fill ratio
-                if bldg_level < self.game_state.MAX_LEVEL:
-                    prev_t = self.game_state.LEVEL_XP_CUMULATIVE[bldg_level - 1] if bldg_level > 0 else 0
-                    next_t = self.game_state.LEVEL_XP_CUMULATIVE[bldg_level]
-                    xp_in_level = bldg_xp - prev_t
-                    xp_needed = next_t - prev_t
-                    fill = max(0.0, min(1.0, xp_in_level / xp_needed)) if xp_needed > 0 else 0.0
-                    xp_label = f"{xp_in_level}/{xp_needed} XP"
-                else:
-                    fill = 1.0
-                    xp_label = "MAX"
-
-                # Draw bar bg + fill (brass-colored)
-                pygame.draw.rect(self.screen, (60, 50, 40), (bar_x, bar_y, bar_w, bar_h))
-                fill_px = int(bar_w * fill)
-                if fill_px > 0:
-                    pygame.draw.rect(self.screen, (185, 155, 80), (bar_x, bar_y, fill_px, bar_h))
-                # Thin border
-                pygame.draw.rect(self.screen, (100, 90, 70), (bar_x, bar_y, bar_w, bar_h), 1)
-
-                # XP text to the right of bar
-                xp_text = self._get_cached_text(xp_label, self.small_font, (200, 200, 200))
-                self.screen.blit(xp_text, (bar_x + bar_w + 8, bar_y - 2))
-                build_ui_y += bar_h + 10
-
-            # Demolish button (same format as Barracks)
-            demolish_rect = pygame.Rect(build_ui_x, build_ui_y, 180, 30)
-
-            # Tutorial hook: grey out demolish button during tutorial unless allowed
-            _tutorial_demolish_locked = (self.tutorial_mission
-                                         and self.tutorial_mission.active
-                                         and not self.tutorial_mission.is_action_allowed('demolish'))
-
-            if _tutorial_demolish_locked:
-                # Greyed out demolish button during tutorial
-                self.draw_feedback_button(demolish_rect, (80, 80, 80),
-                                          'demolish', 'building',
-                                          text="Demolish (50%)", font=self.small_font,
-                                          text_color=(120, 120, 120))
-            else:
-                # Check if Confiscate is active (Erec Silvyr + Farm/Mine)
-                has_confiscate = (self.game_state.player_has_silvyr(self.game_state.current_player) and
-                                building in ['Farm', 'Mine'])
-
-                if has_confiscate:
-                    # Dark blue glowing button for Confiscate
-                    demolish_color = (30, 60, 150)  # Dark blue
-                    self.draw_feedback_button(demolish_rect, demolish_color,
-                                              'demolish', 'building',
-                                              text="Demolish (50%)", font=self.small_font)
-
-                    # Add glowing effect - draw a bright blue outline
-                    glow_color = (70, 120, 255)  # Bright blue glow
-                    pygame.draw.rect(self.screen, glow_color, demolish_rect, 3)
-                else:
-                    # Normal red demolish button
-                    self.draw_feedback_button(demolish_rect, (150, 100, 100),
-                                              'demolish', 'building',
-                                              text="Demolish (50%)", font=self.small_font)
-
-            self.demolish_button = demolish_rect
-            
         elif under_construction:
-            # Show construction info - polished format matching completed buildings
+            # Under construction (any building type, Barracks and Keep included): greyed
+            # icon and headline, description + turns left, rule, Cancel
             building_type = under_construction[0]  # entry is (building_type, turns_remaining, cost)
             turns_remaining = under_construction[1]
             building_info = self.game_state.building_types[building_type]
-
-            # Large building name with "Under Construction" suffix
-            building_title = self._get_cached_text(f"{building_type} (Under Construction)", self.large_font, BROWN_TEXT_HEADING)
-            self.screen.blit(building_title, (build_ui_x, build_ui_y))
-            build_ui_y += 40
-
-            # Show effect as bullet point with lighter color
-            effect_color = (200, 200, 200)  # Light gray for consistency
-            effect = building_info['effect']
-            value = building_info['value']
-
-            effect_text = self._get_cached_text(
-                self._get_building_effect_text(effect, value), self.small_font, effect_color)
-            self.screen.blit(effect_text, (build_ui_x, build_ui_y))
-            build_ui_y += 22
-
-            # Turns remaining info
-            turns_text = self._get_cached_text(f"- Completes in {turns_remaining} turn{'s' if turns_remaining != 1 else ''}.", self.small_font, effect_color)
-            self.screen.blit(turns_text, (build_ui_x, build_ui_y))
-            build_ui_y += 30
-
-            # Cancel button (same format as Demolish)
-            cancel_rect = pygame.Rect(build_ui_x, build_ui_y, 180, 30)
-
-            # Tutorial hook: grey out cancel button during tutorial unless allowed
-            _tutorial_cancel_locked = (self.tutorial_mission
-                                       and self.tutorial_mission.active
-                                       and not self.tutorial_mission.is_action_allowed('cancel_construction'))
-
-            if _tutorial_cancel_locked:
-                # Greyed out cancel button during tutorial
-                self.draw_feedback_button(cancel_rect, (80, 80, 80),
-                                          'cancel', 'construction',
-                                          # Just "Cancel": the building name made long types overflow the
-                                          # button, and the plot panel above already names it.
-                                          text="Cancel", font=self.small_font,
-                                          text_color=(120, 120, 120))
-            else:
-                self.draw_feedback_button(cancel_rect, (150, 100, 100),
-                                          'cancel', 'construction',
-                                          text="Cancel", font=self.small_font)
-            self.cancel_button = cancel_rect
+            lines = [self._get_building_effect_text(building_info['effect'], building_info['value']),
+                     f"- Completes in {turns_remaining} turn{'s' if turns_remaining != 1 else ''}."]
+            # Just "Cancel": the headline already names the building
+            self.cancel_button = self._draw_plot_building_view(
+                building_type, True, lines, "Cancel", TINT_DEMOLISH, ('cancel', 'construction'),
+                locked=bool(self._is_tutorial_blocking('cancel_construction')))
 
         else:
             # Empty plot - show building options. No "Territory - Plot X" title any
@@ -9683,6 +9758,7 @@ class Game:
         self.forces_cells = []
         self.bottom_panel_tooltip = None  # Re-set by the hovered Forces icon
         self.hero_view_portrait_button = None  # Hero view portrait (pans to its Keep)
+        self.keep_hero_button = None  # Keep view: the Keep's hero card (opens the Hero view)
         # Hero ability slots were only reset inside draw_hero_ui, so after the Hero UI
         # closed their rects stayed clickable over whatever the bottom panel showed next
         self.hero_ability_buttons = {}
@@ -9978,54 +10054,168 @@ class Game:
         ] + (["Click the portrait to view the Hero's Keep on the map."]
              if UIConstants.SIDEBAR_CAMERA_PAN else []))  # Bulleted, like Unit Selection Info
 
+    # Barracks view section widths (fractions right of the End Turn pillar): Barracks
+    # (5 unit buttons) / Training Queue (4 slots) / Barracks Info (2 columns + Demolish).
+    # Checked to fit at 720p-1440p (2026-10-09): unit buttons 57-102 px, queue slots
+    # 27-46 px tall, the longest queue text fits at 720p.
+    BARRACKS_VIEW_WEIGHTS = (0.36, 0.28, 0.36)
+    # Extra px (reference size) above and below the headline rules in this view
+    BARRACKS_HEADER_SPACING_REF = 3
+    # Share of the spare height above the unit button row (0.5 = centred)
+    BARRACKS_UNIT_ROW_TOP_FRAC = 0.35
+    TRAINING_UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
+    # Keyboard shortcuts listed in Barracks Info (input/keyboard_handler._TRAINING_SHORTCUTS)
+    TRAINING_HOTKEYS = (('S', 'Swordsman'), ('A', 'Archer'), ('P', 'Pikeman'),
+                        ('C', 'Cavalry'), ('T', 'Captain'))
+
+    def _barracks_view_layout(self):
+        """Barracks view sections: units / queue / info (see _section_layout)."""
+        return self._section_layout(('units', 'queue', 'info'), self.BARRACKS_VIEW_WEIGHTS)
+
+    def _header_with_count(self, rect, title, count_text, count_color, spacing=0):
+        """kit.header() with a count after the title in its own colour, e.g.
+        "Training Queue (4/4)" with the count red when full. `spacing` as in
+        kit.header() (px above and below the rule). Returns the content y."""
+        kit = self.bottom_panel_kit
+        role = 'heading'
+        full = f"{title} {count_text}"
+        title_w = kit.font(role).size(title + " ")[0]
+        x = rect.centerx - kit.font(role).size(full)[0] // 2
+        kit.left_text(title + " ", role, BOTTOM_GOLD_TEXT, x, rect.top)
+        kit.left_text(count_text, role, count_color, x + title_w, rect.top)
+        return kit.rule(rect, rect.top + kit.line_height(role) + kit.px(1) + spacing) + spacing
+
+    def _draw_section_button(self, rect, label, tint, flash_key, locked=False):
+        """
+        A rule and a centred ornate button at the bottom of a section (Barracks Info /
+        Hero Info: Demolish). Returns (button_rect, y): y is where the rule starts,
+        i.e. the bottom of the space left for the section's other content.
+        """
+        kit = self.bottom_panel_kit
+        button_w = min(rect.w, kit.px(self.BUILDING_BUTTON_W_REF))
+        button_h = kit.button_height(button_w)
+        button = pygame.Rect(0, rect.bottom - button_h, button_w, button_h)
+        button.centerx = rect.centerx
+        rule_y = button.top - kit.rule_gap() - kit.rule_height()
+        kit.rule(rect, rule_y)
+        kit.ornate_button(button, label, tint, flash_key=flash_key, locked=locked)
+        return button, rule_y - kit.rule_gap()
+
+    def _draw_queue_row(self, rect, text, color, cancel_flash_key, cancel_locked):
+        """
+        One training-queue entry: a stretched ResourceSlot wood frame (owner choice)
+        with the entry text on the left and a small red X on the right. Shared by the
+        Barracks queue and the Keep's Training Status. Returns the X's rect.
+        """
+        kit = self.bottom_panel_kit
+        border = max(3, int(rect.h * 0.17))
+        # Cached per size (SidebarWidgets.nine_slice) - no per-frame surfaces
+        frame = self.sidebar_widgets.nine_slice('wood', rect.size, border, fill=(30, 22, 16))
+        self.screen.blit(frame, rect.topleft)
+
+        x_size = max(10, rect.h - 2 * border - 2)
+        cancel = pygame.Rect(0, 0, x_size, x_size)
+        cancel.midright = (rect.right - border - kit.px(4), rect.centery)
+        if cancel_locked:
+            # Greyed while the tutorial/mission forbids cancelling
+            fill, edge, mark = (80, 80, 80), (60, 60, 60), (130, 130, 130)
+        else:
+            fill, edge, mark = (170, 62, 50), (226, 186, 110), WHITE
+            if self.clicked_element == cancel_flash_key:
+                fill = brighten_color(fill, 0.4)
+            elif cancel.collidepoint(self.mouse_pos):
+                fill = lighten_color(fill, 0.2)
+        pygame.draw.rect(self.screen, fill, cancel, border_radius=3)
+        pygame.draw.rect(self.screen, edge, cancel, 1, border_radius=3)
+        x_role = 'small_bold'
+        x_surf = kit.text("X", x_role, mark)
+        self.screen.blit(x_surf, x_surf.get_rect(center=cancel.center))
+
+        text_x = rect.left + border + kit.px(6)
+        avail = max(20, cancel.left - kit.px(6) - text_x)
+        role = 'small'
+        kit.left_text(kit.fit(text, role, avail), role, color, text_x,
+                      rect.centery - kit.font(role).get_height() // 2)
+        return cancel
+
+    def _draw_fact_columns(self, rect, columns):
+        """
+        Side-by-side columns of (text, colour) lines in `rect`: each column's lines are
+        left-aligned, and the columns are centred together as one block with a fixed
+        gap between them (centring each in its own half pushed them to the edges).
+        Body font, or small if the longest column does not fit the height; the lines
+        are spaced to use it (capped). Bounds-checked. Returns the font role used.
+        """
+        kit = self.bottom_panel_kit
+        rows = max(len(col) for col in columns)
+        role = 'body' if rows * kit.line_height('body') <= rect.h else 'small'
+        line_h = kit.line_height(role)
+        gap = max(0, min(kit.px(6), (rect.h - rows * line_h) // max(1, rows)))
+        col_gap = kit.px(40)
+        max_col_w = max(20, (rect.w - col_gap * (len(columns) - 1)) // len(columns))
+        fitted = [[(kit.fit(text, role, max_col_w), color) for text, color in col] for col in columns]
+        widths = [max(kit.font(role).size(text)[0] for text, _color in col) for col in fitted]
+        x = rect.left + max(0, (rect.w - sum(widths) - col_gap * (len(columns) - 1)) // 2)
+        for col, col_w in zip(fitted, widths):
+            y = rect.top + gap // 2
+            for text, color in col:
+                if y + line_h > rect.bottom + 1:
+                    break  # bounds check - never render past the section
+                kit.left_text(text, role, color, x, y)
+                y += line_h + gap
+            x += col_w + col_gap
+        return role
+
     def draw_training_ui(self):
-        """Draw training interface when Barracks is selected"""
+        """
+        Draw the Barracks view (a finished Barracks selected).
+
+        Sections (owner-designed 2026-10-09), each a centred headline + gold rule:
+            Barracks:            the five unit training buttons in a centred row
+            Training Queue (n/4): the queued units in 4 fixed slots (ResourceSlot rows)
+            Hotkeys:             the training hotkeys, then a rule and the Demolish button
+        The headlines have a little extra space around their rules.
+        """
         territory, barracks_plot_index = self.selected_barracks
+        gs = self.game_state
+        kit = self.bottom_panel_kit
+        current_player = gs.current_player
+        layout = self._barracks_view_layout()
+        rects = layout['rects']
+        for pillar_x in layout['pillars']:
+            self.draw_separator(pillar_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
 
-        # Panel starting position (right after player info separator - dynamic)
-        panel_x = int(WINDOW_WIDTH * 0.194)  # Matches player info separator position
-        panel_y = BOTTOM_UI_Y + 30
-
-        # Left info section - 30 pixels from the separator for breathing room
-        info_x = panel_x + 30
-        info_y = panel_y
-
-        # Draw title
-        title_text = self._get_cached_text("Barracks", self.large_font, BROWN_TEXT_HEADING)
-        self.screen.blit(title_text, (info_x, info_y))
-        info_y += 35
-
-        # Draw current gold and income
-        current_gold = self.game_state.player_gold[self.game_state.current_player]
-        current_income = self.game_state.calculate_player_income(self.game_state.current_player)
-        gold_text = self._get_cached_text(f"Gold: {current_gold}G (+{current_income}/turn)", self.small_font, (218, 165, 32))
-        self.screen.blit(gold_text, (info_x, info_y))
-        info_y += 22
-
-        # Get current queue info
-        queue_count = 0
-        if (territory in self.game_state.training_queue and
-            barracks_plot_index in self.game_state.training_queue[territory]):
-            queue_count = len(self.game_state.training_queue[territory][barracks_plot_index])
-
-        # Display units in queue
-        queue_text = self._get_cached_text(f"Queue: {queue_count}/4", self.small_font, BROWN_TEXT_SECONDARY)
-        self.screen.blit(queue_text, (info_x, info_y))
-        info_y += 22
-
+        current_gold = gs.player_gold[current_player]
+        queue = gs.training_queue.get(territory, {}).get(barracks_plot_index, [])
+        queue_count = len(queue)
         # Display armies in territory (include ALL garrisons)
-        current_armies = self.game_state.get_territory_total_armies(territory)
-        armies_text = self._get_cached_text(f"Armies: {current_armies}/{self.game_state.MAX_ARMIES_PER_TERRITORY}", self.small_font, BROWN_TEXT_SECONDARY)
-        self.screen.blit(armies_text, (info_x, info_y))
+        current_armies = gs.get_territory_total_armies(territory)
+        at_army_limit = current_armies >= gs.MAX_ARMIES_PER_TERRITORY
+        # Command limit: player's total army count against their limit
+        command_count = gs.get_player_army_count(current_player)
+        command_limit = gs.player_command_limit[current_player]
+        at_command_limit = command_count >= command_limit
+        can_queue = queue_count < gs.MAX_TRAINING_QUEUE  # same limit as start_training()
 
-        # Training buttons - sized to fit 5 unit types (Swordsman, Archer, Pikeman, Cavalry, Captain)
-        button_y = panel_y
-        button_width = int(BUTTON_SIZE_SQUARE * 1.2)
-        button_height = int(BUTTON_SIZE_SQUARE * 1.2)
-        button_spacing = BUTTON_SPACING
-        button_x = info_x + 150  # Position to the right of the info section
-        
-        # Unit type colors (for button backgrounds)
+        # === SECTION 1: BARRACKS (unit buttons) ===
+        # The old gold / queue / armies lines and "Not enough gold" status are gone (the
+        # queue count is in its headline); the buttons' red tint shows refusals
+        units_rect = rects['units']
+        # A little more air between the headlines and their rules (owner: the rule sat
+        # too close to "Barracks"); all three sections use it so the rules stay level
+        header_spacing = kit.px(self.BARRACKS_HEADER_SPACING_REF)
+        y = kit.header(units_rect, "Barracks", spacing=header_spacing)
+        button_spacing = kit.px(10)
+        slots = len(self.TRAINING_UNIT_ORDER)
+        button_size = max(24, min(kit.px(72), units_rect.bottom - y,
+                                  (units_rect.w - button_spacing * (slots - 1)) // slots))
+        row_w = slots * button_size + (slots - 1) * button_spacing
+        button_x = units_rect.centerx - row_w // 2
+        # Spare height above the row: a bit less than half (owner: the centred row sat
+        # a little far below the rule)
+        button_y = y + max(0, int((units_rect.bottom - y - button_size) * self.BARRACKS_UNIT_ROW_TOP_FRAC))
+
+        # Unit type colors (for fallback letter buttons)
         unit_colors = {
             'Swordsman': (100, 100, 150),  # Blue-gray
             'Archer': (100, 150, 100),     # Green
@@ -10033,29 +10223,13 @@ class Game:
             'Cavalry': (180, 140, 60),     # Gold
             'Captain': (160, 120, 180)     # Purple
         }
-        
-        # Check army limit (reuse current_armies from above)
-        at_army_limit = current_armies >= self.game_state.MAX_ARMIES_PER_TERRITORY
-        # Command limit: show red hue when player's total army count >= limit
-        at_command_limit = self.game_state.get_player_army_count(self.game_state.current_player) >= self.game_state.player_command_limit[self.game_state.current_player]
 
-        # Reuse queue_count from above
-        can_queue = queue_count < self.game_state.MAX_TRAINING_QUEUE  # same limit as start_training()
-        
-        # Store training buttons for click detection
         self.train_buttons = {}
-        any_affordable = False  # Bug 4 fix: track if ANY unit is affordable
-
-        # Draw 5 training buttons (one for each unit type including Captain)
-        for unit_type in ['Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain']:
-            unit_info = self.game_state.UNIT_TYPES[unit_type]
+        for unit_type in self.TRAINING_UNIT_ORDER:
+            unit_info = gs.UNIT_TYPES[unit_type]
             # Use discounted cost for affordability check (fixes red tint persisting after discount)
-            unit_cost = self.game_state.get_effective_cost(unit_type, unit_info['cost'])
-            unit_letter = unit_info['letter']
-
+            unit_cost = gs.get_effective_cost(unit_type, unit_info['cost'])
             can_afford = current_gold >= unit_cost
-            if can_afford:
-                any_affordable = True  # Bug 4 fix: track across all unit types
             is_available = can_afford and can_queue and not at_army_limit and not at_command_limit
 
             # Tutorial hook: override training button availability
@@ -10069,248 +10243,118 @@ class Game:
                     training_locked = True
                     is_available = False
 
-            # Create button rect
-            train_button_rect = pygame.Rect(button_x, button_y, button_width, button_height)
-
-            # Check hover and click state
+            train_button_rect = pygame.Rect(button_x, button_y, button_size, button_size)
             is_hovering = train_button_rect.collidepoint(self.mouse_pos)
             is_clicking = (self.clicked_element and
-                          self.clicked_element[0] == 'training' and
-                          self.clicked_element[1] == unit_type)
+                           self.clicked_element[0] == 'training' and
+                           self.clicked_element[1] == unit_type)
 
-            # Get unit icon
             unit_icon = self.unit_icons.get(unit_type)
-
             if unit_icon:
-                # PERFORMANCE OPTIMIZATION: Use cached scaled icon (fixes 80→40 FPS drop)
-                icon_size = min(button_width, button_height) - 4  # Slightly smaller than button
+                # PERFORMANCE: cached scaled icon (fixes 80->40 FPS drop)
+                icon_size = button_size - 4  # Slightly smaller than button
                 cached_icon = self._get_cached_ui_icon(unit_icon, f'unit_{unit_type}', icon_size)
 
-                # Create working copy for overlays (only when effects are needed)
+                # Working copy only when an overlay is needed
                 display_icon = cached_icon
                 if not is_available or is_clicking or is_hovering:
-                    display_icon = cached_icon.copy()  # Only copy when we need to apply effects
-
-                    # Apply tint overlay if unavailable (cached by icon_size): grey when
-                    # locked by the tutorial/mission, red when a game rule refuses it
+                    display_icon = cached_icon.copy()
+                    overlays = self._cached_training_overlays.setdefault(icon_size, {})
+                    # Tint when unavailable (cached by icon_size): grey when locked by
+                    # the tutorial/mission, red when a game rule refuses it
                     if not is_available:
-                        if icon_size not in self._cached_training_overlays:
-                            self._cached_training_overlays[icon_size] = {}
-                        overlays = self._cached_training_overlays[icon_size]
                         tint_key = 'grey' if training_locked else 'red'
                         if tint_key not in overlays:
                             s = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
                             s.fill((110, 110, 110, 255) if training_locked else (255, 100, 100, 128))
                             overlays[tint_key] = s
                         display_icon.blit(overlays[tint_key], (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-
-                    # Apply hover/click brightness effects (cached by icon_size)
-                    if is_clicking:
-                        if icon_size not in self._cached_training_overlays:
-                            self._cached_training_overlays[icon_size] = {}
-                        overlays = self._cached_training_overlays[icon_size]
-                        if 'bright' not in overlays:
+                    # Hover/click brightness (cached by icon_size)
+                    if is_clicking or is_hovering:
+                        key = 'bright' if is_clicking else 'light'
+                        if key not in overlays:
                             s = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                            s.fill((100, 100, 100, 100))
-                            overlays['bright'] = s
-                        display_icon.blit(overlays['bright'], (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                    elif is_hovering:
-                        if icon_size not in self._cached_training_overlays:
-                            self._cached_training_overlays[icon_size] = {}
-                        overlays = self._cached_training_overlays[icon_size]
-                        if 'light' not in overlays:
-                            s = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                            s.fill((50, 50, 50, 50))
-                            overlays['light'] = s
-                        display_icon.blit(overlays['light'], (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+                            s.fill((100, 100, 100, 100) if is_clicking else (50, 50, 50, 50))
+                            overlays[key] = s
+                        display_icon.blit(overlays[key], (0, 0), special_flags=pygame.BLEND_RGB_ADD)
 
-                # Blit final icon
-                icon_rect = display_icon.get_rect(center=train_button_rect.center)
-                self.screen.blit(display_icon, icon_rect)
-
-                # PERFORMANCE OPTIMIZATION: Cache border scaling too
-                # Border is 2px larger than icon (1px per side) to fully contain icon edges
+                self.screen.blit(display_icon, display_icon.get_rect(center=train_button_rect.center))
+                # Border 2 px larger than the icon (1 px per side) to contain its edges
                 if self.icon_border:
                     cached_border = self._get_cached_ui_icon(self.icon_border, 'icon_border', icon_size + 2)
-                    border_rect = cached_border.get_rect(center=train_button_rect.center)
-                    self.screen.blit(cached_border, border_rect)
+                    self.screen.blit(cached_border, cached_border.get_rect(center=train_button_rect.center))
             else:
-                # Fallback to letter button if icon not available
-                # Grey when locked by the tutorial/mission, red when a game rule refuses it
+                # Fallback letter button: grey when locked by the tutorial/mission,
+                # red when a game rule refuses it
                 if is_available:
                     button_color = unit_colors[unit_type]
                 else:
                     button_color = (120, 120, 120) if training_locked else (200, 100, 100)
-                self.draw_letter_button(train_button_rect, unit_letter, button_color, letter_color=WHITE,
-                                       button_type='training', button_id=unit_type)
+                self.draw_letter_button(train_button_rect, unit_info['letter'], button_color,
+                                        letter_color=WHITE, button_type='training', button_id=unit_type)
 
-            # Tutorial hook: draw green highlight border if button is highlighted
+            # Tutorial hook: pulsing green border on a highlighted button
             if self._is_tutorial_active():
-                btn_id = f'training_{unit_type}'
-                if self.tutorial_mission.should_highlight_button(btn_id):
-                    # Pulsing green glow border
+                if self.tutorial_mission.should_highlight_button(f'training_{unit_type}'):
                     pulse = int(180 + 75 * math.sin(pygame.time.get_ticks() / 200.0))
                     pygame.draw.rect(self.screen, (50, 255, 50, pulse), train_button_rect, 3)
 
-            # Store button for click detection
             self.train_buttons[unit_type] = train_button_rect
+            button_x += button_size + button_spacing
 
-            # Move to next button position
-            button_x += button_width + button_spacing
-        
-        # Move panel_y down past the buttons
-        panel_y += button_height + 15
-        # Status messages below the buttons (if needed)
-        status_x = button_x
-        if at_army_limit:
-            status_text = self._get_cached_text("ARMY LIMIT REACHED", self.small_font, (180, 0, 0))
-            self.screen.blit(status_text, (status_x, panel_y))
-        elif not any_affordable:  # Bug 4 fix: check if ANY unit is affordable, not just last one
-            status_text = self._get_cached_text("Not enough gold", self.small_font, (150, 0, 0))
-            self.screen.blit(status_text, (status_x, panel_y))
-        elif not can_queue:
-            status_text = self._get_cached_text("Queue full", self.small_font, (150, 0, 0))
-            self.screen.blit(status_text, (status_x, panel_y))
-        panel_y += UI_LINE_SPACING_SMALL
-
-        # Draw first vertical divider line (between training controls and queue)
-        # Calculate position: info section (150px) + buttons (5 unit types + spacing) + margin
-        divider_x = info_x + 150 + (button_width * 5) + (button_spacing * 4) + 20
-        self.draw_separator(divider_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-        
-        # Draw training queue on the right
-        queue_x = divider_x + 20
-        queue_y = BOTTOM_UI_Y + 30
-        
-        # PERFORMANCE: Use cached static text
-        queue_title = self._get_cached_text("Training Queue:", self.font, BROWN_TEXT_HEADING)
-        self.screen.blit(queue_title, (queue_x, queue_y))
-        queue_y += 30
-        
-        # Initialize queue cancel buttons
+        # === SECTION 2: TRAINING QUEUE (n/4) ===
+        queue_rect = rects['queue']
+        max_queue = gs.MAX_TRAINING_QUEUE
+        count_color = (232, 82, 70) if queue_count >= max_queue else BOTTOM_GOLD_TEXT
+        y = self._header_with_count(queue_rect, "Training Queue", f"({queue_count}/{max_queue})", count_color,
+                                    spacing=header_spacing)
+        slot_gap = kit.px(5)
+        slot_h = max(16, (queue_rect.bottom - y - slot_gap * (max_queue - 1)) // max_queue)
         self.queue_cancel_buttons = []
-        
-        # Display queue items
-        if (territory in self.game_state.training_queue and 
-            barracks_plot_index in self.game_state.training_queue[territory]):
-            queue = self.game_state.training_queue[territory][barracks_plot_index]
-            
-            for i, entry in enumerate(queue):
-                unit_type, turns_remaining = entry[0], entry[1]
-                # Queue item background
-                item_rect = pygame.Rect(queue_x, queue_y, 280, 30)
-                pygame.draw.rect(self.screen, (220, 220, 220), item_rect)
-                pygame.draw.rect(self.screen, BLACK, item_rect, 1)
-                
-                # Unit info
+        # Tutorial hook: grey out the X buttons unless cancelling is allowed (the click
+        # handler blocks it with the same check)
+        cancel_locked = bool(self._is_tutorial_blocking('cancel_training'))
+        if queue:
+            for i, entry in enumerate(queue[:max_queue]):
+                unit_type, turns_remaining = entry[0], entry[1]  # (unit_type, turns, cost_paid)
                 if i == 0:
                     # First in queue - currently training
                     if turns_remaining == 0:
                         # Training paused due to army limit
-                        unit_text = self._get_cached_text(f"{unit_type} (Army Limit Reached)", self.small_font, (180, 0, 0))
+                        text, color = f"{unit_type} (Army Limit Reached)", (232, 82, 70)
                     else:
-                        unit_text = self._get_cached_text(f"{unit_type} (training... {turns_remaining} turn)", self.small_font, (0, 100, 0))
+                        turn_word = "turn" if turns_remaining == 1 else "turns"
+                        text, color = f"{unit_type} (training... {turns_remaining} {turn_word})", (120, 210, 105)
                 else:
-                    # Waiting in queue
-                    unit_text = self._get_cached_text(f"{unit_type} (waiting)", self.small_font, GRAY)
-                self.screen.blit(unit_text, (queue_x + 5, queue_y + 7))
-
-                # Cancel button
-                cancel_rect = pygame.Rect(queue_x + 250, queue_y + 5, 20, 20)
-
-                # Base color
-                # Tutorial hook: grey out cancel button during tutorial unless allowed
-                _tutorial_cancel_locked = (self.tutorial_mission
-                                           and self.tutorial_mission.active
-                                           and not self.tutorial_mission.is_action_allowed('cancel_training'))
-                if _tutorial_cancel_locked:
-                    button_color = (80, 80, 80)
-                else:
-                    button_color = (200, 100, 100)
-                    # Check hover
-                    is_hovering = cancel_rect.collidepoint(self.mouse_pos)
-                    # Check click
-                    is_clicking = (self.clicked_element and
-                                  self.clicked_element[0] == 'queue_cancel' and
-                                  self.clicked_element[1] == i)
-                    # Apply feedback
-                    if is_clicking:
-                        button_color = brighten_color(button_color, 0.4)
-                    elif is_hovering:
-                        button_color = lighten_color(button_color, 0.2)
-
-                pygame.draw.rect(self.screen, button_color, cancel_rect)
-                pygame.draw.rect(self.screen, BLACK, cancel_rect, 1)
-                cancel_text_color = (120, 120, 120) if _tutorial_cancel_locked else WHITE
-                cancel_text = self._get_cached_text("X", self.small_font, cancel_text_color)
-                cancel_text_rect = cancel_text.get_rect(center=cancel_rect.center)
-                self.screen.blit(cancel_text, cancel_text_rect)
-
-                # Store for click detection
+                    text, color = f"{unit_type} (waiting)", (180, 174, 164)
+                # Fixed slot positions: rows never shift with the queue length
+                row = pygame.Rect(queue_rect.left, y + i * (slot_h + slot_gap), queue_rect.w, slot_h)
+                cancel_rect = self._draw_queue_row(row, text, color, ('queue_cancel', i), cancel_locked)
                 self.queue_cancel_buttons.append((cancel_rect, i))
-
-                queue_y += 35
         else:
-            empty_text = self._get_cached_text("No units in queue", self.small_font, BROWN_TEXT_SECONDARY)
-            self.screen.blit(empty_text, (queue_x, queue_y))
-        
-        # Draw second vertical divider line (between queue and tips)
-        divider_x2 = queue_x + 320
-        self.draw_separator(divider_x2, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-        
-        # Draw tips and controls section on the right
-        tips_x = divider_x2 + 20
-        tips_y = BOTTOM_UI_Y + 30
+            kit.centered_text("No units in queue", 'body', BROWN_TEXT_SECONDARY, queue_rect.centerx,
+                              y + kit.px(6))
 
-        # Section title - PERFORMANCE: Use cached static text
-        tips_title = self._get_cached_text("Controls", self.font, BROWN_TEXT_HEADING)
-        self.screen.blit(tips_title, (tips_x, tips_y))
-        tips_y += 35
-
-        # Keyboard shortcut hints - all static labels cached
-        shortcut_text = self._get_cached_text("Keyboard Shortcuts:", self.small_font, BROWN_TEXT_PRIMARY)
-        self.screen.blit(shortcut_text, (tips_x, tips_y))
-        tips_y += 20
-
-        shortcut_hint = self._get_cached_text("S = Swordsman", self.small_font, BROWN_TEXT_SECONDARY)
-        self.screen.blit(shortcut_hint, (tips_x, tips_y))
-        tips_y += 18
-
-        shortcut_hint = self._get_cached_text("A = Archer", self.small_font, BROWN_TEXT_SECONDARY)
-        self.screen.blit(shortcut_hint, (tips_x, tips_y))
-        tips_y += 18
-
-        shortcut_hint = self._get_cached_text("P = Pikeman", self.small_font, BROWN_TEXT_SECONDARY)
-        self.screen.blit(shortcut_hint, (tips_x, tips_y))
-        tips_y += 18
-
-        shortcut_hint = self._get_cached_text("C = Cavalry", self.small_font, BROWN_TEXT_SECONDARY)
-        self.screen.blit(shortcut_hint, (tips_x, tips_y))
-        tips_y += 30
-        
-        # Demolish button (refund percentage depends on Makeshift Barracks upgrade)
-        refund_percent = "100%" if self.game_state.player_barracks_full_refund[self.game_state.current_player] else "50%"
-        demolish_rect = pygame.Rect(tips_x, tips_y, 180, 30)
-        # Tutorial hook: grey out demolish during tutorial unless allowed
-        _tutorial_demolish_locked = (self.tutorial_mission
-                                     and self.tutorial_mission.active
-                                     and not self.tutorial_mission.is_action_allowed('demolish'))
-        if _tutorial_demolish_locked:
-            self.draw_feedback_button(demolish_rect, (80, 80, 80),
-                                      'demolish', 'barracks',
-                                      text=f"Demolish Barracks ({refund_percent})",
-                                      font=self.small_font, text_color=(120, 120, 120))
-        else:
-            self.draw_feedback_button(demolish_rect, (150, 100, 100),
-                                      'demolish', 'barracks',
-                                      text=f"Demolish Barracks ({refund_percent})",
-                                      font=self.small_font)
-        
-        # Store for click detection
-        self.demolish_barracks_button = demolish_rect
+        # === SECTION 3: HOTKEYS (+ Demolish) ===
+        # Was "Barracks Info" with gold / armies / command lines too; the owner dropped
+        # those (2026-10-09), so only the hotkeys remain and the headline says so
+        info_rect = rects['info']
+        y = kit.header(info_rect, "Hotkeys", spacing=header_spacing)
+        # Demolish refund depends on the Makeshift Barracks upgrade. Just "Demolish":
+        # the headline names the building and the longer label did not fit the button.
+        refund_percent = "100%" if gs.player_barracks_full_refund[current_player] else "50%"
+        self.demolish_barracks_button, rows_bottom = self._draw_section_button(
+            info_rect, f"Demolish ({refund_percent})", TINT_DEMOLISH, ('demolish', 'barracks'),
+            locked=bool(self._is_tutorial_blocking('demolish')))
         self.demolish_barracks_territory = territory
         self.demolish_barracks_plot_index = barracks_plot_index
-        
+
+        # Hotkeys (Captain = T was missing from the old list) in two columns, S/A/P and
+        # C/T: five lines in one column only fit in the small font
+        hotkeys = [(f"[{key}] {unit}", BROWN_TEXT_SECONDARY) for key, unit in self.TRAINING_HOTKEYS]
+        self._draw_fact_columns(pygame.Rect(info_rect.left, y, info_rect.w, max(1, rows_bottom - y)),
+                                [hotkeys[:3], hotkeys[3:]])
+
         # Track button hover for tooltips (will be drawn with delay in main loop)
         mouse_pos = pygame.mouse.get_pos()
         current_hover = None
@@ -10318,70 +10362,169 @@ class Game:
             if button_rect.collidepoint(mouse_pos):
                 current_hover = ('training', unit_type)
                 break
-        
-        # Update hover tracking using helper (Phase 1D)
         self.update_button_hover(current_hover, 'training')
 
+    # Keep view section widths (fractions right of the End Turn pillar): Keep (4x2 hero
+    # portraits) / Castle upgrade / Training Status / Hero Info (+ Demolish). Checked to
+    # fit at 720p-1440p (2026-10-09): portraits 55-98 px, Castle icon 107-205 px.
+    KEEP_VIEW_WEIGHTS = (0.28, 0.15, 0.22, 0.35)
+    KEEP_HERO_COLUMNS = 4
+    CASTLE_UPGRADE_COST = 150  # game_state.start_castle_upgrade() UPGRADE_COST
+
+    def _keep_view_layout(self):
+        """Keep view sections: heroes / castle / training / info (see _section_layout)."""
+        return self._section_layout(('heroes', 'castle', 'training', 'info'), self.KEEP_VIEW_WEIGHTS)
+
+    def _castle_section_geometry(self, rect):
+        """(icon rect, bar rect) of the Castle upgrade section: the icon as big as the
+        section allows above the progress bar's slot, both centred. The icon keeps
+        this spot in every state (available / upgrading / Castle)."""
+        kit = self.bottom_panel_kit
+        bar_h = kit.px(22)
+        gap = kit.px(5)
+        size = max(24, min(kit.px(144), rect.w, rect.h - bar_h - gap))
+        top = rect.top + max(0, (rect.h - size - gap - bar_h) // 2)
+        icon = pygame.Rect(0, top, size, size)
+        icon.centerx = rect.centerx
+        bar_w = min(rect.w, int(size * 1.05))
+        bar = pygame.Rect(0, icon.bottom + gap, bar_w, bar_h)
+        bar.centerx = rect.centerx
+        return icon, bar
+
+    def _draw_keep_hero_card(self, area, hero_name):
+        """
+        Keep view: the hero residing at this Keep - portrait, then the name and title
+        (1-2 lines) to its right, the pair centred in `area`. The whole card opens the
+        Hero view like the Territory view's Forces portrait (_select_hero); hover and
+        click flash brighten the portrait and its frame. Stores self.keep_hero_button
+        = (card rect, hero_name) for handle_bottom_ui_click().
+        """
+        kit = self.bottom_panel_kit
+        gap = kit.px(12)
+        size = max(24, min(kit.px(90), area.h, int(area.w * 0.4)))
+        text_w = max(40, area.w - size - gap)
+        name_role = 'heading' if kit.font('heading').size(hero_name)[0] <= text_w else 'body_bold'
+        name = kit.fit(hero_name, name_role, text_w)
+        title = ' '.join(self.game_state.HERO_TYPES.get(hero_name, {}).get('description', []))
+        title_lines = kit.wrap(title, 'italic', text_w, max_lines=2) if title else []
+        block_w = max([kit.font(name_role).size(name)[0]] +
+                      [kit.font('italic').size(line)[0] for line in title_lines])
+        x = area.left + max(0, (area.w - size - gap - block_w) // 2)
+        # Spare height: a bit less above than below, like the portrait grid
+        top = area.top + max(0, int((area.h - size) * self.BARRACKS_UNIT_ROW_TOP_FRAC))
+        portrait_rect = pygame.Rect(x, top, size, size)
+        card = portrait_rect.union(pygame.Rect(portrait_rect.right, top, gap + block_w, size))
+
+        flash_key = ('bottom_button', ('keep_hero', hero_name))
+        is_clicking = self.clicked_element == flash_key
+        is_hovering = card.collidepoint(self.mouse_pos)
+        image = self.hero_images.get(hero_name)
+        if image:
+            base = self._get_cached_scaled_surface(image, f'hero_{hero_name}', size, size)
+            self.screen.blit(self._apply_icon_overlay(base, is_clicking, is_hovering), portrait_rect.topleft)
+        else:
+            # Fallback: letter tile
+            pygame.draw.rect(self.screen, (150, 100, 200), portrait_rect, border_radius=6)
+            letter = self.game_state.HERO_TYPES.get(hero_name, {}).get('letter', hero_name[0])
+            kit.centered_text(letter, 'title', WHITE, portrait_rect.centerx,
+                              portrait_rect.centery - kit.line_height('title') // 2)
+        frame = (255, 232, 160) if (is_hovering or is_clicking) else (212, 170, 80)
+        pygame.draw.rect(self.screen, frame, portrait_rect, max(2, kit.px(2)), border_radius=4)
+
+        # Name (gold) and title (bronze italic, as in the Hero view), centred on the portrait
+        name_h = kit.line_height(name_role)
+        title_h = kit.line_height('italic')
+        text_h = name_h + kit.px(3) + len(title_lines) * title_h
+        tx = portrait_rect.right + gap
+        ty = portrait_rect.centery - text_h // 2
+        kit.left_text(name, name_role, BOTTOM_GOLD_TEXT, tx, ty)
+        ty += name_h + kit.px(3)
+        for line in title_lines:
+            kit.left_text(line, 'italic', (232, 170, 100), tx, ty)
+            ty += title_h
+        self.keep_hero_button = (card, hero_name)
+
+    def _draw_hero_training_progress(self, rect, hero_type, turns_remaining):
+        """Keep view Training Status: the hero in a ResourceSlot row with its X, then a
+        progress bar and "N turns remaining" - the sidebar Heroes tab's training card
+        style (ui_renderer._draw_hero_card). Returns the X's rect."""
+        kit = self.bottom_panel_kit
+        slot_gap = kit.px(5)
+        row_h = max(16, (rect.h - 3 * slot_gap) // 4)  # Same row height as the Barracks queue
+        row = pygame.Rect(rect.left, rect.top, rect.w, row_h)
+        cancel = self._draw_queue_row(row, hero_type, (245, 235, 210), ('hero_cancel', 'training'), False)
+
+        # done / total turns; total from HERO_TYPES training_time (as the sidebar card)
+        total = max(1, int(self.game_state.HERO_TYPES.get(hero_type, {}).get('training_time', turns_remaining) or 1))
+        total = max(total, int(turns_remaining))
+        frac = (total - turns_remaining) / float(total)
+        bar = pygame.Rect(0, row.bottom + kit.px(10), int(rect.w * 0.9), max(6, kit.px(12)))
+        bar.centerx = rect.centerx
+        pygame.draw.rect(self.screen, (28, 20, 16), bar, border_radius=3)
+        if frac > 0:
+            fill = bar.inflate(-4, -4)
+            fill.w = max(1, int(fill.w * frac))
+            pygame.draw.rect(self.screen, (196, 150, 60), fill, border_radius=2)
+        pygame.draw.rect(self.screen, (120, 86, 34), bar, 1, border_radius=3)
+        self.keep_training_bar = (bar, frac)  # For the tests
+        turn_word = "turn" if turns_remaining == 1 else "turns"
+        kit.centered_text(f"{turns_remaining} {turn_word} remaining", 'small', (226, 210, 178),
+                          rect.centerx, bar.bottom + kit.px(4))
+        return cancel
+
     def draw_keep_ui(self):
-        """Draw Hero training interface when Keep is selected"""
+        """
+        Draw the Keep view (a finished Keep or Castle selected).
+
+        Sections (owner-designed 2026-10-09):
+            Keep / Castle:   headline + rule, the hero portraits in a fixed 4x2 grid
+            Castle upgrade:  no headline - the upgrade icon (available / upgrading with
+                             its turns bar and X / Castle done, not clickable)
+            Training Status: headline + rule, the hero in training (ResourceSlot row
+                             with X) + progress bar, as on the sidebar Heroes tab
+            Hero Info:       headline + rule, Hero Limit and the rules, then a rule and
+                             the Demolish button
+        """
         territory, keep_plot_index = self.selected_keep
+        gs = self.game_state
+        kit = self.bottom_panel_kit
+        current_player = gs.current_player
+        layout = self._keep_view_layout()
+        rects = layout['rects']
+        for pillar_x in layout['pillars']:
+            self.draw_separator(pillar_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
+        # Same headline spacing as the Barracks view (owner: rule a bit below the text)
+        header_spacing = kit.px(self.BARRACKS_HEADER_SPACING_REF)
 
-        # Panel position (right after player info separator - dynamic)
-        panel_x = int(WINDOW_WIDTH * 0.194)  # Matches player info separator position
-        panel_y = BOTTOM_UI_Y + 30
-
-        # === SECTION 1: KEEP/CASTLE TITLE ===
-        info_x = panel_x + 10
-        info_y = panel_y
-
-        # Get display name (Keep or Castle)
-        _, display_name = self.game_state.get_keep_display_info(territory, keep_plot_index)
-        title_text = self._get_cached_text(display_name, self.large_font, BROWN_TEXT_HEADING)
-        self.screen.blit(title_text, (info_x + 15, info_y))  # Title 15px to the right
-
-        # Get current gold for hero affordability checks
-        current_gold = self.game_state.player_gold[self.game_state.current_player]
-
-        # === SECTION 2: HERO TRAINING BUTTONS (4x2 grid) ===
-        button_y = panel_y
-        first_row_y = button_y  # Save the first row Y position for Castle button positioning
-        button_width = int(BUTTON_SIZE_SQUARE * 1.2)
-        button_height = int(BUTTON_SIZE_SQUARE * 1.2)
-        button_spacing = BUTTON_SPACING
-        button_x = info_x + 110  # Position 40px less to the left (was 150, now 110)
-
-        # All hero buttons use purple color
-        hero_color_purple = (150, 100, 200)
+        current_gold = gs.player_gold[current_player]
+        _, display_name = gs.get_keep_display_info(territory, keep_plot_index)  # Keep or Castle
 
         # Check if Keep is training
-        is_training = (territory in self.game_state.hero_training_queue and
-                       keep_plot_index in self.game_state.hero_training_queue[territory])
+        is_training = (territory in gs.hero_training_queue and
+                       keep_plot_index in gs.hero_training_queue[territory])
 
-        # Check if Keep already has a trained hero
-        keep_has_hero = False
-        if self.game_state.current_player in self.game_state.heroes:
-            for hero_data in self.game_state.heroes[self.game_state.current_player].values():
-                if (hero_data['keep_territory'] == territory and
-                    hero_data['keep_plot'] == keep_plot_index):
-                    keep_has_hero = True
-                    break
+        # The trained hero residing at this Keep, if any (one per Keep / Castle)
+        keep_hero = next((name for name, hero_data in gs.heroes.get(current_player, {}).items()
+                          if hero_data['keep_territory'] == territory
+                          and hero_data['keep_plot'] == keep_plot_index), None)
+        keep_has_hero = keep_hero is not None
 
-        # Check if hero limit is reached
-        current_hero_count = len(self.game_state.hero_ownership[self.game_state.current_player])
-        hero_limit = self.game_state.player_hero_limit[self.game_state.current_player]
+        # Hero limit (3, or 4 with Heroic Fortitude - player_hero_limit holds the current value)
+        current_hero_count = len(gs.hero_ownership[current_player])
+        hero_limit = gs.player_hero_limit[current_player]
         hero_limit_reached = current_hero_count >= hero_limit
 
         # Campaign mission 4: skip drawing hero training buttons entirely
         # when the active mission hides hero training (pre-assigned hero only)
         _hide_hero_training = (
-            self.game_state.tutorial_mission and
-            hasattr(self.game_state.tutorial_mission, 'should_hide_hero_training') and
-            self.game_state.tutorial_mission.should_hide_hero_training()
+            gs.tutorial_mission and
+            hasattr(gs.tutorial_mission, 'should_hide_hero_training') and
+            gs.tutorial_mission.should_hide_hero_training()
         )
 
         # Keep is being upgraded to a Castle: start_hero_training() refuses, so the
         # buttons must show it (they used to look available)
-        keep_upgrading = self.game_state.is_upgrading_to_castle(territory, keep_plot_index)
+        keep_upgrading = gs.is_upgrading_to_castle(territory, keep_plot_index)
 
         # A mission that forbids hero training but still shows the buttons (the base
         # tutorial): grey them out, like other tutorial-locked controls
@@ -10389,418 +10532,244 @@ class Game:
             self.tutorial_mission and self.tutorial_mission.active
             and not self.tutorial_mission.is_action_allowed('train_hero'))
 
-        # Draw hero buttons (6 on first line, 2 on second line)
+        # === SECTION 1: KEEP / CASTLE - hero portraits ===
+        heroes_rect = rects['heroes']
+        y = kit.header(heroes_rect, display_name, spacing=header_spacing)
         # Filter out campaign-only heroes (trainable: False) from the training menu
-        hero_types_list = [h for h in self.game_state.HERO_TYPES.keys()
-                          if self.game_state.HERO_TYPES[h].get('trainable', True)]
+        hero_types_list = [h for h in gs.HERO_TYPES.keys() if gs.HERO_TYPES[h].get('trainable', True)]
+        if keep_hero:
+            # This Keep's hero (owner request 2026-10-09): portrait + name + title,
+            # clickable like the Territory view's Forces portrait. It replaces the
+            # grid - a Keep holds one hero, so every portrait there would be red.
+            self._draw_keep_hero_card(pygame.Rect(heroes_rect.left, y, heroes_rect.w, heroes_rect.bottom - y),
+                                      keep_hero)
+            hero_types_list = []
+        columns = self.KEEP_HERO_COLUMNS
+        rows = max(1, -(-len(hero_types_list) // columns))
+        spacing = kit.px(8)
+        button_size = max(20, min(kit.px(72), (heroes_rect.bottom - y - spacing * (rows - 1)) // rows,
+                                  (heroes_rect.w - spacing * (columns - 1)) // columns))
+        grid_w = columns * button_size + (columns - 1) * spacing
+        grid_h = rows * button_size + (rows - 1) * spacing
+        grid_x = heroes_rect.centerx - grid_w // 2
+        # Spare height: a bit less above than below, like the Barracks unit row
+        grid_y = y + max(0, int((heroes_rect.bottom - y - grid_h) * self.BARRACKS_UNIT_ROW_TOP_FRAC))
+
+        # All hero buttons use purple color (fallback letter buttons)
+        hero_color_purple = (150, 100, 200)
+        discount_percent = gs.player_royal_decree_discount[current_player]
         for idx, hero_type in enumerate(hero_types_list):
             if _hide_hero_training:
                 break  # Skip all hero training button drawing
-            hero_info = self.game_state.HERO_TYPES[hero_type]
+            hero_info = gs.HERO_TYPES[hero_type]
             hero_cost = hero_info['cost']
-
             # Apply Royal Decree discount for display
-            discount_percent = self.game_state.player_royal_decree_discount[self.game_state.current_player]
             if discount_percent > 0:
                 hero_cost = int(hero_cost * (100 - discount_percent) / 100)
-
-            hero_letter = hero_info['letter']
-
             can_afford = current_gold >= hero_cost
-            already_owned = hero_type in self.game_state.hero_ownership[self.game_state.current_player]
+            already_owned = hero_type in gs.hero_ownership[current_player]
+            is_disabled = (is_training or already_owned or keep_has_hero or hero_limit_reached
+                           or not can_afford or keep_upgrading or hero_training_locked)
 
-            # Determine button state
-            if hero_training_locked:
-                button_color = (120, 120, 120)  # Locked by tutorial/mission (grey)
-            elif is_training or already_owned or keep_has_hero or hero_limit_reached or keep_upgrading:
-                button_color = (200, 100, 100)  # Disabled (red)
-            elif can_afford:
-                button_color = hero_color_purple  # Enabled (purple)
-            else:
-                button_color = (200, 100, 100)  # Disabled (can't afford)
+            # Fixed slots, filled row by row (4 per row)
+            col, row = idx % columns, idx // columns
+            train_button_rect = pygame.Rect(grid_x + col * (button_size + spacing),
+                                            grid_y + row * (button_size + spacing),
+                                            button_size, button_size)
 
-            # Move to second line after 4 heroes (4x2 grid)
-            if idx == 4:
-                button_y += button_height + button_spacing
-                button_x = info_x + 110  # Reset to starting position
-
-            # Draw button - use PNG if available, otherwise use letter
-            train_button_rect = pygame.Rect(button_x, button_y, button_width, button_height)
-
-            # Check if PNG image is available for this hero
             if hero_type in self.hero_images and self.hero_images[hero_type]:
-                # Draw PNG image button with hover/click effects
-
-                # Check for hover
                 is_hovering = train_button_rect.collidepoint(self.mouse_pos)
-
-                # Check for click flash
                 is_clicking = (self.clicked_element and
-                              self.clicked_element[0] == 'hero_training' and
-                              self.clicked_element[1] == hero_type)
-
-                # M17: Use cached scaling + icon overlay helpers instead of manual per-frame scale+tint
-                is_disabled = (is_training or already_owned or keep_has_hero or hero_limit_reached
-                               or not can_afford or keep_upgrading or hero_training_locked)
+                               self.clicked_element[0] == 'hero_training' and
+                               self.clicked_element[1] == hero_type)
+                # Cached scaling + icon overlay helpers (no per-frame scale/tint)
                 base_icon = self._get_cached_scaled_surface(
-                    self.hero_images[hero_type], f'hero_{hero_type}', button_width, button_height)
+                    self.hero_images[hero_type], f'hero_{hero_type}', button_size, button_size)
                 # Grey when locked by the tutorial/mission, red when a game rule refuses it
                 hero_image_scaled = self._apply_icon_overlay(
                     base_icon, is_clicking, is_hovering,
                     enabled=not is_disabled,
                     disabled_tint=(110, 110, 110, 150) if hero_training_locked else (200, 0, 0, 120))
-
-                # Draw the image
-                self.screen.blit(hero_image_scaled, (button_x, button_y))
-
-                # C2 fix: Use cached border scaling
-                # Border is 2px larger than icon (1px per side) to fully contain icon edges
+                self.screen.blit(hero_image_scaled, train_button_rect.topleft)
+                # Border 2 px larger than the icon (1 px per side) to contain its edges
                 if self.icon_border:
                     scaled_border = self._get_cached_scaled_surface(
-                        self.icon_border, 'icon_border', button_width + 2, button_height + 2)
-                    self.screen.blit(scaled_border, (button_x - 1, button_y - 1))
+                        self.icon_border, 'icon_border', button_size + 2, button_size + 2)
+                    self.screen.blit(scaled_border, (train_button_rect.x - 1, train_button_rect.y - 1))
             else:
                 # Fallback to letter button
-                self.draw_letter_button(train_button_rect, hero_letter, button_color,
-                                       letter_color=WHITE, button_type='hero_training',
-                                       button_id=hero_type)
+                if hero_training_locked:
+                    button_color = (120, 120, 120)  # Locked by tutorial/mission (grey)
+                elif is_disabled:
+                    button_color = (200, 100, 100)  # Disabled (red)
+                else:
+                    button_color = hero_color_purple  # Enabled (purple)
+                self.draw_letter_button(train_button_rect, hero_info['letter'], button_color,
+                                        letter_color=WHITE, button_type='hero_training',
+                                        button_id=hero_type)
 
-            # Store for click detection
             self.hero_train_buttons[hero_type] = train_button_rect
 
-            button_x += button_width + button_spacing
-
-        # === SEPARATOR AFTER HERO GRID ===
-        heroes_end_x = info_x + 110 + (button_width + button_spacing) * 4
-        separator1_x = heroes_end_x + 15
-        self.draw_separator(separator1_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-
-        # === SECTION 3: CASTLE UPGRADE ===
-        # Castle upgrade button - original size (button_width * 2)
-        castle_button_width = button_width * 2
-        castle_button_height = button_height * 2
-        castle_button_x = separator1_x + 20  # 20px after separator
-        castle_button_y = first_row_y  # Align with top of hero grid
-
-        # Check Castle status
+        # === SECTION 2: CASTLE UPGRADE (no headline) ===
+        castle_rect = rects['castle']
+        icon_rect, bar_rect = self._castle_section_geometry(castle_rect)
+        self.castle_icon_rect = icon_rect  # For the tests (fixed spot in every state)
         try:
-            is_castle = self.game_state.is_castle(territory, keep_plot_index)
-            is_upgrading = self.game_state.is_upgrading_to_castle(territory, keep_plot_index)
+            is_castle = gs.is_castle(territory, keep_plot_index)
+            is_upgrading = gs.is_upgrading_to_castle(territory, keep_plot_index)
         except Exception as e:
             logger.error(f"ERROR in Castle upgrade check: {e}")
             is_castle = False
             is_upgrading = False
 
-        UPGRADE_COST = 150
-
-        # Initialize Castle hover tracking variables
+        # Castle hover tracking (tooltip), applied at the end of this method
         self.castle_button_is_hovering = False
         self.castle_button_rect_for_hover = None
+        icon_w = icon_rect.w
+
+        def draw_border():
+            # Border 2 px larger than the icon (1 px per side) to contain its edges
+            if self.icon_border:
+                border = self._get_cached_scaled_surface(self.icon_border, 'icon_border', icon_w + 2, icon_w + 2)
+                self.screen.blit(border, (icon_rect.x - 1, icon_rect.y - 1))
+
+        def draw_fallback(color, line1, line2):
+            # Text tile when the upgrade icon art is missing
+            pygame.draw.rect(self.screen, color, icon_rect)
+            pygame.draw.rect(self.screen, (218, 165, 32), icon_rect, 3, border_radius=5)
+            kit.centered_text(line1, 'body_bold', BLACK, icon_rect.centerx,
+                              icon_rect.centery - kit.line_height('body_bold'), shadow=False)
+            if line2:
+                kit.centered_text(line2, 'small', BLACK, icon_rect.centerx, icon_rect.centery, shadow=False)
 
         if is_castle:
-            # Already Castle - don't show the Castle button or separator
-            # Just continue with the UI as normal
-            pass
+            # Upgrade done (owner choice): the icon in full colour, not clickable, with an
+            # "Upgrade Finished" caption in the bar's slot (not "Castle": the headline
+            # beside it already says that). No button rect, no tooltip.
+            if self.castle_upgrade_icon:
+                self.screen.blit(self._get_cached_scaled_surface(
+                    self.castle_upgrade_icon, 'castle_upgrade', icon_w, icon_w), icon_rect.topleft)
+                draw_border()
+            else:
+                draw_fallback((200, 200, 100), "CASTLE", "")
+            # The section is narrow (107 px at 720p): small bold if body bold won't fit
+            caption = "Upgrade Finished"
+            role = 'body_bold' if kit.font('body_bold').size(caption)[0] <= castle_rect.w else 'small_bold'
+            kit.centered_text(kit.fit(caption, role, castle_rect.w), role, BOTTOM_GOLD_TEXT,
+                              bar_rect.centerx, bar_rect.centery - kit.line_height(role) // 2)
 
         elif is_upgrading:
-            # Upgrading in progress - show icon + progress bar underneath
-            turns_remaining = self.game_state.castle_upgrades_in_progress[territory][keep_plot_index]
-
-            # Create rect for collision detection
-            upgrade_rect = pygame.Rect(castle_button_x, castle_button_y, castle_button_width, castle_button_height)
-
-            # Hover/click effects for the button
-            is_button_hovering = upgrade_rect.collidepoint(self.mouse_pos)
+            # Upgrading: yellow-tinted icon + "N turns" bar with a cancel X
+            turns_remaining = gs.castle_upgrades_in_progress[territory][keep_plot_index]
+            is_button_hovering = icon_rect.collidepoint(self.mouse_pos)
             is_button_clicking = (self.clicked_element and self.clicked_element[0] == 'upgrade_castle')
-
-            # C2 fix: Use cached scaling for castle upgrade icon (in-progress state)
             if self.castle_upgrade_icon:
-                icon_width = castle_button_width
-                icon_height = castle_button_height
-                base_icon = self._get_cached_scaled_surface(
-                    self.castle_upgrade_icon, 'castle_upgrade', icon_width, icon_height)
-                scaled_icon = base_icon.copy()
-
-                # Apply yellow tint to show it's in progress (construction state)
-                yellow_overlay = pygame.Surface((icon_width, icon_height), pygame.SRCALPHA)
-                yellow_overlay.fill((255, 220, 100, 120))
-                scaled_icon.blit(yellow_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-
-                # Apply hover/click brightness
-                if is_button_hovering or is_button_clicking:
-                    bright_overlay = pygame.Surface((icon_width, icon_height), pygame.SRCALPHA)
-                    if is_button_clicking:
-                        bright_overlay.fill((100, 100, 100, 100))
-                    else:
-                        bright_overlay.fill((50, 50, 50, 50))
-                    scaled_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-                self.screen.blit(scaled_icon, (castle_button_x, castle_button_y))
-
-                # C2 fix: Use cached border scaling
-                # Border is 2px larger than icon (1px per side) to fully contain icon edges
-                if self.icon_border:
-                    scaled_border = self._get_cached_scaled_surface(
-                        self.icon_border, 'icon_border', icon_width + 2, icon_height + 2)
-                    self.screen.blit(scaled_border, (castle_button_x - 1, castle_button_y - 1))
+                # PERFORMANCE: the yellow tint is baked once per size (it used to allocate
+                # an overlay Surface every frame); hover/click via the shared helper
+                key = ('castle_upgrade_yellow', icon_w)
+                tinted = self._ui_icon_cache.get(key)
+                if tinted is None:
+                    tinted = self._get_cached_scaled_surface(
+                        self.castle_upgrade_icon, 'castle_upgrade', icon_w, icon_w).copy()
+                    tinted.fill((255, 220, 100, 120), special_flags=pygame.BLEND_RGBA_MULT)
+                    self._ui_icon_cache[key] = tinted
+                self.screen.blit(self._apply_icon_overlay(tinted, is_button_clicking, is_button_hovering),
+                                 icon_rect.topleft)
+                draw_border()
             else:
-                # Fallback to text if icon not loaded
-                button_color = (200, 200, 100)  # Yellow for upgrading
+                color = (200, 200, 100)  # Yellow for upgrading
                 if is_button_hovering and not is_button_clicking:
-                    button_color = lighten_color(button_color, 0.2)
+                    color = lighten_color(color, 0.2)
+                draw_fallback(color, "UPGRADE", "TO CASTLE")
 
-                pygame.draw.rect(self.screen, button_color, upgrade_rect)
-                pygame.draw.rect(self.screen, (218, 165, 32), upgrade_rect, 3, border_radius=5)
+            # Progress bar under the icon (as before, now sized to the section)
+            pygame.draw.rect(self.screen, (220, 220, 220), bar_rect)
+            pygame.draw.rect(self.screen, (218, 165, 32), bar_rect, 2)
+            turn_word = "turn" if turns_remaining == 1 else "turns"
+            turns_surf = kit.text(f"{turns_remaining} {turn_word}", 'small', (100, 100, 0))
+            self.screen.blit(turns_surf, (bar_rect.x + kit.px(5),
+                                          bar_rect.y + (bar_rect.h - turns_surf.get_height()) // 2))
 
-                icon_text = self._get_cached_text("UPGRADE", self.font, BLACK)
-                icon_text_rect = icon_text.get_rect(center=(upgrade_rect.centerx, upgrade_rect.centery - 10))
-                self.screen.blit(icon_text, icon_text_rect)
-
-                subtext = self._get_cached_text("TO CASTLE", self.small_font, BLACK)
-                subtext_rect = subtext.get_rect(center=(upgrade_rect.centerx, upgrade_rect.centery + 10))
-                self.screen.blit(subtext, subtext_rect)
-
-            # Progress bar underneath the button (narrower and shorter to fit in area)
-            bar_width = int(castle_button_width * 1.05)  # 30% less wide (was 1.5x)
-            bar_height = 22  # Half as tall (was 45)
-            bar_x = castle_button_x - (bar_width - castle_button_width) // 2  # Center it
-            bar_y = castle_button_y + castle_button_height + 5  # Below button with 5px gap
-
-            queue_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
-            pygame.draw.rect(self.screen, (220, 220, 220), queue_rect)
-            pygame.draw.rect(self.screen, (218, 165, 32), queue_rect, 2)
-
-            # Text: "X turn/s" - very small text
-            # C1 fix: Use cached extra_small_font instead of per-frame Font() creation
-            turn_text = "turn" if turns_remaining == 1 else "turns"
-            upgrade_text = self._get_cached_text(
-                f"{turns_remaining} {turn_text}",
-                self.extra_small_font, (100, 100, 0)
-            )
-            # Center the text vertically in the taller bar
-            text_y = bar_y + (bar_height - upgrade_text.get_height()) // 2
-            self.screen.blit(upgrade_text, (bar_x + 5, text_y))
-
-            # Cancel button (X) to the right of the progress bar (vertically centered)
-            cancel_size = 18  # 30% smaller (was 25)
-            cancel_x = bar_x + bar_width - cancel_size - 5
-            cancel_y = bar_y + (bar_height - cancel_size) // 2  # Center vertically in taller bar
-            cancel_rect = pygame.Rect(cancel_x, cancel_y, cancel_size, cancel_size)
-
-            is_cancel_hovering = cancel_rect.collidepoint(self.mouse_pos)
-            is_cancel_clicking = (self.clicked_element and self.clicked_element[0] == 'cancel_castle_upgrade')
-
+            # Cancel button (X) at the bar's right end
+            cancel_size = max(10, bar_rect.h - 4)
+            cancel_rect = pygame.Rect(0, 0, cancel_size, cancel_size)
+            cancel_rect.midright = (bar_rect.right - kit.px(3), bar_rect.centery)
             cancel_color = (150, 100, 100)
-            if is_cancel_clicking:
+            if self.clicked_element and self.clicked_element[0] == 'cancel_castle_upgrade':
                 cancel_color = brighten_color(cancel_color, 0.4)
-            elif is_cancel_hovering:
+            elif cancel_rect.collidepoint(self.mouse_pos):
                 cancel_color = lighten_color(cancel_color, 0.2)
-
             pygame.draw.rect(self.screen, cancel_color, cancel_rect)
             pygame.draw.rect(self.screen, BLACK, cancel_rect, 1)
-            cancel_text = self._get_cached_text("X", self.small_font, WHITE)
-            cancel_text_rect = cancel_text.get_rect(center=cancel_rect.center)
-            self.screen.blit(cancel_text, cancel_text_rect)
-
+            x_surf = kit.text("X", 'small_bold', WHITE)
+            self.screen.blit(x_surf, x_surf.get_rect(center=cancel_rect.center))
             self.castle_upgrade_cancel_button = cancel_rect
 
-            # Store hover state but don't call update_button_hover here
-            # (will be called at the end of draw_keep_ui to avoid interference with hero_training hover)
+            # Tooltip over the icon (not over the X)
             castle_hover = is_button_hovering and not cancel_rect.collidepoint(self.mouse_pos)
             self.castle_button_is_hovering = castle_hover
-            self.castle_button_rect_for_hover = upgrade_rect if castle_hover else None
+            self.castle_button_rect_for_hover = icon_rect if castle_hover else None
+
         else:
-            # Show upgrade button (2x size, spans both rows)
-            can_afford = current_gold >= UPGRADE_COST
-
-            # Determine button state
-            if is_training:
-                button_color = (150, 100, 100)  # Disabled (hero training)
-                button_enabled = False
-            elif can_afford:
-                button_color = (100, 150, 200)  # Enabled (blue)
-                button_enabled = True
-            else:
-                button_color = (150, 100, 100)  # Disabled (can't afford)
-                button_enabled = False
-
-            upgrade_rect = pygame.Rect(castle_button_x, castle_button_y, castle_button_width, castle_button_height)
-
-            # Hover/click effects
-            is_hovering = upgrade_rect.collidepoint(self.mouse_pos)
+            # Upgrade available (or refused: hero training / not enough gold)
+            button_enabled = not is_training and current_gold >= self.CASTLE_UPGRADE_COST
+            is_hovering = icon_rect.collidepoint(self.mouse_pos)
             is_clicking = (self.clicked_element and self.clicked_element[0] == 'upgrade_castle')
-
-            # Draw Castle upgrade icon PNG or fallback to text button
             if self.castle_upgrade_icon:
-                # C2 fix: Use cached scaling instead of per-frame smoothscale
-                icon_width = castle_button_width
-                icon_height = castle_button_height
                 base_icon = self._get_cached_scaled_surface(
-                    self.castle_upgrade_icon, 'castle_upgrade', icon_width, icon_height)
-                scaled_icon = self._apply_icon_overlay(
-                    base_icon, is_clicking, is_hovering, enabled=button_enabled)
-
-                # Draw icon at button position
-                self.screen.blit(scaled_icon, (castle_button_x, castle_button_y))
-
-                # Draw icon border frame overlay if available
-                # Border is 2px larger than icon (1px per side) to fully contain icon edges
-                if self.icon_border:
-                    scaled_border = self._get_cached_scaled_surface(
-                        self.icon_border, 'icon_border', icon_width + 2, icon_height + 2)
-                    self.screen.blit(scaled_border, (castle_button_x - 1, castle_button_y - 1))
+                    self.castle_upgrade_icon, 'castle_upgrade', icon_w, icon_w)
+                self.screen.blit(self._apply_icon_overlay(base_icon, is_clicking, is_hovering,
+                                                          enabled=button_enabled), icon_rect.topleft)
+                draw_border()
             else:
-                # Fallback to old text button
+                color = (100, 150, 200) if button_enabled else (150, 100, 100)
                 if button_enabled:
                     if is_clicking:
-                        button_color = brighten_color(button_color, 0.4)
+                        color = brighten_color(color, 0.4)
                     elif is_hovering:
-                        button_color = lighten_color(button_color, 0.2)
-
-                # Draw button
-                pygame.draw.rect(self.screen, button_color, upgrade_rect)
-                pygame.draw.rect(self.screen, BLACK, upgrade_rect, 3, border_radius=5)
-
-                # Draw icon/text - use "UPGRADE" text
-                icon_text = self._get_cached_text("UPGRADE", self.font, WHITE)
-                icon_text_rect = icon_text.get_rect(center=(upgrade_rect.centerx, upgrade_rect.centery - 10))
-                self.screen.blit(icon_text, icon_text_rect)
-
-                # Draw "TO CASTLE" below
-                subtext = self._get_cached_text("TO CASTLE", self.small_font, WHITE)
-                subtext_rect = subtext.get_rect(center=(upgrade_rect.centerx, upgrade_rect.centery + 10))
-                self.screen.blit(subtext, subtext_rect)
-
+                        color = lighten_color(color, 0.2)
+                draw_fallback(color, "UPGRADE", "TO CASTLE")
             # Store button for click handling (only if enabled)
-            if button_enabled:
-                self.castle_upgrade_button = upgrade_rect
-            else:
-                self.castle_upgrade_button = None
-
-            # Store hover state but don't call update_button_hover here
-            # (will be called at the end of draw_keep_ui to avoid interference with hero_training hover)
-            # Track hover even if button is disabled (to show tooltip explaining why it's disabled)
+            self.castle_upgrade_button = icon_rect if button_enabled else None
+            # Tooltip even when disabled (it explains why)
             self.castle_button_is_hovering = is_hovering
-            self.castle_button_rect_for_hover = upgrade_rect if is_hovering else None
+            self.castle_button_rect_for_hover = icon_rect if is_hovering else None
 
-        # Update panel_y to account for two rows (keep the layout consistent)
-        panel_y += (button_height * 2) + button_spacing + 15
-
-        # === SEPARATOR AFTER CASTLE ===
-        separator2_x = castle_button_x + castle_button_width + 20
-        self.draw_separator(separator2_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-
-        # === SECTION 4: TRAINING STATUS ===
-        queue_x = separator2_x + 20
-        queue_y = BOTTOM_UI_Y + 30
-
-        # PERFORMANCE: Use cached static text
-        queue_title = self._get_cached_text("Training Status:", self.font, BROWN_TEXT_HEADING)
-        self.screen.blit(queue_title, (queue_x, queue_y))
-        queue_y += 30
-
-        # Display training hero
+        # === SECTION 3: TRAINING STATUS ===
+        training_rect = rects['training']
+        y = kit.header(training_rect, "Training Status", spacing=header_spacing)
+        self.keep_training_bar = None
         if is_training:
-            # H3 fix: handle 3-tuple (hero_type, turns, paid_cost) from Audit #3 H1
-            entry = self.game_state.hero_training_queue[territory][keep_plot_index]
+            # Format: (hero_type, turns_remaining[, paid_cost]) - index access
+            entry = gs.hero_training_queue[territory][keep_plot_index]
             hero_type, turns_remaining = entry[0], entry[1]
-
-            # Hero box
-            item_rect = pygame.Rect(queue_x, queue_y, 280, 30)
-            pygame.draw.rect(self.screen, (220, 220, 220), item_rect)
-            pygame.draw.rect(self.screen, BLACK, item_rect, 1)
-
-            # Hero name and progress
-            turn_text = "turn" if turns_remaining == 1 else "turns"
-            hero_text = self._get_cached_text(
-                f"{hero_type} (training... {turns_remaining} {turn_text})",
-                self.small_font, (0, 100, 0)
-            )
-            self.screen.blit(hero_text, (queue_x + 5, queue_y + 7))
-
-            # Cancel button
-            cancel_rect = pygame.Rect(queue_x + 250, queue_y + 5, 20, 20)
-            button_color = (200, 100, 100)
-
-            # Hover/click feedback
-            is_hovering = cancel_rect.collidepoint(self.mouse_pos)
-            is_clicking = (self.clicked_element and
-                          self.clicked_element[0] == 'hero_cancel')
-
-            if is_clicking:
-                button_color = brighten_color(button_color, 0.4)
-            elif is_hovering:
-                button_color = lighten_color(button_color, 0.2)
-
-            pygame.draw.rect(self.screen, button_color, cancel_rect)
-            pygame.draw.rect(self.screen, BLACK, cancel_rect, 1)
-            cancel_text = self._get_cached_text("X", self.small_font, WHITE)
-            cancel_text_rect = cancel_text.get_rect(center=cancel_rect.center)
-            self.screen.blit(cancel_text, cancel_text_rect)
-
-            self.hero_cancel_button = cancel_rect
+            self.hero_cancel_button = self._draw_hero_training_progress(
+                pygame.Rect(training_rect.left, y, training_rect.w, training_rect.bottom - y),
+                hero_type, turns_remaining)
         else:
-            empty_text = self._get_cached_text("No hero in training", self.small_font, BROWN_TEXT_SECONDARY)
-            self.screen.blit(empty_text, (queue_x, queue_y))
+            kit.centered_text("No hero in training", 'body', BROWN_TEXT_SECONDARY, training_rect.centerx,
+                              y + kit.px(6))
 
-        # === SEPARATOR BEFORE HERO INFO ===
-        separator3_x = queue_x + 320
-        self.draw_separator(separator3_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-
-        # === SECTION 5: HERO INFO & DEMOLISH ===
-        tips_x = separator3_x + 20
-        tips_y = BOTTOM_UI_Y + 30
-
-        tips_title = self._get_cached_text("Hero Info", self.font, WHITE)
-        self.screen.blit(tips_title, (tips_x, tips_y))
-        tips_y += 35
-
-        # Rules as bullet points with lighter color
-        # Use extra small font at 720p to prevent overflow
-        info_color = (200, 200, 200)  # Light gray, distinct from white header
-        info_font = self.extra_small_font if WINDOW_HEIGHT == 720 else self.small_font
-
-        rule1 = self._get_cached_text("- Each Hero can only be trained once.", info_font, info_color)
-        self.screen.blit(rule1, (tips_x, tips_y))
-        tips_y += 22
-
-        rule2 = self._get_cached_text("- Each Keep or Castle can only have", info_font, info_color)
-        self.screen.blit(rule2, (tips_x, tips_y))
-        tips_y += 20
-        rule2b = self._get_cached_text("  one Hero.", info_font, info_color)
-        self.screen.blit(rule2b, (tips_x, tips_y))
-        tips_y += 22
-
-        rule3 = self._get_cached_text("- Heroes are slain upon Keep or", info_font, info_color)
-        self.screen.blit(rule3, (tips_x, tips_y))
-        tips_y += 20
-        rule3b = self._get_cached_text("  Castle's destruction.", info_font, info_color)
-        self.screen.blit(rule3b, (tips_x, tips_y))
-        tips_y += 30
-
-        # Demolish button
-        demolish_rect = pygame.Rect(tips_x, tips_y, 180, 30)
-        _, display_name = self.game_state.get_keep_display_info(territory, keep_plot_index)
+        # === SECTION 4: HERO INFO (+ Demolish) ===
+        info_rect = rects['info']
+        y = kit.header(info_rect, "Hero Info", spacing=header_spacing)
         # Mission hook: grey out demolish only when the mission disallows it — the
         # same test the click handler uses. (It used to grey out for ANY active
         # mission, so Keeps looked undemolishable in missions that allow it.)
-        _tutorial_demolish_locked = (self.tutorial_mission
-                                     and self.tutorial_mission.active
-                                     and not self.tutorial_mission.is_action_allowed('demolish'))
-        if _tutorial_demolish_locked:
-            self.draw_feedback_button(demolish_rect, (80, 80, 80),
-                                      'demolish', 'keep',
-                                      text=f"Demolish {display_name} (50%)",
-                                      font=self.small_font, text_color=(120, 120, 120))
-        else:
-            self.draw_feedback_button(demolish_rect, (150, 100, 100),
-                                      'demolish', 'keep',
-                                      text=f"Demolish {display_name} (50%)",
-                                      font=self.small_font)
-
-        self.demolish_keep_button = demolish_rect
+        # Castles refund 50% too (upgrade cost included, destroy_building()).
+        self.demolish_keep_button, rows_bottom = self._draw_section_button(
+            info_rect, "Demolish (50%)", TINT_DEMOLISH, ('demolish', 'keep'),
+            locked=bool(self._is_tutorial_blocking('demolish')))
         self.demolish_keep_territory = territory
         self.demolish_keep_plot_index = keep_plot_index
+        # Hero Limit first (red once reached - 3, or 4 with Heroic Fortitude), then the rules
+        limit_color = (232, 82, 70) if hero_limit_reached else BROWN_TEXT_PRIMARY
+        self._draw_info_list(pygame.Rect(info_rect.left, y, info_rect.w, max(1, rows_bottom - y)), [
+            (f"Hero Limit: {current_hero_count}/{hero_limit}", limit_color, False),
+            "Each Hero can only be trained once.",
+            "Each Keep or Castle can only have one Hero.",
+            "Heroes are slain upon Keep or Castle's destruction.",
+        ])
 
         # Track button hover for tooltips (will be drawn with delay in main loop)
         mouse_pos = pygame.mouse.get_pos()
@@ -10809,18 +10778,13 @@ class Game:
             if button_rect.collidepoint(mouse_pos):
                 current_hover = ('hero_training', hero_type)
                 break
-
-        # Update hover tracking using helper
         self.update_button_hover(current_hover, 'hero_training')
 
         # Castle upgrade button hover tracking (must come AFTER hero_training to take precedence)
-        castle_hovering = self.castle_button_is_hovering
-        if castle_hovering:
+        if self.castle_button_is_hovering:
             self.update_button_hover(('castle', 'castle_upgrade'), 'castle')
-        else:
-            # Clear castle hover when not hovering
-            if self.hover_target_button and self.hover_target_button[0] == 'castle':
-                self.update_button_hover(None, 'castle')
+        elif self.hover_target_button and self.hover_target_button[0] == 'castle':
+            self.update_button_hover(None, 'castle')
 
     def draw_army_composition_ui(self):
         """Draw army composition UI for individual army control (Phase 3)"""
@@ -14242,6 +14206,15 @@ class Game:
                     })
                 return True
 
+        # Keep view: the Keep's own hero opens its Hero view, like the Territory view's
+        # Forces portrait and the sidebar Heroes tab
+        if self.selected_keep and self.keep_hero_button:
+            card_rect, hero_name = self.keep_hero_button
+            if card_rect.collidepoint(pos):
+                self.trigger_click_flash('bottom_button', ('keep_hero', hero_name))
+                self._select_hero(hero_name)
+                return True
+
         # Hero training buttons (only when Keep is actually selected)
         if self.selected_keep and self.hero_train_buttons:
             for hero_type, button_rect in self.hero_train_buttons.items():
@@ -16140,8 +16113,9 @@ class Game:
             self.show_tooltip_territory = None
             self.show_tooltip_army = None
             self.show_tooltip_button = None
+            self._hover_systems_this_frame = set()  # Start the next frame clean
             return
-        
+
         # Track building button hover (must happen after draw_bottom_ui every frame)
         # This ensures hover state is always properly managed
         if self.selected_plot:
@@ -16192,6 +16166,10 @@ class Game:
                 self.hover_target_button = None
                 self.show_tooltip_button = None
                 self.hover_start_time_button = None
+
+        # A hover whose buttons were not drawn this frame (view switched by a click or
+        # key) must not keep its tooltip following the mouse
+        self._release_orphaned_button_hover()
 
         # Check tooltip timer every frame (automatic tooltip appearance)
         # THIS MUST HAPPEN AFTER ALL DRAWING where hover is tracked
@@ -16788,6 +16766,10 @@ class Game:
 
     def draw_empty_bottom_ui_panel(self):
         """Draw empty bottom UI panel during AI turns (background only, no interactive content)"""
+        # draw_bottom_ui() resets the Forces-icon hover label every frame, but it does not
+        # run during AI turns: a label hovered when the turn ended stayed frozen on screen
+        # until the AI finished (update_frame_tooltips draws it at the frame's end)
+        self.bottom_panel_tooltip = None
         # Draw bottom UI background
         bottom_rect = pygame.Rect(0, BOTTOM_UI_Y, WINDOW_WIDTH, BOTTOM_UI_HEIGHT)
 

@@ -741,3 +741,776 @@ class TestHeroPortraitPan:
         _open_hero(game)
         game.draw_bottom_ui()
         assert game.hero_view_portrait_button is None
+
+
+# ===========================================================================
+# Plot building view (finished / under construction) - owner design 2026-10-09:
+# icon left; headline, rule, description (+ Farm/Mine level + XP BattleBar),
+# rule, Demolish / Cancel button right of it
+# ===========================================================================
+
+def _select_building_plot(game, building=None, under_construction=None, xp=None):
+    """Select plot 1 of an owned territory holding `building` (finished) or an
+    `under_construction` entry (building_type, turns_remaining, cost)."""
+    territory = _three_plot_territory(game)
+    game.selected_territory_info = None
+    gs = game.game_state
+    gs.buildings.setdefault(territory, {}).pop(1, None)
+    gs.under_construction.setdefault(territory, {}).pop(1, None)
+    if building:
+        gs.buildings[territory][1] = building
+    if under_construction:
+        gs.under_construction[territory][1] = under_construction
+    if xp is not None:
+        gs.building_xp.setdefault(territory, {})[1] = xp
+    game.selected_plot = (territory, 1)
+    return territory
+
+
+def _spy_buttons(game, monkeypatch):
+    """Record every kit.ornate_button() call: label -> (tint, locked, rect)."""
+    drawn = {}
+    kit = game.bottom_panel_kit
+    real = kit.ornate_button
+
+    def spy(rect, label, inner_tint, flash_key=None, locked=False, role='button', hover_pos=None):
+        drawn[label] = (inner_tint, locked, rect)
+        return real(rect, label, inner_tint, flash_key=flash_key, locked=locked, role=role,
+                    hover_pos=hover_pos)
+
+    monkeypatch.setattr(kit, 'ornate_button', spy)
+    return drawn
+
+
+PLOT_VIEW_CASES = [
+    {'building': 'Square'},
+    {'building': 'Training Grounds'},
+    {'building': 'Farm', 'xp': {'xp': 50, 'level': 1}},
+    {'building': 'Mine', 'xp': {'xp': 240, 'level': 5}},
+    {'under_construction': ('Barracks', 2, 100)},
+    {'under_construction': ('Training Grounds', 1, 100)},
+]
+
+
+class TestPlotBuildingLayout:
+
+    def test_icon_matches_the_empty_plot_button(self, any_res_game):
+        """The icon takes the first empty-plot button's size and spot (no jump when
+        construction starts); the text column is right of it, inside the panel."""
+        import pygame
+        g = any_res_game
+        layout = g._plot_building_view_layout()
+        size, _gap, row_y, _limit = g._empty_plot_button_layout(False)
+        assert layout['icon'] == pygame.Rect(int(g.screen.get_width() * 0.25), row_y, size, size)
+        assert layout['column'].left > layout['icon'].right
+        for rect in layout.values():
+            assert _panel(g).contains(rect)
+
+    @pytest.mark.parametrize('case', PLOT_VIEW_CASES,
+                             ids=lambda c: c.get('building') or 'building_' + c['under_construction'][0])
+    def test_every_state_fits_the_column(self, any_res_game, monkeypatch, case):
+        g = any_res_game
+        bars = []
+        kit = g.bottom_panel_kit
+        real_bar = kit.battlebar
+        monkeypatch.setattr(kit, 'battlebar', lambda rect, *a, **k: bars.append(rect) or real_bar(rect, *a, **k))
+        _select_building_plot(g, **case)
+        g.draw_bottom_ui()
+        column = g._plot_building_view_layout()['column']
+        button = g.cancel_button if 'under_construction' in case else g.demolish_button
+        assert button is not None and column.contains(button)
+        assert button.bottom <= kit.content_bottom()
+        # Farm / Mine: the XP BattleBar sits in the column, above the button (the End
+        # Turn section's timer is a BattleBar too - left of the column)
+        bars = [b for b in bars if b.left >= column.left]
+        if case.get('xp'):
+            assert len(bars) == 1
+            assert column.contains(bars[0]) and bars[0].bottom < button.top
+        else:
+            assert bars == []
+
+
+class TestPlotBuildingIcon:
+
+    def _channel_spread(self, game):
+        """Largest |r-b| / |r-g| over the middle of the icon. The circle border is
+        switched off: its art lays a faint warm glaze over the whole circle."""
+        game.circle_border = None
+        game.screen.fill((0, 0, 0))
+        game.draw_bottom_ui()
+        icon = game._plot_building_view_layout()['icon']
+        spread = 0
+        for fx in (0.35, 0.45, 0.55, 0.65):
+            for fy in (0.35, 0.45, 0.55, 0.65):
+                r, gg, b = tuple(game.screen.get_at((icon.left + int(icon.w * fx), icon.top + int(icon.h * fy))))[:3]
+                spread = max(spread, abs(r - b), abs(r - gg))
+        return spread
+
+    def test_under_construction_icon_is_greyed(self, game):
+        _select_building_plot(game, under_construction=('Farm', 2, 50))
+        assert self._channel_spread(game) <= 2
+
+    def test_finished_icon_in_full_colour(self, game):
+        _select_building_plot(game, building='Farm')
+        assert self._channel_spread(game) > 10
+
+
+class TestPlotBuildingButtons:
+
+    def test_cancel_still_cancels(self, game):
+        territory = _select_building_plot(game, under_construction=('Square', 2, 120))
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.cancel_button.center) is True
+        assert 1 not in game.game_state.under_construction.get(territory, {})
+        assert game.clicked_element == ('cancel', 'construction')
+
+    def test_demolish_still_demolishes(self, game):
+        territory = _select_building_plot(game, building='Square')
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.demolish_button.center) is True
+        assert 1 not in game.game_state.buildings.get(territory, {})
+        assert game.clicked_element == ('demolish', 'building')
+
+    def test_hover_and_flash_change_pixels(self, game):
+        _select_building_plot(game, building='Square')
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.demolish_button
+            return sum(sum(tuple(game.screen.get_at((rect.left + int(rect.w * f), rect.centery)))[:3])
+                       for f in (0.2, 0.24, 0.76, 0.8))
+
+        normal = pixels()
+        game.mouse_pos = game.demolish_button.center
+        hover = pixels()
+        game.clicked_element = ('demolish', 'building')
+        assert normal < hover < pixels()
+
+    def test_labels_and_tints(self, game, monkeypatch):
+        import main
+        drawn = _spy_buttons(game, monkeypatch)
+        _select_building_plot(game, building='Square')
+        game.draw_bottom_ui()
+        assert drawn['Demolish (50%)'][:2] == (main.TINT_DEMOLISH, False)
+        _select_building_plot(game, under_construction=('Mine', 3, 80))
+        game.draw_bottom_ui()
+        assert drawn['Cancel'][:2] == (main.TINT_DEMOLISH, False)
+
+    def test_confiscate_shows_the_real_refund(self, game, monkeypatch):
+        """With Erec Silvyr a Farm/Mine demolish refunds 175% (destroy_building());
+        the button used to say 50%. Other buildings keep 50%."""
+        import main
+        drawn = _spy_buttons(game, monkeypatch)
+        monkeypatch.setattr(game.game_state, 'player_has_silvyr', lambda p: True)
+        _select_building_plot(game, building='Farm')
+        game.draw_bottom_ui()
+        assert drawn['Demolish (175%)'][0] == main.TINT_CONFISCATE
+        drawn.clear()
+        _select_building_plot(game, building='Square')
+        game.draw_bottom_ui()
+        assert 'Demolish (50%)' in drawn and 'Demolish (175%)' not in drawn
+
+    def test_greyed_while_the_mission_forbids_it(self, game, monkeypatch):
+        drawn = _spy_buttons(game, monkeypatch)
+        game.tutorial_mission = SimpleNamespace(
+            active=True, should_highlight_button=lambda b: False, is_button_locked=lambda b: False,
+            is_action_allowed=lambda a, **k: a not in ('demolish', 'cancel_construction'),
+            is_timer_visible=lambda: True)
+        territory = _select_building_plot(game, building='Square')
+        game.draw_bottom_ui()
+        assert drawn['Demolish (50%)'][1] is True
+        # The click is consumed without demolishing (same check as before)
+        assert game.handle_bottom_ui_click(game.demolish_button.center) is True
+        assert game.game_state.buildings[territory][1] == 'Square'
+        _select_building_plot(game, under_construction=('Farm', 2, 50))
+        game.draw_bottom_ui()
+        assert drawn['Cancel'][1] is True
+
+
+class TestBuildingXpView:
+
+    def test_bar_fill_and_label(self, game):
+        _select_building_plot(game, building='Farm', xp={'xp': 50, 'level': 1})
+        xp = game._building_xp_view(*game.selected_plot)
+        # Level 1 spans 30..75 XP: 20 of 45
+        assert xp['label'] == '20/45 XP'
+        assert abs(xp['fill'] - 20 / 45) < 1e-6
+        assert xp['bonus_pct'] == 10
+
+    def test_max_level(self, game):
+        _select_building_plot(game, building='Mine', xp={'xp': 240, 'level': 5})
+        xp = game._building_xp_view(*game.selected_plot)
+        assert (xp['label'], xp['fill'], xp['bonus_pct']) == ('MAX', 1.0, 50)
+
+
+# ===========================================================================
+# Barracks view - owner design 2026-10-09: Barracks (unit buttons) / Training
+# Queue (n/4) / Barracks Info (facts + hotkeys, Demolish)
+# ===========================================================================
+
+def _open_barracks(game, queue=()):
+    """Select a finished Barracks on plot 0 of an owned territory with `queue`."""
+    territory = _three_plot_territory(game)
+    game.selected_territory_info = None
+    gs = game.game_state
+    gs.buildings.setdefault(territory, {})[0] = 'Barracks'
+    gs.training_queue.setdefault(territory, {})[0] = list(queue)
+    game.selected_barracks = (territory, 0)
+    return territory
+
+
+FULL_QUEUE = [('Swordsman', 0, 30), ('Archer', 1, 30), ('Pikeman', 1, 30), ('Cavalry', 1, 50)]
+
+
+class TestBarracksLayout:
+
+    def test_sections_inside_panel_and_ordered(self, any_res_game):
+        g = any_res_game
+        rects = [g._barracks_view_layout()['rects'][k] for k in ('units', 'queue', 'info')]
+        for rect in rects:
+            assert _panel(g).contains(rect)
+        for left, right in zip(rects, rects[1:]):
+            assert left.right < right.left
+
+    def test_unit_buttons_fit_in_a_row(self, any_res_game):
+        g = any_res_game
+        _open_barracks(g)
+        g.draw_bottom_ui()
+        units = g._barracks_view_layout()['rects']['units']
+        buttons = [g.train_buttons[u] for u in g.TRAINING_UNIT_ORDER]
+        for rect in buttons:
+            assert units.contains(rect)
+            assert rect.w >= 40  # Readable at 720p too
+        for left, right in zip(buttons, buttons[1:]):
+            assert left.right < right.left and left.top == right.top
+
+    def test_full_queue_fits_its_section(self, any_res_game):
+        g = any_res_game
+        _open_barracks(g, FULL_QUEUE)
+        g.draw_bottom_ui()
+        queue = g._barracks_view_layout()['rects']['queue']
+        assert [i for _r, i in g.queue_cancel_buttons] == [0, 1, 2, 3]
+        for rect, _i in g.queue_cancel_buttons:
+            assert queue.contains(rect)
+        tops = [r.top for r, _i in g.queue_cancel_buttons]
+        assert tops == sorted(tops) and len(set(tops)) == 4
+
+    def test_demolish_inside_info_section(self, any_res_game):
+        g = any_res_game
+        _open_barracks(g)
+        g.draw_bottom_ui()
+        info = g._barracks_view_layout()['rects']['info']
+        assert info.contains(g.demolish_barracks_button)
+        assert abs(g.demolish_barracks_button.centerx - info.centerx) <= 1
+
+
+class TestBarracksContent:
+
+    def _texts(self, game, monkeypatch):
+        drawn = {}
+        kit = game.bottom_panel_kit
+        real_left, real_centered = kit.left_text, kit.centered_text
+
+        def left(text, role, color, x, y, shadow=True):
+            drawn[text] = color
+            return real_left(text, role, color, x, y, shadow)
+
+        def centered(text, role, color, cx, y, shadow=True):
+            drawn[text] = color
+            return real_centered(text, role, color, cx, y, shadow)
+
+        monkeypatch.setattr(kit, 'left_text', left)
+        monkeypatch.setattr(kit, 'centered_text', centered)
+        return drawn
+
+    def test_queue_count_in_the_headline(self, game, monkeypatch):
+        import main
+        drawn = self._texts(game, monkeypatch)
+        _open_barracks(game, FULL_QUEUE[1:3])
+        game.draw_bottom_ui()
+        assert drawn['(2/4)'] == main.BOTTOM_GOLD_TEXT
+        _open_barracks(game, FULL_QUEUE)
+        game.draw_bottom_ui()
+        assert drawn['(4/4)'] == (232, 82, 70)  # Red when full
+
+    def test_queue_texts(self, game, monkeypatch):
+        drawn = self._texts(game, monkeypatch)
+        _open_barracks(game, FULL_QUEUE)
+        game.draw_bottom_ui()
+        assert 'Swordsman (Army Limit Reached)' in drawn
+        assert 'Archer (waiting)' in drawn
+        _open_barracks(game, [('Archer', 1, 30)])
+        game.draw_bottom_ui()
+        assert 'Archer (training... 1 turn)' in drawn
+
+    def test_empty_queue(self, game, monkeypatch):
+        drawn = self._texts(game, monkeypatch)
+        _open_barracks(game)
+        game.draw_bottom_ui()
+        assert 'No units in queue' in drawn
+        assert game.queue_cancel_buttons == []
+
+    def test_hotkeys_section_lists_every_hotkey(self, game, monkeypatch):
+        """Captain's hotkey (T) was missing from the old Controls list. The section
+        shows only the hotkeys (owner: no gold / armies / command lines)."""
+        drawn = self._texts(game, monkeypatch)
+        _open_barracks(game)
+        game.draw_bottom_ui()
+        for key, unit in (('S', 'Swordsman'), ('A', 'Archer'), ('P', 'Pikeman'),
+                          ('C', 'Cavalry'), ('T', 'Captain')):
+            assert f'[{key}] {unit}' in drawn
+        assert 'Hotkeys' in drawn and 'Barracks Info' not in drawn
+        assert not any(t.startswith(('Gold: ', 'Armies: ', 'Command: ')) for t in drawn)
+
+    def test_hotkeys_match_the_keyboard_handler(self):
+        import main
+        import pygame
+        from input.keyboard_handler import _TRAINING_SHORTCUTS
+        listed = {pygame.key.key_code(k.lower()): unit for k, unit in main.Game.TRAINING_HOTKEYS}
+        assert listed == _TRAINING_SHORTCUTS
+
+    def test_demolish_label_follows_the_refund(self, game, monkeypatch):
+        import main
+        drawn = _spy_buttons(game, monkeypatch)
+        _open_barracks(game)
+        game.draw_bottom_ui()
+        assert drawn['Demolish (50%)'][:2] == (main.TINT_DEMOLISH, False)
+        game.game_state.player_barracks_full_refund[0] = True  # Makeshift Barracks
+        game.draw_bottom_ui()
+        assert 'Demolish (100%)' in drawn
+
+
+class TestBarracksButtons:
+
+    def test_demolish_still_works(self, game):
+        territory = _open_barracks(game)
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.demolish_barracks_button.center) is True
+        assert 0 not in game.game_state.buildings.get(territory, {})
+        assert game.selected_barracks is None
+
+    def test_demolish_hover_and_flash_change_pixels(self, game):
+        _open_barracks(game)
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.demolish_barracks_button
+            return sum(sum(tuple(game.screen.get_at((rect.left + int(rect.w * f), rect.centery)))[:3])
+                       for f in (0.2, 0.24, 0.76, 0.8))
+
+        normal = pixels()
+        game.mouse_pos = game.demolish_barracks_button.center
+        hover = pixels()
+        game.clicked_element = ('demolish', 'barracks')
+        assert normal < hover < pixels()
+
+    def test_queue_cancel_still_works(self, game):
+        territory = _open_barracks(game, [('Archer', 1, 30), ('Pikeman', 1, 30)])
+        game.draw_bottom_ui()
+        rect, index = game.queue_cancel_buttons[1]
+        assert game.handle_bottom_ui_click(rect.center) is True
+        assert [e[0] for e in game.game_state.training_queue[territory][0]] == ['Archer']
+
+    def test_queue_cancel_hover_and_flash_change_pixels(self, game):
+        _open_barracks(game, [('Archer', 1, 30)])
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.queue_cancel_buttons[0][0]
+            return sum(sum(tuple(game.screen.get_at((rect.left + 2, rect.top + 2)))[:3]) for _ in (0,))
+
+        normal = pixels()
+        game.mouse_pos = game.queue_cancel_buttons[0][0].center
+        hover = pixels()
+        game.clicked_element = ('queue_cancel', 0)
+        assert normal < hover < pixels()
+
+    def test_train_button_still_trains(self, game):
+        territory = _open_barracks(game)
+        game.game_state.player_gold[0] = 1000
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.train_buttons['Archer'].center) is True
+        assert [e[0] for e in game.game_state.training_queue[territory][0]] == ['Archer']
+
+
+# ===========================================================================
+# Orphaned button tooltips: a hover whose buttons are no longer drawn is dropped
+# (owner report 2026-10-09: Territory view plot icon hovered + clicked -> the
+# tooltip stayed in the bottom panel and followed the mouse forever)
+# ===========================================================================
+
+class TestOrphanedTooltips:
+
+    def _hover_frames(self, game, monkeypatch, pos, frames=2):
+        import pygame
+        monkeypatch.setattr(pygame.mouse, 'get_pos', lambda: pos)
+        game.mouse_pos = pos
+        for _ in range(frames):
+            game.draw_bottom_ui()
+            game.update_frame_tooltips()
+
+    def test_territory_plot_tooltip_gone_after_the_click(self, game, monkeypatch):
+        territory = _three_plot_territory(game)
+        game.game_state.buildings.setdefault(territory, {})[0] = 'Barracks'
+        game.game_state.training_queue.setdefault(territory, {})[0] = []
+        game.draw_bottom_ui()
+        rect = next(r for r, _t, i in game.territory_info_plot_buttons if i == 0)
+        drawn = []
+        monkeypatch.setattr(game, 'draw_button_tooltip', lambda pos, data: drawn.append(data))
+        self._hover_frames(game, monkeypatch, rect.center)
+        assert game.hover_target_button and game.hover_target_button[0] == 'plot'
+        game.hover_start_time_button -= 5000  # Past the tooltip delay
+        self._hover_frames(game, monkeypatch, rect.center, frames=1)
+        assert drawn  # The plot tooltip is showing
+
+        assert game.handle_bottom_ui_click(rect.center) is True  # Opens the Barracks view
+        assert game.selected_barracks == (territory, 0)
+        drawn.clear()
+        # The cursor moves on over empty panel space (bottom of the empty queue) -
+        # where the old tooltip kept following it
+        queue = game._barracks_view_layout()['rects']['queue']
+        self._hover_frames(game, monkeypatch, (queue.centerx, queue.bottom - 2))
+        assert game.hover_target_button is None
+        assert not [d for d in drawn if d[0] == 'plot']
+
+    def test_map_training_icon_tooltip_gone_when_barracks_deselected(self, game, monkeypatch):
+        """Escape (or the turn passing) while the cursor is on a quick-access icon:
+        the icons stop drawing, so their hover must not survive."""
+        game.hover_target_button = ('map_training', 'Archer')
+        game.show_tooltip_button = ('map_training', 'Archer')
+        game.selected_barracks = None
+        self._hover_frames(game, monkeypatch, (400, 300), frames=1)
+        assert game.hover_target_button is None and game.show_tooltip_button is None
+
+    def test_forces_label_cleared_on_ai_turn(self, game):
+        """The Forces-icon label (bottom_panel_tooltip) is reset by draw_bottom_ui(),
+        which does not run during AI turns - the empty panel must reset it too."""
+        game.bottom_panel_tooltip = ("5x Swordsmen", (300, 800))
+        game.draw_empty_bottom_ui_panel()
+        assert game.bottom_panel_tooltip is None
+
+    def test_live_hover_survives_frames(self, game, monkeypatch):
+        """No false release: a button still drawn keeps its hover and timer."""
+        _open_barracks(game)
+        game.draw_bottom_ui()
+        rect = game.train_buttons['Archer']
+        self._hover_frames(game, monkeypatch, rect.center)
+        started = game.hover_start_time_button
+        self._hover_frames(game, monkeypatch, rect.center, frames=3)
+        assert game.hover_target_button == ('training', 'Archer')
+        assert game.hover_start_time_button == started
+
+
+# ===========================================================================
+# Keep view - owner design 2026-10-09: Keep (4x2 hero portraits) / Castle upgrade
+# (no headline) / Training Status (row + progress bar) / Hero Info (Hero Limit,
+# rules, Demolish)
+# ===========================================================================
+
+def _open_keep(game, gold=1000):
+    """Select a finished Keep on plot 0 of an owned territory (no hero yet)."""
+    territory = _three_plot_territory(game)
+    game.selected_territory_info = None
+    gs = game.game_state
+    gs.buildings.setdefault(territory, {})[0] = 'Keep'
+    gs.hero_training_queue.pop(territory, None)
+    gs.castle_upgrades.pop(territory, None)
+    gs.castle_upgrades_in_progress.pop(territory, None)
+    gs.player_gold[0] = gold
+    game.selected_keep = (territory, 0)
+    return territory
+
+
+def _trainable_heroes(game):
+    types = game.game_state.HERO_TYPES
+    return [h for h in types if types[h].get('trainable', True)]
+
+
+class TestKeepLayout:
+
+    def test_sections_inside_panel_and_ordered(self, any_res_game):
+        g = any_res_game
+        rects = [g._keep_view_layout()['rects'][k] for k in ('heroes', 'castle', 'training', 'info')]
+        for rect in rects:
+            assert _panel(g).contains(rect)
+        for left, right in zip(rects, rects[1:]):
+            assert left.right < right.left
+
+    def test_hero_portraits_fit_a_4x2_grid(self, any_res_game):
+        g = any_res_game
+        _open_keep(g)
+        g.draw_bottom_ui()
+        heroes = g._keep_view_layout()['rects']['heroes']
+        trainable = _trainable_heroes(g)
+        assert sorted(g.hero_train_buttons) == sorted(trainable)
+        rects = [g.hero_train_buttons[h] for h in trainable]
+        for rect in rects:
+            assert heroes.contains(rect)
+            assert rect.w >= 50  # Readable at 720p too
+        assert len({r.top for r in rects}) == 2 and len({r.left for r in rects}) == 4
+        for i, a in enumerate(rects):
+            for b in rects[i + 1:]:
+                assert not a.colliderect(b)
+
+    def test_castle_icon_keeps_its_spot_in_every_state(self, any_res_game):
+        g = any_res_game
+        territory = _open_keep(g)
+        castle = g._keep_view_layout()['rects']['castle']
+        spots = []
+        for state in ('available', 'upgrading', 'castle'):
+            if state == 'upgrading':
+                g.game_state.castle_upgrades_in_progress[territory] = {0: 2}
+            elif state == 'castle':
+                g.game_state.castle_upgrades_in_progress.pop(territory, None)
+                g.game_state.castle_upgrades[territory] = {0: True}
+            g.draw_bottom_ui()
+            assert castle.contains(g.castle_icon_rect)
+            spots.append(g.castle_icon_rect)
+        assert spots[0] == spots[1] == spots[2]
+
+    def test_demolish_inside_info_section(self, any_res_game):
+        g = any_res_game
+        _open_keep(g)
+        g.draw_bottom_ui()
+        info = g._keep_view_layout()['rects']['info']
+        assert info.contains(g.demolish_keep_button)
+
+
+class TestCastleStates:
+
+    def test_available_is_clickable(self, game):
+        _open_keep(game)
+        game.draw_bottom_ui()
+        assert game.castle_upgrade_button == game.castle_icon_rect
+
+    def test_not_clickable_without_gold(self, game):
+        _open_keep(game, gold=100)
+        game.draw_bottom_ui()
+        assert game.castle_upgrade_button is None
+
+    def test_upgrading_shows_cancel_inside_the_section(self, any_res_game):
+        g = any_res_game
+        territory = _open_keep(g)
+        g.game_state.castle_upgrades_in_progress[territory] = {0: 2}
+        g.draw_bottom_ui()
+        castle = g._keep_view_layout()['rects']['castle']
+        assert g.castle_upgrade_button is None
+        assert castle.contains(g.castle_upgrade_cancel_button)
+
+    def test_castle_done_is_not_clickable(self, game, monkeypatch):
+        """Owner choice: the icon stays, in full colour, captioned "Upgrade
+        Finished" (not "Castle" - the headline says that); no button, no cancel,
+        no tooltip."""
+        texts = []
+        kit = game.bottom_panel_kit
+        real = kit.centered_text
+        monkeypatch.setattr(kit, 'centered_text', lambda t, *a, **k: texts.append(t) or real(t, *a, **k))
+        territory = _open_keep(game)
+        game.game_state.castle_upgrades[territory] = {0: True}
+        game.draw_bottom_ui()
+        assert game.castle_upgrade_button is None and game.castle_upgrade_cancel_button is None
+        assert 'Upgrade Finished' in texts
+        game.mouse_pos = game.castle_icon_rect.center
+        game.draw_bottom_ui()
+        assert game.castle_button_is_hovering is False
+
+    def test_upgrade_click_still_works(self, game):
+        territory = _open_keep(game)
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.castle_icon_rect.center) is True
+        assert game.game_state.is_upgrading_to_castle(territory, 0)
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.castle_upgrade_cancel_button.center) is True
+        assert not game.game_state.is_upgrading_to_castle(territory, 0)
+
+    def test_upgrading_icon_tint_is_cached(self, game, monkeypatch):
+        """The yellow "upgrading" tint used to allocate a Surface every frame."""
+        import pygame
+        territory = _open_keep(game)
+        game.game_state.castle_upgrades_in_progress[territory] = {0: 2}
+        game.draw_bottom_ui()  # Builds the cached tint
+        made = []
+        real_surface = pygame.Surface
+
+        def counting(*a, **k):
+            made.append(a)
+            return real_surface(*a, **k)
+
+        monkeypatch.setattr(pygame, 'Surface', counting)
+        size = game.castle_icon_rect.w
+        game.draw_bottom_ui()
+        assert not [a for a in made if a and tuple(a[0]) == (size, size)]
+
+
+class TestKeepTrainingStatus:
+
+    def test_progress_bar_follows_training_time(self, game):
+        territory = _open_keep(game)
+        hero = 'Aidam Narn'  # training_time 5
+        total = game.game_state.HERO_TYPES[hero]['training_time']
+        game.game_state.hero_training_queue[territory] = {0: (hero, 3, 300)}
+        game.draw_bottom_ui()
+        bar, frac = game.keep_training_bar
+        assert abs(frac - (total - 3) / float(total)) < 1e-6
+        training = game._keep_view_layout()['rects']['training']
+        assert training.contains(bar) and training.contains(game.hero_cancel_button)
+
+    def test_fits_at_every_resolution(self, any_res_game):
+        g = any_res_game
+        territory = _open_keep(g)
+        g.game_state.hero_training_queue[territory] = {0: ('Seledra Rennervail', 1, 300)}
+        g.draw_bottom_ui()
+        training = g._keep_view_layout()['rects']['training']
+        bar, _frac = g.keep_training_bar
+        assert training.contains(bar)
+        assert bar.bottom + g.bottom_panel_kit.line_height('small') <= training.bottom
+
+    def test_cancel_still_works(self, game):
+        territory = _open_keep(game)
+        game.game_state.hero_training_queue[territory] = {0: ('Aidam Narn', 3, 300)}
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.hero_cancel_button.center) is True
+        assert territory not in game.game_state.hero_training_queue or \
+            0 not in game.game_state.hero_training_queue[territory]
+        assert game.clicked_element == ('hero_cancel', 'training')
+
+    def test_nothing_in_training(self, game):
+        _open_keep(game)
+        game.draw_bottom_ui()
+        assert game.hero_cancel_button is None and game.keep_training_bar is None
+
+
+class TestKeepHeroInfo:
+
+    def _left_texts(self, game, monkeypatch):
+        drawn = {}
+        kit = game.bottom_panel_kit
+        real = kit.left_text
+
+        def spy(text, role, color, x, y, shadow=True):
+            drawn[text] = color
+            return real(text, role, color, x, y, shadow)
+
+        monkeypatch.setattr(kit, 'left_text', spy)
+        return drawn
+
+    def test_hero_limit_red_once_reached(self, game, monkeypatch):
+        """Red at the limit: 3, or 4 with Heroic Fortitude (player_hero_limit)."""
+        import main
+        drawn = self._left_texts(game, monkeypatch)
+        gs = game.game_state
+        _open_keep(game)
+        gs.hero_ownership[0] = {'Halon Nextroy', 'Erec Silvyr'}
+        game.draw_bottom_ui()
+        assert drawn['Hero Limit: 2/3'] == main.BROWN_TEXT_PRIMARY
+        gs.hero_ownership[0] = {'Halon Nextroy', 'Erec Silvyr', 'Vearen Asford'}
+        game.draw_bottom_ui()
+        assert drawn['Hero Limit: 3/3'] == (232, 82, 70)
+        gs.player_hero_limit[0] = 4  # Heroic Fortitude researched
+        game.draw_bottom_ui()
+        assert drawn['Hero Limit: 3/4'] == main.BROWN_TEXT_PRIMARY
+
+    def test_rules_listed(self, game, monkeypatch):
+        drawn = self._left_texts(game, monkeypatch)
+        _open_keep(game)
+        game.draw_bottom_ui()
+        for fragment in ("trained once", "only have one", "slain upon"):
+            assert any(fragment in text for text in drawn), fragment
+
+    def test_demolish_still_works(self, game):
+        territory = _open_keep(game)
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.demolish_keep_button.center) is True
+        assert 0 not in game.game_state.buildings.get(territory, {})
+
+    def test_demolish_hover_and_flash_change_pixels(self, game):
+        _open_keep(game)
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.demolish_keep_button
+            return sum(sum(tuple(game.screen.get_at((rect.left + int(rect.w * f), rect.centery)))[:3])
+                       for f in (0.2, 0.24, 0.76, 0.8))
+
+        normal = pixels()
+        game.mouse_pos = game.demolish_keep_button.center
+        hover = pixels()
+        game.clicked_element = ('demolish', 'keep')
+        assert normal < hover < pixels()
+
+    def test_hero_portrait_click_still_trains(self, game):
+        territory = _open_keep(game)
+        hero = _trainable_heroes(game)[0]
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.hero_train_buttons[hero].center) is True
+        assert game.game_state.hero_training_queue[territory][0][0] == hero
+
+
+class TestKeepHeroCard:
+    """Owner request 2026-10-09: a Keep whose hero is trained shows that hero
+    (portrait, name, title) under the headline instead of the training grid, and
+    clicking it opens the Hero view like the Territory view's Forces portrait."""
+
+    HERO = 'Neil Hévilneu'  # Longest title: two lines
+
+    def _give_keep_a_hero(self, game):
+        territory = _open_keep(game)
+        gs = game.game_state
+        gs.heroes.setdefault(0, {})[self.HERO] = {'keep_territory': territory, 'keep_plot': 0}
+        gs.hero_ownership[0] = {self.HERO}
+        return territory
+
+    def test_card_replaces_the_grid_and_fits(self, any_res_game):
+        g = any_res_game
+        self._give_keep_a_hero(g)
+        g.draw_bottom_ui()
+        assert g.hero_train_buttons == {}
+        card, name = g.keep_hero_button
+        assert name == self.HERO
+        assert g._keep_view_layout()['rects']['heroes'].contains(card)
+
+    def test_name_and_title_drawn(self, game, monkeypatch):
+        drawn = []
+        kit = game.bottom_panel_kit
+        real = kit.left_text
+        monkeypatch.setattr(kit, 'left_text', lambda t, *a, **k: drawn.append(t) or real(t, *a, **k))
+        self._give_keep_a_hero(game)
+        game.draw_bottom_ui()
+        assert self.HERO in drawn
+        assert any('Supreme Commander' in t for t in drawn)
+
+    def test_click_opens_the_hero_view(self, game):
+        self._give_keep_a_hero(game)
+        game.draw_bottom_ui()
+        card, _name = game.keep_hero_button
+        assert game.handle_bottom_ui_click(card.center) is True
+        assert game.selected_hero == self.HERO
+        assert game.selected_keep is None
+        assert game.clicked_element == ('bottom_button', ('keep_hero', self.HERO))
+
+    def test_hover_and_flash_brighten_the_portrait(self, game):
+        self._give_keep_a_hero(game)
+
+        def brightness():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            card, _name = game.keep_hero_button
+            size = card.h
+            return sum(sum(tuple(game.screen.get_at((card.left + int(size * fx), card.top + int(size * fy))))[:3])
+                       for fx in (0.3, 0.5, 0.7) for fy in (0.3, 0.5, 0.7))
+
+        normal = brightness()
+        game.mouse_pos = game.keep_hero_button[0].center
+        hover = brightness()
+        game.clicked_element = ('bottom_button', ('keep_hero', self.HERO))
+        assert normal < hover < brightness()
+
+    def test_no_card_without_a_hero(self, game):
+        _open_keep(game)
+        game.draw_bottom_ui()
+        assert game.keep_hero_button is None
+        assert len(game.hero_train_buttons) == len(_trainable_heroes(game))

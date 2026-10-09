@@ -74,6 +74,10 @@ TINT_LOCKED = (170, 170, 170)            # Greyed: the action is refused right n
 TINT_SELECT_ARMY = (160, 175, 200)       # Steel - not green, so it isn't read as End Turn
 TINT_SELECT_ALL = (110, 160, 240)        # Blue
 TINT_DESELECT_ALL = (230, 90, 80)        # Red
+# Building views (2026-10-09): Demolish / Cancel are red; with Erec Silvyr's Confiscate a
+# Farm/Mine demolish refunds 175%, shown by a blue button (it used to glow blue)
+TINT_DEMOLISH = (230, 90, 80)            # Red
+TINT_CONFISCATE = (110, 160, 240)        # Blue
 
 # Colours
 GOLD_TEXT = (238, 206, 132)              # Section headlines
@@ -268,19 +272,27 @@ class BottomPanelKit:
         art = self._cache(('vrule', height), build)
         self.game.screen.blit(art, (x - 1, y0))
 
-    def header(self, rect, text, color=GOLD_TEXT, role='heading', y=None, max_lines=1, spacing=0):
+    def header(self, rect, text, color=GOLD_TEXT, role='heading', y=None, max_lines=1, spacing=0,
+               align='center'):
         """Centred headline (wrapped / fitted) and a gold rule under it.
 
         `spacing` adds that many px above AND below the rule (sections with spare
         height, e.g. Territory Info, so the headline doesn't feel cramped).
+        align='left' puts the headline at rect.left instead (the plot building view,
+        where it sits beside the building's icon); its rule then spans the whole rect
+        so it starts where the text does.
         Returns the y where the section's content starts.
         """
         y = rect.top if y is None else y
         step = self.line_height(role)
         for line in self.wrap(text, role, rect.w, max_lines):
-            self.centered_text(line, role, color, rect.centerx, y)
+            if align == 'left':
+                self.left_text(line, role, color, rect.left, y)
+            else:
+                self.centered_text(line, role, color, rect.centerx, y)
             y += step
-        return self.rule(rect, y + self.px(1) + spacing) + spacing
+        width_frac = 1.0 if align == 'left' else 0.92
+        return self.rule(rect, y + self.px(1) + spacing, width_frac) + spacing
 
     def header_height(self, text, role='heading', width=None, max_lines=1, spacing=0):
         """Height header() would take (lines + rule + gaps) - for layout planning."""
