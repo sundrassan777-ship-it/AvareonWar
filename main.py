@@ -9872,21 +9872,21 @@ class Game:
         text_gap = kit.px(14)
 
         # Portrait: as tall as the space under the headline allows (100 px at most at
-        # the reference size); the text column takes the rest of the width
+        # the reference size), at a FIXED spot 15% into the section and centred
+        # vertically. It used to be centred together with the text, so heroes with
+        # longer titles shifted it sideways (owner feedback 2026-10-09).
         area_h = general.bottom - y
         icon_size = max(24, min(area_h, kit.px(100)))
-        max_text_w = max(40, general.w - icon_size - text_gap)
+        icon_x = general.left + int(general.w * 0.15)
+        icon_y = y + max(0, (area_h - icon_size) // 2)
+        icon_rect = pygame.Rect(icon_x, icon_y, icon_size, icon_size)
+        self.hero_view_portrait_rect = icon_rect  # For the tests (position is fixed)
+
+        # The text column takes whatever width is left right of the portrait
+        max_text_w = max(40, general.right - icon_rect.right - text_gap)
         title_lines = [kit.fit(line, 'italic', max_text_w) for line in description_lines]
         label_w = kit.font('body_bold').size("Location: ")[0]
         location_text = kit.fit(location, 'body', max(20, max_text_w - label_w))
-        text_w = max([kit.font('italic').size(line)[0] for line in title_lines]
-                     + [label_w + kit.font('body').size(location_text)[0]])
-
-        # Portrait + text centred as one block, both centred vertically under the headline
-        block_w = icon_size + text_gap + text_w
-        icon_x = general.left + max(0, (general.w - block_w) // 2)
-        icon_y = y + max(0, (area_h - icon_size) // 2)
-        icon_rect = pygame.Rect(icon_x, icon_y, icon_size, icon_size)
 
         if self.hero_images.get(hero_name):
             # PERFORMANCE: cached scaled portrait (keyed by size)
@@ -9899,12 +9899,12 @@ class Game:
                               icon_rect.centery - kit.line_height('title') // 2)
         pygame.draw.rect(self.screen, (212, 170, 80), icon_rect, max(2, kit.px(3)), border_radius=6)
 
+        # Text starts level with the portrait's top edge (it used to be centred on the
+        # portrait, so its start moved with the number of title lines)
         title_h = kit.line_height('italic')
-        location_h = kit.line_height('body')
         line_gap = kit.px(6)
-        text_h = len(title_lines) * title_h + line_gap + location_h
         tx = icon_rect.right + text_gap
-        ty = icon_rect.centery - text_h // 2
+        ty = icon_rect.top + kit.px(2)
         for line in title_lines:
             kit.left_text(line, 'italic', title_color, tx, ty)
             ty += title_h

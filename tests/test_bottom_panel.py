@@ -679,3 +679,24 @@ class TestHeroView:
             _open_hero(game, hero)
             game.draw_bottom_ui()
             assert (hero, 0) in game.hero_ability_buttons
+
+
+class TestHeroPortraitPosition:
+    """Owner feedback 2026-10-09: the portrait moved sideways with the title length."""
+
+    def test_portrait_does_not_move_between_heroes(self, any_res_game):
+        g = any_res_game
+        positions = set()
+        for hero in list(g.game_state.HERO_TYPES):
+            g.game_state.heroes[0] = {}
+            _open_hero(g, hero)
+            g.draw_bottom_ui()
+            positions.add(tuple(g.hero_view_portrait_rect))
+        assert len(positions) == 1
+        general = g._hero_view_layout()['rects']['general']
+        assert general.contains(pygame_rect(positions.pop()))
+
+
+def pygame_rect(values):
+    import pygame
+    return pygame.Rect(values)
