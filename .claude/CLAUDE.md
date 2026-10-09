@@ -161,6 +161,8 @@ AvareonWar/
 - [tests/test_sidebar_tech.py](tests/test_sidebar_tech.py) - Tech arrow states, grid fit at 720p/900p/1080p, centring
 - [tests/test_sidebar_feedback.py](tests/test_sidebar_feedback.py) - Pixel audit: every sidebar control highlights on hover and flashes on click
 - [tests/test_font_italic.py](tests/test_font_italic.py) - Italic only where intended: separate italic font objects, no shared font left italic after resolution changes
+- [tests/test_bottom_panel.py](tests/test_bottom_panel.py) - Bottom panel overhaul at 720p/900p/1080p/1440p: kit geometry, End Turn section + state rules, Territory view (plots fill, Forces grid, Select Army, hero portrait, hover labels), empty plot buttons, Army view (T divider, 15-unit grid), Hero view (fixed portrait, Keep pan), full-width button tooltips
+- [tests/test_cutscene_volume.py](tests/test_cutscene_volume.py) - Cutscene voice/music follow the master volume (muted game = silent cutscenes)
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -176,6 +178,7 @@ AvareonWar/
 - [rendering/helpers.py](rendering/helpers.py) (~527 lines) - Drawing utilities
 - [rendering/map_extension.py](rendering/map_extension.py) - Fills the strip past the map's east edge at low zoom (generated edge-stretch fading into fog, or a painted `<background>_east.png`)
 - [rendering/sidebar_widgets.py](rendering/sidebar_widgets.py) - `SidebarWidgets` (`game.sidebar_widgets`): cached drawing kit for the right sidebar (capped text, 9-sliced wood/bronze frames, cards, buttons, chips, ribbons, tech arrows, scrollbars, clip helpers)
+- [rendering/bottom_panel_kit.py](rendering/bottom_panel_kit.py) - `BottomPanelKit` (`game.bottom_panel_kit`): bottom panel sections (`section_rect`), centred headline + gold rule, CampaignBTN buttons with a tinted wooden window, BattleBar timer, T-divider rule, traced tutorial outline; fonts sized by panel height
 - [rendering/action_log_model.py](rendering/action_log_model.py) - Pure Action Log model: message classification, grouping by turn, per-player visibility, filter chips (`FILTERS`), badge categories
 
 **Input Handling:**
@@ -469,7 +472,8 @@ After making code changes, ask yourself:
 - Add achievement reward icon → `achievement_manager.py` ALL_REWARD_ICON_PATHS
 - Change achievement panel UI → `achievement_panel.py`
 - Add campaign cutscene → Use `Cutscene_Tool.py`, data in `cutscene_data.json`
-- Modify cutscene player → `cutscene_player.py`
+- Modify cutscene player → `cutscene_player.py` (volume = slide volume × `master_volume`, passed by every in-game `CutscenePlayer(...)` call)
+- Change a bottom panel view (End Turn, Territory, empty plot, Army, Hero) → `main.py` view method using `rendering/bottom_panel_kit.py`; section geometry via `_section_layout()` / `_*_view_layout()`, **never fixed x offsets**; text sized by `kit.font(role)` (panel height, not `ui_scale`). New buttons: `kit.ornate_button()` + rect reset in `draw_bottom_ui()` + `handle_bottom_ui_click()` + a hover/flash test in `tests/test_bottom_panel.py`. See "Bottom panel: sections, kit and views" in CODE_GUIDE.md
 - Export cutscene to MP4 → `cutscene_exporter.py` (called from `Cutscene_Tool.py`)
 - Modify loading screen → `loading_screen.py`
 - Change deferred sound loading → `global_sound.py` `get_game_sound_tasks()`

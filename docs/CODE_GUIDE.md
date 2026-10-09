@@ -1135,6 +1135,116 @@ their `Player N: ` prefix; `classify()` strips it before matching.
 `test_action_log_model.py`, `test_sidebar_heroes.py`, `test_sidebar_tech.py`,
 `test_sidebar_feedback.py`.
 
+### Bottom panel: sections, kit and views
+
+The bottom panel is split into **sections** by the wooden pillars (`Separator1.png`). Since the
+2026-10-09 overhaul, every section follows one pattern:
+
+    centred headline
+    ───────◆─────── gold rule
+    content (centred, or left-aligned lists)
+
+| File | Role |
+|---|---|
+| `rendering/bottom_panel_kit.py` | `BottomPanelKit` (`game.bottom_panel_kit`): `section_rect()`, `header()`, `rule()`, `vertical_rule()`, `ornate_button()`, `battlebar()`, `button_outline()`, fonts / text helpers. Cached; `invalidate()` is called by `apply_display_settings()` |
+| `rendering/sidebar_widgets.py` | Supplies the art: `separator()` (the gold rule) and `button_sprite(..., inner_tint=...)` |
+| `utils/surface_utils.py` | `tint_campaign_button_wood()` + `CAMPAIGN_BTN_WOOD_RECT`; BattleBar `BAR_FRAME_CROP` / `BAR_FILL_*` (shared with the Tales' Popularity bar) |
+| `main.py` | The views: `_draw_player_info_section()` (End Turn), `draw_territory_info_panel()`, `_draw_building_ui_section()` (empty plot), `draw_army_composition_ui()`, `draw_hero_ui()`; clicks in `handle_bottom_ui_click()` |
+
+**Geometry — never hardcode x offsets.**
+- `END_TURN_SECTION_FRAC` (0.194) is the pillar after the End Turn section, in every view.
+- Views split the rest with `_section_layout(names, weights)` →
+  `{'pillars': [x…], 'rects': {name: content rect}}`. Weights:
+  `TERRITORY_VIEW_WEIGHTS` (info / plots / forces / lore), `ARMY_VIEW_WEIGHTS`
+  (info / units / help), `HERO_VIEW_WEIGHTS` (= the Army weights, so pillars don't jump
+  when switching between the two views).
+- `kit.section_rect(left_x, right_x)` insets by half the pillar plus padding, and starts
+  below the wooden beam (`CONTENT_TOP_FRAC`, ~12% of the panel height).
+- Tests use the same layout functions, so drawing and tests can't drift apart.
+
+**Text sizes follow the panel height, not `ui_scale`.** The panel is capped at 300 px (180 px
+at 1280x720, 211 px at 1600x900), but `ui_scale` reaches 1.6 at 2560x1440, so the game fonts
+overflowed it. `kit.font(role)` sizes are the 1600x900 values × `panel_height / 211`. Roles:
+`title / heading / body / body_bold / small / small_bold / small_italic / italic / button /
+lore`. `kit.px(v)` scales lengths the same way.
+
+**Building blocks.**
+- `y = kit.header(rect, text, color=..., role=..., max_lines=..., spacing=...)` draws the
+  headline + rule and returns where content starts. `spacing` adds room above and below
+  the rule (Territory Info, Army, Hero).
+- `kit.ornate_button(rect, label, inner_tint, flash_key, locked, role, hover_pos)` —
+  CampaignBTN with only its **wooden window** tinted (`TINT_END_TURN`,
+  `TINT_SELECT_ARMY`, `TINT_SELECT_ALL`, `TINT_DESELECT_ALL`); the gold frame stays gold.
+  The wood is greyed before tinting (multiplying brown by blue gave mud). Locked buttons
+  are always grey (`TINT_LOCKED`). Height from the art: `kit.button_height(width)`.
+- `kit.battlebar(rect, frac, color, text)` — BattleBar frame over a gradient fill (the
+  planning timer); height from `kit.battlebar_height(width)`.
+- `kit.vertical_rule(x, y0, y1)` — the upright of a "T" divider: solid at the top so it
+  meets the rule's centre diamond (3 px below the rule art's top), fading at the bottom.
+- `kit.button_outline(size)` — tutorial highlight band traced from the button's alpha mask
+  (it hugs the pointed caps); set its alpha per frame like `pulse_ring()`.
+- `_draw_info_list_section(rect, title, items, bullets=True)` — headline + wrapped items
+  with a hanging indent (Unit Selection Info, Hero Info). Falls back to the small font and
+  stops at the section bottom.
+
+**The views.**
+- **End Turn** (all views): name, rule, End Turn button, rule, "Turn X:", BattleBar timer,
+  elapsed time — a vertically centred stack whose gaps shrink to fit; the elapsed line is
+  dropped only if even 1 px gaps overflow. State rules: `_end_turn_button_state()` →
+  `('normal' | 'highlight' | 'locked', label)`. Timer source: `_planning_timer_info()`.
+  Turn number: `_display_turn_number()` (`sim_state.round_number` in simultaneous mode,
+  `turn_number + 1` otherwise).
+- **Territory:** Info (facts spread over the height), Building Plots (sized so three
+  fill the section), Forces, Lore (text from the top).
+  - Forces: **Select Army** (`_can_select_army_in()`: planning, local player's turn, own
+    units there) → `_select_army_garrison()`.
+  - Icon grid from `_forces_entries()`: two fixed column slots, filled column-first from
+    the top. The hero portrait is last and clickable for your own hero → `_select_hero()`
+    (shared with the Heroes tab).
+  - Hover labels: `game.bottom_panel_tooltip`, drawn by `_draw_bottom_panel_tooltip()`.
+  - Army Limit / Total colours: `_army_limit_color(n)` (yellow from 3 below the limit,
+    red at it).
+- **Empty plot:** no title; `_empty_plot_button_layout()` sizes the building buttons to
+  the content height (narrower screens limit them by width).
+- **Army:** Info with a T divider (status counts left, Select / Deselect All right),
+  Units (5-wide grid sized so 15 units fit), Unit Selection Info.
+- **Hero:** General (portrait at a fixed 15% spot, text from its top; clicking it pans to
+  the Keep like the Heroes tab card, gated by `UIConstants.SIDEBAR_CAMERA_PAN`),
+  Abilities (three icons in a centred row), Hero Info.
+
+**Hover and click flash.** Same convention as the sidebar: hover from `game.mouse_pos`,
+flash when `game.clicked_element` equals the control's key.
+
+| Control | Flash key | Click handler |
+|---|---|---|
+| End Turn | `('bottom_button', 'end_turn')` | `handle_bottom_ui_click` |
+| Select Army | `('bottom_button', 'select_army')` — not shown, the view switches; the map banner flashes `('army', territory)` | `handle_bottom_ui_click` |
+| Forces hero portrait | `('bottom_button', ('forces_hero', hero))` | `handle_bottom_ui_click` → `_select_hero()` |
+| Hero view portrait | `('bottom_button', ('hero_portrait', hero))` | `handle_bottom_ui_click` → `start_sidebar_camera_pan()` |
+| Select All / Deselect All | `('army_comp', 'select_all' / 'deselect_all')` | `handle_bottom_ui_click` |
+
+**Button tooltips reach the whole panel width.** They used to be cut off in the rightmost
+250 px (a leftover from a full-height sidebar). The bigger empty-plot buttons put Training
+Grounds inside that strip and it lost its tooltip. Every bottom-panel hover system clears
+its own tooltip when the mouse leaves its buttons, so nothing lingers.
+
+#### When to Modify
+
+✅ **Add or restyle a section of a view:** get its rect from the view's `_*_view_layout()`
+(or add a name + weight), start with `kit.header()`, and lay content out inside the rect
+using `kit.px()` and `kit.line_height()`. Stop at `rect.bottom`.
+
+✅ **Add a button:** `kit.ornate_button()` with a tint (add a `TINT_*` constant), store
+its rect in an attribute reset at the top of `draw_bottom_ui()`, handle it in
+`handle_bottom_ui_click()`, and add a hover/flash pixel test to `test_bottom_panel.py`.
+
+✅ **Rework the building views (Barracks, Keep, finished / under-construction plots):**
+the next pass. They still use fixed offsets and flat `draw_feedback_button()` boxes.
+
+⚠️ Tests: `tests/test_bottom_panel.py` — layout at 1280x720 / 1600x900 / 1920x1080 /
+2560x1440 (resolutions forced with an offscreen surface, so the machine's monitor
+doesn't decide what gets tested), every view and control above.
+
 ### Action Log privacy: who sees a message
 
 `game_state.messages` is one shared list of plain strings; every player's log is a filtered
@@ -2722,6 +2832,7 @@ Adding/removing files from `assets/sounds/general/` shifts alphabetical indices 
 
 **Volume pipeline:** `effective_volume = music_volume * master_volume` (set via options sliders)
 **SFX volume pipeline:** `effective_volume = sfx_volume * master_volume` applied via `sound_manager.set_volume()`
+**Cutscene volume:** each slide's `audio_volume` / `music_volume` × `master_volume` (the game passes `music_manager.master_volume` to `CutscenePlayer`; the Cutscene Tool and MP4 export keep 1.0)
 **Settings persistence:** `master_volume`, `music_volume`, `sfx_volume` in `settings_manager.py`
 
 #### ✅ Add New Hero Voice Lines
@@ -3163,6 +3274,8 @@ INTRO_SEQUENCE = [
 **Integration:** Automatic. `main.py` checks for `{mission_id}_intro` and `{mission_id}_outro` keys. If present, cutscene plays; if absent, no-op.
 
 **Player controls:** ESC or left-click to skip (0.5s fade-to-black).
+
+**Volume:** `CutscenePlayer(screen, id, master_volume=...)` multiplies every slide's voice and music volume, so a muted game (master 0%) plays silent cutscenes. Every in-game call passes `music_manager.master_volume` (`tests/test_cutscene_volume.py` checks all of them); the Cutscene Tool and MP4 export leave the default 1.0 so previews and videos keep the authored levels.
 
 **MP4 Export:** Click "Export MP4" in Cutscene_Tool.py to export the selected cutscene as a video file. Options: include/exclude subtitles, include/exclude audio. Export uses [cutscene_exporter.py](../cutscene_exporter.py) which renders frames offscreen and pipes to ffmpeg (bundled via `imageio-ffmpeg`). Two-pass: silent video first, then audio muxing via ffmpeg `filter_complex`.
 

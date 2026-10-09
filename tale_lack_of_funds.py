@@ -154,14 +154,13 @@ POP_LABEL_SIZE_REF = 22
 POP_BUTTON_FONT_REF = 17
 POP_CHAT_LIFT_REF = 50       # Lift above the chat input box while it is open
 POP_EASE_PER_SEC = 40.0      # Bar drains/refills at this many points per second
-# BattleBar.png (1536x1024): the frame's opaque bounds, and the inner window
-# (in coordinates of that crop) where the fill shows. The fill rect overshoots
-# the window slightly so its edges hide under the frame; FILL_HIDDEN_LEFT px of
-# it sit under the left end cap, so an empty bar shows no blue.
-BAR_FRAME_CROP = (46, 358, 1439, 174)
-BAR_FILL_LEFT, BAR_FILL_RIGHT = 216, 1226
-BAR_FILL_TOP, BAR_FILL_BOTTOM = 36, 128
-BAR_FILL_HIDDEN_LEFT = 21
+# BattleBar.png frame crop + fill window: moved to utils/surface_utils.py so the
+# bottom panel's planning timer shares them. Re-exported here because Tale II
+# imports them from this module.
+from utils.surface_utils import (  # noqa: E402  (kept beside the other widget constants)
+    BAR_FRAME_CROP, BAR_FILL_LEFT, BAR_FILL_RIGHT,
+    BAR_FILL_TOP, BAR_FILL_BOTTOM, BAR_FILL_HIDDEN_LEFT,
+)
 POP_TRACK_COLOR = (18, 18, 28)
 POP_FILL_TOP_COLOR = (120, 170, 255)
 POP_FILL_BOTTOM_COLOR = (35, 75, 200)

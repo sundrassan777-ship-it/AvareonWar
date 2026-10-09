@@ -35,7 +35,8 @@ from collections import OrderedDict
 
 import pygame
 
-from utils.surface_utils import crop_to_opaque, load_cached_image, get_campaign_button_image
+from utils.surface_utils import (crop_to_opaque, load_cached_image, get_campaign_button_image,
+                                 tint_campaign_button_wood)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -193,11 +194,14 @@ class SidebarWidgets:
             self._art[frame] = (load_cached_image(path, alpha=True), insets)
         return self._art[frame]
 
-    def _button_art(self, art):
-        key = ('button', art)
+    def _button_art(self, art, inner_tint=None):
+        key = ('button', art, inner_tint)
         if key not in self._art:
             if art == 'campaign':
                 image = get_campaign_button_image()
+                # Bottom panel buttons colour only the wooden window, keeping the gold frame
+                if inner_tint is not None:
+                    image = tint_campaign_button_wood(image, inner_tint)
             else:  # 'battlebar'
                 raw = load_cached_image('assets/BattleBar.png', alpha=True)
                 image = crop_to_opaque(raw, threshold=128) if raw else None
@@ -327,14 +331,18 @@ class SidebarWidgets:
 
     # ------------------------------------------------------------------ buttons
 
-    def button_sprite(self, art, size, tint=None, state='normal'):
-        """Ornate button art scaled to `size`, optionally tinted, in a baked state."""
+    def button_sprite(self, art, size, tint=None, state='normal', inner_tint=None):
+        """Ornate button art scaled to `size`, optionally tinted, in a baked state.
+
+        `tint` multiplies the whole sprite (frame included); `inner_tint` colours only
+        CampaignBTN's wooden window (the bottom panel's End Turn / Select buttons).
+        """
         w, h = int(size[0]), int(size[1])
-        key = ('btn', art, w, h, tint, state)
+        key = ('btn', art, w, h, tint, state, inner_tint)
         cached = self._get(key)
         if cached is not None:
             return cached
-        image = self._button_art(art)
+        image = self._button_art(art, inner_tint)
         surf = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
         if image is not None:
             surf.blit(pygame.transform.smoothscale(image, (w, h)), (0, 0))

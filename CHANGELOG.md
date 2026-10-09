@@ -2,6 +2,65 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-09 - Bottom panel overhaul (End Turn, Territory, empty plot, Army, Hero views)
+
+Branch `feature/bottom-panel-overhaul`. Every section of the bottom panel now follows one
+pattern: centred headline, gold rule, content. Building views (Barracks, Keep, finished /
+under-construction plots) are the next pass. Developer guide: "Bottom panel: sections, kit
+and views" in CODE_GUIDE.md.
+
+**Foundation (P1):**
+- New `rendering/bottom_panel_kit.py` (`BottomPanelKit`, `game.bottom_panel_kit`): section
+  geometry between the pillars, headline + gold rule, CampaignBTN buttons, BattleBar bar,
+  T-divider rule, traced tutorial outline.
+- Fonts are sized by the panel height (211 px at 1600x900), not `ui_scale`: the panel caps
+  at 300 px while `ui_scale` reaches 1.6 at 2560x1440, so game fonts overflowed it.
+- CampaignBTN inner tint (`tint_campaign_button_wood()` in utils/surface_utils.py): only the
+  measured wooden window is coloured (pygame masks, no numpy), greyed first so blue isn't
+  mud; the gold frame stays gold. `SidebarWidgets.button_sprite(..., inner_tint=...)`.
+- BattleBar crop / fill constants moved from tale_lack_of_funds.py to utils/surface_utils.py
+  (Tale I re-exports them for Tale II).
+
+**End Turn section (all views, P1):** centred name, rule, End Turn CampaignBTN (green; grey
+when refused; brighter green + traced pulsing band for the tutorial), rule, "Turn X:", the
+planning timer in a BattleBar frame, elapsed time in grey. Gaps shrink to fit 720p.
+`_end_turn_button_state()` holds the grey/highlight rules (tests no longer spy on
+`draw_feedback_button`); `_planning_timer_info()`, `_display_turn_number()`.
+
+**Territory view (P2):** sections sized by proportion (`_section_layout()`), not fixed px —
+at 1280x720 the lore section no longer disappears.
+- Info: name centred, facts one per line spread over the height.
+- Building Plots: sized so three plots fill the section.
+- Forces: Select Army (opens your garrison there; greyed without own units, outside
+  planning or off-turn); unit icons with counts in two fixed column slots, then the hero
+  portrait (your own opens its Hero view via the new shared `_select_hero()`); hover
+  labels; Army Limit yellow from 12, red at 15 (`_army_limit_color()`).
+- Lore: brighter text with a shadow, starting at the top.
+
+**Empty plot view (P3):** title removed; building buttons sized to the panel height
+(`_empty_plot_button_layout()`); "Building limit reached" in the old title slot.
+
+**Army view (P4):** Army Info with a T divider (Total N/15 in the limit colours + Ready /
+Moved / Ordered on the left, Select All / Deselect All on the right), Units grid sized so
+15 units fit at every resolution, Unit Selection Info as a shared wrapped list
+(`_draw_info_list_section()`).
+
+**Hero view (P5):** portrait at a fixed spot with the title and location beside it;
+clicking it pans to the hero's Keep like the Heroes tab card; abilities in a centred row
+(up to 80 px, was 60); Hero Info as a bulleted list. Same section widths as the Army view.
+
+**Fixes:**
+- Cutscenes ignored the master volume: a muted game still played intro/outro audio.
+  `CutscenePlayer(master_volume=...)` scales voice and music; every in-game call passes
+  `music_manager.master_volume` (Cutscene Tool / MP4 export keep 1.0).
+- Bottom-panel button tooltips were cut off in the rightmost 250 px (a leftover from a
+  full-height sidebar); after P3 the Training Grounds button sat in that strip and lost its
+  tooltip. Tooltips now cover the full panel width.
+
+**Tests:** `tests/test_bottom_panel.py` (resolutions forced with an offscreen surface:
+1280x720 / 1600x900 / 1920x1080 / 2560x1440), `tests/test_cutscene_volume.py`;
+`tests/test_action_feedback_phase3.py` End Turn tests use `_end_turn_button_state()`.
+
 ## 2026-10-08 - Right sidebar overhaul + Action Log privacy
 
 Branch `feature/sidebar-overhaul`. A visual and UX pass over every tab of the right sidebar,
