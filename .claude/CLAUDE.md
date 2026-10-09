@@ -161,7 +161,7 @@ AvareonWar/
 - [tests/test_sidebar_tech.py](tests/test_sidebar_tech.py) - Tech arrow states, grid fit at 720p/900p/1080p, centring
 - [tests/test_sidebar_feedback.py](tests/test_sidebar_feedback.py) - Pixel audit: every sidebar control highlights on hover and flashes on click
 - [tests/test_font_italic.py](tests/test_font_italic.py) - Italic only where intended: separate italic font objects, no shared font left italic after resolution changes
-- [tests/test_bottom_panel.py](tests/test_bottom_panel.py) - Bottom panel overhaul at 720p/900p/1080p/1440p: kit geometry, End Turn section + state rules, Territory view (plots fill, Forces grid, Select Army, hero portrait, hover labels), empty plot buttons, Army view (T divider, 15-unit grid), Hero view (fixed portrait, Keep pan), full-width button tooltips
+- [tests/test_bottom_panel.py](tests/test_bottom_panel.py) - Bottom panel overhaul at 720p/900p/1080p/1440p: kit geometry, End Turn section + state rules, Territory view (plots fill, Forces grid, Select Army, hero portrait, hover labels), empty plot buttons, Army view (T divider, 15-unit grid), Hero view (fixed portrait, Keep pan), building views (finished / under-construction plot incl. Confiscate label + XP bar, Barracks queue + hotkeys, Keep grid / hero card / castle states / training progress / Hero Limit), full-width button tooltips, orphaned tooltips dropped when the view switches
 - [tests/test_cutscene_volume.py](tests/test_cutscene_volume.py) - Cutscene voice/music follow the master volume (muted game = silent cutscenes)
 
 **Configuration:**
@@ -473,7 +473,7 @@ After making code changes, ask yourself:
 - Change achievement panel UI → `achievement_panel.py`
 - Add campaign cutscene → Use `Cutscene_Tool.py`, data in `cutscene_data.json`
 - Modify cutscene player → `cutscene_player.py` (volume = slide volume × `master_volume`, passed by every in-game `CutscenePlayer(...)` call)
-- Change a bottom panel view (End Turn, Territory, empty plot, Army, Hero) → `main.py` view method using `rendering/bottom_panel_kit.py`; section geometry via `_section_layout()` / `_*_view_layout()`, **never fixed x offsets**; text sized by `kit.font(role)` (panel height, not `ui_scale`). New buttons: `kit.ornate_button()` + rect reset in `draw_bottom_ui()` + `handle_bottom_ui_click()` + a hover/flash test in `tests/test_bottom_panel.py`. See "Bottom panel: sections, kit and views" in CODE_GUIDE.md
+- Change a bottom panel view (End Turn, Territory, empty plot, finished / under-construction plot, Barracks, Keep, Army, Hero) → `main.py` view method using `rendering/bottom_panel_kit.py`; section geometry via `_section_layout()` / `_*_view_layout()`, **never fixed x offsets**; text sized by `kit.font(role)` (panel height, not `ui_scale`). New buttons: `kit.ornate_button()` + rect reset in `draw_bottom_ui()` + `handle_bottom_ui_click()` + a hover/flash test in `tests/test_bottom_panel.py`. See "Bottom panel: sections, kit and views" in CODE_GUIDE.md
 - Export cutscene to MP4 → `cutscene_exporter.py` (called from `Cutscene_Tool.py`)
 - Modify loading screen → `loading_screen.py`
 - Change deferred sound loading → `global_sound.py` `get_game_sound_tasks()`
@@ -516,6 +516,7 @@ After making code changes, ask yourself:
 - Add save state to new mission → add `get_save_state()`/`restore_save_state()` + update `_SAVE_MISSION_REGISTRY` in main.py
 - Add / reword an action error toast → `config/action_error_messages.py` (text) + set `last_action_error` in the game-state method + `_show_action_failure_feedback()` at the call site. Red/grey/hidden controls need no toast (fix the tint instead). See "Action Failure Feedback Pattern" in CODE_GUIDE.md
 - Build/train from any input (map icon, bottom panel, keyboard) → `main.py` `_try_start_construction()` / `_try_start_training()` — never a separate copy
+- Add a button tooltip / hover system → call `update_button_hover(current, type)` **every frame** while its buttons are drawn (`None` when nothing is hovered); `update_frame_tooltips()` drops a hover whose system didn't run that frame (`_release_orphaned_button_hover()`). See "Orphaned tooltips" in CODE_GUIDE.md
 - Hero death toast → `HeroMixin._record_hero_death()` + `main.py` `_show_hero_death_notifications()` (+ Battle Report `heroes_slain` for multiplayer defenders)
 
 ## Notes

@@ -2,6 +2,51 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-09 - Bottom panel: building views (plot, Barracks, Keep) + orphaned tooltips
+
+Branch `feature/building-views`. The building views get the bottom panel pattern of the
+previous overhaul (centred headline, gold rule, content; `rendering/bottom_panel_kit.py`).
+Developer guide: "Bottom panel: sections, kit and views" in CODE_GUIDE.md.
+
+**Plot views (P1):** a finished Farm / Mine / Square / Training Grounds, or any building
+under construction, shows its round icon (same size and spot as the first empty-plot
+button; cached greyscale copy while under construction), a left-aligned headline (greyed
+while building), rule, description (+ "Completes in N turns"), rule and a red ornate Cancel
+/ Demolish (50%). Farm/Mine add a level row (shields cropped to their opaque part - they
+drew as dots) and a BattleBar XP bar. `_plot_building_view_layout()`,
+`_draw_plot_building_view()`, `_building_xp_view()`; `kit.header(align='left')`;
+`TINT_DEMOLISH`, `TINT_CONFISCATE`.
+- **Fix:** with Erec Silvyr's Confiscate the Farm/Mine button said "Demolish (50%)" while
+  `destroy_building()` refunds 175%; it now says 175% on a blue button.
+
+**Barracks view (P2):** Barracks (five unit buttons, a little above centre), Training Queue
+(n/4) (count red when full; four fixed `ResourceSlot.png` rows with a red X), Hotkeys (S/A/P
+and C/T columns - the Captain's T was missing - plus Demolish). The old gold / queue /
+armies / status lines are gone. Shared helpers: `_draw_queue_row()`,
+`_draw_section_button()`, `_draw_fact_columns()`, `_header_with_count()`.
+
+**Keep view (P3):** Keep / Castle (8 hero portraits in a fixed 4x2 grid, or - once the
+Keep's hero is trained - that hero's portrait, name and title, opening the Hero view),
+Castle upgrade (icon at one fixed spot in every state; "Upgrade Finished", not clickable,
+once done), Training Status (queue row + progress bar as on the sidebar Heroes tab), Hero
+Info ("Hero Limit: n/limit", red at the limit - 3, or 4 with Heroic Fortitude - the rules,
+Demolish). `_draw_info_list()` split out of `_draw_info_list_section()`.
+- **Perf:** the castle "upgrading" tint allocated a Surface every frame; it is now baked
+  once per size.
+
+**Orphaned tooltips (owner report):** a hover system released its hover only while its
+buttons were drawn, so after a click switched views the tooltip followed the mouse for
+good (Territory view plot icon → Barracks / Keep / plot view; map quick-access icons when
+Escape deselected the plot or the multiplayer turn passed). `update_button_hover()` records
+the systems that ran each frame; `update_frame_tooltips()` →
+`_release_orphaned_button_hover()` clears a hover whose system did not. The Forces hover
+label is also reset during AI turns (`draw_empty_bottom_ui_panel()`); it froze on screen
+there.
+
+**Other:** `input/keyboard_handler.py` docstrings list T (Training Grounds / Captain).
+Tests: `tests/test_bottom_panel.py` (plot / Barracks / Keep views at four resolutions,
+`TestOrphanedTooltips`).
+
 ## 2026-10-09 - Bottom panel overhaul (End Turn, Territory, empty plot, Army, Hero views)
 
 Branch `feature/bottom-panel-overhaul`. Every section of the bottom panel now follows one
