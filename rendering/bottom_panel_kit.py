@@ -252,9 +252,11 @@ class BottomPanelKit:
         art = self.game.sidebar_widgets.vertical_separator(height)
         self.game.screen.blit(art, (x - art.get_width() // 2, y0))
 
-    def header(self, rect, text, color=GOLD_TEXT, role='heading', y=None, max_lines=1):
+    def header(self, rect, text, color=GOLD_TEXT, role='heading', y=None, max_lines=1, spacing=0):
         """Centred headline (wrapped / fitted) and a gold rule under it.
 
+        `spacing` adds that many px above AND below the rule (sections with spare
+        height, e.g. Territory Info, so the headline doesn't feel cramped).
         Returns the y where the section's content starts.
         """
         y = rect.top if y is None else y
@@ -262,12 +264,13 @@ class BottomPanelKit:
         for line in self.wrap(text, role, rect.w, max_lines):
             self.centered_text(line, role, color, rect.centerx, y)
             y += step
-        return self.rule(rect, y + self.px(1))
+        return self.rule(rect, y + self.px(1) + spacing) + spacing
 
-    def header_height(self, text, role='heading', width=None, max_lines=1):
-        """Height header() would take (lines + rule + gap) - for layout planning."""
+    def header_height(self, text, role='heading', width=None, max_lines=1, spacing=0):
+        """Height header() would take (lines + rule + gaps) - for layout planning."""
         lines = len(self.wrap(text, role, width, max_lines)) if width else 1
-        return lines * self.line_height(role) + self.px(1) + self.rule_height() + self.rule_gap()
+        return (lines * self.line_height(role) + self.px(1) + self.rule_height() + self.rule_gap()
+                + 2 * spacing)
 
     # ------------------------------------------------------------------ buttons
 

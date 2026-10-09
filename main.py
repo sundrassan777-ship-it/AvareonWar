@@ -8211,11 +8211,13 @@ class Game:
         text_gap = kit.px(5)
         count_w = kit.font('body_bold').size("× 15")[0]
         cell_w = icon + text_gap + count_w
-        # Two FIXED column slots spread over ~78% of the section, and the 3-row grid
-        # anchored at its top: a lone column stays in the left slot and a short column
-        # starts at the top row (owner: centring each case read badly, and the two
-        # columns had too much empty wood either side)
-        span = min(area.w, max(2 * cell_w + kit.px(16), int(area.w * 0.78)))
+        # Two FIXED column slots, and the 3-row grid anchored at its top: a lone column
+        # stays in the left slot and a short column starts at the top row (owner:
+        # centring each case read badly). The span is halfway between the tight
+        # original (columns 16 px apart) and 78% of the section, which the owner found
+        # too far apart.
+        tight = 2 * cell_w + kit.px(16)
+        span = min(area.w, max(tight, (tight + int(area.w * 0.78)) // 2))
         x0 = area.centerx - span // 2
         col_x = (x0, x0 + span - cell_w)
         grid_h = rows * icon + (rows - 1) * row_gap
@@ -8348,7 +8350,10 @@ class Game:
         # line per fact. Long names / owners / bonuses wrap to two lines.
         info = rects['info']
         display_territory = map_data.get_display_name(territory)
-        y = kit.header(info, display_territory, color=BROWN_TEXT_HEADING, role='title', max_lines=2)
+        # Extra space around the rule: the facts below rarely fill the section
+        # (owner: a little more padding makes the area feel filled)
+        y = kit.header(info, display_territory, color=BROWN_TEXT_HEADING, role='title', max_lines=2,
+                       spacing=kit.px(4))
         line_h = kit.line_height('body')
         facts = []  # (text, color, role), drawn below in one pass
 
