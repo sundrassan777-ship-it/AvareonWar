@@ -409,15 +409,6 @@ class SidebarWidgets:
         pygame.draw.polygon(surf, color, [(c, 0), (c + 3, 3), (c, 6), (c - 3, 3)])
         return self._put(key, surf)
 
-    def vertical_separator(self, height, color=GOLD):
-        """separator() turned upright (the bottom panel's T-shaped dividers)."""
-        height = max(8, int(height))
-        key = ('vsep', height, color)
-        cached = self._get(key)
-        if cached is not None:
-            return cached
-        return self._put(key, pygame.transform.rotate(self.separator(height, color), 90))
-
     def section_header(self, text, width, color=GOLD_LIGHT, role='heading'):
         """Centred heading with a separator underneath (one cached surface)."""
         key = ('hdr', text, int(width), color, role, self.scale)

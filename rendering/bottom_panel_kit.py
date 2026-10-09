@@ -247,10 +247,25 @@ class BottomPanelKit:
         return y + art.get_height() + self.rule_gap()
 
     def vertical_rule(self, x, y0, y1):
-        """Upright gold rule from y0 to y1, centred on x."""
+        """Upright gold rule from y0 down to y1, centred on x.
+
+        Meant to hang from a horizontal rule (a "T" divider, e.g. the Army view's
+        info section): solid at the top so it meets the rule, fading out over its
+        bottom quarter. The horizontal separator art fades at BOTH ends, which left
+        a visible gap at the junction.
+        """
         height = max(8, int(y1 - y0))
-        art = self.game.sidebar_widgets.vertical_separator(height)
-        self.game.screen.blit(art, (x - art.get_width() // 2, y0))
+
+        def build():
+            from rendering.sidebar_widgets import GOLD
+            surf = pygame.Surface((3, height), pygame.SRCALPHA)
+            fade_from = int(height * 0.75)
+            for y in range(height):
+                a = 255 if y < fade_from else int(255 * (height - 1 - y) / max(1, height - 1 - fade_from))
+                surf.set_at((1, y), (*GOLD, a))
+            return surf
+        art = self._cache(('vrule', height), build)
+        self.game.screen.blit(art, (x - 1, y0))
 
     def header(self, rect, text, color=GOLD_TEXT, role='heading', y=None, max_lines=1, spacing=0):
         """Centred headline (wrapped / fitted) and a gold rule under it.

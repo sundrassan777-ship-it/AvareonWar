@@ -8081,11 +8081,12 @@ class Game:
     # Unit order in the Forces grid (column-major), then the hero
     FORCES_UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
 
-    def _territory_view_layout(self):
+    def _section_layout(self, names, weights):
         """
-        Pillar x positions and content rects of the Territory view's sections.
+        Split the panel right of the End Turn pillar into sections.
 
-        Returns {'pillars': [x, x, x], 'rects': {'info', 'plots', 'forces', 'lore'}}.
+        `weights` are fractions of that space, one per name. Returns
+        {'pillars': [x, ...] (between sections), 'rects': {name: content rect}}.
         One source of geometry for drawing and the tests.
         """
         kit = self.bottom_panel_kit
@@ -8093,14 +8094,62 @@ class Game:
         avail = WINDOW_WIDTH - start
         edges = [start]
         acc = float(start)
-        for weight in self.TERRITORY_VIEW_WEIGHTS[:-1]:
+        for weight in weights[:-1]:
             acc += avail * weight
             edges.append(int(round(acc)))
         # The last section ends at the screen edge (no pillar there)
         edges.append(WINDOW_WIDTH + self.separator_width // 2)
-        names = ('info', 'plots', 'forces', 'lore')
         rects = {name: kit.section_rect(edges[i], edges[i + 1]) for i, name in enumerate(names)}
         return {'pillars': edges[1:-1], 'rects': rects}
+
+    def _territory_view_layout(self):
+        """Territory view sections: info / plots / forces / lore (see _section_layout)."""
+        return self._section_layout(('info', 'plots', 'forces', 'lore'), self.TERRITORY_VIEW_WEIGHTS)
+
+    # Army view section widths (fractions right of the End Turn pillar): Army Info
+    # (status + Select/Deselect All), Units (5-wide grid), Unit Selection Info
+    ARMY_VIEW_WEIGHTS = (0.36, 0.25, 0.39)
+
+    def _army_view_layout(self):
+        """Army view sections: info / units / help (see _section_layout)."""
+        return self._section_layout(('info', 'units', 'help'), self.ARMY_VIEW_WEIGHTS)
+
+    def _draw_info_list_section(self, rect, title, items, bullets=True):
+        """
+        Centred headline + gold rule, then left-aligned text: bullet points with a
+        hanging indent, or (bullets=False) one paragraph per item. Each item wraps to
+        the section width; spacing between items grows to use the height (capped);
+        drops to the small font if the body font does not fit; bounds-checked.
+        Shared by the Army view's Unit Selection Info and the Hero view's Hero Info.
+        """
+        kit = self.bottom_panel_kit
+        y = kit.header(rect, title)
+        avail = rect.bottom - y
+        prefix = "- " if bullets else ""
+
+        def wrapped(role):
+            indent = kit.font(role).size(prefix)[0]
+            return indent, [kit.wrap(item, role, rect.w - indent, max_lines=4) for item in items]
+
+        role = 'body'
+        indent, blocks = wrapped(role)
+        if sum(len(b) for b in blocks) * kit.line_height(role) > avail:
+            role = 'small'
+            indent, blocks = wrapped(role)
+        line_h = kit.line_height(role)
+        n_lines = sum(len(b) for b in blocks)
+        gap = max(0, min(kit.px(6), (avail - n_lines * line_h) // max(1, len(blocks))))
+        color = BROWN_TEXT_SECONDARY
+        for block in blocks:
+            for i, line in enumerate(block):
+                if y + line_h > rect.bottom + 1:
+                    return  # bounds check - never render past the section
+                if i == 0 and prefix:
+                    kit.left_text(prefix + line, role, color, rect.left, y)
+                else:
+                    kit.left_text(line, role, color, rect.left + indent, y)
+                y += line_h
+            y += gap
 
     def _army_limit_color(self, count):
         """Colour of an "Army Limit" / "Total" count: red at the limit, yellow from 3
@@ -10801,114 +10850,90 @@ class Game:
         ordered_count = sum(1 for u in units if u['status'] == 'ordered')
         total = len(units)
 
-        # MIDDLE SECTION: Army composition info and controls - dynamic (21.875% of width)
-        middle_x = int(WINDOW_WIDTH * 0.21875)  # Was 350 at 1600px width
-        panel_y = BOTTOM_UI_Y + 30
-        
-        # Draw title (shortened to "Army:")
-        # Use the garrison player's color, not the territory owner's
-        # Use display name for campaign mission territory renaming
-        display_territory = map_data.get_display_name(territory)
-        player_color = self.game_state.get_player_color(player) if player != -1 else BROWN_TEXT_PRIMARY
-        title_text = self._get_cached_text(f"Army: {display_territory}", self.large_font, player_color)
-        self.screen.blit(title_text, (middle_x, panel_y))
-        panel_y += UI_SECTION_SPACING
+        # Section geometry (pillars + content rects) - shared with the tests
+        kit = self.bottom_panel_kit
+        gs = self.game_state
+        layout = self._army_view_layout()
+        rects = layout['rects']
+        for pillar_x in layout['pillars']:
+            self.draw_separator(pillar_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
 
-        # Total and status summary
-        summary_text = self._get_cached_text(f"Total: {total} armies", self.font, BROWN_TEXT_PRIMARY)
-        self.screen.blit(summary_text, (middle_x, panel_y))
-        panel_y += UI_LINE_SPACING_SMALL
-
-        status_text = self._get_cached_text(
-            f"({ready_count} ready, {moved_count} moved, {ordered_count} ordered)",
-            self.small_font, BROWN_TEXT_SECONDARY
-        )
-        self.screen.blit(status_text, (middle_x, panel_y))
-        panel_y += UI_LINE_SPACING
-
-        # Selection count
-        if self.selected_army_units:
-            selected_text = self._get_cached_text(
-                f"Selected: {len(self.selected_army_units)} armies",
-                self.small_font, (0, 120, 180)
-            )
-            self.screen.blit(selected_text, (middle_x, panel_y))
-            panel_y += UI_LINE_SPACING_SMALL
-        
-        # Add extra spacing before buttons to avoid any potential interference
-        panel_y += 10
-        
         # Clear old button state before creating new buttons
         self.army_composition_buttons = []
         self.select_all_button = None
         self.deselect_all_button = None
-        
-        # Select All and Deselect All buttons
-        button_y = panel_y
-        
-        # Select All button - scaled dimensions (110x25 at 1600x900)
-        select_all_rect = pygame.Rect(middle_x, button_y, self.scale(110), self.scale(25))
 
-        # Base color
-        button_color = (100, 150, 200)
-        # Check hover
-        is_hovering = select_all_rect.collidepoint(hover_pos)
-        # Check click
-        is_clicking = (self.clicked_element and
-                      self.clicked_element[0] == 'army_comp' and
-                      self.clicked_element[1] == 'select_all')
-        # Apply feedback
-        if is_clicking:
-            button_color = brighten_color(button_color, 0.4)
-        elif is_hovering:
-            button_color = lighten_color(button_color, 0.2)
+        # === SECTION 1: ARMY INFO ===
+        # "Army: <territory>" centred in the garrison player's colour (not the
+        # territory owner's), then a rule with an upright rule hanging from it (a T):
+        # status counts on the left, Select / Deselect All on the right.
+        info = rects['info']
+        display_territory = map_data.get_display_name(territory)  # Campaign renames
+        player_color = gs.get_player_color(player) if player != -1 else BROWN_TEXT_PRIMARY
+        y = kit.header(info, f"Army: {display_territory}", color=player_color, role='title')
+        rule_centre_y = y - kit.rule_gap() - kit.rule_height() // 2 - 1
+        split_x = info.left + int(info.w * 0.52)
+        kit.vertical_rule(split_x, rule_centre_y, info.bottom)
+        col_pad = kit.px(10)
+        left = pygame.Rect(info.left, y, split_x - col_pad - info.left, info.bottom - y)
+        right = pygame.Rect(split_x + col_pad, y, info.right - split_x - col_pad, info.bottom - y)
 
-        pygame.draw.rect(self.screen, button_color, select_all_rect)
-        pygame.draw.rect(self.screen, BLACK, select_all_rect, 2)
-        select_all_text = self._get_cached_text("Select All", self.small_font, WHITE)
-        text_rect = select_all_text.get_rect(center=select_all_rect.center)
-        self.screen.blit(select_all_text, text_rect)
+        # Left column. Total = this garrison's units, coloured by how close the
+        # TERRITORY is to the army limit (all garrisons count towards it) - the same
+        # colours as the Territory view's Army Limit
+        territory_total = gs.get_territory_total_armies(territory)
+        facts = [
+            (f"Total: {total}/{gs.MAX_ARMIES_PER_TERRITORY}", self._army_limit_color(territory_total), 'body_bold'),
+            (f"Ready to Move: {ready_count}", (120, 210, 105), 'body'),  # Green: can be ordered
+            (f"Moved: {moved_count}", (180, 174, 164), 'body'),          # Grey: exhausted
+            (f"Ordered: {ordered_count}", (238, 206, 92), 'body'),       # Yellow: has an order
+        ]
+        line_h = kit.line_height('body')
+        fact_gap = max(kit.px(2), min(kit.px(10), (left.h - len(facts) * line_h) // len(facts)))
+        fy = left.top + kit.px(2)
+        for text, color, role in facts:
+            if fy + line_h > left.bottom + 1:
+                break  # bounds check
+            kit.left_text(kit.fit(text, role, left.w), role, color, left.left, fy)
+            fy += line_h + fact_gap
+
+        # Right column: Select All (blue) / Deselect All (red) + selection count,
+        # centred vertically. Hover uses hover_pos (the context menu blocks it).
+        button_w = min(right.w, kit.px(150))
+        button_h = kit.button_height(button_w)
+        selected_h = kit.line_height('small_bold')
+        gap = kit.px(5)
+        block_h = 2 * button_h + selected_h + 2 * gap
+        by = right.top + max(0, (right.h - block_h) // 2)
+        select_all_rect = pygame.Rect(0, by, button_w, button_h)
+        select_all_rect.centerx = right.centerx
+        deselect_all_rect = select_all_rect.move(0, button_h + gap)
+        kit.ornate_button(select_all_rect, "Select All", TINT_SELECT_ALL,
+                          flash_key=('army_comp', 'select_all'), role='body_bold', hover_pos=hover_pos)
+        kit.ornate_button(deselect_all_rect, "Deselect All", TINT_DESELECT_ALL,
+                          flash_key=('army_comp', 'deselect_all'), role='body_bold', hover_pos=hover_pos)
         self.select_all_button = select_all_rect
-
-        # Deselect All button (next to Select All) - scaled
-        deselect_all_rect = pygame.Rect(middle_x + self.scale(120), button_y, self.scale(110), self.scale(25))
-
-        # Base color
-        button_color = (150, 100, 100)
-        # Check hover
-        is_hovering = deselect_all_rect.collidepoint(hover_pos)
-        # Check click
-        is_clicking = (self.clicked_element and
-                      self.clicked_element[0] == 'army_comp' and
-                      self.clicked_element[1] == 'deselect_all')
-        # Apply feedback
-        if is_clicking:
-            button_color = brighten_color(button_color, 0.4)
-        elif is_hovering:
-            button_color = lighten_color(button_color, 0.2)
-
-        pygame.draw.rect(self.screen, button_color, deselect_all_rect)
-        pygame.draw.rect(self.screen, BLACK, deselect_all_rect, 2)
-        deselect_all_text = self._get_cached_text("Deselect All", self.small_font, WHITE)
-        text_rect = deselect_all_text.get_rect(center=deselect_all_rect.center)
-        self.screen.blit(deselect_all_text, text_rect)
         self.deselect_all_button = deselect_all_rect
-        
-        # Draw vertical separator line between middle and right sections
-        separator_x = middle_x + 450  # Increased from 375 to 450 for very long names
-        self.draw_separator(separator_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-        
-        # RIGHT SECTION: Army button grid
-        grid_x = separator_x + self.scale(20)
-        grid_y = BOTTOM_UI_Y + self.scale(30)
+        kit.centered_text(f"Selected: {len(self.selected_army_units)}", 'small_bold', (140, 195, 245),
+                          right.centerx, deselect_all_rect.bottom + gap)
 
-        # Draw army buttons (grid: 5 per row, max 3 rows) - scaled
-        button_size = self.scale(45)
-        button_spacing = self.scale(5)
+        # === SECTION 2: UNITS ===
+        # "Units" + rule, then the unit buttons: 5 per row, up to 3 rows (the army
+        # limit), sized to fit the section (smaller at 1280x720) and centred
+        units_rect = rects['units']
+        grid_y = kit.header(units_rect, "Units")
         buttons_per_row = 5
+        max_rows = 3
+        button_spacing = max(2, kit.px(5))
+        button_size = max(16, min(
+            kit.px(45),
+            (units_rect.bottom - grid_y - button_spacing * (max_rows - 1)) // max_rows,
+            (units_rect.w - button_spacing * (buttons_per_row - 1)) // buttons_per_row))
+        grid_w = buttons_per_row * button_size + (buttons_per_row - 1) * button_spacing
+        grid_x = units_rect.centerx - grid_w // 2
         # Veterancy: XP bar and shields drawn OVER the button icon (no extra vertical space)
-        xp_bar_height = self.scale(3)   # Height of XP progress bar (overlaid at bottom edge)
-        row_height = button_size + button_spacing  # No extra space needed
+        xp_bar_height = max(2, kit.px(3))   # Height of XP progress bar (overlaid at bottom edge)
+        row_height = button_size + button_spacing
 
         # Track if any unit button is being hovered (for tooltip clearing)
         any_unit_hovered = False
@@ -11064,42 +11089,15 @@ class Game:
         if not any_unit_hovered:
             self.update_button_hover(None, 'army_unit_tooltip')
 
-        # Third separator line between grid and instructions
-        grid_width = buttons_per_row * (button_size + button_spacing)
-        instructions_separator_x = grid_x + grid_width + 15
-        self.draw_separator(instructions_separator_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-        
-        # INSTRUCTIONS SECTION: To the right of third separator
-        instructions_x = instructions_separator_x + 15
-        instructions_y = grid_y
+        # === SECTION 3: UNIT SELECTION INFO ===
+        self._draw_info_list_section(rects['help'], "Unit Selection Info", [
+            "Click to select",
+            "CTRL+Click for multi-select",
+            "Right-click unit for options",
+            "Right-click destination to command",
+            "Click elsewhere to close",
+        ])
 
-        # PERFORMANCE: Cache static instruction text renders
-        header_text = self._get_cached_text("Unit Selection Info:", self.font_bold, WHITE)
-        self.screen.blit(header_text, (instructions_x, instructions_y))
-        instructions_y += self.scale(30)  # Space after header
-
-        # Instruction lines - each point on one line
-        instruction_lines = [
-            "- Click to select",
-            "- CTRL+Click for multi-select",
-            "- Right-click unit for options",
-            "- Right-click destination",
-            "  to command",
-            "- Click elsewhere to close"
-        ]
-
-        # Bounds-check: the list grew with the right-click hint, so stop before
-        # spilling past the bottom panel on short layouts (min panel height is 180px).
-        line_spacing = self.scale(22)
-        max_instructions_y = BOTTOM_UI_Y + BOTTOM_UI_HEIGHT - line_spacing
-
-        for line in instruction_lines:
-            if instructions_y > max_instructions_y:
-                break
-            inst_text = self._get_cached_text(line, self.small_font, BROWN_TEXT_SECONDARY)
-            self.screen.blit(inst_text, (instructions_x, instructions_y))
-            instructions_y += line_spacing
-    
     # ------------------------------------------------------------------
     # Unit right-click context menu (army composition strip)
     # Purpose: give mouse-only players a way to build partial garrison

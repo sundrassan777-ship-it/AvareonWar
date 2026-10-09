@@ -481,3 +481,93 @@ class TestEmptyPlotView:
         started.add(territory) if hasattr(started, 'add') else started.append(territory)
         game.draw_bottom_ui()
         assert all(r.top >= row_y_l for r in game.building_buttons.values())
+
+
+# ===========================================================================
+# Army view (army composition)
+# ===========================================================================
+
+def _open_army(game, units=7, territory_total=None):
+    """Open the Army view on a garrison of `units` for player 0."""
+    territory = _three_plot_territory(game, units=units)
+    game.selected_territory_info = None
+    game._select_army_garrison((territory, 0))
+    return territory
+
+
+class TestArmyLayout:
+
+    def test_sections_inside_panel_and_ordered(self, any_res_game):
+        g = any_res_game
+        rects = [g._army_view_layout()['rects'][k] for k in ('info', 'units', 'help')]
+        for rect in rects:
+            assert _panel(g).contains(rect)
+        for left, right in zip(rects, rects[1:]):
+            assert left.right < right.left
+
+    def test_full_army_fits_the_units_section(self, any_res_game):
+        """15 units (the army limit) = 3 full rows, inside the section at 720p too."""
+        g = any_res_game
+        _open_army(g, units=15)
+        g.draw_bottom_ui()
+        units = g._army_view_layout()['rects']['units']
+        assert len(g.army_composition_buttons) == 15
+        for rect, _uid in g.army_composition_buttons:
+            assert units.contains(rect)
+
+    def test_buttons_in_the_right_column_of_the_info_section(self, any_res_game):
+        g = any_res_game
+        _open_army(g)
+        g.draw_bottom_ui()
+        info = g._army_view_layout()['rects']['info']
+        for rect in (g.select_all_button, g.deselect_all_button):
+            assert info.contains(rect)
+            assert rect.left > info.centerx - info.w // 10  # Right of the T's upright
+        assert g.select_all_button.bottom < g.deselect_all_button.top
+
+
+class TestArmyButtons:
+
+    def test_select_and_deselect_all_still_work(self, game):
+        territory = _open_army(game, units=4)
+        units = game.game_state.territory_garrisons[territory][0]['units']
+        units[3]['status'] = 'moved'
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.deselect_all_button.center) is True
+        assert game.selected_army_units == []
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.select_all_button.center) is True
+        assert sorted(game.selected_army_units) == sorted(u['id'] for u in units[:3])
+
+    def test_hover_and_flash_change_pixels(self, game):
+        _open_army(game)
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.select_all_button
+            return sum(sum(tuple(game.screen.get_at((rect.left + int(rect.w * f), rect.centery)))[:3])
+                       for f in (0.2, 0.24, 0.76, 0.8))
+
+        normal = pixels()
+        game.mouse_pos = game.select_all_button.center
+        hover = pixels()
+        game.clicked_element = ('army_comp', 'select_all')
+        assert normal < hover < pixels()
+
+    def test_total_coloured_by_territory_limit(self, game, monkeypatch):
+        """Total uses the Army Limit colours: yellow from 12, red at 15."""
+        drawn = {}
+        kit = game.bottom_panel_kit
+        real = kit.left_text
+
+        def spy(text, role, color, x, y, shadow=True):
+            drawn[text] = color
+            return real(text, role, color, x, y, shadow)
+
+        monkeypatch.setattr(kit, 'left_text', spy)
+        _open_army(game, units=12)
+        game.draw_bottom_ui()
+        assert drawn["Total: 12/15"] == game._army_limit_color(12)
+        assert drawn["Total: 12/15"] != game._army_limit_color(5)
+        assert any(text.startswith("Ready to Move: 12") for text in drawn)
