@@ -571,3 +571,37 @@ class TestArmyButtons:
         assert drawn["Total: 12/15"] == game._army_limit_color(12)
         assert drawn["Total: 12/15"] != game._army_limit_color(5)
         assert any(text.startswith("Ready to Move: 12") for text in drawn)
+
+
+class TestArmyInfoTweaks:
+    """Owner feedback 2026-10-09: T anchored on the rule's diamond, roomier buttons."""
+
+    def test_t_hangs_from_the_rule_diamond(self, any_res_game, monkeypatch):
+        g = any_res_game
+        kit = g.bottom_panel_kit
+        calls = {'rule': [], 'vrule': []}
+        real_rule, real_vrule = kit.rule, kit.vertical_rule
+
+        def rule(rect, y, width_frac=0.92):
+            calls['rule'].append((rect.copy(), y))
+            return real_rule(rect, y, width_frac)
+
+        def vrule(x, y0, y1):
+            calls['vrule'].append((x, y0, y1))
+            return real_vrule(x, y0, y1)
+
+        monkeypatch.setattr(kit, 'rule', rule)
+        monkeypatch.setattr(kit, 'vertical_rule', vrule)
+        _open_army(g)
+        g.draw_bottom_ui()
+        info = g._army_view_layout()['rects']['info']
+        header_rule = [c for c in calls['rule'] if c[0] == info][0]
+        x, y0, _y1 = calls['vrule'][0]
+        # kit.rule() centres the art on rect.centerx; its diamond is mid-art, 3 px down
+        assert x == info.centerx == header_rule[0].centerx
+        assert y0 == header_rule[1] + 3
+
+    def test_buttons_have_room_between_them(self, game):
+        _open_army(game)
+        game.draw_bottom_ui()
+        assert game.deselect_all_button.top - game.select_all_button.bottom >= game.bottom_panel_kit.px(10)

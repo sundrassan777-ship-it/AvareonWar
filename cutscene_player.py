@@ -108,14 +108,19 @@ class CutscenePlayer:
     # Rotation padding factor -- how much extra to crop around viewport for rotation headroom
     ROTATION_PAD_FACTOR = 0.25
 
-    def __init__(self, screen, cutscene_id):
+    def __init__(self, screen, cutscene_id, master_volume=1.0):
         """
         Initialize the cutscene player.
 
         Args:
             screen: The pygame display surface to render onto.
             cutscene_id: String key into cutscene_data.json (e.g. "mission_1_intro").
+            master_volume: The game's master volume (0.0-1.0). Multiplies every slide's
+                voice and music volume, so muting the game mutes its cutscenes - they
+                used to play at the authored volumes regardless. The game passes the
+                live value; the Cutscene Tool / MP4 export keep 1.0 (authored levels).
         """
+        self.master_volume = max(0.0, min(1.0, float(master_volume)))
         self.screen = screen
         self.screen_width = screen.get_width()
         self.screen_height = screen.get_height()
@@ -230,8 +235,8 @@ class CutscenePlayer:
             if audio_path and os.path.exists(audio_path):
                 try:
                     sound = pygame.mixer.Sound(audio_path)
-                    # Apply voice volume (default 1.0)
-                    sound.set_volume(slide.get('audio_volume', 1.0))
+                    # Apply voice volume (default 1.0), scaled by the master volume
+                    sound.set_volume(slide.get('audio_volume', 1.0) * self.master_volume)
                     self._voices[i] = sound
                 except pygame.error as e:
                     logger.warning(f"Could not load voiceover {audio_path}: {e}")
@@ -241,8 +246,9 @@ class CutscenePlayer:
             if music_path and os.path.exists(music_path):
                 try:
                     music = pygame.mixer.Sound(music_path)
-                    # Apply music volume (default 0.4 -- lower than voice by default)
-                    music.set_volume(slide.get('music_volume', 0.4))
+                    # Apply music volume (default 0.4 -- lower than voice by default),
+                    # scaled by the master volume
+                    music.set_volume(slide.get('music_volume', 0.4) * self.master_volume)
                     self._music[i] = music
                 except pygame.error as e:
                     logger.warning(f"Could not load music {music_path}: {e}")

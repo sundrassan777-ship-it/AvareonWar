@@ -10870,10 +10870,15 @@ class Game:
         info = rects['info']
         display_territory = map_data.get_display_name(territory)  # Campaign renames
         player_color = gs.get_player_color(player) if player != -1 else BROWN_TEXT_PRIMARY
-        y = kit.header(info, f"Army: {display_territory}", color=player_color, role='title')
-        rule_centre_y = y - kit.rule_gap() - kit.rule_height() // 2 - 1
-        split_x = info.left + int(info.w * 0.52)
-        kit.vertical_rule(split_x, rule_centre_y, info.bottom)
+        # Extra space around the rule (owner: the lines needed more breathing room)
+        header_spacing = kit.px(3)
+        y = kit.header(info, f"Army: {display_territory}", color=player_color, role='title',
+                       spacing=header_spacing)
+        # The T hangs from the rule's centre diamond: kit.rule() centres the art on
+        # info.centerx, and the diamond sits mid-art, 3 px below the art's top
+        rule_top = y - header_spacing - kit.rule_gap() - kit.rule_height()
+        split_x = info.centerx
+        kit.vertical_rule(split_x, rule_top + 3, info.bottom)
         col_pad = kit.px(10)
         left = pygame.Rect(info.left, y, split_x - col_pad - info.left, info.bottom - y)
         right = pygame.Rect(split_x + col_pad, y, info.right - split_x - col_pad, info.bottom - y)
@@ -10889,12 +10894,17 @@ class Game:
             (f"Ordered: {ordered_count}", (238, 206, 92), 'body'),       # Yellow: has an order
         ]
         line_h = kit.line_height('body')
-        fact_gap = max(kit.px(2), min(kit.px(10), (left.h - len(facts) * line_h) // len(facts)))
+        fact_gap = max(kit.px(3), min(kit.px(14), (left.h - len(facts) * line_h) // len(facts)))
+        # The lines stay left-aligned with each other, but the block is centred in the
+        # column (owner: it sat far from the T's upright, hugging the pillar)
+        texts = [(kit.fit(text, role, left.w), color, role) for text, color, role in facts]
+        block_w = max(kit.font(role).size(text)[0] for text, _c, role in texts)
+        fx = left.left + max(0, (left.w - block_w) // 2)
         fy = left.top + kit.px(2)
-        for text, color, role in facts:
+        for text, color, role in texts:
             if fy + line_h > left.bottom + 1:
                 break  # bounds check
-            kit.left_text(kit.fit(text, role, left.w), role, color, left.left, fy)
+            kit.left_text(text, role, color, fx, fy)
             fy += line_h + fact_gap
 
         # Right column: Select All (blue) / Deselect All (red) + selection count,
@@ -10902,7 +10912,7 @@ class Game:
         button_w = min(right.w, kit.px(150))
         button_h = kit.button_height(button_w)
         selected_h = kit.line_height('small_bold')
-        gap = kit.px(5)
+        gap = kit.px(10)  # Owner: the two buttons sat too close together
         block_h = 2 * button_h + selected_h + 2 * gap
         by = right.top + max(0, (right.h - block_h) // 2)
         select_all_rect = pygame.Rect(0, by, button_w, button_h)
@@ -17067,7 +17077,8 @@ if __name__ == "__main__":
         music_manager.stop()
 
         # Play pre-mission cutscene if one exists for this mission
-        intro_cutscene = CutscenePlayer(screen, f"{mission_id}_intro")
+        intro_cutscene = CutscenePlayer(screen, f"{mission_id}_intro",
+                                        master_volume=music_manager.master_volume)
         if intro_cutscene.has_cutscene:
             intro_cutscene.run()
 
@@ -17101,7 +17112,8 @@ if __name__ == "__main__":
         # Post-mission outro cutscene — victory only. A defeat returns
         # 'campaign_defeat' from Game.run(), failing this check on purpose.
         if game_result == 'campaign':
-            outro_cutscene = CutscenePlayer(screen, f"{mission_id}_outro")
+            outro_cutscene = CutscenePlayer(screen, f"{mission_id}_outro",
+                                            master_volume=music_manager.master_volume)
             if outro_cutscene.has_cutscene:
                 outro_cutscene.run()
 
@@ -17236,7 +17248,8 @@ if __name__ == "__main__":
         # 'campaign_defeat' from Game.run(), which deliberately fails this check.
         if game_result == 'campaign':
             from cutscene_player import CutscenePlayer
-            outro_cutscene = CutscenePlayer(screen, f"{mission_id}_outro")
+            outro_cutscene = CutscenePlayer(screen, f"{mission_id}_outro",
+                                            master_volume=music_manager.master_volume)
             if outro_cutscene.has_cutscene:
                 outro_cutscene.run()
 
