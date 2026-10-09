@@ -1051,17 +1051,17 @@ class TestBarracksContent:
         assert 'No units in queue' in drawn
         assert game.queue_cancel_buttons == []
 
-    def test_info_lists_facts_and_every_hotkey(self, game, monkeypatch):
-        """Captain's hotkey (T) was missing from the old Controls list."""
+    def test_hotkeys_section_lists_every_hotkey(self, game, monkeypatch):
+        """Captain's hotkey (T) was missing from the old Controls list. The section
+        shows only the hotkeys (owner: no gold / armies / command lines)."""
         drawn = self._texts(game, monkeypatch)
         _open_barracks(game)
         game.draw_bottom_ui()
         for key, unit in (('S', 'Swordsman'), ('A', 'Archer'), ('P', 'Pikeman'),
                           ('C', 'Cavalry'), ('T', 'Captain')):
             assert f'[{key}] {unit}' in drawn
-        assert any(t.startswith('Gold: ') for t in drawn)
-        assert any(t.startswith('Armies: ') for t in drawn)
-        assert any(t.startswith('Command: ') for t in drawn)
+        assert 'Hotkeys' in drawn and 'Barracks Info' not in drawn
+        assert not any(t.startswith(('Gold: ', 'Armies: ', 'Command: ')) for t in drawn)
 
     def test_hotkeys_match_the_keyboard_handler(self):
         import main

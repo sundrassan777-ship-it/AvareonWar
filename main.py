@@ -10043,6 +10043,8 @@ class Game:
     # Checked to fit at 720p-1440p (2026-10-09): unit buttons 57-102 px, queue slots
     # 27-46 px tall, the longest queue text fits at 720p.
     BARRACKS_VIEW_WEIGHTS = (0.36, 0.28, 0.36)
+    # Extra px (reference size) above and below the headline rules in this view
+    BARRACKS_HEADER_SPACING_REF = 3
     TRAINING_UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
     # Keyboard shortcuts listed in Barracks Info (input/keyboard_handler._TRAINING_SHORTCUTS)
     TRAINING_HOTKEYS = (('S', 'Swordsman'), ('A', 'Archer'), ('P', 'Pikeman'),
@@ -10052,9 +10054,10 @@ class Game:
         """Barracks view sections: units / queue / info (see _section_layout)."""
         return self._section_layout(('units', 'queue', 'info'), self.BARRACKS_VIEW_WEIGHTS)
 
-    def _header_with_count(self, rect, title, count_text, count_color):
+    def _header_with_count(self, rect, title, count_text, count_color, spacing=0):
         """kit.header() with a count after the title in its own colour, e.g.
-        "Training Queue (4/4)" with the count red when full. Returns the content y."""
+        "Training Queue (4/4)" with the count red when full. `spacing` as in
+        kit.header() (px above and below the rule). Returns the content y."""
         kit = self.bottom_panel_kit
         role = 'heading'
         full = f"{title} {count_text}"
@@ -10062,7 +10065,7 @@ class Game:
         x = rect.centerx - kit.font(role).size(full)[0] // 2
         kit.left_text(title + " ", role, BOTTOM_GOLD_TEXT, x, rect.top)
         kit.left_text(count_text, role, count_color, x + title_w, rect.top)
-        return kit.rule(rect, rect.top + kit.line_height(role) + kit.px(1))
+        return kit.rule(rect, rect.top + kit.line_height(role) + kit.px(1) + spacing) + spacing
 
     def _draw_section_button(self, rect, label, tint, flash_key, locked=False):
         """
@@ -10120,28 +10123,29 @@ class Game:
     def _draw_fact_columns(self, rect, columns):
         """
         Side-by-side columns of (text, colour) lines in `rect`: each column's lines are
-        left-aligned and the block is centred in its share of the width. Body font, or
-        small if the longest column does not fit the height; the lines are spaced to
-        use it (capped). Bounds-checked. Returns the font role used (for the tests).
+        left-aligned, and the columns are centred together as one block with a fixed
+        gap between them (centring each in its own half pushed them to the edges).
+        Body font, or small if the longest column does not fit the height; the lines
+        are spaced to use it (capped). Bounds-checked. Returns the font role used.
         """
         kit = self.bottom_panel_kit
         rows = max(len(col) for col in columns)
         role = 'body' if rows * kit.line_height('body') <= rect.h else 'small'
         line_h = kit.line_height(role)
         gap = max(0, min(kit.px(6), (rect.h - rows * line_h) // max(1, rows)))
-        pad = kit.px(8)
-        width = rect.w // len(columns)
-        for i, col in enumerate(columns):
-            area = pygame.Rect(rect.left + i * width + pad, rect.top, width - 2 * pad, rect.h)
-            lines = [(kit.fit(text, role, area.w), color) for text, color in col]
-            block_w = max(kit.font(role).size(text)[0] for text, _color in lines)
-            x = area.left + max(0, (area.w - block_w) // 2)
+        col_gap = kit.px(40)
+        max_col_w = max(20, (rect.w - col_gap * (len(columns) - 1)) // len(columns))
+        fitted = [[(kit.fit(text, role, max_col_w), color) for text, color in col] for col in columns]
+        widths = [max(kit.font(role).size(text)[0] for text, _color in col) for col in fitted]
+        x = rect.left + max(0, (rect.w - sum(widths) - col_gap * (len(columns) - 1)) // 2)
+        for col, col_w in zip(fitted, widths):
             y = rect.top + gap // 2
-            for text, color in lines:
+            for text, color in col:
                 if y + line_h > rect.bottom + 1:
                     break  # bounds check - never render past the section
                 kit.left_text(text, role, color, x, y)
                 y += line_h + gap
+            x += col_w + col_gap
         return role
 
     def draw_training_ui(self):
@@ -10151,8 +10155,8 @@ class Game:
         Sections (owner-designed 2026-10-09), each a centred headline + gold rule:
             Barracks:            the five unit training buttons in a centred row
             Training Queue (n/4): the queued units in 4 fixed slots (ResourceSlot rows)
-            Barracks Info:       gold / armies / command limit + the hotkeys, then a
-                                 rule and the Demolish button
+            Hotkeys:             the training hotkeys, then a rule and the Demolish button
+        The headlines have a little extra space around their rules.
         """
         territory, barracks_plot_index = self.selected_barracks
         gs = self.game_state
@@ -10176,10 +10180,13 @@ class Game:
         can_queue = queue_count < gs.MAX_TRAINING_QUEUE  # same limit as start_training()
 
         # === SECTION 1: BARRACKS (unit buttons) ===
-        # The old gold / queue / armies lines and "Not enough gold" status moved to
-        # Barracks Info and the queue headline; the buttons' red tint shows refusals
+        # The old gold / queue / armies lines and "Not enough gold" status are gone (the
+        # queue count is in its headline); the buttons' red tint shows refusals
         units_rect = rects['units']
-        y = kit.header(units_rect, "Barracks")
+        # A little more air between the headlines and their rules (owner: the rule sat
+        # too close to "Barracks"); all three sections use it so the rules stay level
+        header_spacing = kit.px(self.BARRACKS_HEADER_SPACING_REF)
+        y = kit.header(units_rect, "Barracks", spacing=header_spacing)
         button_spacing = kit.px(10)
         slots = len(self.TRAINING_UNIT_ORDER)
         button_size = max(24, min(kit.px(72), units_rect.bottom - y,
@@ -10279,7 +10286,8 @@ class Game:
         queue_rect = rects['queue']
         max_queue = gs.MAX_TRAINING_QUEUE
         count_color = (232, 82, 70) if queue_count >= max_queue else BOTTOM_GOLD_TEXT
-        y = self._header_with_count(queue_rect, "Training Queue", f"({queue_count}/{max_queue})", count_color)
+        y = self._header_with_count(queue_rect, "Training Queue", f"({queue_count}/{max_queue})", count_color,
+                                    spacing=header_spacing)
         slot_gap = kit.px(5)
         slot_h = max(16, (queue_rect.bottom - y - slot_gap * (max_queue - 1)) // max_queue)
         self.queue_cancel_buttons = []
@@ -10307,9 +10315,11 @@ class Game:
             kit.centered_text("No units in queue", 'body', BROWN_TEXT_SECONDARY, queue_rect.centerx,
                               y + kit.px(6))
 
-        # === SECTION 3: BARRACKS INFO (+ Demolish) ===
+        # === SECTION 3: HOTKEYS (+ Demolish) ===
+        # Was "Barracks Info" with gold / armies / command lines too; the owner dropped
+        # those (2026-10-09), so only the hotkeys remain and the headline says so
         info_rect = rects['info']
-        y = kit.header(info_rect, "Barracks Info")
+        y = kit.header(info_rect, "Hotkeys", spacing=header_spacing)
         # Demolish refund depends on the Makeshift Barracks upgrade. Just "Demolish":
         # the headline names the building and the longer label did not fit the button.
         refund_percent = "100%" if gs.player_barracks_full_refund[current_player] else "50%"
@@ -10319,17 +10329,11 @@ class Game:
         self.demolish_barracks_territory = territory
         self.demolish_barracks_plot_index = barracks_plot_index
 
-        current_income = gs.calculate_player_income(current_player)
-        facts = [
-            (f"Gold: {current_gold} (+{current_income})", (238, 206, 92)),
-            (f"Armies: {current_armies}/{gs.MAX_ARMIES_PER_TERRITORY}", self._army_limit_color(current_armies)),
-            (f"Command: {command_count}/{command_limit}",
-             (232, 82, 70) if at_command_limit else BROWN_TEXT_PRIMARY),
-        ]
-        # Hotkeys (Captain = T was missing from the old list)
+        # Hotkeys (Captain = T was missing from the old list) in two columns, S/A/P and
+        # C/T: five lines in one column only fit in the small font
         hotkeys = [(f"[{key}] {unit}", BROWN_TEXT_SECONDARY) for key, unit in self.TRAINING_HOTKEYS]
         self._draw_fact_columns(pygame.Rect(info_rect.left, y, info_rect.w, max(1, rows_bottom - y)),
-                                [facts, hotkeys])
+                                [hotkeys[:3], hotkeys[3:]])
 
         # Track button hover for tooltips (will be drawn with delay in main loop)
         mouse_pos = pygame.mouse.get_pos()
