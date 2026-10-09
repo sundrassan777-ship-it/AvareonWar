@@ -72,6 +72,7 @@ from rendering.map_extension import MapEastExtension, east_extension_override_pa
 from rendering.sidebar_widgets import SidebarWidgets
 from rendering.bottom_panel_kit import (BottomPanelKit, TINT_END_TURN, TINT_END_TURN_HIGHLIGHT,
                                         TINT_SELECT_ARMY, TINT_SELECT_ALL, TINT_DESELECT_ALL,
+                                        TINT_DEMOLISH, TINT_CONFISCATE,
                                         GOLD_TEXT as BOTTOM_GOLD_TEXT, EDGE_PAD_REF as EDGE_PAD_REF_PX)
 from input.camera_handler import CameraHandler
 from input.keyboard_handler import KeyboardHandler
@@ -9269,24 +9270,194 @@ class Game:
         row_y = top + max(0, (bottom - top - size) // 2)
         return size, gap, row_y, limit_y
 
+    # Building views' ornate Demolish / Cancel button width (reference px, scaled by the
+    # panel): wide enough for "Demolish (100%)" at every resolution, since a label only
+    # gets 66% of the button (measured 2026-10-09: 170 px ellipsized it)
+    BUILDING_BUTTON_W_REF = 210
+    # Plot building view: text column width cap (the longest description, Training
+    # Grounds, fits on one line) and the Farm/Mine XP BattleBar width
+    PLOT_VIEW_COLUMN_W_REF = 540
+    BUILDING_XP_BAR_W_REF = 280
+
+    def _plot_building_view_layout(self):
+        """
+        {'icon': rect, 'column': rect} of the plot view of a finished or
+        under-construction building.
+
+        The icon takes the size and spot of the empty plot view's first building button,
+        so it does not jump when construction starts; the text column starts right of it
+        and spans the content height. One source of geometry for drawing and the tests.
+        """
+        kit = self.bottom_panel_kit
+        size, _gap, row_y, _limit_y = self._empty_plot_button_layout(False)
+        icon = pygame.Rect(int(WINDOW_WIDTH * 0.25), row_y, size, size)
+        col_x = icon.right + kit.px(24)
+        col_w = max(40, min(kit.px(self.PLOT_VIEW_COLUMN_W_REF),
+                            WINDOW_WIDTH - col_x - kit.px(EDGE_PAD_REF_PX)))
+        top = kit.content_top()
+        return {'icon': icon, 'column': pygame.Rect(col_x, top, col_w, kit.content_bottom() - top)}
+
+    def _building_xp_view(self, territory, plot_index):
+        """Farm/Mine veterancy for the plot view: level, XP bar fill (0..1), bar label
+        and income bonus %. Same maths as the pre-redesign panel."""
+        gs = self.game_state
+        data = gs.get_building_xp_data(territory, plot_index)
+        level, xp = data['level'], data['xp']
+        if level < gs.MAX_LEVEL:
+            prev_t = gs.LEVEL_XP_CUMULATIVE[level - 1] if level > 0 else 0
+            next_t = gs.LEVEL_XP_CUMULATIVE[level]
+            in_level, needed = xp - prev_t, next_t - prev_t
+            fill = max(0.0, min(1.0, in_level / needed)) if needed > 0 else 0.0
+            label = f"{in_level}/{needed} XP"
+        else:
+            fill, label = 1.0, "MAX"
+        return {'level': level, 'fill': fill, 'label': label,
+                'bonus_pct': int(level * gs.BUILDING_LEVEL_INCOME_BONUS * 100)}
+
+    def _draw_plot_building_icon(self, building_type, rect, greyed):
+        """
+        The building's round icon in the plot view, drawn like the empty plot view's
+        buttons (icon at 80% of the circle + circle border). greyed (under
+        construction): a greyscale copy, slightly dimmed, cached per building and size.
+        """
+        radius = rect.w // 2
+        image = self.building_icons.get(building_type)
+        if image:
+            icon_size = int(radius * 1.6)
+            icon = self._get_cached_ui_icon(image, building_type, icon_size)
+            if greyed:
+                # PERFORMANCE: greyscale once per (building, size), never per frame.
+                # _ui_icon_cache is cleared on resolution change.
+                key = ('grey_building', building_type, icon_size)
+                grey = self._ui_icon_cache.get(key)
+                if grey is None:
+                    grey = pygame.transform.grayscale(icon)
+                    grey.fill((205, 205, 205, 255), special_flags=pygame.BLEND_RGBA_MULT)
+                    self._ui_icon_cache[key] = grey
+                icon = grey
+            self.screen.blit(icon, icon.get_rect(center=rect.center))
+            if self.circle_border:
+                border = self._get_cached_ui_icon(self.circle_border, 'circle_border', rect.w)
+                self.screen.blit(border, border.get_rect(center=rect.center))
+        else:
+            # Fallback when the icon art is missing: a letter disc
+            fill = (120, 120, 120) if greyed else (100, 160, 100)
+            pygame.draw.circle(self.screen, fill, rect.center, radius)
+            pygame.draw.circle(self.screen, BLACK, rect.center, radius, 2)
+            letter = self.game_state.building_types.get(building_type, {}).get('letter', '?')
+            letter_surf = self._get_cached_text(letter, self.font, WHITE)
+            self.screen.blit(letter_surf, letter_surf.get_rect(center=rect.center))
+
+    def _draw_building_level_row(self, xp, role, x, y):
+        """Farm/Mine level line in the plot view: one shield per level, "Level N" and
+        the income bonus (just "Level 0" before the first level)."""
+        kit = self.bottom_panel_kit
+        level = xp['level']
+        if level <= 0:
+            kit.left_text("Level 0", role, BROWN_TEXT_SECONDARY, x, y)
+            return
+        if self.level_shield_icon:
+            # The shield art has a wide transparent margin (it drew as dots at text
+            # height): crop it to the opaque shield once, then scale to the line
+            cropped = self._ui_icon_cache.get('level_shield_cropped')
+            if cropped is None:
+                from utils.surface_utils import crop_to_opaque
+                cropped = crop_to_opaque(self.level_shield_icon)
+                self._ui_icon_cache['level_shield_cropped'] = cropped
+            line_h = kit.line_height(role)
+            sh = max(8, int(line_h * 0.9))
+            sw = max(6, int(round(sh * cropped.get_width() / float(max(1, cropped.get_height())))))
+            shield = self._get_cached_scaled_surface(cropped, 'level_shield_bldg_view', sw, sh)
+            for _ in range(level):
+                self.screen.blit(shield, (x, y + (line_h - sh) // 2))
+                x += sw + kit.px(2)
+            x += kit.px(4)
+        x += kit.left_text(f"Level {level}", f"{role}_bold", (232, 180, 60), x, y)
+        if xp['bonus_pct'] > 0:
+            kit.left_text(f"  (+{xp['bonus_pct']}% income)", role, (150, 210, 140), x, y)
+
+    def _draw_plot_building_view(self, building_type, under_construction, lines, button_label,
+                                 button_tint, flash_key, locked=False, xp=None):
+        """
+        Plot view of a finished or under-construction building (owner-designed
+        2026-10-09): the building's icon on the left; right of it the name as a
+        headline, a rule, the description lines (+ the Farm/Mine level row and XP
+        BattleBar), a rule and the Demolish / Cancel button. Under construction, the
+        icon and headline are greyed out. The blocks are spread over the content height.
+
+        Returns the button rect (the caller stores it for handle_bottom_ui_click()).
+        """
+        kit = self.bottom_panel_kit
+        layout = self._plot_building_view_layout()
+        col = layout['column']
+        self._draw_plot_building_icon(building_type, layout['icon'], greyed=under_construction)
+
+        title_h = kit.header_height(building_type, role='title')
+        bar_w = min(col.w, kit.px(self.BUILDING_XP_BAR_W_REF))
+        bar_h = kit.battlebar_height(bar_w)
+        button_w = min(col.w, kit.px(self.BUILDING_BUTTON_W_REF))
+        button_h = kit.button_height(button_w)
+        rule_h = kit.rule_height() + kit.rule_gap()
+        level_gap = kit.px(3)  # Between the level row and its XP bar
+
+        def wrapped(role):
+            return [part for line in lines for part in kit.wrap(line, role, col.w, max_lines=2)]
+
+        def stack_height(role, text_lines):
+            line_h = kit.line_height(role)
+            height = title_h + len(text_lines) * line_h + rule_h + button_h
+            if xp is not None:
+                height += line_h + level_gap + bar_h
+            return height
+
+        # Body font, or the small one if the stack would not fit the content height
+        role = 'body'
+        text_lines = wrapped(role)
+        if stack_height(role, text_lines) > col.h:
+            role = 'small'
+            text_lines = wrapped(role)
+        line_h = kit.line_height(role)
+
+        # Spare height becomes the gaps before each block after the headline (text,
+        # XP, rule, button), capped; what is left over centres the stack vertically
+        blocks = 3 + (1 if xp is not None else 0)
+        spare = max(0, col.h - stack_height(role, text_lines))
+        gap = min(kit.px(10), spare // blocks)
+        y = col.top + (spare - gap * blocks) // 2
+
+        heading_color = (168, 160, 148) if under_construction else BROWN_TEXT_HEADING
+        y = kit.header(col, building_type, color=heading_color, role='title', y=y, align='left')
+        y += gap
+        for line in text_lines:
+            kit.left_text(line, role, BROWN_TEXT_SECONDARY, col.left, y)
+            y += line_h
+        if xp is not None:
+            y += gap
+            self._draw_building_level_row(xp, role, col.left, y)
+            y += line_h + level_gap
+            kit.battlebar(pygame.Rect(col.left, y, bar_w, bar_h), xp['fill'], (185, 155, 80),
+                          text=xp['label'])
+            y += bar_h
+        y = kit.rule(col, y + gap, width_frac=1.0)
+        button = pygame.Rect(col.left, y + gap, button_w, button_h)
+        kit.ornate_button(button, button_label, button_tint, flash_key=flash_key, locked=locked)
+        return button
+
     def _draw_building_ui_section(self):
         """
         Draw building UI when plot is selected.
         
         Phase 5: Extracted from draw_bottom_ui() for maintainability.
         Shows different content based on plot state:
-        - Completed building: Show info and demolish option
-        - Under construction: Show progress and cancel option
-        - Empty plot: Show building options
-        
-        Renders:
-        - Plot title (territory + plot number)
-        - Building info (if built)
-        - Construction info (if building)
-        - Building options (if empty)
-        - Demolish/Cancel buttons
-        
-        Location: Center-right of bottom UI
+        - Completed building (Farm, Mine, Square, Training Grounds): icon, headline,
+          description (+ level and XP bar for Farm/Mine), Demolish
+          (_draw_plot_building_view)
+        - Under construction (any type): greyed icon and headline, description,
+          turns left, Cancel (_draw_plot_building_view)
+        - Empty plot: the building buttons
+
+        A finished Barracks / Keep never gets here: it opens draw_training_ui() /
+        draw_keep_ui() instead.
         """
         territory, plot_index = self.selected_plot
         
@@ -9305,169 +9476,35 @@ class Game:
         build_ui_y = BOTTOM_UI_Y + 30
 
         if building:
-            # Show existing building info - polished format matching Keep/Barracks
+            # Finished building (Farm, Mine, Square, Training Grounds - Barracks and Keep
+            # have their own views): icon, headline, rule, description (+ level row and
+            # XP bar for Farm/Mine), rule, Demolish. Owner-designed 2026-10-09.
             building_info = self.game_state.building_types[building]
+            lines = [self._get_building_effect_text(building_info['effect'], building_info['value'])]
+            xp = self._building_xp_view(territory, plot_index) if building in ('Farm', 'Mine') else None
+            # Confiscate (Erec Silvyr): a Farm/Mine demolish refunds 175%, not 50% (the
+            # destroy_building() rule). The button used to say 50% either way.
+            has_confiscate = (building in ('Farm', 'Mine') and
+                              self.game_state.player_has_silvyr(self.game_state.current_player))
+            label, tint = (("Demolish (175%)", TINT_CONFISCATE) if has_confiscate
+                           else ("Demolish (50%)", TINT_DEMOLISH))
+            # Greyed while the tutorial/mission forbids it - the click handler checks the same
+            self.demolish_button = self._draw_plot_building_view(
+                building, False, lines, label, tint, ('demolish', 'building'),
+                locked=bool(self._is_tutorial_blocking('demolish')), xp=xp)
 
-            # Large building name (same format as Keep)
-            building_title = self._get_cached_text(building, self.large_font, BROWN_TEXT_HEADING)
-            self.screen.blit(building_title, (build_ui_x, build_ui_y))
-            build_ui_y += 40
-
-            # Show effect as bullet point with lighter color
-            effect_color = (200, 200, 200)  # Light gray for consistency
-            effect = building_info['effect']
-            value = building_info['value']
-
-            effect_text = self._get_cached_text(
-                self._get_building_effect_text(effect, value), self.small_font, effect_color)
-            self.screen.blit(effect_text, (build_ui_x, build_ui_y))
-            build_ui_y += 25
-
-            # --- Veterancy: Show XP bar and level info for Farms/Mines ---
-            if building in ('Farm', 'Mine'):
-                bldg_data = self.game_state.get_building_xp_data(territory, plot_index)
-                bldg_level = bldg_data['level']
-                bldg_xp = bldg_data['xp']
-
-                # Level text with shield icons
-                gold_color = (218, 165, 32)
-                if bldg_level > 0 and self.level_shield_icon:
-                    # Draw shield icons inline before level text
-                    s_size = self.scale(12)
-                    cached_s = self._get_cached_scaled_surface(
-                        self.level_shield_icon, 'level_shield_bldg_panel', s_size, s_size)
-                    sx = build_ui_x
-                    for lv in range(bldg_level):
-                        self.screen.blit(cached_s, (sx, build_ui_y))
-                        sx += s_size + 1
-                    # Level text after shields
-                    level_label = self._get_cached_text(f" Level {bldg_level}", self.small_font, gold_color)
-                    self.screen.blit(level_label, (sx, build_ui_y))
-                    # Income bonus text
-                    bonus_pct = int(bldg_level * self.game_state.BUILDING_LEVEL_INCOME_BONUS * 100)
-                    if bonus_pct > 0:
-                        bonus_text = self._get_cached_text(f"  (+{bonus_pct}% income)", self.small_font, (150, 200, 150))
-                        self.screen.blit(bonus_text, (sx + level_label.get_width(), build_ui_y))
-                else:
-                    level_label = self._get_cached_text(f"Level {bldg_level}", self.small_font, (200, 200, 200))
-                    self.screen.blit(level_label, (build_ui_x, build_ui_y))
-                build_ui_y += 22
-
-                # XP progress bar
-                bar_w = 180
-                bar_h = self.scale(6)
-                bar_x = build_ui_x
-                bar_y = build_ui_y
-
-                # Calculate fill ratio
-                if bldg_level < self.game_state.MAX_LEVEL:
-                    prev_t = self.game_state.LEVEL_XP_CUMULATIVE[bldg_level - 1] if bldg_level > 0 else 0
-                    next_t = self.game_state.LEVEL_XP_CUMULATIVE[bldg_level]
-                    xp_in_level = bldg_xp - prev_t
-                    xp_needed = next_t - prev_t
-                    fill = max(0.0, min(1.0, xp_in_level / xp_needed)) if xp_needed > 0 else 0.0
-                    xp_label = f"{xp_in_level}/{xp_needed} XP"
-                else:
-                    fill = 1.0
-                    xp_label = "MAX"
-
-                # Draw bar bg + fill (brass-colored)
-                pygame.draw.rect(self.screen, (60, 50, 40), (bar_x, bar_y, bar_w, bar_h))
-                fill_px = int(bar_w * fill)
-                if fill_px > 0:
-                    pygame.draw.rect(self.screen, (185, 155, 80), (bar_x, bar_y, fill_px, bar_h))
-                # Thin border
-                pygame.draw.rect(self.screen, (100, 90, 70), (bar_x, bar_y, bar_w, bar_h), 1)
-
-                # XP text to the right of bar
-                xp_text = self._get_cached_text(xp_label, self.small_font, (200, 200, 200))
-                self.screen.blit(xp_text, (bar_x + bar_w + 8, bar_y - 2))
-                build_ui_y += bar_h + 10
-
-            # Demolish button (same format as Barracks)
-            demolish_rect = pygame.Rect(build_ui_x, build_ui_y, 180, 30)
-
-            # Tutorial hook: grey out demolish button during tutorial unless allowed
-            _tutorial_demolish_locked = (self.tutorial_mission
-                                         and self.tutorial_mission.active
-                                         and not self.tutorial_mission.is_action_allowed('demolish'))
-
-            if _tutorial_demolish_locked:
-                # Greyed out demolish button during tutorial
-                self.draw_feedback_button(demolish_rect, (80, 80, 80),
-                                          'demolish', 'building',
-                                          text="Demolish (50%)", font=self.small_font,
-                                          text_color=(120, 120, 120))
-            else:
-                # Check if Confiscate is active (Erec Silvyr + Farm/Mine)
-                has_confiscate = (self.game_state.player_has_silvyr(self.game_state.current_player) and
-                                building in ['Farm', 'Mine'])
-
-                if has_confiscate:
-                    # Dark blue glowing button for Confiscate
-                    demolish_color = (30, 60, 150)  # Dark blue
-                    self.draw_feedback_button(demolish_rect, demolish_color,
-                                              'demolish', 'building',
-                                              text="Demolish (50%)", font=self.small_font)
-
-                    # Add glowing effect - draw a bright blue outline
-                    glow_color = (70, 120, 255)  # Bright blue glow
-                    pygame.draw.rect(self.screen, glow_color, demolish_rect, 3)
-                else:
-                    # Normal red demolish button
-                    self.draw_feedback_button(demolish_rect, (150, 100, 100),
-                                              'demolish', 'building',
-                                              text="Demolish (50%)", font=self.small_font)
-
-            self.demolish_button = demolish_rect
-            
         elif under_construction:
-            # Show construction info - polished format matching completed buildings
+            # Under construction (any building type, Barracks and Keep included): greyed
+            # icon and headline, description + turns left, rule, Cancel
             building_type = under_construction[0]  # entry is (building_type, turns_remaining, cost)
             turns_remaining = under_construction[1]
             building_info = self.game_state.building_types[building_type]
-
-            # Large building name with "Under Construction" suffix
-            building_title = self._get_cached_text(f"{building_type} (Under Construction)", self.large_font, BROWN_TEXT_HEADING)
-            self.screen.blit(building_title, (build_ui_x, build_ui_y))
-            build_ui_y += 40
-
-            # Show effect as bullet point with lighter color
-            effect_color = (200, 200, 200)  # Light gray for consistency
-            effect = building_info['effect']
-            value = building_info['value']
-
-            effect_text = self._get_cached_text(
-                self._get_building_effect_text(effect, value), self.small_font, effect_color)
-            self.screen.blit(effect_text, (build_ui_x, build_ui_y))
-            build_ui_y += 22
-
-            # Turns remaining info
-            turns_text = self._get_cached_text(f"- Completes in {turns_remaining} turn{'s' if turns_remaining != 1 else ''}.", self.small_font, effect_color)
-            self.screen.blit(turns_text, (build_ui_x, build_ui_y))
-            build_ui_y += 30
-
-            # Cancel button (same format as Demolish)
-            cancel_rect = pygame.Rect(build_ui_x, build_ui_y, 180, 30)
-
-            # Tutorial hook: grey out cancel button during tutorial unless allowed
-            _tutorial_cancel_locked = (self.tutorial_mission
-                                       and self.tutorial_mission.active
-                                       and not self.tutorial_mission.is_action_allowed('cancel_construction'))
-
-            if _tutorial_cancel_locked:
-                # Greyed out cancel button during tutorial
-                self.draw_feedback_button(cancel_rect, (80, 80, 80),
-                                          'cancel', 'construction',
-                                          # Just "Cancel": the building name made long types overflow the
-                                          # button, and the plot panel above already names it.
-                                          text="Cancel", font=self.small_font,
-                                          text_color=(120, 120, 120))
-            else:
-                self.draw_feedback_button(cancel_rect, (150, 100, 100),
-                                          'cancel', 'construction',
-                                          text="Cancel", font=self.small_font)
-            self.cancel_button = cancel_rect
+            lines = [self._get_building_effect_text(building_info['effect'], building_info['value']),
+                     f"- Completes in {turns_remaining} turn{'s' if turns_remaining != 1 else ''}."]
+            # Just "Cancel": the headline already names the building
+            self.cancel_button = self._draw_plot_building_view(
+                building_type, True, lines, "Cancel", TINT_DEMOLISH, ('cancel', 'construction'),
+                locked=bool(self._is_tutorial_blocking('cancel_construction')))
 
         else:
             # Empty plot - show building options. No "Territory - Plot X" title any

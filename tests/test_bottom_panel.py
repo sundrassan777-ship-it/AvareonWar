@@ -741,3 +741,204 @@ class TestHeroPortraitPan:
         _open_hero(game)
         game.draw_bottom_ui()
         assert game.hero_view_portrait_button is None
+
+
+# ===========================================================================
+# Plot building view (finished / under construction) - owner design 2026-10-09:
+# icon left; headline, rule, description (+ Farm/Mine level + XP BattleBar),
+# rule, Demolish / Cancel button right of it
+# ===========================================================================
+
+def _select_building_plot(game, building=None, under_construction=None, xp=None):
+    """Select plot 1 of an owned territory holding `building` (finished) or an
+    `under_construction` entry (building_type, turns_remaining, cost)."""
+    territory = _three_plot_territory(game)
+    game.selected_territory_info = None
+    gs = game.game_state
+    gs.buildings.setdefault(territory, {}).pop(1, None)
+    gs.under_construction.setdefault(territory, {}).pop(1, None)
+    if building:
+        gs.buildings[territory][1] = building
+    if under_construction:
+        gs.under_construction[territory][1] = under_construction
+    if xp is not None:
+        gs.building_xp.setdefault(territory, {})[1] = xp
+    game.selected_plot = (territory, 1)
+    return territory
+
+
+def _spy_buttons(game, monkeypatch):
+    """Record every kit.ornate_button() call: label -> (tint, locked, rect)."""
+    drawn = {}
+    kit = game.bottom_panel_kit
+    real = kit.ornate_button
+
+    def spy(rect, label, inner_tint, flash_key=None, locked=False, role='button', hover_pos=None):
+        drawn[label] = (inner_tint, locked, rect)
+        return real(rect, label, inner_tint, flash_key=flash_key, locked=locked, role=role,
+                    hover_pos=hover_pos)
+
+    monkeypatch.setattr(kit, 'ornate_button', spy)
+    return drawn
+
+
+PLOT_VIEW_CASES = [
+    {'building': 'Square'},
+    {'building': 'Training Grounds'},
+    {'building': 'Farm', 'xp': {'xp': 50, 'level': 1}},
+    {'building': 'Mine', 'xp': {'xp': 240, 'level': 5}},
+    {'under_construction': ('Barracks', 2, 100)},
+    {'under_construction': ('Training Grounds', 1, 100)},
+]
+
+
+class TestPlotBuildingLayout:
+
+    def test_icon_matches_the_empty_plot_button(self, any_res_game):
+        """The icon takes the first empty-plot button's size and spot (no jump when
+        construction starts); the text column is right of it, inside the panel."""
+        import pygame
+        g = any_res_game
+        layout = g._plot_building_view_layout()
+        size, _gap, row_y, _limit = g._empty_plot_button_layout(False)
+        assert layout['icon'] == pygame.Rect(int(g.screen.get_width() * 0.25), row_y, size, size)
+        assert layout['column'].left > layout['icon'].right
+        for rect in layout.values():
+            assert _panel(g).contains(rect)
+
+    @pytest.mark.parametrize('case', PLOT_VIEW_CASES,
+                             ids=lambda c: c.get('building') or 'building_' + c['under_construction'][0])
+    def test_every_state_fits_the_column(self, any_res_game, monkeypatch, case):
+        g = any_res_game
+        bars = []
+        kit = g.bottom_panel_kit
+        real_bar = kit.battlebar
+        monkeypatch.setattr(kit, 'battlebar', lambda rect, *a, **k: bars.append(rect) or real_bar(rect, *a, **k))
+        _select_building_plot(g, **case)
+        g.draw_bottom_ui()
+        column = g._plot_building_view_layout()['column']
+        button = g.cancel_button if 'under_construction' in case else g.demolish_button
+        assert button is not None and column.contains(button)
+        assert button.bottom <= kit.content_bottom()
+        # Farm / Mine: the XP BattleBar sits in the column, above the button (the End
+        # Turn section's timer is a BattleBar too - left of the column)
+        bars = [b for b in bars if b.left >= column.left]
+        if case.get('xp'):
+            assert len(bars) == 1
+            assert column.contains(bars[0]) and bars[0].bottom < button.top
+        else:
+            assert bars == []
+
+
+class TestPlotBuildingIcon:
+
+    def _channel_spread(self, game):
+        """Largest |r-b| / |r-g| over the middle of the icon. The circle border is
+        switched off: its art lays a faint warm glaze over the whole circle."""
+        game.circle_border = None
+        game.screen.fill((0, 0, 0))
+        game.draw_bottom_ui()
+        icon = game._plot_building_view_layout()['icon']
+        spread = 0
+        for fx in (0.35, 0.45, 0.55, 0.65):
+            for fy in (0.35, 0.45, 0.55, 0.65):
+                r, gg, b = tuple(game.screen.get_at((icon.left + int(icon.w * fx), icon.top + int(icon.h * fy))))[:3]
+                spread = max(spread, abs(r - b), abs(r - gg))
+        return spread
+
+    def test_under_construction_icon_is_greyed(self, game):
+        _select_building_plot(game, under_construction=('Farm', 2, 50))
+        assert self._channel_spread(game) <= 2
+
+    def test_finished_icon_in_full_colour(self, game):
+        _select_building_plot(game, building='Farm')
+        assert self._channel_spread(game) > 10
+
+
+class TestPlotBuildingButtons:
+
+    def test_cancel_still_cancels(self, game):
+        territory = _select_building_plot(game, under_construction=('Square', 2, 120))
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.cancel_button.center) is True
+        assert 1 not in game.game_state.under_construction.get(territory, {})
+        assert game.clicked_element == ('cancel', 'construction')
+
+    def test_demolish_still_demolishes(self, game):
+        territory = _select_building_plot(game, building='Square')
+        game.draw_bottom_ui()
+        assert game.handle_bottom_ui_click(game.demolish_button.center) is True
+        assert 1 not in game.game_state.buildings.get(territory, {})
+        assert game.clicked_element == ('demolish', 'building')
+
+    def test_hover_and_flash_change_pixels(self, game):
+        _select_building_plot(game, building='Square')
+
+        def pixels():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.demolish_button
+            return sum(sum(tuple(game.screen.get_at((rect.left + int(rect.w * f), rect.centery)))[:3])
+                       for f in (0.2, 0.24, 0.76, 0.8))
+
+        normal = pixels()
+        game.mouse_pos = game.demolish_button.center
+        hover = pixels()
+        game.clicked_element = ('demolish', 'building')
+        assert normal < hover < pixels()
+
+    def test_labels_and_tints(self, game, monkeypatch):
+        import main
+        drawn = _spy_buttons(game, monkeypatch)
+        _select_building_plot(game, building='Square')
+        game.draw_bottom_ui()
+        assert drawn['Demolish (50%)'][:2] == (main.TINT_DEMOLISH, False)
+        _select_building_plot(game, under_construction=('Mine', 3, 80))
+        game.draw_bottom_ui()
+        assert drawn['Cancel'][:2] == (main.TINT_DEMOLISH, False)
+
+    def test_confiscate_shows_the_real_refund(self, game, monkeypatch):
+        """With Erec Silvyr a Farm/Mine demolish refunds 175% (destroy_building());
+        the button used to say 50%. Other buildings keep 50%."""
+        import main
+        drawn = _spy_buttons(game, monkeypatch)
+        monkeypatch.setattr(game.game_state, 'player_has_silvyr', lambda p: True)
+        _select_building_plot(game, building='Farm')
+        game.draw_bottom_ui()
+        assert drawn['Demolish (175%)'][0] == main.TINT_CONFISCATE
+        drawn.clear()
+        _select_building_plot(game, building='Square')
+        game.draw_bottom_ui()
+        assert 'Demolish (50%)' in drawn and 'Demolish (175%)' not in drawn
+
+    def test_greyed_while_the_mission_forbids_it(self, game, monkeypatch):
+        drawn = _spy_buttons(game, monkeypatch)
+        game.tutorial_mission = SimpleNamespace(
+            active=True, should_highlight_button=lambda b: False, is_button_locked=lambda b: False,
+            is_action_allowed=lambda a, **k: a not in ('demolish', 'cancel_construction'),
+            is_timer_visible=lambda: True)
+        territory = _select_building_plot(game, building='Square')
+        game.draw_bottom_ui()
+        assert drawn['Demolish (50%)'][1] is True
+        # The click is consumed without demolishing (same check as before)
+        assert game.handle_bottom_ui_click(game.demolish_button.center) is True
+        assert game.game_state.buildings[territory][1] == 'Square'
+        _select_building_plot(game, under_construction=('Farm', 2, 50))
+        game.draw_bottom_ui()
+        assert drawn['Cancel'][1] is True
+
+
+class TestBuildingXpView:
+
+    def test_bar_fill_and_label(self, game):
+        _select_building_plot(game, building='Farm', xp={'xp': 50, 'level': 1})
+        xp = game._building_xp_view(*game.selected_plot)
+        # Level 1 spans 30..75 XP: 20 of 45
+        assert xp['label'] == '20/45 XP'
+        assert abs(xp['fill'] - 20 / 45) < 1e-6
+        assert xp['bonus_pct'] == 10
+
+    def test_max_level(self, game):
+        _select_building_plot(game, building='Mine', xp={'xp': 240, 'level': 5})
+        xp = game._building_xp_view(*game.selected_plot)
+        assert (xp['label'], xp['fill'], xp['bonus_pct']) == ('MAX', 1.0, 50)
