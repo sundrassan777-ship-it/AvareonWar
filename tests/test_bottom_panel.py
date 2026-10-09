@@ -700,3 +700,44 @@ class TestHeroPortraitPosition:
 def pygame_rect(values):
     import pygame
     return pygame.Rect(values)
+
+
+class TestHeroPortraitPan:
+    """Owner request 2026-10-09: the Hero view portrait pans to the hero's Keep,
+    like the portrait on the sidebar Heroes tab card."""
+
+    def test_click_pans_to_the_keep(self, game, monkeypatch):
+        hero = _open_hero(game)
+        keep = game.game_state.heroes[0][hero]['keep_territory']
+        panned = []
+        monkeypatch.setattr(game, 'start_sidebar_camera_pan', lambda territory: panned.append(territory) or True)
+        game.draw_bottom_ui()
+        rect, name = game.hero_view_portrait_button
+        assert name == hero
+        assert game.handle_bottom_ui_click(rect.center) is True
+        assert panned == [keep]
+        assert game.clicked_element == ('bottom_button', ('hero_portrait', hero))
+        assert game.selected_hero == hero  # Stays on the Hero view
+
+    def test_hover_and_flash_brighten_the_portrait(self, game):
+        _open_hero(game)
+
+        def brightness():
+            game.screen.fill((0, 0, 0))
+            game.draw_bottom_ui()
+            rect = game.hero_view_portrait_rect
+            return sum(sum(tuple(game.screen.get_at((rect.left + int(rect.w * fx), rect.top + int(rect.h * fy))))[:3])
+                       for fx in (0.3, 0.5, 0.7) for fy in (0.3, 0.5, 0.7))
+
+        normal = brightness()
+        game.mouse_pos = game.hero_view_portrait_rect.center
+        hover = brightness()
+        game.clicked_element = ('bottom_button', ('hero_portrait', game.selected_hero))
+        assert normal < hover < brightness()
+
+    def test_no_pan_button_when_camera_pan_is_off(self, game, monkeypatch):
+        import main
+        monkeypatch.setattr(main.UIConstants, 'SIDEBAR_CAMERA_PAN', False)
+        _open_hero(game)
+        game.draw_bottom_ui()
+        assert game.hero_view_portrait_button is None

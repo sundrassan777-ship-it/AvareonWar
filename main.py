@@ -637,6 +637,7 @@ class Game:
         # of the current player's clickable hero portrait (reset every frame)
         self.select_army_button = None
         self.forces_hero_button = None
+        self.hero_view_portrait_button = None  # Hero view: (portrait rect, hero_name)
         self.castle_upgrade_button = None
         self.castle_upgrade_cancel_button = None
         self.bonuses_button_rect = None
@@ -9681,6 +9682,7 @@ class Game:
         self.forces_hero_button = None
         self.forces_cells = []
         self.bottom_panel_tooltip = None  # Re-set by the hovered Forces icon
+        self.hero_view_portrait_button = None  # Hero view portrait (pans to its Keep)
         # Hero ability slots were only reset inside draw_hero_ui, so after the Hero UI
         # closed their rects stayed clickable over whatever the bottom panel showed next
         self.hero_ability_buttons = {}
@@ -9881,6 +9883,14 @@ class Game:
         icon_y = y + max(0, (area_h - icon_size) // 2)
         icon_rect = pygame.Rect(icon_x, icon_y, icon_size, icon_size)
         self.hero_view_portrait_rect = icon_rect  # For the tests (position is fixed)
+        # Clicking the portrait pans the map to the hero's Keep, like the portrait on
+        # the sidebar Heroes tab card (same UIConstants.SIDEBAR_CAMERA_PAN switch)
+        portrait_clickable = UIConstants.SIDEBAR_CAMERA_PAN
+        portrait_flash = ('bottom_button', ('hero_portrait', hero_name))
+        portrait_hover = portrait_clickable and icon_rect.collidepoint(self.mouse_pos)
+        portrait_click = portrait_clickable and self.clicked_element == portrait_flash
+        if portrait_clickable:
+            self.hero_view_portrait_button = (icon_rect, hero_name)
 
         # The text column takes whatever width is left right of the portrait
         max_text_w = max(40, general.right - icon_rect.right - text_gap)
@@ -9889,15 +9899,18 @@ class Game:
         location_text = kit.fit(location, 'body', max(20, max_text_w - label_w))
 
         if self.hero_images.get(hero_name):
-            # PERFORMANCE: cached scaled portrait (keyed by size)
-            self.screen.blit(self._get_cached_scaled_surface(
-                self.hero_images[hero_name], f'hero_{hero_name}', icon_size, icon_size), icon_rect.topleft)
+            # PERFORMANCE: cached scaled portrait (keyed by size); hover/click brighten it
+            portrait = self._get_cached_scaled_surface(
+                self.hero_images[hero_name], f'hero_{hero_name}', icon_size, icon_size)
+            self.screen.blit(self._apply_icon_overlay(portrait, portrait_click, portrait_hover),
+                             icon_rect.topleft)
         else:
             # Fallback: letter tile
             pygame.draw.rect(self.screen, (150, 100, 200), icon_rect, border_radius=8)
             kit.centered_text(hero_letter, 'title', WHITE, icon_rect.centerx,
                               icon_rect.centery - kit.line_height('title') // 2)
-        pygame.draw.rect(self.screen, (212, 170, 80), icon_rect, max(2, kit.px(3)), border_radius=6)
+        frame_color = (255, 232, 160) if (portrait_hover or portrait_click) else (212, 170, 80)
+        pygame.draw.rect(self.screen, frame_color, icon_rect, max(2, kit.px(3)), border_radius=6)
 
         # Text starts level with the portrait's top edge (it used to be centred on the
         # portrait, so its start moved with the number of title lines)
@@ -9962,7 +9975,8 @@ class Game:
             # Original wording, now wrapped to the section instead of hand-split lines
             "A Hero is slain when a Keep they are residing at is conquered.",
             "Hero can be re-summoned in a Keep after their death.",
-        ], bullets=False)
+        ] + (["Click the portrait to view the Hero's Keep on the map."]
+             if UIConstants.SIDEBAR_CAMERA_PAN else []), bullets=False)
 
     def draw_training_ui(self):
         """Draw training interface when Barracks is selected"""
@@ -14361,6 +14375,18 @@ class Game:
                         self.selected_army_units = [unit_id]
                     return True
         
+        # Hero view portrait: pan the map to the hero's Keep, like the portrait on the
+        # sidebar Heroes tab card (start_sidebar_camera_pan refuses during tutorial
+        # camera locks and scripted camera moves)
+        if self.selected_hero and self.hero_view_portrait_button:
+            portrait_rect, hero_name = self.hero_view_portrait_button
+            if portrait_rect.collidepoint(pos):
+                self.trigger_click_flash('bottom_button', ('hero_portrait', hero_name))
+                hero_data = self.game_state.heroes.get(self.game_state.current_player, {}).get(hero_name, {})
+                if hero_data.get('keep_territory'):
+                    self.start_sidebar_camera_pan(hero_data['keep_territory'])
+                return True
+
         # Territory view Forces section: Select Army opens the current player's garrison
         # here (same path as clicking its banner); greyed = consumed with no action
         if self.selected_territory_info and self.select_army_button and self.select_army_button.collidepoint(pos):
