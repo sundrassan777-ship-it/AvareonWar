@@ -4,6 +4,53 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## A New Look for the Bottom Panel
+
+*9 October 2026*
+
+Every part of the bottom panel now has a centred title with a gold line beneath it, and the
+panel fits properly at every screen size.
+
+### End Turn
+
+- Your name, then the **End Turn** button in the same ornate style as the menus — green
+  when you can end your turn, grey when you can't yet.
+- Below it, the **turn number** and your **turn timer**, which drains from green to yellow
+  to red as time runs out.
+
+### Selecting a territory
+
+- **Territory details** are easier to read, one per line.
+- **Building plots** are much bigger and fill their space.
+- **Forces** now shows each unit type as a picture with its count — point at one to see
+  its name. Any Hero in the territory's Keep is shown too; **click your own Hero** to open it.
+- A new **Select Army** button picks up your army in that territory straight away.
+- **Army Limit** turns yellow when the territory is nearly full and red when it is full.
+- The territory's **lore** is brighter and easier to read.
+
+### Building on an empty plot
+
+- The building buttons are **much larger**. The Training Grounds button shows its tooltip
+  again.
+
+### Selecting an army
+
+- Your army's state at a glance: **Total** (coloured like Army Limit), **Ready to Move**,
+  **Moved** and **Ordered**.
+- **Select All** and **Deselect All** are now proper buttons.
+- Your units always fit, even a full army on smaller screens.
+
+### Selecting a Hero
+
+- The Hero's portrait, title and location side by side, with larger ability icons.
+- **Click the portrait** to jump to the Hero's Keep on the map.
+
+### Fixes
+
+- Cutscenes now follow your **master volume** — muting the game mutes them too.
+
+---
+
 ## A New Look for the Right-Hand Panel
 
 *8 October 2026*
