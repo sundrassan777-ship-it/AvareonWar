@@ -10045,6 +10045,8 @@ class Game:
     BARRACKS_VIEW_WEIGHTS = (0.36, 0.28, 0.36)
     # Extra px (reference size) above and below the headline rules in this view
     BARRACKS_HEADER_SPACING_REF = 3
+    # Share of the spare height above the unit button row (0.5 = centred)
+    BARRACKS_UNIT_ROW_TOP_FRAC = 0.35
     TRAINING_UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
     # Keyboard shortcuts listed in Barracks Info (input/keyboard_handler._TRAINING_SHORTCUTS)
     TRAINING_HOTKEYS = (('S', 'Swordsman'), ('A', 'Archer'), ('P', 'Pikeman'),
@@ -10193,7 +10195,9 @@ class Game:
                                   (units_rect.w - button_spacing * (slots - 1)) // slots))
         row_w = slots * button_size + (slots - 1) * button_spacing
         button_x = units_rect.centerx - row_w // 2
-        button_y = y + max(0, (units_rect.bottom - y - button_size) // 2)
+        # Spare height above the row: a bit less than half (owner: the centred row sat
+        # a little far below the rule)
+        button_y = y + max(0, int((units_rect.bottom - y - button_size) * self.BARRACKS_UNIT_ROW_TOP_FRAC))
 
         # Unit type colors (for fallback letter buttons)
         unit_colors = {
