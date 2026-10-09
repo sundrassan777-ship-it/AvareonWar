@@ -630,3 +630,52 @@ class TestBottomPanelTooltipReach:
         g.hover_start_time_button -= 5000  # Past the tooltip delay
         g.update_frame_tooltips()
         assert ('building', 'Training Grounds') in drawn
+
+
+# ===========================================================================
+# Hero view
+# ===========================================================================
+
+def _open_hero(game, hero=None):
+    """Give player 0 a hero in a Keep and open its Hero view."""
+    gs = game.game_state
+    territory = _three_plot_territory(game)
+    hero = hero or list(gs.HERO_TYPES)[0]
+    gs.buildings.setdefault(territory, {})[0] = 'Keep'
+    gs.heroes.setdefault(0, {})[hero] = {'keep_territory': territory, 'keep_plot': 0, 'ability_cooldowns': {}}
+    game.selected_territory_info = None
+    game.selected_hero = hero
+    return hero
+
+
+class TestHeroView:
+
+    def test_sections_match_the_army_view(self, any_res_game):
+        """Same pillars as the Army view, so switching views doesn't shift them."""
+        g = any_res_game
+        assert g._hero_view_layout()['pillars'] == g._army_view_layout()['pillars']
+        for rect in g._hero_view_layout()['rects'].values():
+            assert _panel(g).contains(rect)
+
+    def test_abilities_in_a_centred_row(self, any_res_game):
+        g = any_res_game
+        hero = _open_hero(g)
+        g.draw_bottom_ui()
+        section = g._hero_view_layout()['rects']['abilities']
+        rects = [g.hero_ability_buttons[(hero, i)] for i in range(3)]
+        for rect in rects:
+            assert section.contains(rect)
+            assert rect.size == rects[0].size
+            assert rect.top == rects[0].top
+        assert abs((rects[0].left + rects[-1].right) // 2 - section.centerx) <= 1
+        # Bigger than the old fixed 60 px at the reference resolution and above
+        if g.bottom_panel_kit.scale >= 1:
+            assert rects[0].w >= 60
+
+    def test_every_hero_draws(self, game):
+        """Each hero type (description lengths vary) draws without errors."""
+        for hero in list(game.game_state.HERO_TYPES):
+            game.game_state.heroes[0] = {}
+            _open_hero(game, hero)
+            game.draw_bottom_ui()
+            assert (hero, 0) in game.hero_ability_buttons

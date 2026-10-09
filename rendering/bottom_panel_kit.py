@@ -62,6 +62,7 @@ FONT_ROLES = {
     'small': (12, False, False),
     'small_bold': (12, True, False),
     'small_italic': (12, False, True),
+    'italic': (14, False, True),      # Body-size italic (hero titles)
     'button': (15, True, False),
     'lore': (16, False, True),
 }

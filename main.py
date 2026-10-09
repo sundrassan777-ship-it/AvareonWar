@@ -9823,8 +9823,23 @@ class Game:
         self.clear_button_tooltip()
         return True
 
+    # Hero view section widths (fractions right of the End Turn pillar): the same as
+    # the Army view, so the pillars stay put when switching between the two
+    HERO_VIEW_WEIGHTS = ARMY_VIEW_WEIGHTS
+
+    def _hero_view_layout(self):
+        """Hero view sections: general / abilities / info (see _section_layout)."""
+        return self._section_layout(('general', 'abilities', 'info'), self.HERO_VIEW_WEIGHTS)
+
     def draw_hero_ui(self):
-        """Draw Hero UI when a hero is selected from Heroes tab"""
+        """
+        Draw the Hero view (a hero selected from the Heroes tab or the Forces grid).
+
+        Sections (owner-designed 2026-10-09), each a centred headline + gold rule:
+            General:   hero name; portrait on the left, title and location to its right
+            Abilities: the three ability icons in a centred row
+            Hero Info: what happens when a hero dies (shared list section)
+        """
         hero_name = self.selected_hero
 
         # Get hero data
@@ -9835,103 +9850,96 @@ class Game:
             return
 
         hero_data = self.game_state.heroes[current_player][hero_name]
-        hero_letter = self.game_state.HERO_TYPES[hero_name]['letter']
+        hero_info = self.game_state.HERO_TYPES[hero_name]
+        hero_letter = hero_info['letter']
 
-        # Note: Player info section already draws separator dynamically
-        # We don't need another separator here
+        kit = self.bottom_panel_kit
+        layout = self._hero_view_layout()
+        rects = layout['rects']
+        for pillar_x in layout['pillars']:
+            self.draw_separator(pillar_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
 
-        # === SECTION 1: LARGE HERO ICON ===
-        icon_x = int(WINDOW_WIDTH * 0.21875)  # Start after separator (was 350 at 1600px)
-        icon_y = BOTTOM_UI_Y + 35
-        icon_size = 100
+        # === SECTION 1: GENERAL ===
+        general = rects['general']
+        y = kit.header(general, hero_name, color=BROWN_TEXT_HEADING, role='title', spacing=kit.px(3))
 
-        # Try to use PNG image, fall back to letter if not available
+        # Text to the right of the portrait: title line(s), then "Location: X"
+        description_lines = hero_info.get('description', ['Unknown hero'])
+        location = map_data.get_display_name(hero_data['keep_territory'])  # Campaign renames
+        title_color = (232, 170, 100)   # Lighter bronze than before: readable on the wood
+        label_color = (200, 200, 205)   # Silvery "Location:" label
+        value_color = (245, 235, 210)   # Cream value
+        text_gap = kit.px(14)
+
+        # Portrait: as tall as the space under the headline allows (100 px at most at
+        # the reference size); the text column takes the rest of the width
+        area_h = general.bottom - y
+        icon_size = max(24, min(area_h, kit.px(100)))
+        max_text_w = max(40, general.w - icon_size - text_gap)
+        title_lines = [kit.fit(line, 'italic', max_text_w) for line in description_lines]
+        label_w = kit.font('body_bold').size("Location: ")[0]
+        location_text = kit.fit(location, 'body', max(20, max_text_w - label_w))
+        text_w = max([kit.font('italic').size(line)[0] for line in title_lines]
+                     + [label_w + kit.font('body').size(location_text)[0]])
+
+        # Portrait + text centred as one block, both centred vertically under the headline
+        block_w = icon_size + text_gap + text_w
+        icon_x = general.left + max(0, (general.w - block_w) // 2)
+        icon_y = y + max(0, (area_h - icon_size) // 2)
         icon_rect = pygame.Rect(icon_x, icon_y, icon_size, icon_size)
 
-        if hero_name in self.hero_images and self.hero_images[hero_name]:
-            # PERFORMANCE: Cache scaled hero portrait in existing icon cache
-            cache_key = (f"hero_{hero_name}", icon_size)
-            if cache_key not in self._ui_icon_cache:
-                self._ui_icon_cache[cache_key] = pygame.transform.scale(
-                    self.hero_images[hero_name], (icon_size, icon_size)
-                )
-            hero_image_scaled = self._ui_icon_cache[cache_key]
-            self.screen.blit(hero_image_scaled, (icon_x, icon_y))
-            # Draw border around image
-            pygame.draw.rect(self.screen, (200, 200, 100), icon_rect, 3, border_radius=8)
+        if self.hero_images.get(hero_name):
+            # PERFORMANCE: cached scaled portrait (keyed by size)
+            self.screen.blit(self._get_cached_scaled_surface(
+                self.hero_images[hero_name], f'hero_{hero_name}', icon_size, icon_size), icon_rect.topleft)
         else:
-            # Fallback: Draw letter icon
-            hero_color = (150, 100, 200)
-            pygame.draw.rect(self.screen, hero_color, icon_rect, border_radius=8)
-            pygame.draw.rect(self.screen, (200, 200, 100), icon_rect, 3, border_radius=8)
-            # Draw hero letter
-            hero_letter_surface = self._get_cached_text(hero_letter, self.large_font, WHITE)
-            hero_letter_rect = hero_letter_surface.get_rect(center=icon_rect.center)
-            self.screen.blit(hero_letter_surface, hero_letter_rect)
+            # Fallback: letter tile
+            pygame.draw.rect(self.screen, (150, 100, 200), icon_rect, border_radius=8)
+            kit.centered_text(hero_letter, 'title', WHITE, icon_rect.centerx,
+                              icon_rect.centery - kit.line_height('title') // 2)
+        pygame.draw.rect(self.screen, (212, 170, 80), icon_rect, max(2, kit.px(3)), border_radius=6)
 
-        # === SECTION 3: HERO NAME AND INFO ===
-        name_x = icon_x + icon_size + 25
-        name_y = icon_y
+        title_h = kit.line_height('italic')
+        location_h = kit.line_height('body')
+        line_gap = kit.px(6)
+        text_h = len(title_lines) * title_h + line_gap + location_h
+        tx = icon_rect.right + text_gap
+        ty = icon_rect.centery - text_h // 2
+        for line in title_lines:
+            kit.left_text(line, 'italic', title_color, tx, ty)
+            ty += title_h
+        ty += line_gap
+        label_drawn_w = kit.left_text("Location: ", 'body_bold', label_color, tx, ty)
+        kit.left_text(location_text, 'body', value_color, tx + label_drawn_w, ty)
 
-        # Colors
-        cream_color = (245, 235, 210)
-        bronze_color = (205, 127, 50)
-        silvery_color = (192, 192, 192)
-
-        # Hero name (larger font)
-        name_text = self._get_cached_text(hero_name, self.large_font, BROWN_TEXT_HEADING)
-        self.screen.blit(name_text, (name_x, name_y))
-        name_y += 35  # Increased spacing
-
-        # Hero description (italic bronze) - dynamically pulled from HERO_TYPES
-        hero_info = self.game_state.HERO_TYPES[hero_name]
-        description_lines = hero_info.get('description', ['Unknown hero'])
-        for line in description_lines:
-            desc_text = self._get_cached_text(line, self.small_font_italic, bronze_color)
-            self.screen.blit(desc_text, (name_x, name_y))
-            name_y += 22  # Increased spacing
-
-        # Hero location with bold silvery "Location:" label
-        name_y += 8  # Extra spacing before location
-        location_label = self._get_cached_text("Location:", self.small_font_bold, silvery_color)
-        location_value = self._get_cached_text(f" {hero_data['keep_territory']}", self.small_font, cream_color)
-        self.screen.blit(location_label, (name_x, name_y))
-        self.screen.blit(location_value, (name_x + location_label.get_width(), name_y))
-
-        # === SECTION 2: SECOND SEPARATOR ===
-        second_separator_x = int(WINDOW_WIDTH * 0.5)  # Positioned after hero name (was 800 at 1600px)
-        self.draw_separator(second_separator_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-
-        # === SECTION 5: ABILITY BUTTONS (3 abilities - horizontal) ===
-        ability_start_x = second_separator_x + 20
-        ability_y = BOTTOM_UI_Y + 30
-        ability_size = 60
-        ability_spacing = 15
-
-        # PERFORMANCE: Use cached static text
-        ability_title = self._get_cached_text("Abilities:", self.font, BROWN_TEXT_HEADING)
-        self.screen.blit(ability_title, (ability_start_x, ability_y))
-        ability_y += 35
+        # === SECTION 2: ABILITIES ===
+        # Three icons in a centred row, as big as the section allows (80 px at most at
+        # the reference size). Availability + drawing are shared with the sidebar
+        # Heroes tab (game_state.get_hero_ability_status / draw_hero_ability_icon).
+        abilities_rect = rects['abilities']
+        y = kit.header(abilities_rect, "Abilities")
+        slots = 3
+        ability_spacing = kit.px(14)
+        ability_size = max(24, min(kit.px(80), abilities_rect.bottom - y,
+                                   (abilities_rect.w - ability_spacing * (slots - 1)) // slots))
+        row_w = slots * ability_size + (slots - 1) * ability_spacing
+        ability_x = abilities_rect.centerx - row_w // 2
+        ability_y = y + max(0, (abilities_rect.bottom - y - ability_size) // 2)
 
         # Clear ability buttons dict
         self.hero_ability_buttons = {}
 
-        # Get hero abilities from HERO_TYPES
-        abilities = hero_info.get('abilities', [])
-
         # Track ability button hover
         current_ability_hover = None
+        digit_font = kit.font('title')  # Cooldown digits on the icon
 
-        # Draw up to 3 ability buttons horizontally
-        ability_x = ability_start_x
-        for i in range(3):
-            ability_rect = pygame.Rect(ability_x, ability_y, ability_size, ability_size)
+        for i in range(slots):
+            ability_rect = pygame.Rect(ability_x + i * (ability_size + ability_spacing), ability_y,
+                                       ability_size, ability_size)
 
             # Store button rect for click detection
             self.hero_ability_buttons[(hero_name, i)] = ability_rect
 
-            # Availability + drawing are shared with the sidebar Heroes tab
-            # (game_state.get_hero_ability_status / draw_hero_ability_icon)
             status = self.game_state.get_hero_ability_status(current_player, hero_name, i)
             if status is not None:
                 is_hovering = ability_rect.collidepoint(self.mouse_pos)
@@ -9940,44 +9948,21 @@ class Game:
                     current_ability_hover = ('hero_ability', (hero_name, i))
                 is_clicking = status['castable'] and self.clicked_element == ('hero_ability', (hero_name, i))
                 self.draw_hero_ability_icon(ability_rect, hero_name, i, status, is_hovering, is_clicking,
-                                            self.large_font)
+                                            digit_font)
             else:
                 # No ability at this slot - draw empty placeholder
                 pygame.draw.rect(self.screen, (60, 60, 60), ability_rect, border_radius=5)
                 pygame.draw.rect(self.screen, (40, 40, 40), ability_rect, 2, border_radius=5)
 
-            ability_x += ability_size + ability_spacing
-
         # Update button hover tracking for ability buttons
         self.update_button_hover(current_ability_hover, 'hero_ability')
 
-        # === SECTION 6: THIRD SEPARATOR ===
-        # Calculate based on 3 abilities side by side
-        third_separator_x = ability_start_x + (ability_size * 3) + (ability_spacing * 2) + 20
-        self.draw_separator(third_separator_x, BOTTOM_UI_Y, BOTTOM_UI_HEIGHT)
-
-        # === SECTION 7: HERO INFO ===
-        info_x = third_separator_x + 20
-        info_y = BOTTOM_UI_Y + 30
-
-        # PERFORMANCE: Use cached static text
-        info_title = self._get_cached_text("Hero Info:", self.font, BROWN_TEXT_HEADING)
-        self.screen.blit(info_title, (info_x, info_y))
-        info_y += 40  # Increased spacing
-
-        # Death and respawn information (multi-line)
-        info_lines = [
-            "A Hero is slain when a Keep",
-            "they are residing at is",
-            "conquered. Hero can be",
-            "re-summoned in a Keep",
-            "after their death."
-        ]
-
-        for line in info_lines:
-            info_text = self._get_cached_text(line, self.small_font, cream_color)
-            self.screen.blit(info_text, (info_x, info_y))
-            info_y += 20  # Line spacing
+        # === SECTION 3: HERO INFO ===
+        self._draw_info_list_section(rects['info'], "Hero Info", [
+            # Original wording, now wrapped to the section instead of hand-split lines
+            "A Hero is slain when a Keep they are residing at is conquered.",
+            "Hero can be re-summoned in a Keep after their death.",
+        ], bullets=False)
 
     def draw_training_ui(self):
         """Draw training interface when Barracks is selected"""
