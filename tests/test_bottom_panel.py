@@ -605,3 +605,28 @@ class TestArmyInfoTweaks:
         _open_army(game)
         game.draw_bottom_ui()
         assert game.deselect_all_button.top - game.select_all_button.bottom >= game.bottom_panel_kit.px(10)
+
+
+class TestBottomPanelTooltipReach:
+    """Regression (owner report 2026-10-09): the Training Grounds building button
+    showed no tooltip. Bottom-panel tooltips were cut off in the rightmost 250 px,
+    and the bigger empty-plot buttons put Training Grounds inside that strip."""
+
+    def test_rightmost_building_button_shows_its_tooltip(self, any_res_game, monkeypatch):
+        import pygame
+        g = any_res_game
+        _select_empty_plot(g)
+        g.draw_bottom_ui()
+        rect = g.building_buttons['Training Grounds']
+        assert rect.centerx > g.screen.get_width() - 250  # Inside the old dead strip
+
+        monkeypatch.setattr(pygame.mouse, 'get_pos', lambda: rect.center)
+        g.mouse_pos = rect.center
+        drawn = []
+        monkeypatch.setattr(g, 'draw_button_tooltip', lambda pos, data: drawn.append(data))
+
+        g.update_frame_tooltips()  # Starts the hover timer
+        assert g.hover_target_button == ('building', 'Training Grounds')
+        g.hover_start_time_button -= 5000  # Past the tooltip delay
+        g.update_frame_tooltips()
+        assert ('building', 'Training Grounds') in drawn

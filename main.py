@@ -16209,11 +16209,13 @@ class Game:
         in_map_area = (TOP_PANEL_HEIGHT <= self.mouse_pos[1] < BOTTOM_UI_Y
                        and not self.is_point_over_sidebar(self.mouse_pos))
         in_top_panel = self.mouse_pos[1] < TOP_PANEL_HEIGHT
-        # Bottom-UI button tooltips keep their original rightmost-250 px cut-off. This
-        # is a bottom-panel rule (it stops unit tooltips lingering at the panel's right
-        # end), independent of whether the sidebar above is collapsed.
-        in_bottom_ui = (self.mouse_pos[1] >= BOTTOM_UI_Y
-                        and self.mouse_pos[0] < WINDOW_WIDTH - UIConstants.SIDEBAR_WIDTH)
+        # Bottom-UI button tooltips work across the panel's full width. They used to be
+        # cut off in the rightmost 250 px (a leftover from when the sidebar reached the
+        # bottom of the screen); since the bottom panel overhaul the empty-plot building
+        # buttons fill the width, so Training Grounds - the last one - lost its tooltip.
+        # Every bottom-panel hover system clears its own tooltip when the mouse leaves
+        # its buttons, so nothing lingers there.
+        in_bottom_ui = self.mouse_pos[1] >= BOTTOM_UI_Y
 
         # Check top panel FIRST (has priority over map area)
         if in_top_panel and self.show_tooltip_button:
