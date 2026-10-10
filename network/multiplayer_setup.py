@@ -22,6 +22,7 @@ from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _M
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
+from config.constants import STARTING_GOLD_DEFAULT, clamp_starting_gold
 
 logger = get_logger(__name__)
 
@@ -895,6 +896,8 @@ class MultiplayerSetup:
             'neutral_armies': neutral_armies,
             'randomize_bonuses': randomize_bonuses,
             'gold_transfer': gold_transfer,
+            # Read from lobby_state (not a 9th element of the selector's result tuple)
+            'starting_gold': clamp_starting_gold(getattr(lobby_state, 'starting_gold', STARTING_GOLD_DEFAULT)),
             'bonus_mapping': bonus_mapping,  # Host-generated mapping for client sync
             'game_seed': int(time.time() * 1000) % (2**31),  # Deterministic seed for neutral army placement
 

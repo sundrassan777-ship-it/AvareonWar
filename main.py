@@ -797,6 +797,13 @@ class Game:
         gold_transfer_idx = setup_config.get('gold_transfer', 0)
         self.game_state.gold_transfer_pct = [0, 25, 50, 75, 100][max(0, min(gold_transfer_idx, 4))]
 
+        # Starting Gold (Additional Options, 0-10,000). GameState starts everyone on the
+        # default; campaign missions and tales never set the key and assign their own
+        # gold later, so they are unaffected.
+        if 'starting_gold' in setup_config:
+            self.game_state.starting_gold = clamp_starting_gold(setup_config['starting_gold'])
+            self.game_state.player_gold = [self.game_state.starting_gold] * len(self.game_state.player_gold)
+
         # Randomize territory bonuses if enabled (not used in campaign — campaign never sets this flag)
         if self.randomize_bonuses:
             bonus_mapping = setup_config.get('bonus_mapping')

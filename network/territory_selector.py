@@ -18,13 +18,17 @@ from network.lobby import (
     AI_EASY, AI_MEDIUM, AI_HARD, PLAYER_COLORS as LOBBY_PLAYER_COLORS
 )
 from network_config import MessageType
-from config.constants import ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT
+from config.constants import (ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT, STARTING_GOLD_DEFAULT,
+                              clamp_starting_gold)
 from settings_manager import settings
 from global_sound import sound_manager
 from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
+from ui.additional_options_overlay import AdditionalOptionsOverlay
+from ui.setup_tooltip import SetupTooltips
+from ui.setup_frames import SetupFrames
 
 logger = get_logger(__name__)
 
@@ -181,10 +185,14 @@ class TerritorySelector:
         self.victory_options = ["Domination (45+)", "Capital Assault", "Total Conquest"]
         self.taxation_options = ["0% (No Tax)", "25% Tax", "50% Tax", "75% Tax", "100% Tax"]
         self.turn_mode_options = ["Sequential", "Simultaneous"]
-        self.turn_mode_tooltips = {
-            "Sequential": "Players take turns one at a time",
-            "Simultaneous": "All players plan at once, then orders execute together"
-        }
+        # Victory / Taxation / Turn Mode explanations: hover tooltips on the labels
+        # (ui/setup_tooltip.py, wording in config/setup_tooltips.py). Rects are
+        # refreshed each frame where the labels are drawn.
+        self.setup_tooltips = SetupTooltips(self.ui_scale)
+        # Wood-framed selectors + bronze player-block frame (ui/setup_frames.py)
+        self.setup_frames = SetupFrames(self.ui_scale)
+        self.tooltip_rects = {}
+        self.hovered_tooltip = None
 
         # Selected map (host can change, synced to clients)
         self.selected_map = map_data.get_map_ids()[0] if map_data.get_map_ids() else 'avareon'
@@ -199,17 +207,13 @@ class TerritorySelector:
         self.randomize_bonuses = False
         self.gold_transfer = 0  # 0=Disabled, 1=25%, 2=50%, 3=75%, 4=100%
         self.gold_transfer_options = ["Disabled", "Enabled (25%)", "Enabled (50%)", "Enabled (75%)", "Enabled (100%)"]
+        self.starting_gold = STARTING_GOLD_DEFAULT  # Applies to every player; host decides
         self.bonus_mapping = None  # Host-generated randomized bonus mapping for multiplayer sync
 
-        # Additional Options overlay state
-        self.overlay_open = False
-        self.overlay_neutral_armies = False  # Temp checkbox state while overlay open
-        self.overlay_randomize_bonuses = False  # Temp checkbox state while overlay open
-        self.overlay_gold_transfer = 0  # Temp gold transfer while overlay open (0-4)
-        self.overlay_gold_transfer_dd_open = False  # Is gold transfer dropdown open inside overlay
-        self.overlay_hovered = None  # Hovered overlay element
-        self.overlay_clicked = None  # Clicked overlay element (one-frame flash)
-        self.overlay_rects = {}  # Computed rects for overlay elements
+        # Additional Options window (shared with the Custom Game setup). The host edits a
+        # copy and Confirm applies + syncs it; clients open it read-only to see the
+        # host's choices.
+        self.options_overlay = AdditionalOptionsOverlay(self.ui_scale, self.gold_transfer_options)
 
         # Friend picker modal state (Steam invite — host only)
         self._show_friend_picker = False
@@ -300,7 +304,8 @@ class TerritorySelector:
         except (FileNotFoundError, pygame.error, OSError):
             self.bottom_bar_image = None
 
-        # Load overlay background image for Additional Options popup
+        # Background for the Steam friend picker modal (the Additional Options window
+        # loads its own via ui/additional_options_overlay.py)
         try:
             self.overlay_bg_image = pygame.image.load('assets/InGameMenuBG.png').convert_alpha()
         except (FileNotFoundError, pygame.error, OSError):
@@ -437,11 +442,18 @@ class TerritorySelector:
         # Title position
         self.title_y = int(40 * self.ui_scale)
 
-        # Player info section - starts below title (and IP display area for host)
-        # Each player gets a taller row (2-line layout)
-        # Extra space for IP display when hosting
-        player_section_y = int(115 * self.ui_scale) if self.is_host else int(90 * self.ui_scale)
-        row_height = int(75 * self.ui_scale)  # Taller rows for 2-line layout
+        # Player info section - starts below title (and the IP display for the host),
+        # leaving room for the bronze frame drawn around the rows (_player_block_rect)
+        bx, by = self.setup_frames.table_border()
+        self.player_frame_pad = max(2, int(round(4 * self.ui_scale)))
+        frame_off_y = by + self.player_frame_pad
+        if self.is_host:
+            # Matches _draw_host_ip(): label at title_y + 28, IP line 16 below it
+            above = self.title_y + int(28 * self.ui_scale) + int(16 * self.ui_scale) + self.text_font.get_height()
+        else:
+            above = self.title_y + self.title_font.get_height() // 2
+        player_section_y = above + int(8 * self.ui_scale) + frame_off_y
+        row_height = int(66 * self.ui_scale)  # 2-line rows (name / dropdowns)
 
         self.player_rows = []
         for i in range(self.num_players):
@@ -468,7 +480,7 @@ class TerritorySelector:
         self.slot_dropdown_spacing = dropdown_spacing
 
         # Victory condition section - below player info
-        settings_start_y = player_section_y + self.num_players * row_height + int(20 * self.ui_scale)
+        settings_start_y = player_section_y + self.num_players * row_height + frame_off_y + int(12 * self.ui_scale)
         dropdown_height = int(35 * self.ui_scale)
         label_height = int(22 * self.ui_scale)
 
@@ -552,12 +564,14 @@ class TerritorySelector:
                     _music_manager.handle_music_end_event()
 
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        # Close friend picker or overlay first, otherwise exit selector
+                    if self.overlay_open and not self._show_friend_picker:
+                        # Every key goes to the window while it shows (Starting Gold
+                        # typing; Escape closes an open list / the field, then the window)
+                        self.options_overlay.handle_key(event)
+                    elif event.key == pygame.K_ESCAPE:
+                        # Close friend picker first, otherwise exit selector
                         if self._show_friend_picker:
                             self._show_friend_picker = False
-                        elif self.overlay_open:
-                            self.overlay_open = False
                         else:
                             return None
 
@@ -610,8 +624,6 @@ class TerritorySelector:
             self.render()
             draw_custom_cursor(self.screen)
             pygame.display.flip()
-            # Reset overlay click flash after frame
-            self.overlay_clicked = None
             clock.tick(menu_frame_cap())
 
         return None
@@ -686,6 +698,13 @@ class TerritorySelector:
                 self.turn_mode_dropdown_open = False
             return
 
+        # Additional Options: the host edits, clients get a read-only view of the
+        # host's choices (they used to have no way to see them at all)
+        if self.additional_options_rect.collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.options_overlay.open(self._additional_options_values(), read_only=not self.is_host)
+            return
+
         # Check if Invite Friend button clicked (host only)
         if self.is_host and self.invite_button_rect and self.invite_button_rect.collidepoint(pos):
             from steam_integration import steam_manager
@@ -755,17 +774,6 @@ class TerritorySelector:
                 self.turn_mode_dropdown_open = not self.turn_mode_dropdown_open
                 self.victory_dropdown_open = False
                 self.taxation_dropdown_open = False
-                return
-
-            # Additional Options button (host only)
-            if self.additional_options_rect.collidepoint(pos):
-                sound_manager.play_ui_click()
-                # Copy current values to temp overlay state
-                self.overlay_neutral_armies = self.neutral_armies
-                self.overlay_randomize_bonuses = self.randomize_bonuses
-                self.overlay_gold_transfer = self.gold_transfer
-                self.overlay_gold_transfer_dd_open = False
-                self.overlay_open = True
                 return
 
         # Check if clicked on map (right side)
@@ -1052,6 +1060,7 @@ class TerritorySelector:
         self.lobby_state.neutral_armies = self.neutral_armies
         self.lobby_state.randomize_bonuses = self.randomize_bonuses
         self.lobby_state.gold_transfer = self.gold_transfer
+        self.lobby_state.starting_gold = self.starting_gold
 
         # Send LOBBY_LAUNCH to all clients with final state
         final_slots = [slot.to_dict() for slot in self.lobby_state.slots]
@@ -1086,12 +1095,14 @@ class TerritorySelector:
             'neutral_armies': self.neutral_armies,
             'randomize_bonuses': self.randomize_bonuses,
             'gold_transfer': self.gold_transfer,
+            'starting_gold': self.starting_gold,
             'map_id': self.selected_map,  # Selected map for multi-map support
         })
         self.network_connection.send_message(message)
 
     def handle_hover(self, pos):
         """Handle mouse hover."""
+        self.hovered_tooltip = None
         # Block normal hover while friend picker modal is open
         if self._show_friend_picker:
             self.hovered_territory = None
@@ -1099,7 +1110,8 @@ class TerritorySelector:
 
         # Block normal hover while overlay is open
         if self.overlay_open:
-            self._update_overlay_hover(pos)
+            self.hovered_territory = None
+            self.options_overlay.update_hover(pos, self.screen.get_size())
             return
 
         # Track hover over clickable IP address (host only)
@@ -1120,6 +1132,15 @@ class TerritorySelector:
             self.hovered_territory = self.get_territory_at_pos(pos)
         else:
             self.hovered_territory = None
+            # Label tooltips (not while a list is open - it can cover the labels)
+            lists_open = (self.victory_dropdown_open or self.taxation_dropdown_open
+                          or self.turn_mode_dropdown_open
+                          or any(v is not None for v in self.active_slot_dropdown.values()))
+            if not lists_open:
+                for key, rect in self.tooltip_rects.items():
+                    if rect.collidepoint(pos):
+                        self.hovered_tooltip = key
+                        break
 
     def get_territory_at_pos(self, pos) -> Optional[str]:
         """Get territory name at given position."""
@@ -1251,6 +1272,7 @@ class TerritorySelector:
                     self.neutral_armies = self.lobby_state.neutral_armies
                     self.randomize_bonuses = self.lobby_state.randomize_bonuses
                     self.gold_transfer = self.lobby_state.gold_transfer
+                    self.starting_gold = self.lobby_state.starting_gold
 
                     # Find our slot by name (host may have reassigned us)
                     # Skip slot 0 (host) - client is never the host
@@ -1381,6 +1403,10 @@ class TerritorySelector:
                     self.turn_mode = self.lobby_state.turn_mode
                     self.neutral_armies = self.lobby_state.neutral_armies
                     self.randomize_bonuses = self.lobby_state.randomize_bonuses
+                    # Final values from the launch message (the game config reads
+                    # starting_gold from lobby_state; keep the screen's copy in step)
+                    self.gold_transfer = self.lobby_state.gold_transfer
+                    self.starting_gold = self.lobby_state.starting_gold
                     # Extract host-generated bonus mapping for randomized bonuses
                     if 'bonus_mapping' in data['settings']:
                         self.bonus_mapping = data['settings']['bonus_mapping']
@@ -1409,6 +1435,8 @@ class TerritorySelector:
                     self.randomize_bonuses = data.get('randomize_bonuses', False)
                     self.gold_transfer = data.get('gold_transfer', 0)
                     self.lobby_state.gold_transfer = self.gold_transfer
+                    self.starting_gold = clamp_starting_gold(data.get('starting_gold', STARTING_GOLD_DEFAULT))
+                    self.lobby_state.starting_gold = self.starting_gold
                     # Handle map change from host
                     new_map_id = data.get('map_id', 'avareon')
                     if new_map_id != self.selected_map:
@@ -1456,6 +1484,9 @@ class TerritorySelector:
                 if 'gold_transfer' in data:
                     self.gold_transfer = data.get('gold_transfer')
                     self.lobby_state.gold_transfer = self.gold_transfer
+                if 'starting_gold' in data:
+                    self.starting_gold = clamp_starting_gold(data.get('starting_gold'))
+                    self.lobby_state.starting_gold = self.starting_gold
                 self._sync_from_lobby_state()
                 self.ready_to_start = True
                 logger.info("Setup complete - starting game!")
@@ -1501,11 +1532,15 @@ class TerritorySelector:
         if self.is_host:
             self._draw_warning_tooltips()
 
+        # Label tooltip (drawn after the panel so it can extend over the map)
+        if self.hovered_tooltip and not self.overlay_open and not self._show_friend_picker:
+            self.setup_tooltips.draw(self.screen, self.hovered_tooltip, pygame.mouse.get_pos())
+
         # Draw Additional Options overlay on top of everything (if open)
-        if self.overlay_open:
-            self._draw_additional_options_overlay()
-            # Gold transfer dropdown items render above the overlay so they aren't clipped
-            self._draw_overlay_gold_transfer_items()
+        if self.overlay_open and self.options_overlay.read_only:
+            # Client view mirrors the host live (settings can arrive while it's open)
+            self.options_overlay.set_values(self._additional_options_values())
+        self.options_overlay.draw(self.screen)
 
         # Draw friend picker modal on top of everything (if open)
         if self._show_friend_picker:
@@ -1922,6 +1957,17 @@ class TerritorySelector:
             self.warning_indicator_rects = {}
         self.warning_indicator_rects.clear()
 
+        # One carved bronze frame (TableBorder, as the Custom Game player table) around
+        # the whole block, parchment inside, thin brass rules between the rows
+        if self.player_rows:
+            frame_rect = self._player_block_rect()
+            self.screen.blit(self.setup_frames.table_frame(frame_rect.size, PARCHMENT_COLOR), frame_rect)
+            rule_inset = int(round(6 * self.ui_scale))
+            for upper, lower in zip(self.player_rows, self.player_rows[1:]):
+                rule_y = (upper.bottom + lower.top) // 2
+                pygame.draw.line(self.screen, BRASS_COLOR, (upper.x + rule_inset, rule_y),
+                                 (upper.right - rule_inset, rule_y), 1)
+
         for i, row_rect in enumerate(self.player_rows):
             slot = self.lobby_state.get_slot(i)
             if slot is None:
@@ -1939,12 +1985,14 @@ class TerritorySelector:
                                        slot.state == SLOT_AI and
                                        not slot.territory)
 
-            # Draw warning indicator (!) to the left of the row for AI without territory
+            # Draw warning indicator (!) for AI without territory, at the right end of
+            # the name line (where a human row's kick X sits) - left of the row it
+            # would now cover the bronze frame
             warning_offset = 0
             if needs_territory_warning:
                 warning_size = int(16 * self.ui_scale)
-                warning_x = row_rect.x - warning_size - int(4 * self.ui_scale)
-                warning_y = row_rect.centery - warning_size // 2
+                warning_x = row_rect.right - warning_size - int(8 * self.ui_scale)
+                warning_y = row_rect.y + int(6 * self.ui_scale)
                 warning_rect = pygame.Rect(warning_x, warning_y, warning_size, warning_size)
                 self.warning_indicator_rects[i] = warning_rect
 
@@ -1962,13 +2010,11 @@ class TerritorySelector:
                 exclaim_rect = exclaim_surface.get_rect(center=warning_rect.center)
                 self.screen.blit(exclaim_surface, exclaim_rect)
 
-            # Draw row background (highlight if selected for territory assignment)
+            # Row selected for territory assignment: lighter, outlined in the player's
+            # colour (other rows sit on the block's parchment)
             if is_selected_for_territory:
                 pygame.draw.rect(self.screen, PARCHMENT_HOVER, row_rect)
                 pygame.draw.rect(self.screen, player_color, row_rect, 2)  # Colored border
-            else:
-                pygame.draw.rect(self.screen, PARCHMENT_COLOR, row_rect)
-                pygame.draw.rect(self.screen, BRASS_COLOR, row_rect, 1)
 
             # ===== Line 1: Color swatch, player name, kick button =====
             line1_y = row_rect.y + int(5 * self.ui_scale)
@@ -2182,6 +2228,24 @@ class TerritorySelector:
 
         return False
 
+    def _draw_framed_selector(self, rect, hovered, is_open):
+        """Victory / Taxation / Turn Mode box in a wood frame. Clients (read-only) get
+        a greyed box. Returns the inset content must start at."""
+        if not self.is_host:
+            surf = self.setup_frames.dropdown_box(rect.size, DARK_GRAY, 'disabled')
+        else:
+            state = 'open' if is_open else ('hover' if hovered else 'normal')
+            surf = self.setup_frames.dropdown_box(rect.size, PARCHMENT_COLOR, state)
+        self.screen.blit(surf, rect)
+        return self.setup_frames.content_inset(rect.height)
+
+    def _player_block_rect(self):
+        """Outer rect of the bronze frame around all player rows."""
+        bx, by = self.setup_frames.table_border()
+        pad = self.player_frame_pad
+        block = self.player_rows[0].unionall(self.player_rows[1:])
+        return block.inflate(2 * (bx + pad), 2 * (by + pad))
+
     def _draw_victory_dropdown(self):
         """Draw victory condition dropdown."""
         margin = self.border_thickness
@@ -2189,24 +2253,23 @@ class TerritorySelector:
         # Label (white text like integrated_setup)
         label_surface = self.text_font.render("Victory Condition:", True, WHITE)
         self.screen.blit(label_surface, (margin, self.victory_label_y))
+        # (i) mark; hovering label or mark explains the setting (config/setup_tooltips.py)
+        self.tooltip_rects['victory'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_surface.get_rect(topleft=(margin, self.victory_label_y)),
+            self.hovered_tooltip == 'victory')
 
         # Dropdown box
         mouse_pos = pygame.mouse.get_pos()
         is_hovered = self.victory_dropdown_rect.collidepoint(mouse_pos) and self.is_host
 
-        if self.is_host:
-            bg_color = PARCHMENT_HOVER if is_hovered else PARCHMENT_COLOR
-        else:
-            bg_color = DARK_GRAY  # Disabled appearance for client
-
-        pygame.draw.rect(self.screen, bg_color, self.victory_dropdown_rect)
-        pygame.draw.rect(self.screen, BRASS_COLOR, self.victory_dropdown_rect, 2)
+        # Wood-framed box (ResourceSlot beams): parchment for the host, greyed for clients
+        inset = self._draw_framed_selector(self.victory_dropdown_rect, is_hovered, self.victory_dropdown_open)
 
         # Current value text
         text_color = WHITE if self.is_host else TEXT_COLOR_DIM
         value_text = self.small_font.render(self.victory_options[self.victory_condition], True, text_color)
         text_rect = value_text.get_rect(midleft=(
-            self.victory_dropdown_rect.x + int(10 * self.ui_scale),
+            self.victory_dropdown_rect.x + inset,
             self.victory_dropdown_rect.centery
         ))
         self.screen.blit(value_text, text_rect)
@@ -2229,24 +2292,23 @@ class TerritorySelector:
         # Label (white text like integrated_setup)
         label_surface = self.text_font.render("Taxation Level:", True, WHITE)
         self.screen.blit(label_surface, (margin, self.taxation_label_y))
+        # (i) mark; hovering label or mark explains the setting (config/setup_tooltips.py)
+        self.tooltip_rects['taxation'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_surface.get_rect(topleft=(margin, self.taxation_label_y)),
+            self.hovered_tooltip == 'taxation')
 
         # Dropdown box
         mouse_pos = pygame.mouse.get_pos()
         is_hovered = self.taxation_dropdown_rect.collidepoint(mouse_pos) and self.is_host
 
-        if self.is_host:
-            bg_color = PARCHMENT_HOVER if is_hovered else PARCHMENT_COLOR
-        else:
-            bg_color = DARK_GRAY  # Disabled appearance for client
-
-        pygame.draw.rect(self.screen, bg_color, self.taxation_dropdown_rect)
-        pygame.draw.rect(self.screen, BRASS_COLOR, self.taxation_dropdown_rect, 2)
+        # Wood-framed box (ResourceSlot beams): parchment for the host, greyed for clients
+        inset = self._draw_framed_selector(self.taxation_dropdown_rect, is_hovered, self.taxation_dropdown_open)
 
         # Current value text
         text_color = WHITE if self.is_host else TEXT_COLOR_DIM
         value_text = self.small_font.render(self.taxation_options[self.taxation_level], True, text_color)
         text_rect = value_text.get_rect(midleft=(
-            self.taxation_dropdown_rect.x + int(10 * self.ui_scale),
+            self.taxation_dropdown_rect.x + inset,
             self.taxation_dropdown_rect.centery
         ))
         self.screen.blit(value_text, text_rect)
@@ -2269,24 +2331,23 @@ class TerritorySelector:
         # Label (white text like integrated_setup)
         label_surface = self.text_font.render("Turn Mode:", True, WHITE)
         self.screen.blit(label_surface, (margin, self.turn_mode_label_y))
+        # (i) mark; hovering label or mark explains the setting (config/setup_tooltips.py)
+        self.tooltip_rects['turn_mode'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_surface.get_rect(topleft=(margin, self.turn_mode_label_y)),
+            self.hovered_tooltip == 'turn_mode')
 
         # Dropdown box
         mouse_pos = pygame.mouse.get_pos()
         is_hovered = self.turn_mode_dropdown_rect.collidepoint(mouse_pos) and self.is_host
 
-        if self.is_host:
-            bg_color = PARCHMENT_HOVER if is_hovered else PARCHMENT_COLOR
-        else:
-            bg_color = DARK_GRAY  # Disabled appearance for client
-
-        pygame.draw.rect(self.screen, bg_color, self.turn_mode_dropdown_rect)
-        pygame.draw.rect(self.screen, BRASS_COLOR, self.turn_mode_dropdown_rect, 2)
+        # Wood-framed box (ResourceSlot beams): parchment for the host, greyed for clients
+        inset = self._draw_framed_selector(self.turn_mode_dropdown_rect, is_hovered, self.turn_mode_dropdown_open)
 
         # Current value text
         text_color = WHITE if self.is_host else TEXT_COLOR_DIM
         value_text = self.small_font.render(self.turn_mode_options[self.turn_mode], True, text_color)
         text_rect = value_text.get_rect(midleft=(
-            self.turn_mode_dropdown_rect.x + int(10 * self.ui_scale),
+            self.turn_mode_dropdown_rect.x + inset,
             self.turn_mode_dropdown_rect.centery
         ))
         self.screen.blit(value_text, text_rect)
@@ -2301,18 +2362,6 @@ class TerritorySelector:
                 (arrow_x + 5, arrow_y + 5)
             ]
             pygame.draw.polygon(self.screen, BRASS_COLOR, arrow_points)
-
-        # Draw tooltip on hover
-        if is_hovered:
-            current_option = self.turn_mode_options[self.turn_mode]
-            tooltip = self.turn_mode_tooltips.get(current_option, "")
-            if tooltip:
-                tooltip_surface = self.small_font.render(tooltip, True, TEXT_COLOR_DIM)
-                tooltip_rect = tooltip_surface.get_rect(midleft=(
-                    self.turn_mode_dropdown_rect.x + int(10 * self.ui_scale),
-                    self.turn_mode_dropdown_rect.bottom + int(5 * self.ui_scale)
-                ))
-                self.screen.blit(tooltip_surface, tooltip_rect)
 
     def _draw_dropdown_menus(self):
         """Draw open dropdown menus."""
@@ -2379,277 +2428,38 @@ class TerritorySelector:
             ))
             self.screen.blit(text_surface, text_rect)
 
+    @property
+    def overlay_open(self):
+        """True while the Additional Options window is showing (it blocks other input)."""
+        return self.options_overlay.is_open
+
+    def _additional_options_values(self):
+        """Current Additional Options as the dict the shared window edits."""
+        return {
+            'neutral_armies': self.neutral_armies,
+            'randomize_bonuses': self.randomize_bonuses,
+            'gold_transfer': self.gold_transfer,
+            'starting_gold': self.starting_gold,
+        }
+
     def _handle_overlay_click(self, pos):
-        """Handle clicks within the Additional Options overlay"""
-        # If gold transfer dropdown is open, check item clicks first
-        if self.overlay_gold_transfer_dd_open:
-            for i, _ in enumerate(self.gold_transfer_options):
-                item_key = f'gold_transfer_item_{i}'
-                if item_key in self.overlay_rects and self.overlay_rects[item_key].collidepoint(pos):
-                    sound_manager.play_ui_click()
-                    self.overlay_gold_transfer = i
-                    self.overlay_gold_transfer_dd_open = False
-                    return
-            if 'gold_transfer_dd' in self.overlay_rects and not self.overlay_rects['gold_transfer_dd'].collidepoint(pos):
-                self.overlay_gold_transfer_dd_open = False
+        """Click inside the Additional Options window; Confirm applies and syncs (host)."""
+        if self.options_overlay.handle_click(pos, self.screen.get_size()) != 'confirm':
             return
-
-        # Check checkbox clicks
-        if 'neutral_cb' in self.overlay_rects and self.overlay_rects['neutral_cb'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_neutral_armies = not self.overlay_neutral_armies
-            self.overlay_clicked = 'neutral_cb'
-            return
-
-        if 'randomize_cb' in self.overlay_rects and self.overlay_rects['randomize_cb'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_randomize_bonuses = not self.overlay_randomize_bonuses
-            self.overlay_clicked = 'randomize_cb'
-            return
-
-        # Gold transfer dropdown — toggle open
-        if 'gold_transfer_dd' in self.overlay_rects and self.overlay_rects['gold_transfer_dd'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_gold_transfer_dd_open = not self.overlay_gold_transfer_dd_open
-            self.overlay_clicked = 'gold_transfer_dd'
-            return
-
-        # Check Confirm button
-        if 'confirm_btn' in self.overlay_rects and self.overlay_rects['confirm_btn'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_clicked = 'confirm_btn'
-            # Apply temp values to actual state
-            self.neutral_armies = self.overlay_neutral_armies
-            self.randomize_bonuses = self.overlay_randomize_bonuses
-            self.gold_transfer = self.overlay_gold_transfer
-            self.overlay_open = False
-            # Sync new settings to client
-            if self.is_host:
-                self._sync_settings_to_client()
-            return
-
-        # Check Cancel button
-        if 'cancel_btn' in self.overlay_rects and self.overlay_rects['cancel_btn'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_clicked = 'cancel_btn'
-            # Discard temp values
-            self.overlay_open = False
-            return
-
-    def _update_overlay_hover(self, mouse_pos):
-        """Update hover state for the Additional Options overlay"""
-        self.hovered_territory = None  # Clear normal hover
-        self.overlay_hovered = None
-        for element_name, rect in self.overlay_rects.items():
-            if rect.collidepoint(mouse_pos):
-                self.overlay_hovered = element_name
-                return
-
-    def _draw_additional_options_overlay(self):
-        """Draw the Additional Options modal overlay"""
-        screen_w, screen_h = self.screen.get_size()
-
-        # Semi-transparent dark overlay covering entire screen
-        dark_overlay = pygame.Surface((screen_w, screen_h))
-        dark_overlay.set_alpha(180)
-        dark_overlay.fill((0, 0, 0))
-        self.screen.blit(dark_overlay, (0, 0))
-
-        # Overlay panel dimensions (scaled from reference 400x380 at 1600x900 — taller to fit gold transfer row)
-        scale = self.ui_scale
-        panel_w = int(400 * scale)
-        panel_h = int(380 * scale)
-        panel_x = (screen_w - panel_w) // 2
-        panel_y = (screen_h - panel_h) // 2
-
-        # Draw InGameMenuBG.png as background, or fallback to solid color
-        if self.overlay_bg_image:
-            scaled_bg = pygame.transform.smoothscale(self.overlay_bg_image, (panel_w, panel_h))
-            self.screen.blit(scaled_bg, (panel_x, panel_y))
-        else:
-            pygame.draw.rect(self.screen, (40, 40, 50), (panel_x, panel_y, panel_w, panel_h))
-            pygame.draw.rect(self.screen, BRASS_COLOR, (panel_x, panel_y, panel_w, panel_h), 2)
-
-        # Title
-        title_font_size = max(16, int(26 * scale))
-        try:
-            title_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf', title_font_size)
-        except (FileNotFoundError, pygame.error, OSError):
-            title_font = self.text_font
-        title_surface = title_font.render("Additional Options", True, TEXT_COLOR)
-        title_rect = title_surface.get_rect(centerx=panel_x + panel_w // 2, top=panel_y + int(25 * scale))
-        self.screen.blit(title_surface, title_rect)
-
-        # Separator line below title
-        sep_y = title_rect.bottom + int(10 * scale)
-        sep_margin = int(30 * scale)
-        pygame.draw.line(self.screen, BRASS_COLOR,
-                         (panel_x + sep_margin, sep_y),
-                         (panel_x + panel_w - sep_margin, sep_y), 1)
-
-        # Checkbox rows — checkboxes aligned to same x position
-        label_font_size = max(13, int(20 * scale))
-        try:
-            label_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', label_font_size)
-        except (FileNotFoundError, pygame.error, OSError):
-            label_font = self.small_font
-        cb_size = int(22 * scale)
-        row_x = panel_x + int(40 * scale)
-        row_start_y = sep_y + int(25 * scale)
-        row_spacing = int(45 * scale)
-        # Fixed checkbox x: right side of panel with margin
-        cb_x = panel_x + panel_w - int(40 * scale) - cb_size
-
-        # Row 1: Neutral Armies
-        row1_y = row_start_y
-        neutral_label = label_font.render("Neutral Armies:", True, TEXT_COLOR)
-        self.screen.blit(neutral_label, (row_x, row1_y + (cb_size - neutral_label.get_height()) // 2))
-        neutral_cb_rect = pygame.Rect(cb_x, row1_y, cb_size, cb_size)
-        self.overlay_rects['neutral_cb'] = neutral_cb_rect
-        self._draw_overlay_checkbox(neutral_cb_rect, self.overlay_neutral_armies,
-                                     self.overlay_hovered == 'neutral_cb')
-
-        # Row 2: Randomize Territory Bonuses (split across two lines)
-        row2_y = row_start_y + row_spacing
-        bonus_line1 = label_font.render("Randomize Territory", True, TEXT_COLOR)
-        bonus_line2 = label_font.render("Bonuses:", True, TEXT_COLOR)
-        line_gap = int(3 * scale)
-        total_text_h = bonus_line1.get_height() + line_gap + bonus_line2.get_height()
-        line1_y = row2_y
-        line2_y = line1_y + bonus_line1.get_height() + line_gap
-        self.screen.blit(bonus_line1, (row_x, line1_y))
-        self.screen.blit(bonus_line2, (row_x, line2_y))
-        # Checkbox at same x as row 1, vertically centered with two-line block
-        bonus_cb_y = line1_y + (total_text_h - cb_size) // 2
-        bonus_cb_rect = pygame.Rect(cb_x, bonus_cb_y, cb_size, cb_size)
-        self.overlay_rects['randomize_cb'] = bonus_cb_rect
-        self._draw_overlay_checkbox(bonus_cb_rect, self.overlay_randomize_bonuses,
-                                     self.overlay_hovered == 'randomize_cb')
-
-        # Row 3: Gold Transfer dropdown
-        row3_y = line2_y + bonus_line2.get_height() + int(20 * scale)
-        gold_label = label_font.render("Gold Transfer:", True, TEXT_COLOR)
-        dd_w = int(150 * scale)
-        dd_h = int(26 * scale)
-        self.screen.blit(gold_label, (row_x, row3_y + (dd_h - gold_label.get_height()) // 2))
-        dd_x = panel_x + panel_w - int(40 * scale) - dd_w
-        dd_rect = pygame.Rect(dd_x, row3_y, dd_w, dd_h)
-        self.overlay_rects['gold_transfer_dd'] = dd_rect
-        self._draw_overlay_dropdown(dd_rect,
-                                     self.gold_transfer_options[self.overlay_gold_transfer],
-                                     self.overlay_hovered == 'gold_transfer_dd' or self.overlay_gold_transfer_dd_open,
-                                     scale)
-
-        # Buttons at bottom: Cancel (left) and Confirm (right)
-        btn_w = int(130 * scale)
-        btn_h = int(45 * scale)
-        btn_y = panel_y + panel_h - int(55 * scale)
-        btn_gap = int(20 * scale)
-        total_btn_width = 2 * btn_w + btn_gap
-        btn_start_x = panel_x + (panel_w - total_btn_width) // 2
-
-        cancel_rect = pygame.Rect(btn_start_x, btn_y, btn_w, btn_h)
-        confirm_rect = pygame.Rect(btn_start_x + btn_w + btn_gap, btn_y, btn_w, btn_h)
-        self.overlay_rects['cancel_btn'] = cancel_rect
-        self.overlay_rects['confirm_btn'] = confirm_rect
-
-        self._draw_overlay_button(cancel_rect, "Cancel",
-                                   self.overlay_hovered == 'cancel_btn',
-                                   self.overlay_clicked == 'cancel_btn')
-        self._draw_overlay_button(confirm_rect, "Confirm",
-                                   self.overlay_hovered == 'confirm_btn',
-                                   self.overlay_clicked == 'confirm_btn')
-
-    def _draw_overlay_checkbox(self, rect, checked, hovered):
-        """Draw a checkbox for the Additional Options overlay"""
-        from utils.colors import lighten_color
-        bg_color = lighten_color((40, 40, 50), 0.3) if hovered else lighten_color((40, 40, 50), 0.1)
-        pygame.draw.rect(self.screen, bg_color, rect, border_radius=3)
-        pygame.draw.rect(self.screen, TEXT_COLOR, rect, 1, border_radius=3)
-        if checked:
-            # Draw checkmark (X shape) matching integrated_setup style
-            RADIO_SELECTED = (100, 200, 100)
-            pygame.draw.line(self.screen, RADIO_SELECTED,
-                             (rect.x + 4, rect.y + 4), (rect.right - 4, rect.bottom - 4), 2)
-            pygame.draw.line(self.screen, RADIO_SELECTED,
-                             (rect.right - 4, rect.y + 4), (rect.x + 4, rect.bottom - 4), 2)
-
-    def _draw_overlay_button(self, rect, text, hovered, clicked):
-        """Draw a button for the Additional Options overlay"""
-        if self.button_bg_image:
-            scaled_bg = pygame.transform.smoothscale(self.button_bg_image, (rect.width, rect.height))
-            button_surface = scaled_bg.copy()
-            button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
-            if clicked:
-                button_surface.fill((80, 80, 80, 0), special_flags=pygame.BLEND_RGBA_ADD)
-            elif hovered:
-                button_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
-            self.screen.blit(button_surface, rect)
-        else:
-            bg_color = PARCHMENT_CLICK if clicked else (PARCHMENT_HOVER if hovered else PARCHMENT_COLOR)
-            pygame.draw.rect(self.screen, bg_color, rect, border_radius=5)
-            pygame.draw.rect(self.screen, BRASS_COLOR, rect, 2, border_radius=5)
-
-        btn_font_size = max(14, int(22 * self.ui_scale))
-        try:
-            btn_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', btn_font_size)
-        except (FileNotFoundError, pygame.error, OSError):
-            btn_font = self.button_font_regular
-        text_surface = btn_font.render(text, True, TEXT_COLOR)
-        text_rect = text_surface.get_rect(center=rect.center)
-        self.screen.blit(text_surface, text_rect)
-
-    def _draw_overlay_dropdown(self, rect, selected_label, hovered, scale):
-        """Draw a small dropdown used inside the Additional Options overlay."""
-        from utils.colors import lighten_color
-        bg_color = lighten_color((40, 40, 50), 0.3) if hovered else lighten_color((40, 40, 50), 0.15)
-        pygame.draw.rect(self.screen, bg_color, rect, border_radius=4)
-        pygame.draw.rect(self.screen, BRASS_COLOR, rect, 1, border_radius=4)
-
-        dd_font_size = max(11, int(16 * scale))
-        try:
-            dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dd_font_size)
-        except (FileNotFoundError, pygame.error, OSError):
-            dd_font = self.small_font
-        text_surface = dd_font.render(selected_label, True, TEXT_COLOR)
-        text_rect = text_surface.get_rect(midleft=(rect.x + int(8 * scale), rect.centery))
-        self.screen.blit(text_surface, text_rect)
-
-        arrow_size = int(4 * scale)
-        arrow_points = [
-            (rect.right - int(12 * scale), rect.centery - arrow_size),
-            (rect.right - int(6 * scale), rect.centery),
-            (rect.right - int(12 * scale), rect.centery + arrow_size),
-        ]
-        pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
-
-    def _draw_overlay_gold_transfer_items(self):
-        """Draw the gold-transfer dropdown expanded list (above overlay panel)."""
-        if not self.overlay_gold_transfer_dd_open:
-            return
-        dd_rect = self.overlay_rects.get('gold_transfer_dd')
-        if not dd_rect:
-            return
-        scale = self.ui_scale
-        item_h = dd_rect.height
-        mouse_pos = pygame.mouse.get_pos()
-        dd_font_size = max(11, int(16 * scale))
-        try:
-            dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dd_font_size)
-        except (FileNotFoundError, pygame.error, OSError):
-            dd_font = self.small_font
-        from utils.colors import lighten_color
-        BUTTON_BLUE = (70, 120, 200)
-        for i, option in enumerate(self.gold_transfer_options):
-            item_rect = pygame.Rect(dd_rect.x, dd_rect.bottom + i * item_h, dd_rect.width, item_h)
-            self.overlay_rects[f'gold_transfer_item_{i}'] = item_rect
-            is_hovered = item_rect.collidepoint(mouse_pos)
-            bg_color = lighten_color(BUTTON_BLUE, 0.3) if is_hovered else PARCHMENT_COLOR
-            pygame.draw.rect(self.screen, bg_color, item_rect, border_radius=3)
-            pygame.draw.rect(self.screen, BRASS_COLOR if is_hovered else GRAY, item_rect, 1, border_radius=3)
-            text_surface = dd_font.render(option, True, TEXT_COLOR)
-            text_rect = text_surface.get_rect(midleft=(item_rect.x + int(8 * scale), item_rect.centery))
-            self.screen.blit(text_surface, text_rect)
+        values = self.options_overlay.values
+        self.neutral_armies = values['neutral_armies']
+        self.randomize_bonuses = values['randomize_bonuses']
+        self.gold_transfer = values['gold_transfer']
+        self.starting_gold = values['starting_gold']
+        if self.is_host:
+            # Keep lobby_state current too: a later LOBBY_STATE broadcast (someone
+            # joins) carries its settings and would otherwise reset the clients'
+            # copies to the values from before this Confirm
+            self.lobby_state.neutral_armies = self.neutral_armies
+            self.lobby_state.randomize_bonuses = self.randomize_bonuses
+            self.lobby_state.gold_transfer = self.gold_transfer
+            self.lobby_state.starting_gold = self.starting_gold
+            self._sync_settings_to_client()
 
     # ------------------------------------------------------------------
     # Friend Picker Modal (Steam Invite)
@@ -2856,12 +2666,12 @@ class TerritorySelector:
         mouse_pos = pygame.mouse.get_pos()
         can_launch = self._can_launch()
 
-        # Additional Options button (visible for all, enabled only for host)
+        # Additional Options button (enabled for all: clients open it read-only)
         self._draw_button(
             self.additional_options_rect,
             "Additional Options",
-            enabled=self.is_host,
-            hovered=self.additional_options_rect.collidepoint(mouse_pos) and self.is_host,
+            enabled=True,
+            hovered=self.additional_options_rect.collidepoint(mouse_pos) and not self.overlay_open,
             is_launch_button=False
         )
 

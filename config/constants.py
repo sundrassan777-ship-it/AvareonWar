@@ -249,6 +249,24 @@ UI_PANEL_PADDING = 10  # Padding inside panels
 CLICK_FLASH_DURATION_MS = 150  # How long click flash lasts (milliseconds)
 
 # ===========================================
+# GAME SETUP (Custom Game / Multiplayer)
+# ===========================================
+# Starting Gold is typed in the Additional Options window. The cap keeps a custom game
+# from handing out unlimited gold (XP is earned per unit / building / tech bought).
+STARTING_GOLD_DEFAULT = 100
+STARTING_GOLD_MIN = 0
+STARTING_GOLD_MAX = 10000
+
+
+def clamp_starting_gold(value):
+    """A setup-supplied starting gold as a valid int (bad / missing input -> default)."""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return STARTING_GOLD_DEFAULT
+    return max(STARTING_GOLD_MIN, min(value, STARTING_GOLD_MAX))
+
+# ===========================================
 # CAMERA SETTINGS
 # ===========================================
 

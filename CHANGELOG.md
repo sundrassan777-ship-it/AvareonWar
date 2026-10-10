@@ -2,6 +2,48 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-10 - Setup screens: Additional Options, Starting Gold, tooltips, framed art
+
+Branch `feature/setup-options-polish`. Custom Game (`integrated_setup.py`) and the
+multiplayer lobby (`network/territory_selector.py`). Developer guide: "Game Setup
+Screens" in CODE_GUIDE.md.
+
+**Additional Options window (P1):** the two copy-pasted overlays became one shared
+`ui/additional_options_overlay.py`. Layout is measured from the InGameMenuBG frame's inner
+edge (the title and the Cancel / Confirm buttons used to sit on the border), title and
+buttons have brass rules, the height follows the rows (no scrolling needed), the
+background is nine-sliced and every surface / font is cached (the old code rebuilt fonts
+and rescaled images every frame). Multiplayer clients can open it read-only (they had no
+way to see the host's options).
+- **Fix:** Custom Game territories lit up under the open window.
+- `rendering/sidebar_widgets.render_nine_slice()` extracted from
+  `SidebarWidgets.nine_slice()` (which delegates) so screens without a Game can use it.
+
+**Starting Gold (P2):** typed field in Additional Options, 0-10,000 (default 100;
+`STARTING_GOLD_*` + `clamp_starting_gold()` in `config/constants.py`). Custom:
+`get_config()['starting_gold']`. Multiplayer: `LobbyState.starting_gold` through
+`SETUP_CONFIG` / `LOBBY_STATE` / `LOBBY_LAUNCH` / `SETUP_COMPLETE`;
+`_build_config_from_lobby()` reads `lobby_state` (the selector's 8-tuple is unchanged).
+`initialize_game()` applies it only when present (campaigns / tales unaffected).
+- **Fix:** host Confirm did not update `lobby_state`, so a later `LOBBY_STATE` broadcast
+  (a player joining) reset the clients' copies of Neutral Armies / Randomize / Gold
+  Transfer to the old values (display only; launch sent the right ones).
+
+**Tooltips (P3):** Turn Mode / Taxation Level / Victory Condition labels (both screens)
+and every Additional Options row get an (i) mark and a multi-line tooltip in the in-game
+style (`ui/setup_tooltip.py`; wording in the new owner-edited `config/setup_tooltips.py`).
+Replaces the one-line Turn Mode hint under the dropdown. The window grew 40 px so the
+marks never touch the controls.
+
+**Framed art (P4):** `ui/setup_frames.py`. Taxation / Victory / Turn Mode selectors are
+framed with nine-sliced `ResourceSlot.png` wood (darkened by `WOOD_TINT`; brighter on
+hover / open, greyed for clients) around the existing parchment fill. The lobby's player
+rows sit in one `TableBorder.png` frame with brass rules between rows. Row positions are
+derived from the title / host-IP height plus the frame, rows are 9 px shorter so the
+buttons stay put, and the AI "no territory" (!) moved to the right end of the name line.
+
+**Tests:** `tests/test_setup_options.py` (46).
+
 ## 2026-10-09 - Territory lore for Avareon and the Azincournean Highlands
 
 - `maps/avareon/territory_lore.json`: lore for all 57 territories (written by the owner;

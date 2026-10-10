@@ -69,6 +69,12 @@ AvareonWar/
 **Battle Reports:**
 - [ui/battle_report_popup.py](ui/battle_report_popup.py) - On-map defender-side battle summary popups (DEFENDED/LOST, Detail + Close buttons)
 
+**Game Setup Screens (shared by Custom Game + multiplayer lobby):**
+- [ui/additional_options_overlay.py](ui/additional_options_overlay.py) - Additional Options modal (Neutral Armies, Randomize Bonuses, Gold Transfer, Starting Gold); read-only view for multiplayer clients
+- [ui/setup_tooltip.py](ui/setup_tooltip.py) - (i) label marks + multi-line hover tooltips on the setup screens
+- [config/setup_tooltips.py](config/setup_tooltips.py) - Setup tooltip wording, edited by the owner
+- [ui/setup_frames.py](ui/setup_frames.py) - Wood-framed selector boxes (ResourceSlot) + bronze TableBorder frame for the lobby player rows
+
 **Players Window (Gold Transfer UI):**
 - [players_window.py](players_window.py) - Non-pausing modal listing all players (Name/Controller/Team/Color/Status columns) with ally gold-transfer input + Send button
 
@@ -163,6 +169,7 @@ AvareonWar/
 - [tests/test_font_italic.py](tests/test_font_italic.py) - Italic only where intended: separate italic font objects, no shared font left italic after resolution changes
 - [tests/test_bottom_panel.py](tests/test_bottom_panel.py) - Bottom panel overhaul at 720p/900p/1080p/1440p: kit geometry, End Turn section + state rules, Territory view (plots fill, Forces grid, Select Army, hero portrait, hover labels), empty plot buttons, Army view (T divider, 15-unit grid), Hero view (fixed portrait, Keep pan), building views (finished / under-construction plot incl. Confiscate label + XP bar, Barracks queue + hotkeys, Keep grid / hero card / castle states / training progress / Hero Limit), full-width button tooltips, orphaned tooltips dropped when the view switches
 - [tests/test_cutscene_volume.py](tests/test_cutscene_volume.py) - Cutscene voice/music follow the master volume (muted game = silent cutscenes)
+- [tests/test_setup_options.py](tests/test_setup_options.py) - Setup screens: Additional Options window (inside the frame at 720p-1440p, confirm/cancel/Escape, read-only client view, map hover blocked), Starting Gold (typing, clamp, Custom + lobby + network + `initialize_game`), label tooltips, wood/bronze frames and lobby row layout
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -486,6 +493,10 @@ After making code changes, ask yourself:
 - Shared campaign utilities → `campaign_utils.py`
 - Modify gold transfer feature → `game_state/economy.py` (`can_transfer_gold`, `get_transfer_cap`, `transfer_gold`) + `players_window.py` (UI) + `network/protocol.py` (`GOLD_TRANSFER` msg)
 - Change gold transfer cap options → `integrated_setup.py` `gold_transfer_options` + `network/territory_selector.py` `gold_transfer_options`
+- Add / change an Additional Options setting → `ui/additional_options_overlay.py` `ROWS` + `config/setup_tooltips.py` + both screens' open/Confirm handlers (+ `network/lobby.py` settings for multiplayer). **Never** edit one screen's copy — there is one shared window. See "Game Setup Screens" in CODE_GUIDE.md
+- Change Starting Gold limits → `STARTING_GOLD_DEFAULT/MIN/MAX` in `config/constants.py`; clamp with `clamp_starting_gold()`. Lobby → game goes through `lobby_state.starting_gold`, not the selector's result tuple
+- Reword a setup-screen tooltip (Turn Mode, Taxation, Victory, Additional Options rows) → `config/setup_tooltips.py`
+- Change the setup screens' framed selectors / lobby player frame → `ui/setup_frames.py` (`WOOD_TINT` darkens the beams); lobby row positions are derived in `territory_selector._calculate_ui_layout()`
 - Modify Players window UI → `players_window.py`
 - Change top-bar Players button → `rendering/ui_renderer.py` `draw_top_panel()` + `main.py` `handle_top_panel_click()`
 - Change Steam achievement sync → `steam_integration.py`

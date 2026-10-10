@@ -9,6 +9,8 @@ from typing import Dict, List, Optional, Any
 import hashlib
 import time
 
+from config.constants import STARTING_GOLD_DEFAULT, clamp_starting_gold
+
 
 # Slot state constants
 SLOT_EMPTY = "empty"
@@ -141,6 +143,7 @@ class LobbyState:
         self.neutral_armies: bool = False  # Additional option: neutral armies on territories
         self.randomize_bonuses: bool = False  # Additional option: randomize territory bonuses
         self.gold_transfer: int = 0  # Gold transfer setting: 0=Disabled, 1=25%, 2=50%, 3=75%, 4=100%
+        self.starting_gold: int = STARTING_GOLD_DEFAULT  # Gold every player starts with (host decides)
 
         # Initialize all 4 slots
         for i in range(self.MAX_PLAYERS):
@@ -463,6 +466,7 @@ class LobbyState:
             "neutral_armies": self.neutral_armies,
             "randomize_bonuses": self.randomize_bonuses,
             "gold_transfer": self.gold_transfer,
+            "starting_gold": self.starting_gold,
         }
 
     def set_settings(self, settings: dict) -> None:
@@ -479,6 +483,8 @@ class LobbyState:
             self.randomize_bonuses = settings["randomize_bonuses"]
         if "gold_transfer" in settings:
             self.gold_transfer = settings["gold_transfer"]
+        if "starting_gold" in settings:
+            self.starting_gold = clamp_starting_gold(settings["starting_gold"])
 
     def serialize(self) -> Dict[str, Any]:
         """Serialize full lobby state for network transmission."""
