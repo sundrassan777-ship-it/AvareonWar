@@ -27,6 +27,7 @@ from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
 from ui.additional_options_overlay import AdditionalOptionsOverlay
+from ui.setup_tooltip import SetupTooltips
 
 logger = get_logger(__name__)
 
@@ -183,10 +184,12 @@ class TerritorySelector:
         self.victory_options = ["Domination (45+)", "Capital Assault", "Total Conquest"]
         self.taxation_options = ["0% (No Tax)", "25% Tax", "50% Tax", "75% Tax", "100% Tax"]
         self.turn_mode_options = ["Sequential", "Simultaneous"]
-        self.turn_mode_tooltips = {
-            "Sequential": "Players take turns one at a time",
-            "Simultaneous": "All players plan at once, then orders execute together"
-        }
+        # Victory / Taxation / Turn Mode explanations: hover tooltips on the labels
+        # (ui/setup_tooltip.py, wording in config/setup_tooltips.py). Rects are
+        # refreshed each frame where the labels are drawn.
+        self.setup_tooltips = SetupTooltips(self.ui_scale)
+        self.tooltip_rects = {}
+        self.hovered_tooltip = None
 
         # Selected map (host can change, synced to clients)
         self.selected_map = map_data.get_map_ids()[0] if map_data.get_map_ids() else 'avareon'
@@ -1089,6 +1092,7 @@ class TerritorySelector:
 
     def handle_hover(self, pos):
         """Handle mouse hover."""
+        self.hovered_tooltip = None
         # Block normal hover while friend picker modal is open
         if self._show_friend_picker:
             self.hovered_territory = None
@@ -1118,6 +1122,15 @@ class TerritorySelector:
             self.hovered_territory = self.get_territory_at_pos(pos)
         else:
             self.hovered_territory = None
+            # Label tooltips (not while a list is open - it can cover the labels)
+            lists_open = (self.victory_dropdown_open or self.taxation_dropdown_open
+                          or self.turn_mode_dropdown_open
+                          or any(v is not None for v in self.active_slot_dropdown.values()))
+            if not lists_open:
+                for key, rect in self.tooltip_rects.items():
+                    if rect.collidepoint(pos):
+                        self.hovered_tooltip = key
+                        break
 
     def get_territory_at_pos(self, pos) -> Optional[str]:
         """Get territory name at given position."""
@@ -1508,6 +1521,10 @@ class TerritorySelector:
         # Draw warning tooltip for AI slots without territories (host only)
         if self.is_host:
             self._draw_warning_tooltips()
+
+        # Label tooltip (drawn after the panel so it can extend over the map)
+        if self.hovered_tooltip and not self.overlay_open and not self._show_friend_picker:
+            self.setup_tooltips.draw(self.screen, self.hovered_tooltip, pygame.mouse.get_pos())
 
         # Draw Additional Options overlay on top of everything (if open)
         if self.overlay_open and self.options_overlay.read_only:
@@ -2197,6 +2214,10 @@ class TerritorySelector:
         # Label (white text like integrated_setup)
         label_surface = self.text_font.render("Victory Condition:", True, WHITE)
         self.screen.blit(label_surface, (margin, self.victory_label_y))
+        # (i) mark; hovering label or mark explains the setting (config/setup_tooltips.py)
+        self.tooltip_rects['victory'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_surface.get_rect(topleft=(margin, self.victory_label_y)),
+            self.hovered_tooltip == 'victory')
 
         # Dropdown box
         mouse_pos = pygame.mouse.get_pos()
@@ -2237,6 +2258,10 @@ class TerritorySelector:
         # Label (white text like integrated_setup)
         label_surface = self.text_font.render("Taxation Level:", True, WHITE)
         self.screen.blit(label_surface, (margin, self.taxation_label_y))
+        # (i) mark; hovering label or mark explains the setting (config/setup_tooltips.py)
+        self.tooltip_rects['taxation'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_surface.get_rect(topleft=(margin, self.taxation_label_y)),
+            self.hovered_tooltip == 'taxation')
 
         # Dropdown box
         mouse_pos = pygame.mouse.get_pos()
@@ -2277,6 +2302,10 @@ class TerritorySelector:
         # Label (white text like integrated_setup)
         label_surface = self.text_font.render("Turn Mode:", True, WHITE)
         self.screen.blit(label_surface, (margin, self.turn_mode_label_y))
+        # (i) mark; hovering label or mark explains the setting (config/setup_tooltips.py)
+        self.tooltip_rects['turn_mode'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_surface.get_rect(topleft=(margin, self.turn_mode_label_y)),
+            self.hovered_tooltip == 'turn_mode')
 
         # Dropdown box
         mouse_pos = pygame.mouse.get_pos()
@@ -2309,18 +2338,6 @@ class TerritorySelector:
                 (arrow_x + 5, arrow_y + 5)
             ]
             pygame.draw.polygon(self.screen, BRASS_COLOR, arrow_points)
-
-        # Draw tooltip on hover
-        if is_hovered:
-            current_option = self.turn_mode_options[self.turn_mode]
-            tooltip = self.turn_mode_tooltips.get(current_option, "")
-            if tooltip:
-                tooltip_surface = self.small_font.render(tooltip, True, TEXT_COLOR_DIM)
-                tooltip_rect = tooltip_surface.get_rect(midleft=(
-                    self.turn_mode_dropdown_rect.x + int(10 * self.ui_scale),
-                    self.turn_mode_dropdown_rect.bottom + int(5 * self.ui_scale)
-                ))
-                self.screen.blit(tooltip_surface, tooltip_rect)
 
     def _draw_dropdown_menus(self):
         """Draw open dropdown menus."""

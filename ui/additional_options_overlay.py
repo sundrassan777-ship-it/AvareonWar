@@ -15,6 +15,8 @@ This module owns the window instead:
 - Edits go to temporary values; Confirm returns them, Cancel / Escape discards them.
 - read_only=True (multiplayer clients) shows the host's choices greyed out with a
   single Close button.
+- Every option's name has an (i) mark; hovering the name or the mark explains the
+  option (wording in config/setup_tooltips.py), read-only view included.
 - Starting Gold is a typed number field (digits only, clamped to
   STARTING_GOLD_MIN..MAX when it loses focus and on Confirm; empty -> default).
 
@@ -31,6 +33,7 @@ import pygame
 from config.constants import (STARTING_GOLD_DEFAULT, STARTING_GOLD_MIN, STARTING_GOLD_MAX,
                               clamp_starting_gold)
 from rendering.sidebar_widgets import render_nine_slice
+from ui.setup_tooltip import SetupTooltips
 from utils.surface_utils import load_cached_image
 from utils.logger import get_logger
 
@@ -86,6 +89,8 @@ class AdditionalOptionsOverlay:
         self.gold_text = str(STARTING_GOLD_DEFAULT)   # Starting Gold field contents
         self.text_focus = False                        # Starting Gold field is being typed in
         self.hovered = None
+        self.hovered_tip = None     # Option whose name is under the cursor (tooltip key)
+        self.tooltips = SetupTooltips(self.scale)
         self.rects = {}             # Hit rects from the last layout (also read by tests)
         self._flash = (None, 0)     # (element, ticks) of the last click
         self._layout_cache = {}     # screen size -> layout dict
@@ -110,6 +115,7 @@ class AdditionalOptionsOverlay:
         self.dropdown_open = False
         self.text_focus = False
         self.hovered = None
+        self.hovered_tip = None
 
     def set_values(self, values):
         """Replace the shown values without reopening (read-only view tracking the host)."""
@@ -183,7 +189,7 @@ class AdditionalOptionsOverlay:
 
         s = self.scale
         screen_w, screen_h = screen_size
-        panel_w = int(round(440 * s))
+        panel_w = int(round(480 * s))   # Room for the longest label + (i) mark + a control
         k = panel_w / BG_SOURCE_WIDTH                      # art -> screen scale
         frame = int(round(BG_FRAME * k))                   # carved border thickness on screen
         pad_x = int(round(26 * s))
@@ -244,8 +250,18 @@ class AdditionalOptionsOverlay:
                 text_top = ctrl.y + (dd_h - text_h) // 2   # Label level with the field, not the hint
             else:
                 text_top = top + (row_h - text_h) // 2
+            # Hover area for the tooltip: the label's text plus the (i) mark after
+            # its last line
+            text_w = max(label_font.size(line)[0] for line in lines)
+            last_w = label_font.size(lines[-1])[0]
+            last_y = text_top + (len(lines) - 1) * (line_h + line_gap)
+            mark = self.tooltips.mark_size()
+            mark_rect = pygame.Rect(content.x + last_w + int(round(6 * s)),
+                                    last_y + (line_h - mark) // 2, mark, mark)
+            tip_rect = pygame.Rect(content.x, text_top, text_w, text_h).union(mark_rect)
             out['rows'].append({
                 'key': key, 'control': control, 'lines': lines,
+                'mark_rect': mark_rect, 'tip_rect': tip_rect,
                 'label_pos': (content.x, text_top),
                 'line_step': line_h + line_gap,
                 'label_rect': pygame.Rect(content.x, top, ctrl.x - content.x, row_h),
@@ -281,9 +297,15 @@ class AdditionalOptionsOverlay:
 
     def update_hover(self, pos, screen_size=None):
         self.hovered = None
+        self.hovered_tip = None
         if not self.is_open:
             return
-        self._update_rects(screen_size or pygame.display.get_surface().get_size())
+        lay = self._update_rects(screen_size or pygame.display.get_surface().get_size())
+        # Option name -> tooltip (not while the gold-transfer list may cover the names)
+        if not self.dropdown_open:
+            for row in lay['rows']:
+                if row['tip_rect'].collidepoint(pos):
+                    self.hovered_tip = row['key']
         # Open list items win over whatever they cover
         for name, rect in self.rects.items():
             if name.startswith('gold_transfer_item_') and rect.collidepoint(pos):
@@ -454,6 +476,7 @@ class AdditionalOptionsOverlay:
             for line in row['lines']:
                 screen.blit(self._render(label_font, line, text_color), (x, y))
                 y += row['line_step']
+            screen.blit(self.tooltips.mark(self.hovered_tip == row['key']), row['mark_rect'])
             key, rect = row['key'], row['control_rect']
             active = not self.read_only and (self.hovered == key or (key == 'gold_transfer' and self.dropdown_open))
             if row['control'] == 'checkbox':
@@ -477,6 +500,10 @@ class AdditionalOptionsOverlay:
         # Open list last so it covers the buttons when it reaches that far
         if self.dropdown_open and not self.read_only:
             self._draw_dropdown_items(screen)
+
+        # Tooltip above everything
+        if self.hovered_tip:
+            self.tooltips.draw(screen, self.hovered_tip, pygame.mouse.get_pos())
 
     def _draw_checkbox(self, screen, rect, checked, hovered):
         bg = (66, 66, 74) if hovered else (52, 52, 61)   # lighten_color(PANEL_BG, 0.3 / 0.1)

@@ -79,6 +79,10 @@ def test_everything_sits_inside_the_frame(pygame_display, size):
         assert inner.contains(lay[key]), key
         assert lay[key].top > lay['sep2_y']
     assert not lay['cancel'].colliderect(lay['confirm'])
+    # The (i) mark after each option name never touches that option's control
+    for row in lay['rows']:
+        assert row['mark_rect'].right < row['control_rect'].left, row['key']
+        assert inner.contains(row['mark_rect']), row['key']
     # Fits on screen (sized to its rows, no scrolling)
     assert pygame_display.Rect((0, 0), size).contains(lay['panel'])
 
@@ -400,3 +404,62 @@ def test_initialize_game_applies_starting_gold(pygame_display):
 
     game.initialize_game({'num_players': 2, 'player_is_ai': [False, True], 'player_ai_difficulty': [None, 1]})
     assert game.game_state.player_gold == [100, 100]   # campaigns / old configs keep the default
+
+
+# ---------------------------------------------------------------- Label tooltips
+
+
+def test_every_tooltip_renders(pygame_display):
+    from config.setup_tooltips import SETUP_TOOLTIPS
+    from ui.setup_tooltip import SetupTooltips
+    tips = SetupTooltips(1.0)
+    screen = pygame_display.display.get_surface()
+    for key in SETUP_TOOLTIPS:
+        rect = tips.draw(screen, key, (1590, 890))   # bottom-right corner: must flip
+        assert screen.get_rect().contains(rect), key
+    assert tips.box('no_such_key') is None
+
+
+def test_every_overlay_row_has_a_tooltip():
+    from config.setup_tooltips import SETUP_TOOLTIPS
+    from ui.additional_options_overlay import ROWS
+    for key, _, _ in ROWS:
+        assert key in SETUP_TOOLTIPS, key
+
+
+def test_custom_label_hover_shows_tooltip(custom_setup):
+    panel = custom_setup.config_panel
+    custom_setup.render()                       # draws the labels -> hover rects
+    assert set(panel.tooltip_rects) == {'taxation', 'victory', 'turn_mode'}
+    for key, rect in panel.tooltip_rects.items():
+        panel.update_hover(rect.center)
+        assert panel.hovered_tooltip == key
+    # Not while a dropdown list is open (it can cover the labels)
+    panel.active_dropdown = 'taxation'
+    panel.update_hover(panel.tooltip_rects['turn_mode'].center)
+    assert panel.hovered_tooltip is None
+
+
+def test_turn_mode_hint_under_dropdown_is_gone(custom_setup):
+    """The old one-line hint under the Turn Mode dropdown was replaced by the tooltip."""
+    assert not hasattr(custom_setup.config, 'turn_mode_tooltips')
+
+
+def test_lobby_label_hover_shows_tooltip(pygame_display):
+    sel = _selector(pygame_display, is_host=False)
+    sel.render()
+    assert set(sel.tooltip_rects) == {'taxation', 'victory', 'turn_mode'}
+    for key, rect in sel.tooltip_rects.items():
+        sel.handle_hover(rect.center)
+        assert sel.hovered_tooltip == key
+    sel.render()
+
+
+def test_overlay_name_hover_shows_tooltip(pygame_display):
+    size = (1600, 900)
+    overlay = _overlay(read_only=True)          # clients get the explanations too
+    for row in overlay.layout(size)['rows']:
+        overlay.update_hover(row['mark_rect'].center, size)
+        assert overlay.hovered_tip == row['key']
+    overlay.update_hover((0, 0), size)
+    assert overlay.hovered_tip is None

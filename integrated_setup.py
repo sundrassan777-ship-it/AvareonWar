@@ -32,6 +32,7 @@ from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
 from ui.additional_options_overlay import AdditionalOptionsOverlay
+from ui.setup_tooltip import SetupTooltips
 
 logger = get_logger(__name__)
 
@@ -106,11 +107,8 @@ class SetupConfig:
         # Turn mode options
         self.turn_mode_options = ["Sequential", "Simultaneous"]
 
-        # Turn mode tooltips
-        self.turn_mode_tooltips = {
-            "Sequential": "Players take turns one at a time",
-            "Simultaneous": "All players plan at once, then orders execute together"
-        }
+        # Turn mode / taxation / victory explanations: hover tooltips on the labels
+        # (ui/setup_tooltip.py, wording in config/setup_tooltips.py)
 
         # Additional options (set via Additional Options overlay)
         self.neutral_armies = False
@@ -747,6 +745,12 @@ class ConfigPanel:
         # of the options and hands them back on Confirm.
         self.options_overlay = AdditionalOptionsOverlay(self.ui_scale, self.config.gold_transfer_options)
 
+        # Label tooltips (Taxation / Victory / Turn Mode): hover rects are refreshed
+        # each frame where the labels are drawn
+        self.setup_tooltips = SetupTooltips(self.ui_scale)
+        self.tooltip_rects = {}
+        self.hovered_tooltip = None
+
     @property
     def overlay_open(self):
         """True while the Additional Options window is showing (it blocks all other input)."""
@@ -973,6 +977,7 @@ class ConfigPanel:
 
     def update_hover(self, mouse_pos):
         """Update hover state"""
+        self.hovered_tooltip = None
         # Block normal hover while overlay is open
         if self.overlay_open:
             self.hovered_element = None
@@ -984,6 +989,13 @@ class ConfigPanel:
             self.hovered_element = None
             self.hovered_dropdown_item = None
             return
+
+        # Label tooltips (not while a dropdown list is open - it can cover the labels)
+        if not self.active_dropdown:
+            for key, rect in self.tooltip_rects.items():
+                if rect.collidepoint(mouse_pos):
+                    self.hovered_tooltip = key
+                    break
 
         # If a dropdown is active, check if hovering over dropdown items first
         if self.active_dropdown:
@@ -1378,6 +1390,10 @@ class ConfigPanel:
         if self.active_dropdown:
             self._draw_dropdown_menu()
 
+        # Label tooltip (over the map if it needs the room)
+        if self.hovered_tooltip and not self.overlay_open:
+            self.setup_tooltips.draw(self.screen, self.hovered_tooltip, pygame.mouse.get_pos())
+
         # Draw Additional Options overlay on top of everything (if open)
         self.options_overlay.draw(self.screen)
 
@@ -1732,6 +1748,9 @@ class ConfigPanel:
         label_text = label_font.render("Taxation Level:", True, TEXT_COLOR)
         label_text_rect = label_text.get_rect(midleft=(label_rect.x, label_rect.centery))
         self.screen.blit(label_text, label_text_rect)
+        # (i) mark; hovering label or mark shows the explanation (config/setup_tooltips.py)
+        self.tooltip_rects['taxation'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_text_rect, self.hovered_tooltip == 'taxation')
 
         # Dropdown button
         dropdown_rect = self.ui_elements['taxation_dropdown']
@@ -1768,6 +1787,9 @@ class ConfigPanel:
         label_text = label_font.render("Victory Condition:", True, TEXT_COLOR)
         label_text_rect = label_text.get_rect(midleft=(label_rect.x, label_rect.centery))
         self.screen.blit(label_text, label_text_rect)
+        # (i) mark; hovering label or mark shows the explanation (config/setup_tooltips.py)
+        self.tooltip_rects['victory'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_text_rect, self.hovered_tooltip == 'victory')
 
         # Dropdown button
         dropdown_rect = self.ui_elements['victory_dropdown']
@@ -1804,6 +1826,9 @@ class ConfigPanel:
         label_text = label_font.render("Turn Mode:", True, TEXT_COLOR)
         label_text_rect = label_text.get_rect(midleft=(label_rect.x, label_rect.centery))
         self.screen.blit(label_text, label_text_rect)
+        # (i) mark; hovering label or mark shows the explanation (config/setup_tooltips.py)
+        self.tooltip_rects['turn_mode'] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_text_rect, self.hovered_tooltip == 'turn_mode')
 
         # Dropdown button
         dropdown_rect = self.ui_elements['turn_mode_dropdown']
@@ -1814,23 +1839,13 @@ class ConfigPanel:
         border_color = BRASS_COLOR if hovered else (120, 100, 80)
         pygame.draw.rect(self.screen, border_color, dropdown_rect, 2, border_radius=5)
 
-        # Current selection text with tooltip hint
-        current_option = self.config.turn_mode_options[self.config.turn_mode]
-        tooltip = self.config.turn_mode_tooltips.get(current_option, "")
-        current_text = current_option
+        # Current selection text (the modes are explained by the label's tooltip)
+        current_text = self.config.turn_mode_options[self.config.turn_mode]
         dropdown_font_size = max(12, int(18 * self.ui_scale))
         dropdown_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dropdown_font_size)
         text_surface = dropdown_font.render(current_text, True, TEXT_COLOR)
         text_rect = text_surface.get_rect(midleft=(dropdown_rect.x + int(10 * self.ui_scale), dropdown_rect.centery))
         self.screen.blit(text_surface, text_rect)
-
-        # Draw tooltip if hovered
-        if hovered and tooltip:
-            tooltip_font_size = max(10, int(14 * self.ui_scale))
-            tooltip_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', tooltip_font_size)
-            tooltip_surface = tooltip_font.render(tooltip, True, TEXT_COLOR_DIM)
-            tooltip_rect = tooltip_surface.get_rect(midleft=(dropdown_rect.x + int(10 * self.ui_scale), dropdown_rect.bottom + int(5 * self.ui_scale)))
-            self.screen.blit(tooltip_surface, tooltip_rect)
 
         # Dropdown arrow
         arrow_size = int(5 * self.ui_scale)
