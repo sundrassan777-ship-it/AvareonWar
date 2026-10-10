@@ -30,6 +30,7 @@ This guide provides module-specific guidance on when and how to modify different
 19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
+22. [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby) - Additional Options window, Starting Gold, label tooltips, framed art
 
 ---
 
@@ -1987,6 +1988,9 @@ SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
 - Color and team selection
 - Territory claiming with first-come-wins
 - Host-only kick and launch controls
+- Additional Options (shared window, read-only for clients), label tooltips, framed
+  selectors and the bronze player-block frame: see
+  [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby)
 
 ### main.py Network Integration
 
@@ -3945,3 +3949,83 @@ button simply stops responding. Restyling is safe precisely because it only touc
   options menu, so it deliberately has **no `VIDEORESIZE` handling**. `_build_layout()` exists
   to centralise geometry, not to support live resizing.
 - `camera_offset` is unclamped, so the map can be panned fully off-screen. Pre-existing.
+
+---
+
+## Game Setup Screens (Custom Game + Multiplayer Lobby)
+
+`integrated_setup.py` (Custom Game) and `network/territory_selector.py` (multiplayer
+lobby) share four helpers. **Change the helper, not one screen** — both screens used to
+carry copy-pasted versions of the Additional Options window, which drifted apart.
+
+| Module | What it owns |
+|--------|--------------|
+| `ui/additional_options_overlay.py` | `AdditionalOptionsOverlay`: the modal Additional Options window (rows, layout, input, drawing) |
+| `ui/setup_tooltip.py` | `SetupTooltips`: the (i) mark after a label + the multi-line hover box |
+| `config/setup_tooltips.py` | `SETUP_TOOLTIPS`: tooltip wording (owner-edited, like `action_error_messages.py`) |
+| `ui/setup_frames.py` | `SetupFrames`: wood-framed selector boxes (`ResourceSlot.png`) + the bronze `TableBorder.png` frame |
+
+`rendering/sidebar_widgets.render_nine_slice()` is the shared nine-slice behind the
+frames and the window background (the sidebar's `SidebarWidgets.nine_slice()` delegates
+to it). It is uncached; callers cache.
+
+### Additional Options window
+
+- **Rows** are the `ROWS` tuple at the top of the module: `(key, control, label lines)`,
+  control `'checkbox' | 'dropdown' | 'number'`. The window's height follows the rows; there
+  is no scrolling. A new option needs: a `ROWS` entry, a `SETUP_TOOLTIPS` entry (a test
+  enforces this), the value in both screens' `open({...})` / Confirm handlers, and the
+  setting carried to the game (see Starting Gold below for the full path).
+- **Layout is measured from the frame's inner edge** (`BG_FRAME`, measured on
+  `InGameMenuBG.png`), so nothing can land on the carved border. `layout(screen_size)`
+  returns every rect (`inner`, `content`, rows' `control_rect` / `tip_rect` /
+  `mark_rect`, `cancel` / `confirm` / `close`) and is what the tests check.
+- **Editing a copy:** `open(values, read_only=False)` copies the values; `handle_click()`
+  returns `'confirm'` (apply `overlay.values`) or `'cancel'`. Clicks never fall through
+  while it is open.
+- **Keys:** while the window is open the screens route **every** `KEYDOWN` to
+  `handle_key()` (Starting Gold typing). Escape stops typing, else closes the open list,
+  else closes the window (= Cancel).
+- **Read-only** (`read_only=True`): multiplayer clients. Controls greyed, single Close
+  button, tooltips still work. The lobby refreshes `set_values()` every frame so host
+  changes show while it is open.
+- **Lobby host Confirm also writes `lobby_state`.** Otherwise the next `LOBBY_STATE`
+  broadcast (someone joins) carries the old settings and resets the clients' view.
+
+### Starting Gold
+
+Typed in Additional Options. Limits are `STARTING_GOLD_DEFAULT / MIN / MAX` (100 / 0 /
+10,000) in `config/constants.py`; **always go through `clamp_starting_gold()`** at every
+boundary (field commit, lobby `set_settings()`, network handlers, `initialize_game()`). The
+cap exists because XP is earned per unit / building / tech bought.
+
+Path to the game:
+- Custom: `SetupConfig.starting_gold` → `get_config()['starting_gold']`.
+- Multiplayer: `TerritorySelector.starting_gold` + `LobbyState.starting_gold`
+  (`get_settings()` / `set_settings()`), sent in `SETUP_CONFIG`, `LOBBY_STATE`,
+  `LOBBY_LAUNCH` (and legacy `SETUP_COMPLETE`). `_build_config_from_lobby()` reads it from
+  `lobby_state` — **do not add a 9th element to `TerritorySelector.run()`'s result tuple**
+  (four unpack sites).
+- `Game.initialize_game()` applies it only when the key is present, so campaigns and tales
+  (which set their own gold) are unaffected. Saves and replays already store
+  `starting_gold`.
+
+### Label tooltips
+
+Each screen keeps `tooltip_rects` (refreshed where the labels are drawn, via
+`SetupTooltips.draw_label_mark()`) and `hovered_tooltip` (set in its hover handler, not while
+a dropdown list is open — the list can cover the labels). The box is drawn after the
+panel, so it may extend over the map. To add one: an entry in `SETUP_TOOLTIPS` and a
+`draw_label_mark()` call next to the label.
+
+### Framed art
+
+- Selectors: `SetupFrames.dropdown_box(size, fill, state)`; `state` is `normal` / `hover`
+  / `open` / `disabled`. Text and arrows must start at `content_inset(height)` to clear the
+  beams. Beam darkness: `WOOD_TINT` (owner asked for darker than the raw art).
+- Lobby player block: one `table_frame()` around all rows (`_player_block_rect()`) with
+  brass rules between rows. Row positions in `_calculate_ui_layout()` are **derived** from
+  the title / host-IP height plus the frame thickness — don't go back to fixed y offsets,
+  or the frame covers the IP. The AI "no territory" (!) sits at the right end of the name
+  line (left of the row is the frame).
+

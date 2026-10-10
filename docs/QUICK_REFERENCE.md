@@ -49,7 +49,7 @@
 **Players:** 1-8
 **Building Types:** 6
 **Unit Types:** 5
-**Starting Gold:** 100
+**Starting Gold:** 100 (Custom / multiplayer: 0–10,000 via Additional Options)
 **Turn Structure:** 4 phases
 
 ---

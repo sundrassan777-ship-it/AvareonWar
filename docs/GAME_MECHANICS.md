@@ -256,7 +256,11 @@ Keep line; before 2026-09-25 it wrongly listed 2 Swordsmen and an inflated stren
 - Must have sufficient gold
 - Cannot go into debt
 
-**Starting Gold:** 100 gold per player
+**Starting Gold:** 100 gold per player by default. In Custom Game and multiplayer setup it
+can be changed under **Additional Options → Starting Gold** (typed, 0–10,000; values above
+the cap are lowered to 10,000, an empty field means 100). In multiplayer only the host sets
+it and it applies to every player; clients see it in a read-only Additional Options view.
+Campaign missions and Tales set their own starting gold.
 
 ---
 

@@ -4,6 +4,40 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## A Better Game Setup
+
+*10 October 2026*
+
+### Choose your Starting Gold
+
+- **Custom Game** and **Multiplayer** setups have a new **Starting Gold** option in
+  **Additional Options**. Type any amount from **0 to 10,000** (the standard game is 100).
+- In multiplayer the host decides, and every player starts with the same amount.
+
+### Additional Options
+
+- The window has been tidied up: the title and the **Cancel** / **Confirm** buttons now sit
+  neatly inside the frame.
+- In multiplayer, players who join a game can now open **Additional Options** to see what
+  the host has chosen.
+- Fixed: territories on the map lit up behind the window while it was open.
+- Fixed: in multiplayer, the options shown to joined players could jump back to older
+  values when someone else joined the lobby.
+
+### Know what each setting does
+
+- Hover over **Turn Mode**, **Taxation Level** or **Victory Condition** (look for the small
+  **i** mark) to see what every choice means.
+- Each option in **Additional Options** explains itself the same way.
+
+### A fresh coat of paint
+
+- The setting boxes now have wooden frames.
+- In the multiplayer lobby, the player list sits in a carved frame, like the Custom Game
+  player table.
+
+---
+
 ## Every Territory Has Its Story
 
 *9 October 2026*

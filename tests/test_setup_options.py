@@ -491,19 +491,19 @@ def test_lobby_player_frame_layout(pygame_display, size, is_host):
     above and the Victory label below; everything still fits on screen."""
     import pygame
     from network.territory_selector import TerritorySelector
-    screen = pygame.display.set_mode(size)
-    try:
-        sel = TerritorySelector(screen, _StubConnection(), is_host=is_host,
-                                local_player_index=0 if is_host else 1, host_ip='192.168.100.200')
-        sel.render()
-        frame = sel._player_block_rect()
-        assert frame.left > 0 and frame.right < sel.left_panel_width
-        assert frame.bottom < sel.victory_label_y
-        if is_host:
-            assert sel._ip_click_rect.bottom <= frame.top
-        assert sel.return_button_rect.bottom <= size[1]
-    finally:
-        pygame.display.set_mode((1600, 900))
+    # Offscreen surface of exactly this size: resizing the real display is unreliable
+    # inside the full suite (an earlier SCALED display mode can keep its old size)
+    screen = pygame.Surface(size)
+    sel = TerritorySelector(screen, _StubConnection(), is_host=is_host,
+                            local_player_index=0 if is_host else 1, host_ip='192.168.100.200')
+    assert (sel.width, sel.height) == size
+    sel.render()
+    frame = sel._player_block_rect()
+    assert frame.left > 0 and frame.right < sel.left_panel_width
+    assert frame.bottom < sel.victory_label_y
+    if is_host:
+        assert sel._ip_click_rect.bottom <= frame.top
+    assert sel.return_button_rect.bottom <= size[1]
 
 
 def test_lobby_warning_mark_sits_inside_its_row(pygame_display):
