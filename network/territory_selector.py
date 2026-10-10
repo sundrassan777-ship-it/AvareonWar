@@ -28,6 +28,7 @@ from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
 from ui.additional_options_overlay import AdditionalOptionsOverlay
 from ui.setup_tooltip import SetupTooltips
+from ui.setup_frames import SetupFrames
 
 logger = get_logger(__name__)
 
@@ -188,6 +189,8 @@ class TerritorySelector:
         # (ui/setup_tooltip.py, wording in config/setup_tooltips.py). Rects are
         # refreshed each frame where the labels are drawn.
         self.setup_tooltips = SetupTooltips(self.ui_scale)
+        # Wood-framed selectors + bronze player-block frame (ui/setup_frames.py)
+        self.setup_frames = SetupFrames(self.ui_scale)
         self.tooltip_rects = {}
         self.hovered_tooltip = None
 
@@ -439,11 +442,18 @@ class TerritorySelector:
         # Title position
         self.title_y = int(40 * self.ui_scale)
 
-        # Player info section - starts below title (and IP display area for host)
-        # Each player gets a taller row (2-line layout)
-        # Extra space for IP display when hosting
-        player_section_y = int(115 * self.ui_scale) if self.is_host else int(90 * self.ui_scale)
-        row_height = int(75 * self.ui_scale)  # Taller rows for 2-line layout
+        # Player info section - starts below title (and the IP display for the host),
+        # leaving room for the bronze frame drawn around the rows (_player_block_rect)
+        bx, by = self.setup_frames.table_border()
+        self.player_frame_pad = max(2, int(round(4 * self.ui_scale)))
+        frame_off_y = by + self.player_frame_pad
+        if self.is_host:
+            # Matches _draw_host_ip(): label at title_y + 28, IP line 16 below it
+            above = self.title_y + int(28 * self.ui_scale) + int(16 * self.ui_scale) + self.text_font.get_height()
+        else:
+            above = self.title_y + self.title_font.get_height() // 2
+        player_section_y = above + int(8 * self.ui_scale) + frame_off_y
+        row_height = int(66 * self.ui_scale)  # 2-line rows (name / dropdowns)
 
         self.player_rows = []
         for i in range(self.num_players):
@@ -470,7 +480,7 @@ class TerritorySelector:
         self.slot_dropdown_spacing = dropdown_spacing
 
         # Victory condition section - below player info
-        settings_start_y = player_section_y + self.num_players * row_height + int(20 * self.ui_scale)
+        settings_start_y = player_section_y + self.num_players * row_height + frame_off_y + int(12 * self.ui_scale)
         dropdown_height = int(35 * self.ui_scale)
         label_height = int(22 * self.ui_scale)
 
@@ -1947,6 +1957,17 @@ class TerritorySelector:
             self.warning_indicator_rects = {}
         self.warning_indicator_rects.clear()
 
+        # One carved bronze frame (TableBorder, as the Custom Game player table) around
+        # the whole block, parchment inside, thin brass rules between the rows
+        if self.player_rows:
+            frame_rect = self._player_block_rect()
+            self.screen.blit(self.setup_frames.table_frame(frame_rect.size, PARCHMENT_COLOR), frame_rect)
+            rule_inset = int(round(6 * self.ui_scale))
+            for upper, lower in zip(self.player_rows, self.player_rows[1:]):
+                rule_y = (upper.bottom + lower.top) // 2
+                pygame.draw.line(self.screen, BRASS_COLOR, (upper.x + rule_inset, rule_y),
+                                 (upper.right - rule_inset, rule_y), 1)
+
         for i, row_rect in enumerate(self.player_rows):
             slot = self.lobby_state.get_slot(i)
             if slot is None:
@@ -1964,12 +1985,14 @@ class TerritorySelector:
                                        slot.state == SLOT_AI and
                                        not slot.territory)
 
-            # Draw warning indicator (!) to the left of the row for AI without territory
+            # Draw warning indicator (!) for AI without territory, at the right end of
+            # the name line (where a human row's kick X sits) - left of the row it
+            # would now cover the bronze frame
             warning_offset = 0
             if needs_territory_warning:
                 warning_size = int(16 * self.ui_scale)
-                warning_x = row_rect.x - warning_size - int(4 * self.ui_scale)
-                warning_y = row_rect.centery - warning_size // 2
+                warning_x = row_rect.right - warning_size - int(8 * self.ui_scale)
+                warning_y = row_rect.y + int(6 * self.ui_scale)
                 warning_rect = pygame.Rect(warning_x, warning_y, warning_size, warning_size)
                 self.warning_indicator_rects[i] = warning_rect
 
@@ -1987,13 +2010,11 @@ class TerritorySelector:
                 exclaim_rect = exclaim_surface.get_rect(center=warning_rect.center)
                 self.screen.blit(exclaim_surface, exclaim_rect)
 
-            # Draw row background (highlight if selected for territory assignment)
+            # Row selected for territory assignment: lighter, outlined in the player's
+            # colour (other rows sit on the block's parchment)
             if is_selected_for_territory:
                 pygame.draw.rect(self.screen, PARCHMENT_HOVER, row_rect)
                 pygame.draw.rect(self.screen, player_color, row_rect, 2)  # Colored border
-            else:
-                pygame.draw.rect(self.screen, PARCHMENT_COLOR, row_rect)
-                pygame.draw.rect(self.screen, BRASS_COLOR, row_rect, 1)
 
             # ===== Line 1: Color swatch, player name, kick button =====
             line1_y = row_rect.y + int(5 * self.ui_scale)
@@ -2207,6 +2228,24 @@ class TerritorySelector:
 
         return False
 
+    def _draw_framed_selector(self, rect, hovered, is_open):
+        """Victory / Taxation / Turn Mode box in a wood frame. Clients (read-only) get
+        a greyed box. Returns the inset content must start at."""
+        if not self.is_host:
+            surf = self.setup_frames.dropdown_box(rect.size, DARK_GRAY, 'disabled')
+        else:
+            state = 'open' if is_open else ('hover' if hovered else 'normal')
+            surf = self.setup_frames.dropdown_box(rect.size, PARCHMENT_COLOR, state)
+        self.screen.blit(surf, rect)
+        return self.setup_frames.content_inset(rect.height)
+
+    def _player_block_rect(self):
+        """Outer rect of the bronze frame around all player rows."""
+        bx, by = self.setup_frames.table_border()
+        pad = self.player_frame_pad
+        block = self.player_rows[0].unionall(self.player_rows[1:])
+        return block.inflate(2 * (bx + pad), 2 * (by + pad))
+
     def _draw_victory_dropdown(self):
         """Draw victory condition dropdown."""
         margin = self.border_thickness
@@ -2223,19 +2262,14 @@ class TerritorySelector:
         mouse_pos = pygame.mouse.get_pos()
         is_hovered = self.victory_dropdown_rect.collidepoint(mouse_pos) and self.is_host
 
-        if self.is_host:
-            bg_color = PARCHMENT_HOVER if is_hovered else PARCHMENT_COLOR
-        else:
-            bg_color = DARK_GRAY  # Disabled appearance for client
-
-        pygame.draw.rect(self.screen, bg_color, self.victory_dropdown_rect)
-        pygame.draw.rect(self.screen, BRASS_COLOR, self.victory_dropdown_rect, 2)
+        # Wood-framed box (ResourceSlot beams): parchment for the host, greyed for clients
+        inset = self._draw_framed_selector(self.victory_dropdown_rect, is_hovered, self.victory_dropdown_open)
 
         # Current value text
         text_color = WHITE if self.is_host else TEXT_COLOR_DIM
         value_text = self.small_font.render(self.victory_options[self.victory_condition], True, text_color)
         text_rect = value_text.get_rect(midleft=(
-            self.victory_dropdown_rect.x + int(10 * self.ui_scale),
+            self.victory_dropdown_rect.x + inset,
             self.victory_dropdown_rect.centery
         ))
         self.screen.blit(value_text, text_rect)
@@ -2267,19 +2301,14 @@ class TerritorySelector:
         mouse_pos = pygame.mouse.get_pos()
         is_hovered = self.taxation_dropdown_rect.collidepoint(mouse_pos) and self.is_host
 
-        if self.is_host:
-            bg_color = PARCHMENT_HOVER if is_hovered else PARCHMENT_COLOR
-        else:
-            bg_color = DARK_GRAY  # Disabled appearance for client
-
-        pygame.draw.rect(self.screen, bg_color, self.taxation_dropdown_rect)
-        pygame.draw.rect(self.screen, BRASS_COLOR, self.taxation_dropdown_rect, 2)
+        # Wood-framed box (ResourceSlot beams): parchment for the host, greyed for clients
+        inset = self._draw_framed_selector(self.taxation_dropdown_rect, is_hovered, self.taxation_dropdown_open)
 
         # Current value text
         text_color = WHITE if self.is_host else TEXT_COLOR_DIM
         value_text = self.small_font.render(self.taxation_options[self.taxation_level], True, text_color)
         text_rect = value_text.get_rect(midleft=(
-            self.taxation_dropdown_rect.x + int(10 * self.ui_scale),
+            self.taxation_dropdown_rect.x + inset,
             self.taxation_dropdown_rect.centery
         ))
         self.screen.blit(value_text, text_rect)
@@ -2311,19 +2340,14 @@ class TerritorySelector:
         mouse_pos = pygame.mouse.get_pos()
         is_hovered = self.turn_mode_dropdown_rect.collidepoint(mouse_pos) and self.is_host
 
-        if self.is_host:
-            bg_color = PARCHMENT_HOVER if is_hovered else PARCHMENT_COLOR
-        else:
-            bg_color = DARK_GRAY  # Disabled appearance for client
-
-        pygame.draw.rect(self.screen, bg_color, self.turn_mode_dropdown_rect)
-        pygame.draw.rect(self.screen, BRASS_COLOR, self.turn_mode_dropdown_rect, 2)
+        # Wood-framed box (ResourceSlot beams): parchment for the host, greyed for clients
+        inset = self._draw_framed_selector(self.turn_mode_dropdown_rect, is_hovered, self.turn_mode_dropdown_open)
 
         # Current value text
         text_color = WHITE if self.is_host else TEXT_COLOR_DIM
         value_text = self.small_font.render(self.turn_mode_options[self.turn_mode], True, text_color)
         text_rect = value_text.get_rect(midleft=(
-            self.turn_mode_dropdown_rect.x + int(10 * self.ui_scale),
+            self.turn_mode_dropdown_rect.x + inset,
             self.turn_mode_dropdown_rect.centery
         ))
         self.screen.blit(value_text, text_rect)

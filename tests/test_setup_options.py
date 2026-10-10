@@ -463,3 +463,62 @@ def test_overlay_name_hover_shows_tooltip(pygame_display):
         assert overlay.hovered_tip == row['key']
     overlay.update_hover((0, 0), size)
     assert overlay.hovered_tip is None
+
+
+# ---------------------------------------------------------------- Framed art
+
+
+def test_dropdown_box_states_differ(pygame_display):
+    from ui.setup_frames import SetupFrames
+    frames = SetupFrames(1.0)
+    size = (300, 40)
+    normal = frames.dropdown_box(size, (62, 54, 38))
+    hover = frames.dropdown_box(size, (62, 54, 38), 'hover')
+    disabled = frames.dropdown_box(size, (64, 64, 64), 'disabled')
+    middle = (150, 20)
+    assert sum(hover.get_at(middle)[:3]) > sum(normal.get_at(middle)[:3])
+    assert sum(disabled.get_at(middle)[:3]) < sum(normal.get_at(middle)[:3])
+    # Beam art at the edge, not the fill colour
+    assert normal.get_at((2, 20))[:3] != (62, 54, 38)
+    assert frames.dropdown_box(size, (62, 54, 38)) is normal          # cached
+    assert frames.content_inset(40) > frames.beam(40)
+
+
+@pytest.mark.parametrize("size", [(1280, 720), (1600, 900), (1920, 1080)])
+@pytest.mark.parametrize("is_host", [True, False])
+def test_lobby_player_frame_layout(pygame_display, size, is_host):
+    """Bronze frame around the player rows: on the panel, clear of the title / IP
+    above and the Victory label below; everything still fits on screen."""
+    import pygame
+    from network.territory_selector import TerritorySelector
+    screen = pygame.display.set_mode(size)
+    try:
+        sel = TerritorySelector(screen, _StubConnection(), is_host=is_host,
+                                local_player_index=0 if is_host else 1, host_ip='192.168.100.200')
+        sel.render()
+        frame = sel._player_block_rect()
+        assert frame.left > 0 and frame.right < sel.left_panel_width
+        assert frame.bottom < sel.victory_label_y
+        if is_host:
+            assert sel._ip_click_rect.bottom <= frame.top
+        assert sel.return_button_rect.bottom <= size[1]
+    finally:
+        pygame.display.set_mode((1600, 900))
+
+
+def test_lobby_warning_mark_sits_inside_its_row(pygame_display):
+    from network.lobby import SLOT_AI
+    sel = _selector(pygame_display, is_host=True)
+    sel.lobby_state.slots[2].state = SLOT_AI
+    sel.render()
+    assert sel.player_rows[2].contains(sel.warning_indicator_rects[2])
+
+
+def test_custom_selectors_render_framed(custom_setup):
+    """Taxation / Victory / Turn Mode boxes are drawn with the wood frame art."""
+    panel = custom_setup.config_panel
+    custom_setup.render()
+    rect = panel.ui_elements['taxation_dropdown']
+    expected = panel.setup_frames.dropdown_box(rect.size, (62, 54, 38))
+    edge = (rect.x + 2, rect.centery)
+    assert custom_setup.screen.get_at(edge)[:3] == expected.get_at((2, rect.h // 2))[:3]

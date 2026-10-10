@@ -33,6 +33,7 @@ from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
 from ui.additional_options_overlay import AdditionalOptionsOverlay
 from ui.setup_tooltip import SetupTooltips
+from ui.setup_frames import SetupFrames
 
 logger = get_logger(__name__)
 
@@ -748,6 +749,8 @@ class ConfigPanel:
         # Label tooltips (Taxation / Victory / Turn Mode): hover rects are refreshed
         # each frame where the labels are drawn
         self.setup_tooltips = SetupTooltips(self.ui_scale)
+        # Wood frames for the selectors (ui/setup_frames.py)
+        self.setup_frames = SetupFrames(self.ui_scale)
         self.tooltip_rects = {}
         self.hovered_tooltip = None
 
@@ -1739,6 +1742,16 @@ class ConfigPanel:
         text_rect = button_text.get_rect(center=rect.center)
         self.screen.blit(button_text, text_rect)
 
+    def _draw_framed_selector(self, rect, hovered):
+        """Taxation / Victory / Turn Mode box: wood frame, parchment fill. Brightens on
+        hover and while its list is open. Returns the inset content must start at."""
+        names = {'taxation_dropdown': 'taxation', 'victory_dropdown': 'victory',
+                 'turn_mode_dropdown': 'turn_mode'}
+        is_open = any(self.ui_elements.get(k) == rect and self.active_dropdown == v for k, v in names.items())
+        state = 'open' if is_open else ('hover' if hovered else 'normal')
+        self.screen.blit(self.setup_frames.dropdown_box(rect.size, PARCHMENT_COLOR, state), rect)
+        return self.setup_frames.content_inset(rect.height)
+
     def _draw_taxation_section(self):
         """Draw taxation level dropdown section (below table, above buttons)"""
         # Label
@@ -1756,25 +1769,23 @@ class ConfigPanel:
         dropdown_rect = self.ui_elements['taxation_dropdown']
         hovered = (self.hovered_element == 'taxation_dropdown')
 
-        # Draw dropdown background (parchment color with brass border)
-        pygame.draw.rect(self.screen, PARCHMENT_COLOR, dropdown_rect, border_radius=5)
-        border_color = BRASS_COLOR if hovered else (120, 100, 80)
-        pygame.draw.rect(self.screen, border_color, dropdown_rect, 2, border_radius=5)
+        # Wood-framed box (ResourceSlot beams) around the parchment fill
+        inset = self._draw_framed_selector(dropdown_rect, hovered)
 
         # Current selection text
         current_text = self.config.taxation_options[self.config.taxation_level]
         dropdown_font_size = max(12, int(18 * self.ui_scale))
         dropdown_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dropdown_font_size)
         text_surface = dropdown_font.render(current_text, True, TEXT_COLOR)
-        text_rect = text_surface.get_rect(midleft=(dropdown_rect.x + int(10 * self.ui_scale), dropdown_rect.centery))
+        text_rect = text_surface.get_rect(midleft=(dropdown_rect.x + inset, dropdown_rect.centery))
         self.screen.blit(text_surface, text_rect)
 
         # Dropdown arrow
         arrow_size = int(5 * self.ui_scale)
         arrow_points = [
-            (dropdown_rect.right - int(15 * self.ui_scale), dropdown_rect.centery - arrow_size),
-            (dropdown_rect.right - int(10 * self.ui_scale), dropdown_rect.centery),
-            (dropdown_rect.right - int(15 * self.ui_scale), dropdown_rect.centery + arrow_size)
+            (dropdown_rect.right - inset - int(5 * self.ui_scale), dropdown_rect.centery - arrow_size),
+            (dropdown_rect.right - inset, dropdown_rect.centery),
+            (dropdown_rect.right - inset - int(5 * self.ui_scale), dropdown_rect.centery + arrow_size)
         ]
         pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
 
@@ -1795,25 +1806,23 @@ class ConfigPanel:
         dropdown_rect = self.ui_elements['victory_dropdown']
         hovered = (self.hovered_element == 'victory_dropdown')
 
-        # Draw dropdown background (parchment color with brass border)
-        pygame.draw.rect(self.screen, PARCHMENT_COLOR, dropdown_rect, border_radius=5)
-        border_color = BRASS_COLOR if hovered else (120, 100, 80)
-        pygame.draw.rect(self.screen, border_color, dropdown_rect, 2, border_radius=5)
+        # Wood-framed box (ResourceSlot beams) around the parchment fill
+        inset = self._draw_framed_selector(dropdown_rect, hovered)
 
         # Current selection text
         current_text = self.config.victory_options[self.config.victory_condition]
         dropdown_font_size = max(12, int(18 * self.ui_scale))
         dropdown_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dropdown_font_size)
         text_surface = dropdown_font.render(current_text, True, TEXT_COLOR)
-        text_rect = text_surface.get_rect(midleft=(dropdown_rect.x + int(10 * self.ui_scale), dropdown_rect.centery))
+        text_rect = text_surface.get_rect(midleft=(dropdown_rect.x + inset, dropdown_rect.centery))
         self.screen.blit(text_surface, text_rect)
 
         # Dropdown arrow
         arrow_size = int(5 * self.ui_scale)
         arrow_points = [
-            (dropdown_rect.right - int(15 * self.ui_scale), dropdown_rect.centery - arrow_size),
-            (dropdown_rect.right - int(10 * self.ui_scale), dropdown_rect.centery),
-            (dropdown_rect.right - int(15 * self.ui_scale), dropdown_rect.centery + arrow_size)
+            (dropdown_rect.right - inset - int(5 * self.ui_scale), dropdown_rect.centery - arrow_size),
+            (dropdown_rect.right - inset, dropdown_rect.centery),
+            (dropdown_rect.right - inset - int(5 * self.ui_scale), dropdown_rect.centery + arrow_size)
         ]
         pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
 
@@ -1834,25 +1843,23 @@ class ConfigPanel:
         dropdown_rect = self.ui_elements['turn_mode_dropdown']
         hovered = (self.hovered_element == 'turn_mode_dropdown')
 
-        # Draw dropdown background (parchment color with brass border)
-        pygame.draw.rect(self.screen, PARCHMENT_COLOR, dropdown_rect, border_radius=5)
-        border_color = BRASS_COLOR if hovered else (120, 100, 80)
-        pygame.draw.rect(self.screen, border_color, dropdown_rect, 2, border_radius=5)
+        # Wood-framed box (ResourceSlot beams) around the parchment fill
+        inset = self._draw_framed_selector(dropdown_rect, hovered)
 
         # Current selection text (the modes are explained by the label's tooltip)
         current_text = self.config.turn_mode_options[self.config.turn_mode]
         dropdown_font_size = max(12, int(18 * self.ui_scale))
         dropdown_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dropdown_font_size)
         text_surface = dropdown_font.render(current_text, True, TEXT_COLOR)
-        text_rect = text_surface.get_rect(midleft=(dropdown_rect.x + int(10 * self.ui_scale), dropdown_rect.centery))
+        text_rect = text_surface.get_rect(midleft=(dropdown_rect.x + inset, dropdown_rect.centery))
         self.screen.blit(text_surface, text_rect)
 
         # Dropdown arrow
         arrow_size = int(5 * self.ui_scale)
         arrow_points = [
-            (dropdown_rect.right - int(15 * self.ui_scale), dropdown_rect.centery - arrow_size),
-            (dropdown_rect.right - int(10 * self.ui_scale), dropdown_rect.centery),
-            (dropdown_rect.right - int(15 * self.ui_scale), dropdown_rect.centery + arrow_size)
+            (dropdown_rect.right - inset - int(5 * self.ui_scale), dropdown_rect.centery - arrow_size),
+            (dropdown_rect.right - inset, dropdown_rect.centery),
+            (dropdown_rect.right - inset - int(5 * self.ui_scale), dropdown_rect.centery + arrow_size)
         ]
         pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
 
