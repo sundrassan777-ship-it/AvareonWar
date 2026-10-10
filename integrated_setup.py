@@ -30,6 +30,7 @@ from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _M
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
+from ui.additional_options_overlay import AdditionalOptionsOverlay
 
 logger = get_logger(__name__)
 
@@ -736,29 +737,21 @@ class ConfigPanel:
         self.active_dropdown = None  # Which dropdown is open: 'slot0_player', 'slot1_color', etc.
         self.hovered_dropdown_item = None  # Which item in the dropdown is hovered
 
-        # Additional Options overlay state
-        self.overlay_open = False
-        self.overlay_neutral_armies = False  # Temp checkbox state while overlay open
-        self.overlay_randomize_bonuses = False  # Temp checkbox state while overlay open
-        self.overlay_gold_transfer = 0  # Temp gold transfer setting while overlay open (0-4)
-        self.overlay_gold_transfer_dd_open = False  # Is the gold transfer dropdown currently open
-        self.overlay_hovered = None  # Hovered overlay element: 'neutral_cb', 'randomize_cb', 'gold_transfer_dd', 'confirm_btn', 'cancel_btn'
-        self.overlay_clicked = None  # Clicked overlay element (one-frame flash)
-        self.overlay_rects = {}  # Computed rects for overlay elements
-
-        # Load overlay background image (InGameMenuBG.png)
-        try:
-            self.overlay_bg_image = pygame.image.load('assets/InGameMenuBG.png').convert_alpha()
-        except (FileNotFoundError, pygame.error, OSError):
-            self.overlay_bg_image = None
-        # Load overlay button background (GMenuButton.png)
-        try:
-            self.overlay_button_bg = pygame.image.load('assets/GMenuButton.png').convert_alpha()
-        except (FileNotFoundError, pygame.error, OSError):
-            self.overlay_button_bg = None
-
         # Layout
         self._calculate_layout()
+
+        # Additional Options window (shared with the multiplayer lobby). It edits a copy
+        # of the options and hands them back on Confirm.
+        self.options_overlay = AdditionalOptionsOverlay(self.ui_scale, self.config.gold_transfer_options)
+
+    @property
+    def overlay_open(self):
+        """True while the Additional Options window is showing (it blocks all other input)."""
+        return self.options_overlay.is_open
+
+    def close_overlay(self):
+        """Close the Additional Options window, discarding its edits (Escape)."""
+        self.options_overlay.close()
 
     def _calculate_layout(self):
         """Calculate positions for all UI elements - TABLE LAYOUT"""
@@ -979,7 +972,9 @@ class ConfigPanel:
         """Update hover state"""
         # Block normal hover while overlay is open
         if self.overlay_open:
-            self._update_overlay_hover(mouse_pos)
+            self.hovered_element = None
+            self.hovered_dropdown_item = None
+            self.options_overlay.update_hover(mouse_pos, self.screen.get_size())
             return
 
         if not self.bounds.collidepoint(mouse_pos):
@@ -1019,7 +1014,12 @@ class ConfigPanel:
         """Handle click on UI element - TABLE VERSION"""
         # Route clicks to overlay handler while overlay is open
         if self.overlay_open:
-            return self._handle_overlay_click(pos)
+            if self.options_overlay.handle_click(pos, self.screen.get_size()) == 'confirm':
+                values = self.options_overlay.values
+                self.config.neutral_armies = values['neutral_armies']
+                self.config.randomize_bonuses = values['randomize_bonuses']
+                self.config.gold_transfer = values['gold_transfer']
+            return None
 
         if not self.bounds.collidepoint(pos):
             # Click outside panel - close any open dropdown
@@ -1140,12 +1140,12 @@ class ConfigPanel:
                 # Handle Additional Options button
                 if element_name == 'additional_options_button':
                     sound_manager.play_ui_click()
-                    # Copy current config values to temp overlay state
-                    self.overlay_neutral_armies = self.config.neutral_armies
-                    self.overlay_randomize_bonuses = self.config.randomize_bonuses
-                    self.overlay_gold_transfer = self.config.gold_transfer
-                    self.overlay_gold_transfer_dd_open = False
-                    self.overlay_open = True
+                    # The window edits a copy; Confirm writes it back in handle_click()
+                    self.options_overlay.open({
+                        'neutral_armies': self.config.neutral_armies,
+                        'randomize_bonuses': self.config.randomize_bonuses,
+                        'gold_transfer': self.config.gold_transfer,
+                    })
                     return None
 
                 # Handle buttons
@@ -1374,10 +1374,7 @@ class ConfigPanel:
             self._draw_dropdown_menu()
 
         # Draw Additional Options overlay on top of everything (if open)
-        if self.overlay_open:
-            self._draw_additional_options_overlay()
-            # Gold transfer dropdown items render above the overlay so they aren't clipped
-            self._draw_overlay_gold_transfer_items()
+        self.options_overlay.draw(self.screen)
 
     def _draw_table(self):
         """Draw the player configuration table"""
@@ -1839,264 +1836,6 @@ class ConfigPanel:
         ]
         pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
 
-    def _handle_overlay_click(self, pos):
-        """Handle clicks within the Additional Options overlay"""
-        # If gold transfer dropdown is open, check item clicks first
-        if self.overlay_gold_transfer_dd_open:
-            for i, _ in enumerate(self.config.gold_transfer_options):
-                item_key = f'gold_transfer_item_{i}'
-                if item_key in self.overlay_rects and self.overlay_rects[item_key].collidepoint(pos):
-                    sound_manager.play_ui_click()
-                    self.overlay_gold_transfer = i
-                    self.overlay_gold_transfer_dd_open = False
-                    return None
-            # Click outside items closes the dropdown
-            if 'gold_transfer_dd' in self.overlay_rects and not self.overlay_rects['gold_transfer_dd'].collidepoint(pos):
-                self.overlay_gold_transfer_dd_open = False
-            return None
-
-        # Check checkbox clicks
-        if 'neutral_cb' in self.overlay_rects and self.overlay_rects['neutral_cb'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_neutral_armies = not self.overlay_neutral_armies
-            self.overlay_clicked = 'neutral_cb'
-            return None
-
-        if 'randomize_cb' in self.overlay_rects and self.overlay_rects['randomize_cb'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_randomize_bonuses = not self.overlay_randomize_bonuses
-            self.overlay_clicked = 'randomize_cb'
-            return None
-
-        # Gold transfer dropdown — toggle open
-        if 'gold_transfer_dd' in self.overlay_rects and self.overlay_rects['gold_transfer_dd'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_gold_transfer_dd_open = not self.overlay_gold_transfer_dd_open
-            self.overlay_clicked = 'gold_transfer_dd'
-            return None
-
-        # Check Confirm button
-        if 'confirm_btn' in self.overlay_rects and self.overlay_rects['confirm_btn'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_clicked = 'confirm_btn'
-            # Apply temp values to config
-            self.config.neutral_armies = self.overlay_neutral_armies
-            self.config.randomize_bonuses = self.overlay_randomize_bonuses
-            self.config.gold_transfer = self.overlay_gold_transfer
-            self.overlay_open = False
-            return None
-
-        # Check Cancel button
-        if 'cancel_btn' in self.overlay_rects and self.overlay_rects['cancel_btn'].collidepoint(pos):
-            sound_manager.play_ui_click()
-            self.overlay_clicked = 'cancel_btn'
-            # Discard temp values
-            self.overlay_open = False
-            return None
-
-        # Click outside overlay elements does nothing (blocks background clicks)
-        return None
-
-    def _update_overlay_hover(self, mouse_pos):
-        """Update hover state for the Additional Options overlay"""
-        self.hovered_element = None  # Clear normal hover
-        self.overlay_hovered = None
-        for element_name, rect in self.overlay_rects.items():
-            if rect.collidepoint(mouse_pos):
-                self.overlay_hovered = element_name
-                return
-
-    def _draw_additional_options_overlay(self):
-        """Draw the Additional Options modal overlay on top of the setup panel"""
-        screen_w, screen_h = self.screen.get_size()
-
-        # Semi-transparent dark overlay covering entire screen
-        dark_overlay = pygame.Surface((screen_w, screen_h))
-        dark_overlay.set_alpha(180)
-        dark_overlay.fill((0, 0, 0))
-        self.screen.blit(dark_overlay, (0, 0))
-
-        # Overlay panel dimensions (scaled from reference 400x380 at 1600x900 — taller to fit gold transfer row)
-        scale = self.ui_scale
-        panel_w = int(400 * scale)
-        panel_h = int(380 * scale)
-        panel_x = (screen_w - panel_w) // 2
-        panel_y = (screen_h - panel_h) // 2
-
-        # Draw InGameMenuBG.png as background, or fallback to solid color
-        if self.overlay_bg_image:
-            scaled_bg = pygame.transform.smoothscale(self.overlay_bg_image, (panel_w, panel_h))
-            self.screen.blit(scaled_bg, (panel_x, panel_y))
-        else:
-            pygame.draw.rect(self.screen, PANEL_BG, (panel_x, panel_y, panel_w, panel_h))
-            pygame.draw.rect(self.screen, BRASS_COLOR, (panel_x, panel_y, panel_w, panel_h), 2)
-
-        # Title
-        title_font_size = max(16, int(26 * scale))
-        title_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf', title_font_size)
-        title_surface = title_font.render("Additional Options", True, TEXT_COLOR)
-        title_rect = title_surface.get_rect(centerx=panel_x + panel_w // 2, top=panel_y + int(25 * scale))
-        self.screen.blit(title_surface, title_rect)
-
-        # Separator line below title
-        sep_y = title_rect.bottom + int(10 * scale)
-        sep_margin = int(30 * scale)
-        pygame.draw.line(self.screen, BRASS_COLOR,
-                         (panel_x + sep_margin, sep_y),
-                         (panel_x + panel_w - sep_margin, sep_y), 1)
-
-        # Checkbox rows — checkboxes aligned to same x position
-        label_font_size = max(13, int(20 * scale))
-        label_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', label_font_size)
-        cb_size = int(22 * scale)  # Checkbox box size
-        row_x = panel_x + int(40 * scale)
-        row_start_y = sep_y + int(25 * scale)
-        row_spacing = int(45 * scale)
-        # Fixed checkbox x: right side of panel with margin
-        cb_x = panel_x + panel_w - int(40 * scale) - cb_size
-
-        # Row 1: Neutral Armies
-        row1_y = row_start_y
-        neutral_label = label_font.render("Neutral Armies:", True, TEXT_COLOR)
-        self.screen.blit(neutral_label, (row_x, row1_y + (cb_size - neutral_label.get_height()) // 2))
-        neutral_cb_rect = pygame.Rect(cb_x, row1_y, cb_size, cb_size)
-        self.overlay_rects['neutral_cb'] = neutral_cb_rect
-        self._draw_overlay_checkbox(neutral_cb_rect, self.overlay_neutral_armies,
-                                     self.overlay_hovered == 'neutral_cb')
-
-        # Row 2: Randomize Territory Bonuses (split across two lines)
-        row2_y = row_start_y + row_spacing
-        bonus_line1 = label_font.render("Randomize Territory", True, TEXT_COLOR)
-        bonus_line2 = label_font.render("Bonuses:", True, TEXT_COLOR)
-        line_gap = int(3 * scale)
-        total_text_h = bonus_line1.get_height() + line_gap + bonus_line2.get_height()
-        line1_y = row2_y
-        line2_y = line1_y + bonus_line1.get_height() + line_gap
-        self.screen.blit(bonus_line1, (row_x, line1_y))
-        self.screen.blit(bonus_line2, (row_x, line2_y))
-        # Checkbox at same x as row 1, vertically centered with two-line block
-        bonus_cb_y = line1_y + (total_text_h - cb_size) // 2
-        bonus_cb_rect = pygame.Rect(cb_x, bonus_cb_y, cb_size, cb_size)
-        self.overlay_rects['randomize_cb'] = bonus_cb_rect
-        self._draw_overlay_checkbox(bonus_cb_rect, self.overlay_randomize_bonuses,
-                                     self.overlay_hovered == 'randomize_cb')
-
-        # Row 3: Gold Transfer dropdown
-        row3_y = line2_y + bonus_line2.get_height() + int(20 * scale)
-        gold_label = label_font.render("Gold Transfer:", True, TEXT_COLOR)
-        dd_w = int(150 * scale)
-        dd_h = int(26 * scale)
-        self.screen.blit(gold_label, (row_x, row3_y + (dd_h - gold_label.get_height()) // 2))
-        dd_x = panel_x + panel_w - int(40 * scale) - dd_w
-        dd_rect = pygame.Rect(dd_x, row3_y, dd_w, dd_h)
-        self.overlay_rects['gold_transfer_dd'] = dd_rect
-        self._draw_overlay_dropdown(dd_rect,
-                                     self.config.gold_transfer_options[self.overlay_gold_transfer],
-                                     self.overlay_hovered == 'gold_transfer_dd' or self.overlay_gold_transfer_dd_open,
-                                     scale)
-
-        # Buttons at bottom: Cancel (left) and Confirm (right)
-        btn_w = int(130 * scale)
-        btn_h = int(45 * scale)
-        btn_y = panel_y + panel_h - int(55 * scale)
-        btn_gap = int(20 * scale)
-        total_btn_width = 2 * btn_w + btn_gap
-        btn_start_x = panel_x + (panel_w - total_btn_width) // 2
-
-        cancel_rect = pygame.Rect(btn_start_x, btn_y, btn_w, btn_h)
-        confirm_rect = pygame.Rect(btn_start_x + btn_w + btn_gap, btn_y, btn_w, btn_h)
-        self.overlay_rects['cancel_btn'] = cancel_rect
-        self.overlay_rects['confirm_btn'] = confirm_rect
-
-        self._draw_overlay_button(cancel_rect, "Cancel",
-                                   self.overlay_hovered == 'cancel_btn',
-                                   self.overlay_clicked == 'cancel_btn')
-        self._draw_overlay_button(confirm_rect, "Confirm",
-                                   self.overlay_hovered == 'confirm_btn',
-                                   self.overlay_clicked == 'confirm_btn')
-
-    def _draw_overlay_checkbox(self, rect, checked, hovered):
-        """Draw a checkbox for the Additional Options overlay"""
-        bg_color = lighten_color(PANEL_BG, 0.3) if hovered else lighten_color(PANEL_BG, 0.1)
-        pygame.draw.rect(self.screen, bg_color, rect, border_radius=3)
-        pygame.draw.rect(self.screen, TEXT_COLOR, rect, 1, border_radius=3)
-        if checked:
-            # Draw checkmark (X shape)
-            pygame.draw.line(self.screen, RADIO_SELECTED,
-                             (rect.x + 4, rect.y + 4), (rect.right - 4, rect.bottom - 4), 2)
-            pygame.draw.line(self.screen, RADIO_SELECTED,
-                             (rect.right - 4, rect.y + 4), (rect.x + 4, rect.bottom - 4), 2)
-
-    def _draw_overlay_button(self, rect, text, hovered, clicked):
-        """Draw a button for the Additional Options overlay"""
-        if self.overlay_button_bg:
-            scaled_bg = pygame.transform.smoothscale(self.overlay_button_bg, (rect.width, rect.height))
-            button_surface = scaled_bg.copy()
-            # Darken base
-            button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
-            if clicked:
-                button_surface.fill((80, 80, 80, 0), special_flags=pygame.BLEND_RGBA_ADD)
-            elif hovered:
-                button_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
-            self.screen.blit(button_surface, rect)
-        else:
-            bg_color = PARCHMENT_CLICK if clicked else (PARCHMENT_HOVER if hovered else PARCHMENT_COLOR)
-            pygame.draw.rect(self.screen, bg_color, rect, border_radius=5)
-            pygame.draw.rect(self.screen, BRASS_COLOR, rect, 2, border_radius=5)
-
-        btn_font_size = max(14, int(22 * self.ui_scale))
-        btn_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', btn_font_size)
-        text_surface = btn_font.render(text, True, TEXT_COLOR)
-        text_rect = text_surface.get_rect(center=rect.center)
-        self.screen.blit(text_surface, text_rect)
-
-    def _draw_overlay_dropdown(self, rect, selected_label, hovered, scale):
-        """Draw a small dropdown used inside the Additional Options overlay."""
-        bg_color = lighten_color(PANEL_BG, 0.3) if hovered else lighten_color(PANEL_BG, 0.15)
-        pygame.draw.rect(self.screen, bg_color, rect, border_radius=4)
-        pygame.draw.rect(self.screen, BRASS_COLOR, rect, 1, border_radius=4)
-
-        dd_font_size = max(11, int(16 * scale))
-        dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dd_font_size)
-        text_surface = dd_font.render(selected_label, True, TEXT_COLOR)
-        text_rect = text_surface.get_rect(midleft=(rect.x + int(8 * scale), rect.centery))
-        self.screen.blit(text_surface, text_rect)
-
-        # Arrow
-        arrow_size = int(4 * scale)
-        arrow_points = [
-            (rect.right - int(12 * scale), rect.centery - arrow_size),
-            (rect.right - int(6 * scale), rect.centery),
-            (rect.right - int(12 * scale), rect.centery + arrow_size),
-        ]
-        pygame.draw.polygon(self.screen, TEXT_COLOR, arrow_points)
-
-    def _draw_overlay_gold_transfer_items(self):
-        """Draw the dropdown item list for gold transfer (called AFTER main overlay so items overlay everything)."""
-        if not self.overlay_gold_transfer_dd_open:
-            return
-        dd_rect = self.overlay_rects.get('gold_transfer_dd')
-        if not dd_rect:
-            return
-
-        scale = self.ui_scale
-        item_h = dd_rect.height
-        mouse_pos = pygame.mouse.get_pos()
-
-        dd_font_size = max(11, int(16 * scale))
-        dd_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', dd_font_size)
-
-        for i, option in enumerate(self.config.gold_transfer_options):
-            item_rect = pygame.Rect(dd_rect.x, dd_rect.bottom + i * item_h, dd_rect.width, item_h)
-            self.overlay_rects[f'gold_transfer_item_{i}'] = item_rect
-            is_hovered = item_rect.collidepoint(mouse_pos)
-            bg_color = lighten_color(BUTTON_COLOR, 0.3) if is_hovered else PARCHMENT_COLOR
-            pygame.draw.rect(self.screen, bg_color, item_rect, border_radius=3)
-            pygame.draw.rect(self.screen, BRASS_COLOR if is_hovered else GRAY, item_rect, 1, border_radius=3)
-            text_surface = dd_font.render(option, True, TEXT_COLOR)
-            text_rect = text_surface.get_rect(midleft=(item_rect.x + int(8 * scale), item_rect.centery))
-            self.screen.blit(text_surface, text_rect)
-
     def _draw_dropdown_menu(self):
         """Draw the active dropdown menu overlaying content"""
         if not self.active_dropdown:
@@ -2341,7 +2080,13 @@ class IntegratedSetup:
 
         # Update hover states
         self.config_panel.update_hover(mouse_pos)
-        self.map_preview.update_hover(mouse_pos)
+        if self.config_panel.overlay_open:
+            # The Additional Options window is modal: territories (and the map's arrows /
+            # checkbox) under it must not light up
+            self.map_preview.hovered_territory = None
+            self.map_preview.hovered_arrow = None
+        else:
+            self.map_preview.update_hover(mouse_pos)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -2355,9 +2100,10 @@ class IntegratedSetup:
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    # Close overlay first (acts as Cancel), otherwise cancel setup
+                    # Close overlay first (acts as Cancel; an open list closes before
+                    # the window), otherwise cancel setup
                     if self.config_panel.overlay_open:
-                        self.config_panel.overlay_open = False
+                        self.config_panel.options_overlay.handle_key(event)
                     else:
                         self.cancelled = True
 
@@ -2383,7 +2129,6 @@ class IntegratedSetup:
 
         # Reset clicked state after a frame
         self.config_panel.clicked_element = None
-        self.config_panel.overlay_clicked = None
 
     def render(self):
         """Render setup window"""

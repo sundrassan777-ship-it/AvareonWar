@@ -282,34 +282,8 @@ class SidebarWidgets:
         if cached is not None:
             return cached
 
-        surf = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
-        dl, dt, dr, db = border
-        # Fill first, inset by half the border so it never peeks outside the frame
-        if fill is not None:
-            inner = pygame.Rect(dl // 2, dt // 2, max(1, w - (dl + dr) // 2), max(1, h - (dt + db) // 2))
-            _paint_fill(surf, inner, fill)
-
-        image, (sl, st, sr, sb) = self._frame_art(frame)
-        if image is None:
-            pygame.draw.rect(surf, BRONZE_EDGE, surf.get_rect(), max(1, min(border)))
-            return self._put(key, surf)
-
-        iw, ih = image.get_size()
-        sx = (0, sl, iw - sr, iw)
-        sy = (0, st, ih - sb, ih)
-        dx = (0, dl, w - dr, w)
-        dy = (0, dt, h - db, h)
-        for row in range(3):
-            for col in range(3):
-                if row == 1 and col == 1:
-                    continue  # middle: our fill, never the art's
-                src = pygame.Rect(sx[col], sy[row], sx[col + 1] - sx[col], sy[row + 1] - sy[row])
-                dst_w, dst_h = dx[col + 1] - dx[col], dy[row + 1] - dy[row]
-                if src.w <= 0 or src.h <= 0 or dst_w <= 0 or dst_h <= 0:
-                    continue
-                piece = pygame.transform.smoothscale(image.subsurface(src), (dst_w, dst_h))
-                surf.blit(piece, (dx[col], dy[row]))
-        return self._put(key, surf)
+        image, insets = self._frame_art(frame)
+        return self._put(key, render_nine_slice(image, insets, (w, h), border, fill))
 
     def card(self, frame, size, border, fill, state='normal'):
         """A framed card with a baked interaction state.
@@ -763,6 +737,55 @@ class SidebarWidgets:
 
 
 # ---------------------------------------------------------------------- helpers
+
+def render_nine_slice(image, insets, size, border, fill=None, keep_middle=False):
+    """Frame art stretched to `size` with fixed-thickness borders (uncached).
+
+    Module-level so screens without a Game (the setup screens' Additional Options
+    window, framed dropdowns and player table) share the sidebar's nine-slice. Callers
+    cache the result: every call smoothscales eight pieces.
+
+    Args:
+        image: Source art (None draws a plain bronze box instead).
+        insets: Border thickness of the SOURCE art (l, t, r, b).
+        size: (w, h) of the result.
+        border: Destination border thickness in px (int, or (l, t, r, b)).
+        fill: Middle fill — colour, ((top), (bottom)) gradient pair, or None.
+        keep_middle: Stretch the art's own middle too (textured panels such as
+            InGameMenuBG). False leaves it to `fill` (ResourceSlot's middle is black).
+    """
+    w, h = int(size[0]), int(size[1])
+    if isinstance(border, int):
+        border = (border, border, border, border)
+    surf = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
+    dl, dt, dr, db = border
+    # Fill first, inset by half the border so it never peeks outside the frame
+    if fill is not None:
+        inner = pygame.Rect(dl // 2, dt // 2, max(1, w - (dl + dr) // 2), max(1, h - (dt + db) // 2))
+        _paint_fill(surf, inner, fill)
+
+    if image is None:
+        pygame.draw.rect(surf, BRONZE_EDGE, surf.get_rect(), max(1, min(border)))
+        return surf
+
+    sl, st, sr, sb = insets
+    iw, ih = image.get_size()
+    sx = (0, sl, iw - sr, iw)
+    sy = (0, st, ih - sb, ih)
+    dx = (0, dl, w - dr, w)
+    dy = (0, dt, h - db, h)
+    for row in range(3):
+        for col in range(3):
+            if row == 1 and col == 1 and not keep_middle:
+                continue  # middle: our fill, never the art's
+            src = pygame.Rect(sx[col], sy[row], sx[col + 1] - sx[col], sy[row + 1] - sy[row])
+            dst_w, dst_h = dx[col + 1] - dx[col], dy[row + 1] - dy[row]
+            if src.w <= 0 or src.h <= 0 or dst_w <= 0 or dst_h <= 0:
+                continue
+            piece = pygame.transform.smoothscale(image.subsurface(src), (dst_w, dst_h))
+            surf.blit(piece, (dx[col], dy[row]))
+    return surf
+
 
 def _fill_key(fill):
     if fill is None:
