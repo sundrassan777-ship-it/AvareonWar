@@ -18,7 +18,8 @@ from network.lobby import (
     AI_EASY, AI_MEDIUM, AI_HARD, PLAYER_COLORS as LOBBY_PLAYER_COLORS
 )
 from network_config import MessageType
-from config.constants import ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT
+from config.constants import (ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT, STARTING_GOLD_DEFAULT,
+                              clamp_starting_gold)
 from settings_manager import settings
 from global_sound import sound_manager
 from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _MUSIC_END_EVENT
@@ -200,6 +201,7 @@ class TerritorySelector:
         self.randomize_bonuses = False
         self.gold_transfer = 0  # 0=Disabled, 1=25%, 2=50%, 3=75%, 4=100%
         self.gold_transfer_options = ["Disabled", "Enabled (25%)", "Enabled (50%)", "Enabled (75%)", "Enabled (100%)"]
+        self.starting_gold = STARTING_GOLD_DEFAULT  # Applies to every player; host decides
         self.bonus_mapping = None  # Host-generated randomized bonus mapping for multiplayer sync
 
         # Additional Options window (shared with the Custom Game setup). The host edits a
@@ -549,13 +551,14 @@ class TerritorySelector:
                     _music_manager.handle_music_end_event()
 
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        # Close friend picker or overlay first, otherwise exit selector
+                    if self.overlay_open and not self._show_friend_picker:
+                        # Every key goes to the window while it shows (Starting Gold
+                        # typing; Escape closes an open list / the field, then the window)
+                        self.options_overlay.handle_key(event)
+                    elif event.key == pygame.K_ESCAPE:
+                        # Close friend picker first, otherwise exit selector
                         if self._show_friend_picker:
                             self._show_friend_picker = False
-                        elif self.overlay_open:
-                            # An open list closes first, then the window (= Cancel)
-                            self.options_overlay.handle_key(event)
                         else:
                             return None
 
@@ -1044,6 +1047,7 @@ class TerritorySelector:
         self.lobby_state.neutral_armies = self.neutral_armies
         self.lobby_state.randomize_bonuses = self.randomize_bonuses
         self.lobby_state.gold_transfer = self.gold_transfer
+        self.lobby_state.starting_gold = self.starting_gold
 
         # Send LOBBY_LAUNCH to all clients with final state
         final_slots = [slot.to_dict() for slot in self.lobby_state.slots]
@@ -1078,6 +1082,7 @@ class TerritorySelector:
             'neutral_armies': self.neutral_armies,
             'randomize_bonuses': self.randomize_bonuses,
             'gold_transfer': self.gold_transfer,
+            'starting_gold': self.starting_gold,
             'map_id': self.selected_map,  # Selected map for multi-map support
         })
         self.network_connection.send_message(message)
@@ -1244,6 +1249,7 @@ class TerritorySelector:
                     self.neutral_armies = self.lobby_state.neutral_armies
                     self.randomize_bonuses = self.lobby_state.randomize_bonuses
                     self.gold_transfer = self.lobby_state.gold_transfer
+                    self.starting_gold = self.lobby_state.starting_gold
 
                     # Find our slot by name (host may have reassigned us)
                     # Skip slot 0 (host) - client is never the host
@@ -1374,6 +1380,10 @@ class TerritorySelector:
                     self.turn_mode = self.lobby_state.turn_mode
                     self.neutral_armies = self.lobby_state.neutral_armies
                     self.randomize_bonuses = self.lobby_state.randomize_bonuses
+                    # Final values from the launch message (the game config reads
+                    # starting_gold from lobby_state; keep the screen's copy in step)
+                    self.gold_transfer = self.lobby_state.gold_transfer
+                    self.starting_gold = self.lobby_state.starting_gold
                     # Extract host-generated bonus mapping for randomized bonuses
                     if 'bonus_mapping' in data['settings']:
                         self.bonus_mapping = data['settings']['bonus_mapping']
@@ -1402,6 +1412,8 @@ class TerritorySelector:
                     self.randomize_bonuses = data.get('randomize_bonuses', False)
                     self.gold_transfer = data.get('gold_transfer', 0)
                     self.lobby_state.gold_transfer = self.gold_transfer
+                    self.starting_gold = clamp_starting_gold(data.get('starting_gold', STARTING_GOLD_DEFAULT))
+                    self.lobby_state.starting_gold = self.starting_gold
                     # Handle map change from host
                     new_map_id = data.get('map_id', 'avareon')
                     if new_map_id != self.selected_map:
@@ -1449,6 +1461,9 @@ class TerritorySelector:
                 if 'gold_transfer' in data:
                     self.gold_transfer = data.get('gold_transfer')
                     self.lobby_state.gold_transfer = self.gold_transfer
+                if 'starting_gold' in data:
+                    self.starting_gold = clamp_starting_gold(data.get('starting_gold'))
+                    self.lobby_state.starting_gold = self.starting_gold
                 self._sync_from_lobby_state()
                 self.ready_to_start = True
                 logger.info("Setup complete - starting game!")
@@ -1497,7 +1512,7 @@ class TerritorySelector:
         # Draw Additional Options overlay on top of everything (if open)
         if self.overlay_open and self.options_overlay.read_only:
             # Client view mirrors the host live (settings can arrive while it's open)
-            self.options_overlay.values = self._additional_options_values()
+            self.options_overlay.set_values(self._additional_options_values())
         self.options_overlay.draw(self.screen)
 
         # Draw friend picker modal on top of everything (if open)
@@ -2383,6 +2398,7 @@ class TerritorySelector:
             'neutral_armies': self.neutral_armies,
             'randomize_bonuses': self.randomize_bonuses,
             'gold_transfer': self.gold_transfer,
+            'starting_gold': self.starting_gold,
         }
 
     def _handle_overlay_click(self, pos):
@@ -2393,7 +2409,15 @@ class TerritorySelector:
         self.neutral_armies = values['neutral_armies']
         self.randomize_bonuses = values['randomize_bonuses']
         self.gold_transfer = values['gold_transfer']
+        self.starting_gold = values['starting_gold']
         if self.is_host:
+            # Keep lobby_state current too: a later LOBBY_STATE broadcast (someone
+            # joins) carries its settings and would otherwise reset the clients'
+            # copies to the values from before this Confirm
+            self.lobby_state.neutral_armies = self.neutral_armies
+            self.lobby_state.randomize_bonuses = self.randomize_bonuses
+            self.lobby_state.gold_transfer = self.gold_transfer
+            self.lobby_state.starting_gold = self.starting_gold
             self._sync_settings_to_client()
 
     # ------------------------------------------------------------------

@@ -15,16 +15,21 @@ This module owns the window instead:
 - Edits go to temporary values; Confirm returns them, Cancel / Escape discards them.
 - read_only=True (multiplayer clients) shows the host's choices greyed out with a
   single Close button.
+- Starting Gold is a typed number field (digits only, clamped to
+  STARTING_GOLD_MIN..MAX when it loses focus and on Confirm; empty -> default).
 
 Usage:
     overlay = AdditionalOptionsOverlay(ui_scale, gold_transfer_options)
-    overlay.open({'neutral_armies': .., 'randomize_bonuses': .., 'gold_transfer': ..})
+    overlay.open({'neutral_armies': .., 'randomize_bonuses': .., 'gold_transfer': ..,
+                  'starting_gold': ..})
     result = overlay.handle_click(pos)      # 'confirm' | 'cancel' | None
     if result == 'confirm': apply(overlay.values)
 """
 
 import pygame
 
+from config.constants import (STARTING_GOLD_DEFAULT, STARTING_GOLD_MIN, STARTING_GOLD_MAX,
+                              clamp_starting_gold)
 from rendering.sidebar_widgets import render_nine_slice
 from utils.surface_utils import load_cached_image
 from utils.logger import get_logger
@@ -61,7 +66,11 @@ ROWS = (
     ('neutral_armies', 'checkbox', ("Neutral Armies:",)),
     ('randomize_bonuses', 'checkbox', ("Randomize Territory", "Bonuses:")),
     ('gold_transfer', 'dropdown', ("Gold Transfer:",)),
+    ('starting_gold', 'number', ("Starting Gold:",)),
 )
+
+GOLD_MAX_DIGITS = len(str(STARTING_GOLD_MAX))
+GOLD_RANGE_HINT = f"{STARTING_GOLD_MIN} - {STARTING_GOLD_MAX:,}"
 
 
 class AdditionalOptionsOverlay:
@@ -74,6 +83,8 @@ class AdditionalOptionsOverlay:
         self.read_only = False
         self.values = {}
         self.dropdown_open = False
+        self.gold_text = str(STARTING_GOLD_DEFAULT)   # Starting Gold field contents
+        self.text_focus = False                        # Starting Gold field is being typed in
         self.hovered = None
         self.rects = {}             # Hit rects from the last layout (also read by tests)
         self._flash = (None, 0)     # (element, ticks) of the last click
@@ -86,16 +97,33 @@ class AdditionalOptionsOverlay:
 
     def open(self, values, read_only=False):
         """Show the window with a copy of `values` to edit."""
-        self.values = dict(values)
+        self.set_values(values)
         self.read_only = read_only
         self.is_open = True
         self.dropdown_open = False
+        self.text_focus = False
+        self.gold_text = str(self.values['starting_gold'])
         self.hovered = None
 
     def close(self):
         self.is_open = False
         self.dropdown_open = False
+        self.text_focus = False
         self.hovered = None
+
+    def set_values(self, values):
+        """Replace the shown values without reopening (read-only view tracking the host)."""
+        self.values = dict(values)
+        self.values['starting_gold'] = clamp_starting_gold(self.values.get('starting_gold', STARTING_GOLD_DEFAULT))
+        if not self.text_focus:
+            self.gold_text = str(self.values['starting_gold'])
+
+    def _commit_gold_text(self):
+        """Field -> value: clamp, empty means default, and show the stored number."""
+        text = self.gold_text.strip()
+        self.values['starting_gold'] = clamp_starting_gold(text) if text else STARTING_GOLD_DEFAULT
+        self.gold_text = str(self.values['starting_gold'])
+        self.text_focus = False
 
     def _flash_on(self, element):
         self._flash = (element, pygame.time.get_ticks())
@@ -177,9 +205,12 @@ class AdditionalOptionsOverlay:
         sep1_y = y + int(round(12 * s))
         y = sep1_y + int(round(20 * s))
         rows = []
+        hint_h = self._small_font().get_height()
         for key, control, lines in ROWS:
             text_h = len(lines) * line_h + (len(lines) - 1) * line_gap
             control_h = cb_size if control == 'checkbox' else dd_h
+            if control == 'number':
+                control_h += hint_h   # Range hint under the field
             row_h = max(text_h, control_h)
             rows.append((key, control, lines, y, row_h, text_h, control_h))
             y += row_h + row_gap
@@ -205,11 +236,17 @@ class AdditionalOptionsOverlay:
             top = panel.y + row_y
             if control == 'checkbox':
                 ctrl = pygame.Rect(content.right - cb_size, top + (row_h - cb_size) // 2, cb_size, cb_size)
+            elif control == 'number':
+                ctrl = pygame.Rect(content.right - dd_w, top + (row_h - control_h) // 2, dd_w, dd_h)
             else:
                 ctrl = pygame.Rect(content.right - dd_w, top + (row_h - dd_h) // 2, dd_w, dd_h)
+            if control == 'number':
+                text_top = ctrl.y + (dd_h - text_h) // 2   # Label level with the field, not the hint
+            else:
+                text_top = top + (row_h - text_h) // 2
             out['rows'].append({
                 'key': key, 'control': control, 'lines': lines,
-                'label_pos': (content.x, top + (row_h - text_h) // 2),
+                'label_pos': (content.x, text_top),
                 'line_step': line_h + line_gap,
                 'label_rect': pygame.Rect(content.x, top, ctrl.x - content.x, row_h),
                 'control_rect': ctrl,
@@ -270,6 +307,10 @@ class AdditionalOptionsOverlay:
                 return 'cancel'
             return None
 
+        # Clicking anywhere but the Starting Gold field ends typing (value is clamped)
+        if self.text_focus and not self.rects['starting_gold'].collidepoint(pos):
+            self._commit_gold_text()
+
         # Open gold-transfer list: pick an item, or any other click just closes it
         if self.dropdown_open:
             for i in range(len(self.gold_transfer_options)):
@@ -288,10 +329,13 @@ class AdditionalOptionsOverlay:
                 elif control == 'dropdown':
                     self.dropdown_open = True
                     self._update_rects(screen_size or pygame.display.get_surface().get_size())
+                elif control == 'number':
+                    self.text_focus = True
                 return None
 
         if self.rects['confirm_btn'].collidepoint(pos):
             self._click('confirm_btn')
+            self._commit_gold_text()
             self.close()
             return 'confirm'
         if self.rects['cancel_btn'].collidepoint(pos):
@@ -301,8 +345,25 @@ class AdditionalOptionsOverlay:
         return None   # Clicks elsewhere are swallowed (modal)
 
     def handle_key(self, event):
-        """KEYDOWN while open. Escape closes the list first, then the window (= Cancel)."""
+        """KEYDOWN while open (the screens route every key here while it shows).
+
+        Typing in Starting Gold: digits, Backspace, Enter / Tab finish the field.
+        Escape stops typing (keeping the old value), else closes the list, else the
+        window (= Cancel).
+        """
         if not self.is_open or event.type != pygame.KEYDOWN:
+            return None
+        if self.text_focus:
+            if event.key == pygame.K_ESCAPE:
+                self.gold_text = str(self.values['starting_gold'])
+                self.text_focus = False
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_TAB):
+                self._commit_gold_text()
+            elif event.key == pygame.K_BACKSPACE:
+                self.gold_text = self.gold_text[:-1]
+            elif getattr(event, 'unicode', '').isdigit() and len(self.gold_text.lstrip('0')) < GOLD_MAX_DIGITS:
+                # Leading zeros are dropped ("0" then "5" -> "5")
+                self.gold_text = (self.gold_text + event.unicode).lstrip('0') or '0'
             return None
         if event.key == pygame.K_ESCAPE:
             if self.dropdown_open:
@@ -397,6 +458,8 @@ class AdditionalOptionsOverlay:
             active = not self.read_only and (self.hovered == key or (key == 'gold_transfer' and self.dropdown_open))
             if row['control'] == 'checkbox':
                 self._draw_checkbox(screen, rect, self.values.get(key, False), active)
+            elif row['control'] == 'number':
+                self._draw_number_field(screen, rect, active, text_color)
             else:
                 index = max(0, min(self.values.get(key, 0), len(self.gold_transfer_options) - 1))
                 self._draw_dropdown(screen, rect, self.gold_transfer_options[index], active, text_color)
@@ -439,6 +502,24 @@ class AdditionalOptionsOverlay:
                 (rect.right - int(6 * s), rect.centery),
                 (rect.right - int(12 * s), rect.centery + a),
             ])
+
+    def _draw_number_field(self, screen, rect, hovered, text_color):
+        """Starting Gold text field + its range hint underneath."""
+        focused = self.text_focus and not self.read_only
+        bg = (66, 66, 74) if (hovered or focused) else (56, 56, 66)
+        pygame.draw.rect(screen, bg, rect, border_radius=4)
+        pygame.draw.rect(screen, BRASS_COLOR, rect, 2 if focused else 1, border_radius=4)
+        s = self.scale
+        font = self._small_font()
+        text = self._render(font, self.gold_text, text_color)
+        text_rect = text.get_rect(midleft=(rect.x + int(8 * s), rect.centery))
+        screen.blit(text, text_rect)
+        if focused and (pygame.time.get_ticks() // 500) % 2 == 0:
+            caret_x = text_rect.right + 2
+            pygame.draw.line(screen, TEXT_COLOR, (caret_x, rect.y + int(5 * s)),
+                             (caret_x, rect.bottom - int(5 * s)), 1)
+        hint = self._render(font, GOLD_RANGE_HINT, TEXT_DISABLED)
+        screen.blit(hint, hint.get_rect(midtop=(rect.centerx, rect.bottom + 1)))
 
     def _draw_dropdown_items(self, screen):
         font = self._small_font()

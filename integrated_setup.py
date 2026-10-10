@@ -21,7 +21,8 @@ import map_data
 from config.constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT, ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT,
     WHITE, BLACK, GRAY, DARK_GRAY,
-    PLAYER_COLORS, NEUTRAL_COLOR  # L3: Single source of truth for player colors
+    PLAYER_COLORS, NEUTRAL_COLOR,  # L3: Single source of truth for player colors
+    STARTING_GOLD_DEFAULT
 )
 from utils.colors import lighten_color, brighten_color
 from global_sound import sound_manager  # Global sound manager for UI clicks
@@ -117,6 +118,8 @@ class SetupConfig:
         # Gold transfer: 0=Disabled, 1=25%, 2=50%, 3=75%, 4=100%
         self.gold_transfer = 0
         self.gold_transfer_options = ["Disabled", "Enabled (25%)", "Enabled (50%)", "Enabled (75%)", "Enabled (100%)"]
+        # Gold every player starts with (typed in Additional Options, clamped there)
+        self.starting_gold = STARTING_GOLD_DEFAULT
 
         # Selected map (default to first map in manifest)
         self.selected_map = map_data.get_map_ids()[0] if map_data.get_map_ids() else 'avareon'
@@ -1019,6 +1022,7 @@ class ConfigPanel:
                 self.config.neutral_armies = values['neutral_armies']
                 self.config.randomize_bonuses = values['randomize_bonuses']
                 self.config.gold_transfer = values['gold_transfer']
+                self.config.starting_gold = values['starting_gold']
             return None
 
         if not self.bounds.collidepoint(pos):
@@ -1145,6 +1149,7 @@ class ConfigPanel:
                         'neutral_armies': self.config.neutral_armies,
                         'randomize_bonuses': self.config.randomize_bonuses,
                         'gold_transfer': self.config.gold_transfer,
+                        'starting_gold': self.config.starting_gold,
                     })
                     return None
 
@@ -2099,13 +2104,12 @@ class IntegratedSetup:
                 _music_manager.handle_music_end_event()
 
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    # Close overlay first (acts as Cancel; an open list closes before
-                    # the window), otherwise cancel setup
-                    if self.config_panel.overlay_open:
-                        self.config_panel.options_overlay.handle_key(event)
-                    else:
-                        self.cancelled = True
+                if self.config_panel.overlay_open:
+                    # Every key goes to the window while it shows (Starting Gold typing;
+                    # Escape closes an open list / the field first, then the window)
+                    self.config_panel.options_overlay.handle_key(event)
+                elif event.key == pygame.K_ESCAPE:
+                    self.cancelled = True
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left click
@@ -2156,6 +2160,7 @@ class IntegratedSetup:
             'neutral_armies': self.config.neutral_armies,  # Additional option: neutral armies on territories
             'randomize_bonuses': self.config.randomize_bonuses,  # Additional option: randomize territory bonuses
             'gold_transfer': self.config.gold_transfer,  # Gold transfer setting: 0=Disabled, 1-4=25/50/75/100%
+            'starting_gold': self.config.starting_gold,  # Gold each player starts with (0-10,000)
             'map_id': self.config.selected_map,  # Selected map ID
         }
 
