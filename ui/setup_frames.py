@@ -20,6 +20,7 @@ import pygame
 
 _STATE_ADD = {'hover': 28, 'open': 28}   # Brightness added for hover / open (sidebar cards use 28)
 _DISABLED_MULT = (150, 150, 150, 255)    # Read-only selectors (multiplayer clients)
+WOOD_TINT = (175, 175, 175, 255)         # Darkens the selector beams (owner: raw art too bright)
 
 
 class SetupFrames:
@@ -49,8 +50,14 @@ class SetupFrames:
         if surf is None:
             image, insets = self._art('wood')
             beam = self.beam(size[1])
-            # The fill reaches under the beams' inner half so no gap shows at the edge
-            surf = render_nine_slice(image, insets, size, beam, fill=tuple(fill))
+            # Beams alone first, darkened (the raw ResourceSlot wood is too bright next
+            # to the setup panel), then laid over the fill. The fill reaches under the
+            # beams' inner half so no gap shows at the edge.
+            frame = render_nine_slice(image, insets, size, beam)
+            frame.fill(WOOD_TINT, special_flags=pygame.BLEND_RGBA_MULT)
+            surf = pygame.Surface(size, pygame.SRCALPHA)
+            surf.fill(tuple(fill), pygame.Rect(beam // 2, beam // 2, size[0] - beam, size[1] - beam))
+            surf.blit(frame, (0, 0))
             if state in _STATE_ADD:
                 add = _STATE_ADD[state]
                 surf.fill((add, add, add), special_flags=pygame.BLEND_RGB_ADD)
