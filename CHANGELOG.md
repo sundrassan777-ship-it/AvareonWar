@@ -2,6 +2,75 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-11 - Multiplayer audit, Phase 4: simultaneous mode - the host is the truth
+
+Branch `fix/multiplayer-sync`. Developer guide: "Multiplayer model (the host is the
+truth)" under Simultaneous Mode in CODE_GUIDE.md.
+- **H11 / M12** Execution start: the host validates every order and applies all
+  non-movement orders (`SimPhaseManager.begin_authoritative_execution()`), then sends
+  `SIM_ALL_READY{snapshot, movement_orders, forced_defenders}`; clients apply the snapshot
+  and run exactly those movements (`_sim_apply_all_ready()`). The client-side order
+  executor (`_sim_execute_merged_orders`) is gone - it ran orders the host had rejected.
+- **Round end** carries a full snapshot (`_sim_broadcast_round_complete()`); clients close
+  any open battle window and drop leftover battles / markers before applying it
+  (`_sim_apply_round_complete()`). Replaces a hand-maintained field list (M5 for sim mode).
+- **H10 / M10** AI battle resolution, AI alliance choices, round ends and AI planning run on
+  the host only (`complete_round()` refuses on clients; clients have no `sim_ai`). AI
+  resolvers / choosers now act on the first AI-owned item, not only on item #1.
+- **H14 / M17** The multiplayer host always starts execution from the main loop
+  (`_execution_pending`), never on an AI planning thread - which also stops the host's own
+  ready reaching clients after the round ended. New host -> client `SIM_READY_STATE`
+  (`_sim_broadcast_ready_state()`) keeps every "Waiting for" list right; clients set only
+  other players' flags, and a client's timers only ever ready the local player.
+- **L7** Humans are never auto-readied in multiplayer.
+- **H12** Only exact duplicate orders are dropped (an army split along one route kept half).
+  New `_claim_movement_units()`: orders whose units are missing, not ready or already used
+  are rejected, and `army_count` follows the unit list (excess units became phantom
+  Swordsmen). Remote orders are garrison-checked too.
+- **M11 / M16** The AI ability executor handles all seven targeted abilities and puts them
+  on cooldown.
+- **M15** The host's alliance choice is sent before the round can end.
+- **AFK** (owner decision): own battles / choices auto-resolve after 90 s untouched, the host
+  settles the rest after 180 s (`_sim_afk_watchdog()`; `SIM_AFK_RESOLVE_SECONDS`,
+  `SIM_HOST_FALLBACK_SECONDS`). Multiplayer only.
+- **C3 / M13** AI takeover: `_take_over_disconnected_player()` marks the slot AI (Medium) on
+  every PC; the host creates its AIPlayer (`SimultaneousAI.ensure_player()`) and lets it plan
+  the current round.
+- Main-loop simultaneous work moved into `Game._update_simultaneous()`, which the test
+  harness now calls too.
+- Server drops host-only messages from clients (`_HOST_ONLY_TYPES`).
+- **Found and fixed on the way:** a client's `current_player` would have been overwritten
+  by the host's from snapshots (restored to the local player); the AI's plot lookup wrote
+  into `buildings` from its planning thread (`ai_economy._get_available_plots`, a
+  dict-changed-during-iteration risk); `resolve_alliance_marker()` removed the first marker
+  instead of the chosen territory's and ignored `gs.pending_battles`; the host's
+  SIM_ALLIANCE_CHOICE handler skipped the overflow check (now `assign_territory()`, which
+  also refreshes income caches); snapshots now re-derive the legacy army counters, which
+  drift during simultaneous execution; the disconnect log line crashed on a message without
+  `player_index`.
+- **Round end (found in the Phase 4 review):** the host ended the round while its own battle
+  report was still open - that battle's result and alliance marker go out only on Close, so
+  the allied choice was lost and its marker leaked into the next round. And a late
+  `SIM_ALLIANCE_CHOICE` (or a second click on a still-open choice popup) ended the NEXT
+  round too. Every host-side check now goes through `Game._sim_round_may_end()` (resolving
+  phase, nothing pending, no report of ours open); `resolve_alliance_marker()` and the popup
+  click check the phase / marker as well. AFK rules extended: a battle report left open
+  90 s after FIGHT closes, the 180 s host fallback also settles the host's own battles (a
+  host who walked away from an open window stalled the round), and windows / popups whose
+  battle or choice was settled meanwhile close (`_close_stale_battle_window()`,
+  `_close_alliance_choice_popup()`). Tests: `TestRoundEnd`, `TestAfkWindows` (6).
+- **H13 completed:** the battle window's own FIGHT handler
+  (`EnhancedBattleInterface._pre_calculate_battle_result()`) still read
+  `pending_battles[battle_index]` with the index saved when it opened - an IndexError crash
+  once another player's earlier battle was resolved. It now uses the territory cached at
+  open. Phase 3's test stubbed the window's click and missed it; new
+  `test_the_windows_own_fight_button_survives_the_shift` clicks the real button.
+- **Flaky test explained:** `test_2v2_simultaneous_40turn` ("Territory sum != 57") was a
+  test bug - a perfect battle tie legitimately makes a territory neutral, and battle order
+  depends on PYTHONHASHSEED. All five long simulations now count neutral territories.
+- Tests: `tests/test_mp_sim_flow.py` (23), host-only message drop (4 in
+  `test_mp_transport.py`); strict xfails removed for H11 H12 H14 L7 M10 M11 M15 M16 M17.
+
 ## 2026-10-11 - Multiplayer audit, Phase 3: battles replayed everywhere, shared groundwork
 
 Branch `fix/multiplayer-sync`. Developer guide: "Battle sync (seeded replay) and held

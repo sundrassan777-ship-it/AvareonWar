@@ -43,6 +43,11 @@ def build_snapshot(gs):
     Returns:
         dict: snapshot (send it in a network message; apply with apply_snapshot)
     """
+    # The legacy army counters (armies / armies_unmoved / armies_moved) are derived from
+    # the garrisons and drift during simultaneous execution; refresh them so the sender
+    # and every receiver (apply_snapshot re-derives them too) hold the same numbers
+    for territory in list(gs.territory_garrisons):
+        gs.sync_legacy_garrison_data(territory)
     data = serialize_game_state(gs)
     for key in _PER_VIEWER_KEYS:
         data.pop(key, None)

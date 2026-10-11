@@ -960,9 +960,31 @@ Units spawning from Barracks in simultaneous mode:
 ### UI Indicators
 
 - **Waiting...** button: Shows when you've clicked End Turn
-- **Waiting for: X, Y** text: Lists players still planning
+- **Waiting for: X, Y** text: Lists players still planning (in multiplayer the host keeps
+  everyone's list current)
 - **Blue particle marker**: Alliance arrival (click to assign territory)
 - **Red glow on flag**: Overflow warning (move armies or they disband)
+
+### Multiplayer Rules (simultaneous)
+
+- **The host decides.** When everyone is ready, the host checks every order (a move must
+  use units that exist and are ready; an army split into two orders along one route keeps
+  both halves), applies all builds, training, research and abilities, and sends that state
+  to every player together with the moves to play out. Battles are fought by their
+  resolver and replayed on every other PC.
+- **You are ready only when you say so** - End Turn, or your timer running out. In
+  multiplayer nobody is marked ready automatically, even with nothing to do.
+- **AFK battles:** if you leave your battles (or an alliance choice) untouched for **90
+  seconds**, your game resolves them for you, and a battle report left open for 90 seconds
+  closes by itself; after **180 seconds** of battles the host settles whatever is still
+  open, so a round can never stall.
+- **The round ends when everything is settled** - every battle fought, every alliance
+  choice made, and every battle report closed (a battle's result is shared when its report
+  is closed).
+- **AI battles and choices** are always made on the host's PC (2-second delay, so the grey
+  marker is visible), and the results reach every player.
+- **Leaving:** a player who disconnects is replaced by a **Medium AI** for the rest of the
+  game - it even plans the current round if they had not ended it.
 
 ---
 

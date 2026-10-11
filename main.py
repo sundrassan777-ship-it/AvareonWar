@@ -675,6 +675,11 @@ class Game:
         self._battle_sound_played = False  # Once-per-turn guard for battle sound
         self._ai_alliance_delay_timer = 0.0
         self._ai_alliance_territory = None
+        # Simultaneous multiplayer: last (round, ready players) the host broadcast
+        # (SIM_READY_STATE), and the resolving-phase clocks of the AFK rules
+        self._sim_last_ready_state = None
+        self._sim_resolving_since = None
+        self._sim_local_battle_activity = None
 
         # Performance caches (created lazily on first use)
         self._ai_indicator_overlay = None
@@ -831,7 +836,11 @@ class Game:
             import ai_player  # For AI decision logic
             self.sim_state = SimultaneousGameState(self.game_state)
             self.sim_state.phase_manager = SimPhaseManager(self.sim_state)
-            self.sim_ai = SimultaneousAI(self.sim_state, ai_player)
+            # The AI plans on the host only (or in single-player). Clients used to plan
+            # for the AI slots too, with their own random choices; the host's orders are
+            # the ones that count and reach clients in its execution snapshot.
+            if not (self.multiplayer_mode and self.local_player_index not in (None, 0)):
+                self.sim_ai = SimultaneousAI(self.sim_state, ai_player)
             # The local human's clicks execute immediately and are also queued as sim
             # orders; the executor must skip those copies in single-player as well
             self.sim_state.click_executed_player = self.get_local_player()
@@ -2167,12 +2176,15 @@ class Game:
             # A specific player disconnected - AI takes over their slot
             player_index = data.get('player_index')
             ai_takeover = data.get('ai_takeover', True)
-            logger.info(f"[NETWORK] Player {player_index + 1} disconnected - AI takeover: {ai_takeover}")
+            # Log the raw index: "player_index + 1" crashed on a message without one
+            logger.info(f"[NETWORK] Player index {player_index} disconnected - AI takeover: {ai_takeover}")
 
             if ai_takeover and player_index is not None:
                 # Mark player as AI-controlled using existing player_is_ai list
                 if 0 <= player_index < len(self.game_state.player_is_ai):
-                    self.game_state.player_is_ai[player_index] = True
+                    # The AI plays their empire from now on (Medium); the host also starts
+                    # it planning / resolving for them (simultaneous mode)
+                    self._take_over_disconnected_player(player_index)
                     logger.info(f"[NETWORK] Player {player_index + 1} is now AI-controlled")
 
                     # Track which players disconnected (for potential reconnection)
@@ -2214,7 +2226,9 @@ class Game:
         # ========== SIMULTANEOUS MODE MESSAGES ==========
 
         elif msg_type == MessageType.SIM_PLAYER_READY:
-            # Remote player marked themselves as ready during planning phase
+            # A client finished planning; its orders travel WITH this message. Host only:
+            # clients learn who is ready from SIM_READY_STATE (the host's own ready used
+            # to reach them after the round it belonged to had ended).
             player_id = data.get('player_id')
             orders = data.get('orders', [])
 
@@ -2223,64 +2237,45 @@ class Game:
                 logger.warning(f"[NETWORK] REJECTED: Invalid player_id {player_id} in SIM_PLAYER_READY (num_players={self.game_state.num_players})")
                 return
 
+            if self.sim_state is None or self.local_player_index != 0:
+                return
+
+            if self.sim_state.sim_phase != 'planning' or self.sim_state.players_ready.get(player_id, False):
+                logger.warning(f"[SIM] Late or repeated SIM_PLAYER_READY from player {player_id} - "
+                               f"phase '{self.sim_state.sim_phase}', orders discarded")
+                return
+
             logger.info(f"[NETWORK] Player {player_id} marked ready with {len(orders)} orders (simultaneous mode)")
+            # Store the player's orders (replacing anything stale)
+            self.sim_state.player_orders[player_id] = []
+            for order in orders:
+                if isinstance(order, dict):
+                    order['player_id'] = player_id  # Ensure player_id is set
+                    self.sim_state.add_order(player_id, order)
+                    logger.info(f"[SIM] Received order from Player {player_id}: {order.get('type')} "
+                                f"{order.get('from_territory', order.get('territory'))} -> {order.get('to_territory')}")
 
-            if self.sim_state is not None:
-                # HOST: Store remote player's orders in sim_state
-                # This is critical - orders are sent WITH the ready signal
-                if self.local_player_index == 0:  # Host only
-                    if self.sim_state.sim_phase == 'planning':
-                        # Clear any existing orders for this player (shouldn't be any, but be safe)
-                        self.sim_state.player_orders[player_id] = []
-                        # Add received orders to sim_state
-                        for order in orders:
-                            order['player_id'] = player_id  # Ensure player_id is set
-                            self.sim_state.add_order(player_id, order)
-                            logger.info(f"[SIM] Received order from Player {player_id}: {order.get('from_territory')} -> {order.get('to_territory')}")
-                    else:
-                        logger.warning(f"[SIM] Late SIM_PLAYER_READY from player {player_id} - phase is '{self.sim_state.sim_phase}', orders discarded")
+            # When this completes the set, execution starts from the main loop
+            # (sim_state.check_deferred_execution -> _sim_start_execution_phase)
+            self.sim_state.mark_ready(player_id)
 
-                self.sim_state.players_ready[player_id] = True
-
-                # Host checks if all players are ready to start execution
-                # Only trigger if still in planning phase (avoid double execution)
-                if self.local_player_index == 0:  # Host only
-                    if self.sim_state.sim_phase == 'planning' and self.sim_state.all_players_ready():
-                        logger.info("[NETWORK] All players ready - starting execution phase")
-                        self._sim_start_execution_phase()
+        elif msg_type == MessageType.SIM_READY_STATE:
+            # Host -> client: who is ready this round. Sets only OTHER players' flags
+            # (display only - no mark_ready side effects); this PC's own readiness is
+            # its own. Messages for another round are stale and ignored.
+            if self.sim_state is not None and self.local_player_index != 0:
+                ready = set(data.get('ready') or [])
+                if (data.get('round') == self.sim_state.round_number
+                        and self.sim_state.sim_phase == 'planning'):
+                    for pid in self.sim_state.players_ready:
+                        if pid != self.local_player_index:
+                            self.sim_state.players_ready[pid] = pid in ready
 
         elif msg_type == MessageType.SIM_ALL_READY:
-            # Host signals all players ready with merged orders (client receives this)
-            # Orders are already filtered - forced defender movement orders removed
-            orders = data.get('orders', [])
-            forced_defenders = data.get('forced_defenders', [])
-            logger.debug(f"[NETWORK] All players ready - received {len(orders)} merged orders")
-
-            if self.sim_state is not None:
-                # Process forced defenders - queue popup if local player was forced to defend
-                for fd in forced_defenders:
-                    fd_player = fd.get('player_id')
-                    fd_territory = fd.get('territory')
-                    fd_target = fd.get('intended_target')
-                    if fd_player == self.local_player_index:
-                        logger.info(f"[NETWORK] Forced to defend in {fd_territory} (was attacking {fd_target})")
-                        # Queue popup notification (will show one at a time with auto-close)
-                        self._queue_forced_defend_popup(fd_territory, fd_target)
-
-                # Store merged orders and start execution
-                self.sim_state.merged_orders = orders
-                self.sim_state.sim_phase = 'executing'
-
-                # Reset phase_manager state for this execution
-                # This ensures animation completion callback works correctly
-                if self.sim_state.phase_manager:
-                    self.sim_state.phase_manager.execution_complete = False
-                    self.sim_state.phase_manager.animations_complete = False
-                    self.sim_state.phase_manager._sim_pending_arrivals = []
-
-                # Execute all orders (movements will animate simultaneously)
-                # Orders are already filtered - forced defender orders were removed by host
-                self._sim_execute_merged_orders(orders)
+            # Host started the round's execution (client receives this): its state
+            # snapshot + the movement orders it validated
+            if self.sim_state is not None and self.local_player_index != 0:
+                self._sim_apply_all_ready(data)
 
         elif msg_type == MessageType.SIM_TIMER_UPDATE:
             # Timer sync from host (client receives this)
@@ -2447,300 +2442,40 @@ class Game:
                     self.game_state.current_player = original_player
 
         elif msg_type == MessageType.SIM_ALLIANCE_CHOICE:
-            # Territory ownership assignment from alliance arrival (from host)
+            # Territory ownership assignment from alliance arrival (from the chooser)
             territory = data.get('territory')
             new_owner = data.get('new_owner')
             logger.info(f"[NETWORK] Alliance choice: {territory} assigned to player {new_owner}")
 
             if self.sim_state is not None and territory:
-                # Assign territory ownership
-                self.game_state.territory_owners[territory] = new_owner
-                self.game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
-                self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
+                pm = self.sim_state.phase_manager
+                if pm is not None:
+                    # Same as on the chooser's PC: owner + overflow mark (the old handler
+                    # set the owner by hand and its overflow check never ran)
+                    pm.alliance_handler.assign_territory(territory, new_owner)
+                    # Remove this territory's marker (sync with the chooser)
+                    pm.pending_alliance_markers = [
+                        m for m in pm.pending_alliance_markers
+                        if m.get('territory') != territory
+                    ]
+                    logger.info(f"[NETWORK] Removed alliance marker for {territory}, {len(pm.pending_alliance_markers)} remaining")
+                    # Our popup for this territory has nothing left to choose
+                    self._close_alliance_choice_popup(territory)
+
+                    # HOST: Complete round if no more battles/markers after client resolved alliance
+                    # (only while resolving: a late choice used to end the NEXT round)
+                    if self.local_player_index == 0 and self._sim_round_may_end():
+                        logger.info(f"[HOST] All conflicts resolved after remote alliance choice, completing round")
+                        self.sim_state.complete_round()
 
                 # Remove from alliance arrivals
                 if territory in self.sim_state.alliance_arrivals:
                     del self.sim_state.alliance_arrivals[territory]
 
-                # Remove from pending_alliance_markers in phase manager (sync with host)
-                if hasattr(self.sim_state, 'phase_manager') and self.sim_state.phase_manager:
-                    pm = self.sim_state.phase_manager
-                    if hasattr(pm, 'pending_alliance_markers') and pm.pending_alliance_markers:
-                        # Remove marker for this territory
-                        pm.pending_alliance_markers = [
-                            m for m in pm.pending_alliance_markers
-                            if m.get('territory') != territory
-                        ]
-                        logger.info(f"[NETWORK] Removed alliance marker for {territory}, {len(pm.pending_alliance_markers)} remaining")
-
-                    # HOST: Complete round if no more battles/markers after client resolved alliance
-                    if self.local_player_index == 0:
-                        battles_pending = len(self.game_state.pending_battles)
-                        markers_pending = len(pm.pending_alliance_markers) if pm.pending_alliance_markers else 0
-                        if battles_pending == 0 and markers_pending == 0:
-                            logger.info(f"[HOST] All conflicts resolved after remote alliance choice, completing round")
-                            self.sim_state.complete_round()
-
-                # Check for overflow
-                if hasattr(self.sim_state, 'alliance_handler'):
-                    self.sim_state.alliance_handler._check_overflow(territory)
-
         elif msg_type == MessageType.SIM_ROUND_COMPLETE:
-            # Round finished, start new planning phase
-            round_number = data.get('round_number', 1)
-            logger.info(f"[NETWORK] Round {round_number} complete - starting new planning phase")
-
-            if self.sim_state is not None:
-                # Clear movement orders (for arrow display)
-                self.game_state.movement_orders.clear()
-                logger.info(f"[NETWORK] Cleared movement_orders")
-
-                # Clear player orders in sim_state
-                for player_id in self.sim_state.player_orders:
-                    self.sim_state.player_orders[player_id].clear()
-                logger.info(f"[NETWORK] Cleared player_orders")
-
-                # Apply income and finish constructions/research/castle upgrades for all players
-                # Sync fix: must mirror host's complete_round() logic in sim_state.py
-                # NOTE: These local computations serve as a fallback if host doesn't send a field.
-                # The authoritative override below will overwrite all of these with host's values.
-                original_player = self.game_state.current_player
-                for player_id in range(self.game_state.num_players):
-                    if player_id not in self.sim_state.eliminated_players:
-                        self.game_state.collect_income(player_id)
-                        self.game_state.current_player = player_id
-                        self.game_state.finish_constructions()
-                        self.game_state.finish_research()
-                        self.game_state.finish_castle_upgrades()
-                        self.game_state._tick_building_xp()
-                        self.game_state._tick_training_grounds_xp()
-                self.game_state.current_player = original_player
-
-                # Start new planning phase BEFORE applying authoritative state.
-                # start_planning_phase() resets all 'moved' units to 'ready', so it must run
-                # BEFORE the host's garrison override (which has correct moved/ready statuses
-                # including newly trained units with 'moved' status).
-                self.sim_state.round_number = round_number
-                self.sim_state.start_planning_phase()
-
-                # Apply authoritative state from host to prevent desync
-                # This overrides local calculations with host's values.
-                # Applied AFTER start_planning_phase so garrison moved/ready statuses from host
-                # are the final word (not reset by _reset_unit_movement_status).
-                if 'player_gold' in data:
-                    # player_gold is a list indexed by player_id
-                    for player_id, gold in enumerate(data['player_gold']):
-                        if player_id < len(self.game_state.player_gold):
-                            if self.game_state.player_gold[player_id] != gold:
-                                logger.debug(f"[NETWORK] Sync: Player {player_id} gold {self.game_state.player_gold[player_id]} -> {gold}")
-                            self.game_state.player_gold[player_id] = gold
-
-                if 'territory_owners' in data:
-                    for territory, owner in data['territory_owners'].items():
-                        if self.game_state.territory_owners.get(territory) != owner:
-                            logger.debug(f"[NETWORK] Sync: {territory} owner {self.game_state.territory_owners.get(territory)} -> {owner}")
-                        self.game_state.territory_owners[territory] = owner
-                    # Invalidate caches once after bulk sync (not per territory)
-                    self.game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
-                    self.game_state.invalidate_territorial_bonus_cache()
-
-                if 'eliminated_players' in data:
-                    # sim_state keeps a LIST (eliminate_player() appends; it used to be
-                    # replaced by a set here, so the next elimination crashed the client)
-                    self.sim_state.eliminated_players = list(dict.fromkeys(data['eliminated_players']))
-                    # Also sync to game_state's eliminated_players tracker (a set there)
-                    self.game_state.eliminated_players = set(data['eliminated_players'])
-                    logger.debug(f"[NETWORK] Sync: eliminated_players = {self.sim_state.eliminated_players}")
-
-                if 'disconnect_eliminations' in data:
-                    self.game_state.disconnect_eliminations = set(data['disconnect_eliminations'])
-                    logger.debug(f"[NETWORK] Sync: disconnect_eliminations = {self.game_state.disconnect_eliminations}")
-
-                # Sync hero data - ensures passive abilities (Haste, Defiance, etc.) are consistent
-                if 'heroes' in data:
-                    for player_id_str, player_heroes in data['heroes'].items():
-                        player_id = int(player_id_str)
-                        self.game_state.heroes[player_id] = player_heroes
-                    logger.debug(f"[NETWORK] Sync: heroes for {len(data['heroes'])} players")
-
-                if 'hero_training_queue' in data:
-                    self.game_state.hero_training_queue.clear()
-                    for territory, plots in data['hero_training_queue'].items():
-                        self.game_state.hero_training_queue[territory] = {
-                            int(plot): tuple(entry)
-                            for plot, entry in plots.items()
-                        }
-                    logger.debug(f"[NETWORK] Sync: hero_training_queue for {len(data['hero_training_queue'])} territories")
-
-                if 'hero_ability_cooldowns' in data:
-                    # Cooldowns are already decremented by host before broadcast
-                    # Just sync the authoritative values without decrementing again
-                    self.game_state.hero_ability_cooldowns.clear()
-                    for player_id_str, player_cooldowns in data['hero_ability_cooldowns'].items():
-                        self.game_state.hero_ability_cooldowns[int(player_id_str)] = player_cooldowns
-                    logger.debug(f"[NETWORK] Sync: hero_ability_cooldowns for {len(data['hero_ability_cooldowns'])} players")
-                else:
-                    # Fallback: No authoritative cooldowns sent (older host version?)
-                    # Decrement locally to maintain compatibility
-                    if hasattr(self.game_state, '_decrement_hero_cooldowns_and_silence'):
-                        self.game_state._decrement_hero_cooldowns_and_silence()
-
-                if 'hero_silence_status' in data:
-                    # Vow of Silence effect - already decremented by host
-                    self.game_state.hero_silence_status.clear()
-                    for player_id_str, status in data['hero_silence_status'].items():
-                        self.game_state.hero_silence_status[int(player_id_str)] = status
-                    logger.debug(f"[NETWORK] Sync: hero_silence_status for {len(data['hero_silence_status'])} players")
-
-                # Sync research state - ensures tech bonuses (Efficient Farming, etc.) are consistent
-                if 'player_tech_researched' in data:
-                    for player_id_str, techs in data['player_tech_researched'].items():
-                        player_id = int(player_id_str)
-                        self.game_state.player_tech_researched[player_id] = set(techs)
-                    logger.debug(f"[NETWORK] Sync: player_tech_researched for {len(data['player_tech_researched'])} players")
-
-                if 'research_in_progress' in data:
-                    self.game_state.research_in_progress.clear()
-                    for player_id_str, research in data['research_in_progress'].items():
-                        self.game_state.research_in_progress[int(player_id_str)] = research
-                    logger.debug(f"[NETWORK] Sync: research_in_progress for {len(data['research_in_progress'])} players")
-
-                if 'player_tech_available' in data:
-                    for player_id_str, techs in data['player_tech_available'].items():
-                        player_id = int(player_id_str)
-                        self.game_state.player_tech_available[player_id] = set(techs)
-                    logger.debug(f"[NETWORK] Sync: player_tech_available for {len(data['player_tech_available'])} players")
-
-                # Sync tech effect arrays - derived values for cost discounts, strength bonuses, etc.
-                if 'tech_effects' in data:
-                    effects = data['tech_effects']
-                    if 'royal_decree_discount' in effects:
-                        self.game_state.player_royal_decree_discount = effects['royal_decree_discount']
-                    if 'training_cost_discount' in effects:
-                        self.game_state.player_training_cost_discount = effects['training_cost_discount']
-                    if 'cavalry_cost_discount' in effects:
-                        self.game_state.player_cavalry_cost_discount = effects['cavalry_cost_discount']
-                    if 'archer_keep_strength_bonus' in effects:
-                        self.game_state.player_archer_keep_strength_bonus = effects['archer_keep_strength_bonus']
-                    if 'farm_destruction_gold_bonus' in effects:
-                        self.game_state.player_farm_destruction_gold_bonus = effects['farm_destruction_gold_bonus']
-                    if 'cavalry_strength_bonus' in effects:
-                        self.game_state.player_cavalry_strength_bonus = effects['cavalry_strength_bonus']
-                    if 'divide_conquer_bonus' in effects:
-                        self.game_state.player_divide_conquer_bonus = effects['divide_conquer_bonus']
-                    if 'barracks_cost_discount' in effects:
-                        self.game_state.player_barracks_cost_discount = effects['barracks_cost_discount']
-                    if 'barracks_full_refund' in effects:
-                        self.game_state.player_barracks_full_refund = effects['barracks_full_refund']
-                    if 'hero_keep_defense_bonus' in effects:
-                        self.game_state.player_hero_keep_defense_bonus = effects['hero_keep_defense_bonus']
-                    logger.debug(f"[NETWORK] Sync: tech_effects (10 effect arrays)")
-
-                # Sync territory garrisons - army positions and unit compositions
-                # Critical for fixing forced defender desync where client army moved incorrectly
-                if 'territory_garrisons' in data:
-                    self.game_state.territory_garrisons.clear()
-                    for territory, player_garrisons in data['territory_garrisons'].items():
-                        self.game_state.territory_garrisons[territory] = {
-                            int(player_id): garrison_data
-                            for player_id, garrison_data in player_garrisons.items()
-                        }
-                    # QA fix: sync legacy army counters to match garrison data
-                    # (checksum includes legacy counters, so they must stay in sync)
-                    from map_data import get_all_territories
-                    for territory in get_all_territories():
-                        self.game_state.sync_legacy_garrison_data(territory)
-                    logger.debug(f"[NETWORK] Sync: territory_garrisons for {len(data['territory_garrisons'])} territories")
-
-                # Sync fix: apply authoritative building state to prevent permanent divergence
-                # from missed demolish messages, construction drift, or castle upgrade desync
-                if 'buildings' in data:
-                    self.game_state.buildings.clear()
-                    for territory, plots in data['buildings'].items():
-                        self.game_state.buildings[territory] = {
-                            int(plot): btype for plot, btype in plots.items()
-                        }
-                    logger.debug(f"[NETWORK] Sync: buildings for {len(data['buildings'])} territories")
-
-                if 'under_construction' in data:
-                    self.game_state.under_construction.clear()
-                    for territory, plots in data['under_construction'].items():
-                        self.game_state.under_construction[territory] = {
-                            int(plot): tuple(entry) for plot, entry in plots.items()
-                        }
-                    logger.debug(f"[NETWORK] Sync: under_construction")
-
-                if 'training_queue' in data:
-                    self.game_state.training_queue.clear()
-                    for territory, plots in data['training_queue'].items():
-                        self.game_state.training_queue[territory] = {
-                            int(plot): [tuple(entry) for entry in queue]
-                            for plot, queue in plots.items()
-                        }
-                    logger.debug(f"[NETWORK] Sync: training_queue")
-
-                if 'castle_upgrades_in_progress' in data:
-                    self.game_state.castle_upgrades_in_progress.clear()
-                    for territory, plots in data['castle_upgrades_in_progress'].items():
-                        self.game_state.castle_upgrades_in_progress[territory] = {
-                            int(plot): turns for plot, turns in plots.items()
-                        }
-                    logger.debug(f"[NETWORK] Sync: castle_upgrades_in_progress")
-
-                if 'castle_upgrades' in data:
-                    self.game_state.castle_upgrades.clear()
-                    for territory, plots in data['castle_upgrades'].items():
-                        self.game_state.castle_upgrades[territory] = {
-                            int(plot): val for plot, val in plots.items()
-                        }
-                    logger.debug(f"[NETWORK] Sync: castle_upgrades")
-
-                if 'building_xp' in data:
-                    self.game_state.building_xp.clear()
-                    for territory, plots in data['building_xp'].items():
-                        self.game_state.building_xp[territory] = {
-                            int(plot): xp for plot, xp in plots.items()
-                        }
-                    logger.debug(f"[NETWORK] Sync: building_xp")
-
-                if 'hero_ownership' in data:
-                    for pid_str, owned_heroes in data['hero_ownership'].items():
-                        self.game_state.hero_ownership[int(pid_str)] = set(owned_heroes)
-                    logger.debug(f"[NETWORK] Sync: hero_ownership")
-
-                # Sync fix: transient hero ability state
-                if 'embargo_blocked_players' in data:
-                    self.game_state.embargo_blocked_players = list(data['embargo_blocked_players'])
-                    logger.debug(f"[NETWORK] Sync: embargo_blocked_players = {data['embargo_blocked_players']}")
-
-                if 'player_master_negotiator_active' in data:
-                    self.game_state.player_master_negotiator_active = list(data['player_master_negotiator_active'])
-                    logger.debug(f"[NETWORK] Sync: player_master_negotiator_active")
-
-                # Sync overflow territories — client never runs _process_overflow_territories()
-                if 'overflow_territories' in data and self.sim_state is not None:
-                    self.sim_state.overflow_territories = data['overflow_territories']
-                    logger.debug(f"[NETWORK] Sync: overflow_territories ({len(data['overflow_territories'])} entries)")
-
-                # NOTE: start_planning_phase() already called above (before authoritative override)
-                # so garrison moved/ready statuses from host are preserved.
-                # Do NOT call round_number or start_planning_phase again here.
-
-                # NOTE: Do NOT call finish_training() or finish_hero_training() here.
-                # The host already ran these in complete_round() and sent the results in the
-                # authoritative garrisons and training_queue. Calling them again would:
-                # 1. Double-decrement training timers (off by 1 turn)
-                # 2. Spawn duplicate units into garrisons (desync + tooltip mismatch)
-                # The same logic applies to hero training (already documented).
-
-                # Cleanup empty garrisons to prevent ghost armies
-                for territory in list(self.game_state.territory_garrisons.keys()):
-                    self.game_state.cleanup_empty_garrisons(territory)
-
-                # Clear any stale animation data
-                self.game_state.active_animations.clear()
-
-                logger.info(f"[NETWORK] Client round complete processing done")
+            # Round finished, start new planning phase (client receives this)
+            if self.sim_state is not None and self.local_player_index != 0:
+                self._sim_apply_round_complete(data)
 
         elif msg_type == MessageType.FULL_STATE_SYNC:
             # Sync fix: Authoritative state sync from host (sequential mode safety net)
@@ -3357,43 +3092,48 @@ class Game:
 
     def _sim_start_execution_phase(self):
         """
-        Host starts the execution phase when all players are ready.
+        Host starts the execution phase when all players are ready (main loop, via
+        sim_state.check_deferred_execution).
 
-        Detects crossing conflicts FIRST, then broadcasts filtered orders to clients.
-        This ensures clients don't execute forced defender movement orders.
+        The host is the single source of truth for the round:
+        1. crossing conflicts are resolved (forced defenders keep their armies home),
+        2. every order is validated and all NON-movement orders are applied here
+           (builds, training, research, castle upgrades, demolitions, hero abilities,
+           hero training - remote players' included),
+        3. SIM_ALL_READY carries a snapshot of that state plus the validated movement
+           orders; clients apply the snapshot and run exactly those movements,
+        4. the host starts the same movements.
+        Every PC therefore has the same armies on the same roads, and detects the same
+        arrivals and battles. (Clients used to run the raw merged order list on their own
+        state, including orders the host rejected.)
         """
-        if self.sim_state is None:
+        if self.sim_state is None or self.sim_state.phase_manager is None:
             return
+        pm = self.sim_state.phase_manager
 
-        # Step 1: Detect crossing conflicts BEFORE sending orders to clients
-        # This is critical - clients must receive only valid orders after conflict resolution
+        # Step 1: Detect crossing conflicts BEFORE anything executes
         forced_defenders = []
         resolved_orders = dict(self.sim_state.player_orders)  # Copy for modification
-
-        if self.sim_state.phase_manager and self.sim_state.phase_manager.conflict_resolver:
-            resolver = self.sim_state.phase_manager.conflict_resolver
+        if pm.conflict_resolver:
+            resolver = pm.conflict_resolver
             crossing_conflicts = resolver.detect_crossing_conflicts(self.sim_state.player_orders)
             resolved_orders = resolver.resolve_crossing_conflicts(
                 self.sim_state.player_orders, crossing_conflicts
             )
             forced_defenders = resolver.get_forced_defenders()
-            # NOTE: Don't send separate SIM_FORCED_DEFEND - it's now included in SIM_ALL_READY
 
-        # Step 2: Merge resolved orders (not original orders) for sending to clients
-        merged_orders = []
-        for player_id, orders in resolved_orders.items():
-            for order in orders:
-                order_copy = order.copy()
-                order_copy['player_id'] = player_id  # Tag with player ID
-                merged_orders.append(order_copy)
+        # Step 2: validate + apply the non-movement orders on the host
+        movement_orders = pm.begin_authoritative_execution(resolved_orders)
+        self.sim_state.merged_orders = movement_orders
+        logger.info(f"[SIM] Starting execution phase with {len(movement_orders)} movement orders")
 
-        logger.info(f"[SIM] Starting execution phase with {len(merged_orders)} merged orders (after conflict resolution)")
-
-        # Step 3: Send SIM_ALL_READY to clients with filtered orders
+        # Step 3: the clients get the resulting state + the movement to run
         if self.multiplayer_mode:
-    
+            from network.state_snapshot import build_snapshot
             self._send_action_to_remote(MessageType.SIM_ALL_READY, {
-                'orders': merged_orders,
+                'round': self.sim_state.round_number,
+                'snapshot': build_snapshot(self.game_state),
+                'movement_orders': movement_orders,
                 'forced_defenders': [
                     {'player_id': fd.get('player_id'), 'territory': fd.get('territory'),
                      'intended_target': fd.get('intended_target'), 'forced_by': fd.get('forced_by')}
@@ -3401,7 +3141,7 @@ class Game:
                 ]
             })
 
-        # Step 4: Process forced defenders for host (host doesn't receive SIM_ALL_READY)
+        # Process forced defenders for host (host doesn't receive SIM_ALL_READY)
         local_player = self.get_local_player()
         for fd in forced_defenders:
             if fd.get('player_id') == local_player:
@@ -3410,28 +3150,114 @@ class Game:
                 logger.info(f"[SIM] Host forced to defend in {fd_territory} (was attacking {fd_target})")
                 self._queue_forced_defend_popup(fd_territory, fd_target)
 
-        # Store merged orders reference
-        self.sim_state.merged_orders = merged_orders
+        # Step 4: the armies set off (with no movement the arrivals run at once)
+        pm._execute_movement_orders(movement_orders)
 
-        # Use phase_manager for execution - pass resolved_orders so it doesn't re-detect conflicts
-        if self.sim_state.phase_manager:
-            # Skip conflict detection since we already did it above
-            self.sim_state.phase_manager.begin_execution_with_resolved(resolved_orders)
-        else:
-            # Fallback: direct execution (shouldn't happen in normal use)
-            self.sim_state.sim_phase = 'executing'
-            self._sim_execute_merged_orders(merged_orders)
+    def _sim_apply_round_complete(self, data):
+        """
+        Client: the host finished the round (SIM_ROUND_COMPLETE). Nothing of the old
+        round may linger here - an open battle window, battles or alliance markers this
+        PC still showed (they used to stay forever when the states had drifted) - and the
+        new round starts from the host's state.
+        """
+        round_number = data.get('round_number', self.sim_state.round_number + 1)
+        logger.info(f"[NETWORK] Round {round_number} complete - starting new planning phase")
+        gs = self.game_state
+        pm = self.sim_state.phase_manager
+
+        # The old round is over everywhere
+        self._close_battle_window()
+        self.alliance_choice_popup_visible = False
+        if pm is not None:
+            pm.pending_battles = []
+            pm.pending_alliance_markers = []
+            pm._sim_pending_arrivals = []
+        gs.movement_orders.clear()
+        for orders in self.sim_state.player_orders.values():
+            orders.clear()
+
+        # This PC's own round-end bookkeeping - for its Action Log (income lines,
+        # finished buildings and research). Every value it produces is replaced by the
+        # host's snapshot below. (Training is NOT run here: the host's snapshot already
+        # holds the new units, and finishing it twice would duplicate them.)
+        original_player = gs.current_player
+        try:
+            for player_id in range(gs.num_players):
+                if player_id not in self.sim_state.eliminated_players:
+                    gs.collect_income(player_id)
+                    gs.current_player = player_id
+                    gs.finish_constructions()
+                    gs.finish_research()
+                    gs.finish_castle_upgrades()
+                    gs._tick_building_xp()
+                    gs._tick_training_grounds_xp()
+        finally:
+            gs.current_player = original_player
+
+        # New planning phase BEFORE the snapshot: start_planning_phase() resets 'moved'
+        # units to 'ready', and the snapshot's statuses (new units 'moved') must win
+        self.sim_state.round_number = round_number
+        self.sim_state.start_planning_phase()
+
+        snapshot = data.get('snapshot')
+        if snapshot:
+            from network.state_snapshot import apply_snapshot
+            apply_snapshot(gs, snapshot)
+            # current_player is per PC in simultaneous mode (the snapshot has the host's)
+            gs.current_player = self.get_local_player()
+        # sim_state keeps a LIST (eliminate_player() appends; a set crashed it)
+        self.sim_state.eliminated_players = list(dict.fromkeys(data.get('eliminated_players') or []))
+        for player_id in self.sim_state.eliminated_players:
+            self.sim_state.players_ready[player_id] = True  # no longer participates
+        self.sim_state.overflow_territories = dict(data.get('overflow_territories') or {})
+        logger.info(f"[NETWORK] Client round complete processing done")
+
+    def _sim_apply_all_ready(self, data):
+        """
+        Client: the host started the round's execution (SIM_ALL_READY). Take over its
+        state - every player's builds, training, research and abilities already applied
+        - and run exactly the movement orders it validated.
+        """
+        if self.sim_state is None or self.sim_state.phase_manager is None:
+            return
+        pm = self.sim_state.phase_manager
+        snapshot = data.get('snapshot')
+        movement_orders = data.get('movement_orders') or []
+        logger.info(f"[NETWORK] All players ready - executing {len(movement_orders)} movement orders")
+
+        # Forced defenders - queue popup if local player was forced to defend
+        for fd in data.get('forced_defenders') or []:
+            if fd.get('player_id') == self.local_player_index:
+                logger.info(f"[NETWORK] Forced to defend in {fd.get('territory')} (was attacking {fd.get('intended_target')})")
+                # Queue popup notification (will show one at a time with auto-close)
+                self._queue_forced_defend_popup(fd.get('territory'), fd.get('intended_target'))
+
+        if snapshot:
+            from network.state_snapshot import apply_snapshot
+            apply_snapshot(self.game_state, snapshot)
+            # Simultaneous mode: current_player is per PC - always the local player (the
+            # UI acts for it). The host's snapshot carries the HOST's.
+            self.game_state.current_player = self.get_local_player()
+
+        self.sim_state.merged_orders = movement_orders
+        self.sim_state.sim_phase = 'executing'
+        # Reset phase_manager state for this execution (animation completion callback)
+        pm.execution_complete = False
+        pm.animations_complete = False
+        pm._sim_pending_arrivals = []
+        pm._execute_movement_orders(movement_orders)
 
     def _sim_broadcast_round_complete(self, round_number: int):
         """
         Host broadcasts round completion to all clients.
 
         Called via callback from sim_state.complete_round() when the round finishes
-        (after all battles and alliance markers are resolved).
+        (after all battles and alliance markers are resolved), so the state is the new
+        round's: income collected, buildings / research / training finished.
 
-        Includes authoritative state data to prevent desync:
-        - Player gold values (prevents float/calculation divergence)
-        - Territory ownership (ensures consistency after battles)
+        Carries a full game state snapshot (network/state_snapshot.py) plus the
+        simultaneous-mode round data. It replaces a hand-maintained field list that
+        kept missing fields (turn number, tech limits, Captain discount, stats ...).
 
         Args:
             round_number: The new round number after completion
@@ -3440,275 +3266,14 @@ class Game:
             return
 
         logger.info(f"[HOST] Broadcasting SIM_ROUND_COMPLETE (round {round_number})")
-
-        # Collect authoritative state data to sync
-        authoritative_data = {
+        from network.state_snapshot import build_snapshot
+        self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, {
             'round_number': round_number,
-            # Gold values - prevents calculation divergence
-            'player_gold': list(self.game_state.player_gold),  # list, not dict
-            # Territory ownership - ensures battle results are synchronized
-            'territory_owners': dict(self.game_state.territory_owners),
-            # Eliminated players - for skip logic in income/construction
+            'snapshot': build_snapshot(self.game_state),
+            # sim_state round data (not part of GameState)
             'eliminated_players': list(self.sim_state.eliminated_players) if self.sim_state else [],
-            # Hero data - ensures passive abilities (Haste, Defiance, etc.) are consistent
-            'heroes': {str(k): v for k, v in self.game_state.heroes.items()},
-            # Hero training queue - in-progress training with timers
-            'hero_training_queue': {
-                territory: {str(plot): list(entry) for plot, entry in plots.items()}
-                for territory, plots in self.game_state.hero_training_queue.items()
-            },
-            # Hero ability cooldowns - for ability availability sync
-            'hero_ability_cooldowns': {
-                str(player_id): player_cooldowns
-                for player_id, player_cooldowns in self.game_state.hero_ability_cooldowns.items()
-            },
-            # Hero silence status - Vow of Silence effect (blocks enemy abilities)
-            'hero_silence_status': {
-                str(player_id): status
-                for player_id, status in self.game_state.hero_silence_status.items()
-            },
-            # Research state - ensures tech bonuses (Efficient Farming, etc.) are synchronized
-            'player_tech_researched': {
-                str(player_id): list(techs)
-                for player_id, techs in self.game_state.player_tech_researched.items()
-            },
-            'research_in_progress': {
-                str(player_id): research
-                for player_id, research in self.game_state.research_in_progress.items()
-            },
-            'player_tech_available': {
-                str(player_id): list(techs)
-                for player_id, techs in self.game_state.player_tech_available.items()
-            },
-            # Tech effect arrays - derived values applied when research completes
-            'tech_effects': {
-                'royal_decree_discount': list(self.game_state.player_royal_decree_discount),
-                'training_cost_discount': list(self.game_state.player_training_cost_discount),
-                'cavalry_cost_discount': list(self.game_state.player_cavalry_cost_discount),
-                'archer_keep_strength_bonus': list(self.game_state.player_archer_keep_strength_bonus),
-                'farm_destruction_gold_bonus': list(self.game_state.player_farm_destruction_gold_bonus),
-                'cavalry_strength_bonus': list(self.game_state.player_cavalry_strength_bonus),
-                'divide_conquer_bonus': list(self.game_state.player_divide_conquer_bonus),
-                'barracks_cost_discount': list(self.game_state.player_barracks_cost_discount),
-                'barracks_full_refund': list(self.game_state.player_barracks_full_refund),
-                'hero_keep_defense_bonus': list(self.game_state.player_hero_keep_defense_bonus),
-            },
-            # Territory garrisons - army positions and unit compositions
-            # Prevents desync when forced defenders incorrectly moved on client view
-            # Note: unit dicts may contain 'order' field referencing MovementOrder objects
-            # which are not JSON-serializable — strip them during serialization
-            'territory_garrisons': {
-                territory: {
-                    str(player_id): {
-                        **garrison_data,
-                        'units': [
-                            {k: (None if k == 'order' else v) for k, v in unit.items()}
-                            for unit in garrison_data.get('units', [])
-                        ]
-                    } if 'units' in garrison_data else garrison_data
-                    for player_id, garrison_data in player_garrisons.items()
-                }
-                for territory, player_garrisons in self.game_state.territory_garrisons.items()
-            },
-            # Sync fix: building state safety net — prevents permanent divergence if
-            # demolish/construction messages are lost or client logic drifts
-            'buildings': {
-                territory: {str(plot): btype for plot, btype in plots.items()}
-                for territory, plots in self.game_state.buildings.items()
-            },
-            'under_construction': {
-                territory: {str(plot): list(entry) for plot, entry in plots.items()}
-                for territory, plots in self.game_state.under_construction.items()
-            },
-            'training_queue': {
-                territory: {
-                    str(plot): [list(entry) for entry in queue]
-                    for plot, queue in plots.items()
-                }
-                for territory, plots in self.game_state.training_queue.items()
-            },
-            'castle_upgrades_in_progress': {
-                territory: {str(plot): turns for plot, turns in plots.items()}
-                for territory, plots in self.game_state.castle_upgrades_in_progress.items()
-            },
-            'castle_upgrades': {
-                territory: {str(plot): val for plot, val in plots.items()}
-                for territory, plots in self.game_state.castle_upgrades.items()
-            },
-            'building_xp': {
-                territory: {str(plot): xp for plot, xp in plots.items()}
-                for territory, plots in self.game_state.building_xp.items()
-            },
-            'hero_ownership': {
-                str(pid): list(owned_heroes)
-                for pid, owned_heroes in self.game_state.hero_ownership.items()
-            },
-            # Sync fix: transient hero ability state — prevents desync if ability message lost
-            'embargo_blocked_players': list(self.game_state.embargo_blocked_players),
-            'player_master_negotiator_active': list(self.game_state.player_master_negotiator_active),
-            # Overflow territories — client never runs _process_overflow_territories(),
-            # so sync the dict to prevent stale overflow icons and state divergence
             'overflow_territories': dict(self.sim_state.overflow_territories) if self.sim_state else {},
-            # Disconnect elimination tracking — safety net for elimination state sync
-            'disconnect_eliminations': list(self.game_state.disconnect_eliminations),
-        }
-
-        self._send_action_to_remote(MessageType.SIM_ROUND_COMPLETE, authoritative_data)
-
-    def _sim_execute_merged_orders(self, orders: list):
-        """
-        Execute merged orders from all players simultaneously.
-
-        This is used by clients receiving SIM_ALL_READY. It uses the phase_manager's
-        movement execution to properly populate _sim_pending_arrivals for arrival processing.
-
-        Args:
-            orders: List of order dicts from all players
-        """
-        if self.sim_state is None:
-            return
-
-        logger.info(f"[SIM] Executing {len(orders)} orders simultaneously")
-
-        # Save current_player to restore after execution
-        original_current_player = self.game_state.current_player
-
-        # Separate orders by type
-        movement_orders = []
-        build_orders = []
-        train_orders = []
-        research_orders = []
-        demolish_orders = []
-        upgrade_castle_orders = []
-        train_hero_orders = []
-        hero_ability_orders = []
-
-        for order in orders:
-            order_type = order.get('type')
-            if order_type == 'movement':
-                movement_orders.append(order)
-            elif order_type == 'build':
-                build_orders.append(order)
-            elif order_type == 'train':
-                train_orders.append(order)
-            elif order_type == 'research':
-                research_orders.append(order)
-            elif order_type == 'demolish':
-                demolish_orders.append(order)
-            elif order_type == 'upgrade_castle':
-                upgrade_castle_orders.append(order)
-            elif order_type == 'train_hero':
-                train_hero_orders.append(order)
-            elif order_type == 'hero_ability':
-                hero_ability_orders.append(order)
-
-        # Get local player index for skip check
-        # Local player orders were already executed when clicked (for visual feedback)
-        local_player = self.local_player_index
-
-        # Apply non-movement orders with try/finally to guarantee current_player restore
-        try:
-            # Apply demolish orders first (frees up plots for builds, skip local player's)
-            for order in demolish_orders:
-                player_id = order.get('player_id')
-                if local_player is not None and player_id == local_player:
-                    continue
-                self.game_state.current_player = player_id
-                territory = order.get('territory')
-                plot_index = order.get('plot_index')
-                if territory and plot_index is not None:
-                    self.game_state.demolish_building(territory, plot_index)
-
-            # Apply build orders (skip local player's - already executed)
-            for order in build_orders:
-                player_id = order.get('player_id')
-                if local_player is not None and player_id == local_player:
-                    continue  # Already executed locally
-                self.game_state.current_player = player_id
-                territory = order.get('territory')
-                plot_index = order.get('plot_index')
-                building_type = order.get('building_type')
-                self.game_state.start_construction(territory, plot_index, building_type)
-
-            # Apply upgrade castle orders (skip local player's - already executed)
-            for order in upgrade_castle_orders:
-                player_id = order.get('player_id')
-                if local_player is not None and player_id == local_player:
-                    continue
-                self.game_state.current_player = player_id
-                territory = order.get('territory')
-                plot_index = order.get('plot_index')
-                if territory and plot_index is not None:
-                    self.game_state.start_castle_upgrade(territory, plot_index)
-
-            # Apply train orders (skip local player's - already executed)
-            for order in train_orders:
-                player_id = order.get('player_id')
-                if local_player is not None and player_id == local_player:
-                    continue  # Already executed locally
-                self.game_state.current_player = player_id
-                territory = order.get('territory')
-                barracks_plot = order.get('barracks_plot')
-                unit_type = order.get('unit_type')
-                self.game_state.start_training(territory, barracks_plot, unit_type)
-
-            # Apply research orders (skip local player's - already executed)
-            for order in research_orders:
-                player_id = order.get('player_id')
-                if local_player is not None and player_id == local_player:
-                    continue  # Already executed locally
-                self.game_state.current_player = player_id
-                tech_id = order.get('tech_id')
-                if hasattr(self.game_state, 'start_research'):
-                    self.game_state.start_research(tech_id)
-
-            # Apply hero ability orders (AI-only path; human players use SIM_HERO_ABILITY messages)
-            for order in hero_ability_orders:
-                player_id = order.get('player_id')
-                if local_player is not None and player_id == local_player:
-                    continue
-                if self.sim_state and self.sim_state.phase_manager:
-                    self.sim_state.phase_manager._apply_hero_ability_order(order)
-
-            # Apply train hero orders (skip local player's - already executed)
-            for order in train_hero_orders:
-                player_id = order.get('player_id')
-                if local_player is not None and player_id == local_player:
-                    continue
-                self.game_state.current_player = player_id
-                territory = order.get('territory')
-                keep_plot = order.get('keep_plot')
-                hero_type = order.get('hero_type')
-                if territory and hero_type is not None:
-                    self.game_state.start_hero_training(territory, keep_plot, hero_type)
-        finally:
-            # Restore original current_player
-            self.game_state.current_player = original_current_player
-
-        # Use phase_manager's _execute_movement_orders for proper arrival tracking
-        # This populates _sim_pending_arrivals so on_animations_complete works correctly
-        if self.sim_state.phase_manager and movement_orders:
-            self.sim_state.phase_manager._execute_movement_orders(movement_orders)
-        elif movement_orders:
-            # Fallback: use execute_all_orders (won't track arrivals properly)
-            logger.warning("[WARNING] No phase_manager, using fallback execution")
-            for order in movement_orders:
-                player_id = order.get('player_id')
-                from_territory = order.get('from_territory')
-                to_territory = order.get('to_territory')
-                unit_ids = order.get('unit_ids', [])
-                if unit_ids:
-                    self.game_state.add_movement_order_for_units(from_territory, to_territory, unit_ids, player=player_id)
-                else:
-                    self.game_state.current_player = player_id
-                    self.game_state.add_movement_order(from_territory, to_territory)
-            self.game_state.current_player = original_current_player
-            self.game_state.execute_all_orders()
-        else:
-            # No movement orders - trigger animation complete immediately
-            if self.sim_state.phase_manager:
-                self.sim_state.phase_manager.animations_complete = True
-                self.sim_state.phase_manager._on_animations_complete()
+        })
 
     def _sim_send_timer_update(self):
         """
@@ -3730,6 +3295,458 @@ class Game:
         self._send_action_to_remote(MessageType.SIM_TIMER_UPDATE, {
             'timers': timers
         })
+
+    # ========== SIMULTANEOUS MODE: PER-FRAME UPDATE ==========
+    # The main loop's simultaneous-mode work in one place: Game.run() calls
+    # _update_simultaneous() every frame, and the multiplayer test harness calls the
+    # same method (so tests run this exact code, not a copy).
+
+    # Multiplayer AFK rules for the resolving phase (owner decision 2026-10-10): a
+    # resolver who has not touched their battles for this long gets them resolved on
+    # their own PC...
+    SIM_AFK_RESOLVE_SECONDS = 90.0
+    # ...and after this long the host settles whatever is still open (a player who is
+    # away, frozen or stuck) so the round can never stall
+    SIM_HOST_FALLBACK_SECONDS = 180.0
+    # How long an AI resolver / chooser waits before acting (its grey marker shows meanwhile)
+    SIM_AI_ACTION_DELAY = 2.0
+
+    def _update_simultaneous(self, delta_time):
+        """One frame of simultaneous-mode bookkeeping (see the comment above)."""
+        sim = self.sim_state
+        if sim is None:
+            return
+        # Execution deferred by mark_ready() (AI planning thread, or the multiplayer host,
+        # which always starts it here) - before the timer checks so it starts promptly
+        sim.check_deferred_execution()
+        if self.is_game_paused:
+            return
+        if sim.sim_phase == 'planning':
+            self._update_sim_planning_timers(delta_time)
+        self._sim_broadcast_ready_state()
+        self._auto_resolve_ai_battle(delta_time)
+        self._auto_resolve_ai_alliance_marker(delta_time)
+        self._sim_afk_watchdog()
+        self._sim_check_new_round()
+
+    def _update_sim_planning_timers(self, delta_time):
+        """Planning timers: the local player's timer running out readies them (with their
+        planned moves); the host also keeps the clients' timer displays in step."""
+        local_player = self.get_local_player()
+        was_ready = self.sim_state.players_ready.get(local_player, False)
+
+        # PRE-EXPIRE: Convert movement orders BEFORE update_timers() calls mark_ready().
+        # mark_ready() sets players_ready=True, after which add_order() silently rejects.
+        # This mirrors the End Turn button flow (convert first, mark ready second).
+        if not was_ready:
+            timer_remaining = self.sim_state.player_timers.get(local_player, 999)
+            if timer_remaining - delta_time <= 0:
+                # Timer will expire this frame — convert movement orders now
+                logger.info(f"[SIM] Timer about to expire for player {local_player} - pre-converting {len(self.game_state.movement_orders)} movement orders")
+                self._sim_queue_local_movement_orders(local_player)
+
+        # Now update timers — mark_ready() will be called, but orders are already saved
+        self.sim_state.update_timers(delta_time)
+
+        # Check if local player just became ready due to timer expiration
+        is_ready_now = self.sim_state.players_ready.get(local_player, False)
+        if not was_ready and is_ready_now:
+            # Without this the host never receives a client's orders on timer expiry
+            self._sim_send_local_ready(local_player, "Timer expired")
+
+        # MULTIPLAYER: Host sends periodic timer sync to client (every 2 seconds)
+        if self.multiplayer_mode and self.local_player_index == 0:
+            if self._sim_last_timer_sync is None:
+                self._sim_last_timer_sync = 0
+            self._sim_last_timer_sync += delta_time
+            if self._sim_last_timer_sync >= 2.0:
+                self._sim_send_timer_update()
+                self._sim_last_timer_sync = 0
+
+    def _sim_queue_local_movement_orders(self, local_player):
+        """
+        Turn the local player's planned moves (game_state.movement_orders, drawn as
+        arrows) into simultaneous-mode orders and clear them. End Turn and the planning
+        timer both do this before marking the player ready - add_order() refuses orders
+        after that.
+        """
+        for order in self.game_state.movement_orders:
+            sim_order = {
+                'type': 'movement',
+                'player_id': local_player,
+                'from_territory': order.from_territory,
+                'to_territory': order.to_territory,
+                'army_count': order.army_count,
+                'unit_ids': order.unit_ids if hasattr(order, 'unit_ids') else []
+            }
+            self.sim_state.add_order(local_player, sim_order)
+            logger.debug(f"[SIM] Converted order: {order.from_territory} -> {order.to_territory}")
+
+        # Reset the units' statuses before clearing the orders (they move at execution)
+        for order in self.game_state.movement_orders:
+            if hasattr(order, 'unit_ids') and order.unit_ids:
+                garrison = self.game_state.territory_garrisons.get(order.from_territory, {}).get(local_player)
+                if garrison and 'units' in garrison:
+                    for unit in garrison['units']:
+                        if unit.get('id') in order.unit_ids:
+                            unit['status'] = 'ready'
+                            unit['order'] = None
+        self.game_state.movement_orders.clear()
+
+    def _sim_send_local_ready(self, local_player, reason):
+        """
+        Client: tell the host we are ready and hand over this round's orders
+        (SIM_PLAYER_READY). The host sends nothing - its readiness reaches the clients in
+        SIM_READY_STATE, and its own SIM_PLAYER_READY could arrive after the round it
+        belonged to had already ended.
+        """
+        if not self.multiplayer_mode or self.local_player_index == 0:
+            return
+        orders_to_send = list(self.sim_state.player_orders.get(local_player, []))
+        self._send_action_to_remote(MessageType.SIM_PLAYER_READY, {
+            'player_id': local_player,
+            'orders': orders_to_send
+        })
+        logger.info(f"[SIM] {reason} - sent ready signal with {len(orders_to_send)} orders")
+
+    def _sim_broadcast_ready_state(self):
+        """
+        Host: send SIM_READY_STATE whenever the set of ready players changes, so every
+        client's "Waiting for: ..." list is right. Compared every frame on the main
+        thread, so readiness set by an AI planning thread is reported too.
+        """
+        if not (self.multiplayer_mode and self.local_player_index == 0):
+            return
+        sim = self.sim_state
+        if sim.sim_phase != 'planning':
+            return
+        state = (sim.round_number,
+                 tuple(sorted(pid for pid, ready in sim.players_ready.items() if ready)))
+        if state == self._sim_last_ready_state:
+            return
+        self._sim_last_ready_state = state
+        self._send_action_to_remote(MessageType.SIM_READY_STATE, {
+            'round': state[0],
+            'ready': list(state[1]),
+        })
+
+    def _sim_round_may_end(self):
+        """
+        Simultaneous mode, on the PC that ends rounds (host / single-player): is nothing
+        of this round left? No battle, no alliance choice - and no battle report of ours
+        still open. Our own battle's result goes out (and its alliance marker is queued)
+        only when its report window closes (_finalize_enhanced_battle, which then ends the
+        round itself); ending the round under an open report lost that choice and left a
+        stale marker in the next round. Outside the resolving phase there is nothing to
+        end (a late message used to end the NEXT round).
+        """
+        sim = self.sim_state
+        if sim is None or sim.sim_phase != 'resolving':
+            return False
+        pm = sim.phase_manager
+        return (not self.game_state.pending_battles
+                and not (pm is not None and pm.pending_alliance_markers)
+                and self._resolved_battle_info is None)
+
+    def _close_alliance_choice_popup(self, territory):
+        """The alliance choice for `territory` was made elsewhere (by the host, or its
+        chooser on another PC): close our popup for it, nothing is left to choose."""
+        if (getattr(self, 'alliance_choice_popup_visible', False)
+                and getattr(self, 'alliance_choice_territory', None) == territory):
+            self.alliance_choice_popup_visible = False
+
+    def _is_ai_slot(self, player):
+        """A real player slot the AI controls (incl. a taken-over human)."""
+        return (player is not None and 0 <= player < self.game_state.num_players
+                and bool(self.game_state.player_is_ai[player]))
+
+    def _auto_resolve_ai_battle(self, delta_time):
+        """
+        Resolve a battle whose resolver is an AI, after a short delay (its grey marker
+        shows meanwhile). Host / single-player only: clients get the result from the
+        host - they used to resolve AI battles themselves, with their own dice.
+        """
+        if self.multiplayer_mode and self.local_player_index != 0:
+            return
+        sim = self.sim_state
+        battles = self.game_state.pending_battles
+        if not (sim.sim_phase == 'resolving' and battles and self.enhanced_battle_ui is None):
+            return  # (also: never while a battle window is open)
+        # The first battle with an AI resolver - not just battle #1, which may be a human's
+        index = next((i for i, b in enumerate(battles)
+                      if self._is_ai_slot(getattr(b, 'resolver', None))), None)
+        if index is None:
+            # Not an AI battle, reset the timer tracking
+            if self._ai_battle_delay_timer is not None:
+                self._ai_battle_delay_timer = 0.0
+                self._ai_battle_territory = None
+            return
+
+        next_battle = battles[index]
+        resolver = next_battle.resolver
+        # Track when this AI battle was first detected (for the delay)
+        if self._ai_battle_delay_timer is None:
+            self._ai_battle_delay_timer = 0.0
+            self._ai_battle_territory = next_battle.territory
+            logger.info(f"[SIM] AI battle detected at {next_battle.territory} - showing grey marker for {self.SIM_AI_ACTION_DELAY}s")
+        if self._ai_battle_territory != next_battle.territory:
+            # New battle, reset timer
+            self._ai_battle_delay_timer = 0.0
+            self._ai_battle_territory = next_battle.territory
+            logger.info(f"[SIM] New AI battle detected at {next_battle.territory} - resetting timer")
+        self._ai_battle_delay_timer += delta_time
+        if self._ai_battle_delay_timer < self.SIM_AI_ACTION_DELAY:
+            return
+
+        logger.info(f"[SIM] Auto-resolving battle at {next_battle.territory} - AI player {resolver} is resolver")
+        # Reset timer for next battle
+        self._ai_battle_delay_timer = 0.0
+        self._ai_battle_territory = None
+
+        # Multiplayer: seeded, so the clients replay it
+        battle, battle_seed = self._resolve_battle_locally(index)
+        territory = battle.territory
+        # Clear sequential mode flag - sim mode uses complete_round() instead
+        self.game_state.ready_to_advance_turn = False
+
+        # Check for alliance marker (allied victory, shared rule)
+        alliance_marker = self._alliance_marker_for(battle, territory)
+        if alliance_marker:
+            sim.phase_manager.pending_alliance_markers.append(alliance_marker)
+            logger.info(f"[SIM] AI battle created alliance marker, chooser: {alliance_marker['chooser']}")
+
+        # MULTIPLAYER: Send battle result to clients (seed + outcome)
+        if self.multiplayer_mode:
+            self._send_action_to_remote(MessageType.BATTLE_RESOLVE, self._battle_resolve_payload(
+                battle, territory, battle_seed, alliance_marker,
+                self.game_state.last_battle_reports))
+            logger.info(f"[HOST] Broadcast AI battle result: {territory} -> "
+                        f"player {self.game_state.territory_owners.get(territory, -1)}")
+
+        # Capital Assault: sync battle-based eliminations to sim_state
+        self._sync_battle_eliminations_to_sim("after AI battle")
+
+        # Check if all battles resolved
+        if not self.game_state.pending_battles:
+            logger.info(f"[SIM] All battles resolved. Alliance markers: {len(sim.phase_manager.pending_alliance_markers)}")
+            if self._sim_round_may_end():
+                sim.complete_round()
+
+    def _auto_resolve_ai_alliance_marker(self, delta_time):
+        """
+        Allied capture whose chooser is an AI: pick the new owner after a short delay.
+        Host / single-player only (clients get SIM_ALLIANCE_CHOICE; they used to pick
+        their own owner with their own random tie-break).
+        """
+        if self.multiplayer_mode and self.local_player_index != 0:
+            return
+        sim = self.sim_state
+        markers = sim.phase_manager.pending_alliance_markers if sim.phase_manager else []
+        if not (sim.sim_phase == 'resolving' and not self.game_state.pending_battles and markers
+                and not getattr(self, 'alliance_choice_popup_visible', False)):
+            return
+        index = next((i for i, m in enumerate(markers) if self._is_ai_slot(m.get('chooser'))), None)
+        if index is None:
+            # Not an AI alliance marker, reset the timer tracking
+            if self._ai_alliance_delay_timer is not None:
+                self._ai_alliance_delay_timer = 0.0
+                self._ai_alliance_territory = None
+            return
+
+        next_marker = markers[index]
+        if self._ai_alliance_delay_timer is None:
+            self._ai_alliance_delay_timer = 0.0
+            self._ai_alliance_territory = next_marker['territory']
+            logger.info(f"[SIM] AI alliance marker detected at {next_marker['territory']} - showing grey marker for {self.SIM_AI_ACTION_DELAY}s")
+        if self._ai_alliance_territory != next_marker['territory']:
+            # New marker, reset timer
+            self._ai_alliance_delay_timer = 0.0
+            self._ai_alliance_territory = next_marker['territory']
+            logger.info(f"[SIM] New AI alliance marker detected at {next_marker['territory']} - resetting timer")
+        self._ai_alliance_delay_timer += delta_time
+        if self._ai_alliance_delay_timer < self.SIM_AI_ACTION_DELAY:
+            return
+
+        # Reset timer for next marker
+        self._ai_alliance_delay_timer = 0.0
+        self._ai_alliance_territory = None
+        self._auto_choose_alliance_owner(index, f"AI player {next_marker.get('chooser')} is chooser")
+
+    def _auto_choose_alliance_owner(self, marker_index, reason):
+        """
+        Give an allied capture to the ally with the fewest territories (ties at random)
+        - the AI chooser's rule, also used when the host settles an absent player's
+        choice. Multiplayer host: SIM_ALLIANCE_CHOICE goes out BEFORE the round can end,
+        so clients never see the round end before the choice.
+        """
+        pm = self.sim_state.phase_manager
+        marker = pm.pending_alliance_markers[marker_index]
+        territory = marker['territory']
+        allied_players = marker['players']
+        logger.info(f"[SIM] Auto-resolving alliance marker at {territory} - {reason}")
+
+        # AI logic: Choose player with least territories; if tied, random
+        territory_counts = {}
+        for player_id in allied_players:
+            count = sum(1 for t, owner in self.game_state.territory_owners.items() if owner == player_id)
+            territory_counts[player_id] = count
+        min_territories = min(territory_counts.values())
+        candidates = [p for p, c in territory_counts.items() if c == min_territories]
+        chosen_owner = random.choice(candidates)
+        logger.info(f"[SIM] Chose player {chosen_owner} (had {territory_counts[chosen_owner]} territories, candidates: {candidates})")
+
+        # MULTIPLAYER: Broadcast alliance choice to clients
+        if self.multiplayer_mode and self.local_player_index == 0:
+            self._send_action_to_remote(MessageType.SIM_ALLIANCE_CHOICE, {
+                'territory': territory,
+                'new_owner': chosen_owner
+            })
+            logger.info(f"[HOST] Broadcast SIM_ALLIANCE_CHOICE: {territory} -> player {chosen_owner}")
+
+        # Assign territory and remove this marker from pending
+        pm.alliance_handler.assign_territory(territory, chosen_owner)
+        pm.pending_alliance_markers.pop(marker_index)
+        # The host settling its own choice: its popup has nothing left to choose
+        self._close_alliance_choice_popup(territory)
+
+        # Check if all alliance markers resolved
+        if self._sim_round_may_end():
+            logger.info(f"[SIM] All alliance markers resolved. Completing round.")
+            self.sim_state.complete_round()
+
+    def _sim_afk_watchdog(self):
+        """
+        Multiplayer AFK rules for the resolving phase, so a round never waits forever:
+        - after SIM_AFK_RESOLVE_SECONDS without the local player touching a battle, this
+          PC resolves the battles (and alliance choices) that are theirs;
+        - a battle report left open that long after FIGHT is closed: the battle's result
+          goes out only when its window closes, so it held up the whole round;
+        - after SIM_HOST_FALLBACK_SECONDS of resolving, the host settles every battle and
+          choice still open (an absent, frozen or stuck player's).
+        Single-player has nobody to wait for, so it never auto-resolves.
+        """
+        if not self.multiplayer_mode:
+            return
+        sim = self.sim_state
+        now = time.monotonic()
+        if sim.sim_phase != 'resolving':
+            self._sim_resolving_since = None
+            return
+        if self._sim_resolving_since is None:
+            self._sim_resolving_since = now
+            self._sim_local_battle_activity = now
+        info = self._resolved_battle_info
+        if (info is not None and self.enhanced_battle_ui is not None
+                and now - info.get('fought_at', now) >= self.SIM_AFK_RESOLVE_SECONDS):
+            logger.info(f"[SIM] Battle report for {info.get('territory')} left open - closing it")
+            self._finalize_enhanced_battle()
+            self._sim_local_battle_activity = now
+            return
+        # A battle window still waiting for FIGHT whose battle was settled meanwhile (the
+        # host's fallback below, replayed here) has nothing left to fight
+        self._close_stale_battle_window()
+        if (self.enhanced_battle_ui is not None or self.battle_popup_visible
+                or getattr(self, 'alliance_choice_popup_visible', False)):
+            # Busy with a battle / a choice - not idle
+            self._sim_local_battle_activity = now
+
+        local = self.get_local_player()
+        battles = self.game_state.pending_battles
+        markers = sim.phase_manager.pending_alliance_markers if sim.phase_manager else []
+        idle = now - self._sim_local_battle_activity
+        if idle >= self.SIM_AFK_RESOLVE_SECONDS:
+            if any(getattr(b, 'resolver', None) == local for b in battles):
+                logger.info(f"[SIM] Player {local} idle {idle:.0f}s - resolving their battles")
+                self._sim_local_battle_activity = now
+                self._resolve_all_pending_battles()
+                return
+            mine = next((i for i, m in enumerate(markers) if m.get('chooser') == local), None)
+            if mine is not None and not battles:
+                self._sim_local_battle_activity = now
+                if self.local_player_index == 0:
+                    self._auto_choose_alliance_owner(mine, f"player {local} idle")
+                else:
+                    # A client's choice goes through the normal path (assign + send)
+                    marker = markers[mine]
+                    owner = min(marker['players'], key=lambda p: (
+                        sum(1 for o in self.game_state.territory_owners.values() if o == p), p))
+                    self._send_action_to_remote(MessageType.SIM_ALLIANCE_CHOICE, {
+                        'territory': marker['territory'], 'new_owner': owner})
+                    sim.phase_manager.resolve_alliance_marker(marker['territory'], owner)
+                return
+
+        if self.local_player_index == 0 and now - self._sim_resolving_since >= self.SIM_HOST_FALLBACK_SECONDS:
+            # Every battle / choice still open - the host's own too (a window left open
+            # counts as "busy" above, so the idle rule never covers a host who walked away
+            # from one). The round itself still waits for a battle report of ours that is
+            # open (_sim_round_may_end); that one closes by the rule above.
+            if battles:
+                logger.warning(f"[HOST] Resolving phase open {now - self._sim_resolving_since:.0f}s - "
+                               f"settling the remaining battles")
+                self._resolve_all_pending_battles(any_resolver=True)
+                self._close_stale_battle_window()
+            elif markers:
+                logger.warning("[HOST] Settling a pending alliance choice")
+                self._auto_choose_alliance_owner(0, "host fallback")
+
+    def _close_stale_battle_window(self):
+        """A battle window still before FIGHT whose battle is no longer pending (resolved
+        by the AFK rules or by another PC): close it. FIGHT would close it anyway (see
+        handle_battle_popup_click) - this just doesn't leave it on screen until then."""
+        if (self.enhanced_battle_ui is not None and self._resolved_battle_info is None
+                and self._selected_battle_current_index() is None):
+            logger.info(f"[BATTLE] Battle at {self.selected_battle_territory} was settled meanwhile - "
+                        f"closing the battle window")
+            self._close_battle_window()
+
+    def _sim_check_new_round(self):
+        """A new round started: "Turn N" announcement, and the AI starts planning."""
+        if self.last_sim_round is None or self.game_state.phase == 'ended':
+            return  # no new rounds after victory/defeat
+        current_round = self.sim_state.round_number
+        if current_round == self.last_sim_round:
+            return
+        logger.info(f"[SIMULTANEOUS] New round detected: {self.last_sim_round} -> {current_round}")
+        self.last_sim_round = current_round
+
+        # Trigger turn announcement for the new round (Turn X)
+        if self.turn_announcement_effect is None:
+            self.turn_announcement_effect = TurnAnnouncementEffect(
+                WINDOW_WIDTH,
+                WINDOW_HEIGHT,
+                custom_text=f"Turn {current_round}",
+                on_complete=None  # No callback needed for sim mode
+            )
+            logger.info(f"[SIMULTANEOUS] Triggered Turn {current_round} announcement")
+
+        # Trigger AI planning for the new round (host / single-player only - clients
+        # have no sim_ai)
+        if self.sim_ai is not None and self.sim_state.sim_phase == 'planning':
+            logger.info(f"[SIMULTANEOUS] Triggering AI planning for round {current_round}")
+            self.sim_ai.start_planning_phase()
+
+    def _take_over_disconnected_player(self, player_index):
+        """
+        A player left a running game: the AI plays their empire from now on, at Medium
+        (owner decision). Every PC marks the slot as AI; the host also gives the slot an
+        AIPlayer and, in a simultaneous planning phase, lets it plan this round. In the
+        resolving phase their battles / choices are picked up by the AI auto-resolve.
+        (Sequential-mode takeover: see Phase 6 of the multiplayer audit.)
+        """
+        gs = self.game_state
+        if not (0 <= player_index < gs.num_players):
+            return
+        gs.player_is_ai[player_index] = True
+        gs.player_ai_difficulty[player_index] = 1  # Medium
+        sim = self.sim_state
+        if sim is not None and self.sim_ai is not None and self.local_player_index == 0:
+            self.sim_ai.ensure_player(player_index, 1)
+            if sim.sim_phase == 'planning' and not sim.players_ready.get(player_index, False):
+                # Their orders never reached us (they travel with SIM_PLAYER_READY)
+                sim.player_orders[player_index] = []
+                self.sim_ai.ai_ready[player_index] = False
+                self.sim_ai._start_ai_planning(player_index)
+                logger.info(f"[HOST] AI took over Player {player_index + 1} - planning their round")
 
     def is_local_player_active(self) -> bool:
         """
@@ -11839,69 +11856,10 @@ class Game:
             if self.game_state.game_mode == 'sequential' and _timer_check_allowed and not self.is_game_paused:
                 self.game_state.check_planning_timer_expired()
 
-            # Simultaneous mode: check for deferred execution from AI background thread
-            # Must run before timer checks to process pending execution promptly
+            # Simultaneous mode: deferred execution, planning timers, ready-state broadcast,
+            # AI battles / alliance choices, AFK rules, new rounds (see _update_simultaneous)
             if self.sim_state is not None:
-                self.sim_state.check_deferred_execution()
-
-            # Simultaneous mode: update timers and check for auto-ready
-            if self.sim_state is not None and self.sim_state.sim_phase == 'planning' and not self.is_game_paused:
-                local_player = self.get_local_player()
-                was_ready = self.sim_state.players_ready.get(local_player, False)
-
-                # PRE-EXPIRE: Convert movement orders BEFORE update_timers() calls mark_ready().
-                # mark_ready() sets players_ready=True, after which add_order() silently rejects.
-                # This mirrors the End Turn button flow (convert first, mark ready second).
-                if not was_ready:
-                    timer_remaining = self.sim_state.player_timers.get(local_player, 999)
-                    if timer_remaining - delta_time <= 0:
-                        # Timer will expire this frame — convert movement orders now
-                        logger.info(f"[SIM] Timer about to expire for player {local_player} - pre-converting {len(self.game_state.movement_orders)} movement orders")
-                        for order in self.game_state.movement_orders:
-                            sim_order = {
-                                'type': 'movement',
-                                'player_id': local_player,
-                                'from_territory': order.from_territory,
-                                'to_territory': order.to_territory,
-                                'army_count': order.army_count,
-                                'unit_ids': order.unit_ids if hasattr(order, 'unit_ids') else []
-                            }
-                            self.sim_state.add_order(local_player, sim_order)
-                        # Reset unit statuses before clearing orders (same as End Turn button)
-                        for order in self.game_state.movement_orders:
-                            if hasattr(order, 'unit_ids') and order.unit_ids:
-                                garrison = self.game_state.territory_garrisons.get(order.from_territory, {}).get(local_player)
-                                if garrison and 'units' in garrison:
-                                    for unit in garrison['units']:
-                                        if unit.get('id') in order.unit_ids:
-                                            unit['status'] = 'ready'
-                                            unit['order'] = None
-                        self.game_state.movement_orders.clear()
-
-                # Now update timers — mark_ready() will be called, but orders are already saved
-                self.sim_state.update_timers(delta_time)
-
-                # Check if local player just became ready due to timer expiration
-                is_ready_now = self.sim_state.players_ready.get(local_player, False)
-                if not was_ready and is_ready_now:
-                    # MULTIPLAYER: Send SIM_PLAYER_READY with orders to host (mirrors End Turn button)
-                    # Without this, the host never receives the client's orders on timer expiry
-                    if self.multiplayer_mode:
-                        orders_to_send = list(self.sim_state.player_orders.get(local_player, []))
-                        self._send_action_to_remote(MessageType.SIM_PLAYER_READY, {
-                            'player_id': local_player,
-                            'orders': orders_to_send
-                        })
-                        logger.info(f"[SIM] Timer expired - sent ready signal with {len(orders_to_send)} orders")
-
-                # MULTIPLAYER: Host sends periodic timer sync to client (every 2 seconds)
-                if self.multiplayer_mode and self.local_player_index == 0:
-                    if self._sim_last_timer_sync is None:
-                        self._sim_last_timer_sync = 0
-                    self._sim_last_timer_sync += delta_time
-                    if self._sim_last_timer_sync >= 2.0:
-                        self._sim_send_timer_update()
-                        self._sim_last_timer_sync = 0
+                self._update_simultaneous(delta_time)
 
             # BATTLE SOUND: Play once when battles are created for the local (human) player
             if not self.is_game_paused and self.game_state.pending_battles and not self._battle_sound_played:
@@ -11932,172 +11890,6 @@ class Game:
             if self.game_state.turn_phase != 'battles':
                 if self.sim_state is None or self.sim_state.sim_phase != 'resolving':
                     self._battle_sound_played = False
-
-            # SIMULTANEOUS MODE: Auto-resolve battles where AI is the resolver (with delay)
-            if (not self.is_game_paused and
-                self.sim_state is not None and
-                self.sim_state.sim_phase == 'resolving' and
-                self.game_state.pending_battles and
-                self.enhanced_battle_ui is None):  # Don't auto-resolve if battle UI is open
-                # Check if the next battle's resolver is an AI
-                next_battle = self.game_state.pending_battles[0]
-                resolver = getattr(next_battle, 'resolver', None)
-                if resolver is not None and resolver >= 0 and self.game_state.player_is_ai[resolver]:
-                    # Track when this AI battle was first detected (for 2-second delay)
-                    if self._ai_battle_delay_timer is None:
-                        self._ai_battle_delay_timer = 0.0
-                        self._ai_battle_territory = next_battle.territory
-                        logger.info(f"[SIM] AI battle detected at {next_battle.territory} - showing grey marker for 2 seconds")
-
-                    # Check if we're still on the same battle
-                    if self._ai_battle_territory != next_battle.territory:
-                        # New battle, reset timer
-                        self._ai_battle_delay_timer = 0.0
-                        self._ai_battle_territory = next_battle.territory
-                        logger.info(f"[SIM] New AI battle detected at {next_battle.territory} - resetting timer")
-
-                    # Increment timer
-                    self._ai_battle_delay_timer += delta_time
-
-                    # Only auto-resolve after 2 seconds
-                    if self._ai_battle_delay_timer >= 2.0:
-                        logger.info(f"[SIM] Auto-resolving battle at {next_battle.territory} - AI player {resolver} is resolver")
-                        # Reset timer for next battle
-                        self._ai_battle_delay_timer = 0.0
-                        self._ai_battle_territory = None
-
-                        # Auto-resolve the first pending battle (multiplayer: seeded, so
-                        # the clients replay it)
-                        battle, battle_seed = self._resolve_battle_locally(0)
-                        territory = battle.territory
-                        # Clear sequential mode flag - sim mode uses complete_round() instead
-                        self.game_state.ready_to_advance_turn = False
-
-                        # Check for alliance marker (allied victory, shared rule)
-                        alliance_marker = self._alliance_marker_for(battle, territory)
-                        if alliance_marker:
-                            self.sim_state.phase_manager.pending_alliance_markers.append(alliance_marker)
-                            logger.info(f"[SIM] AI battle created alliance marker, chooser: {alliance_marker['chooser']}")
-
-                        # MULTIPLAYER: Send battle result to clients (seed + outcome)
-                        if self.multiplayer_mode and self.local_player_index == 0:
-                            self._send_action_to_remote(MessageType.BATTLE_RESOLVE, self._battle_resolve_payload(
-                                battle, territory, battle_seed, alliance_marker,
-                                self.game_state.last_battle_reports))
-                            logger.info(f"[HOST] Broadcast AI battle result: {territory} -> "
-                                        f"player {self.game_state.territory_owners.get(territory, -1)}")
-
-                        # Capital Assault: sync battle-based eliminations to sim_state
-                        self._sync_battle_eliminations_to_sim("after AI battle")
-
-                        # Check if all battles resolved
-                        if not self.game_state.pending_battles:
-                            logger.info(f"[SIM] All battles resolved. Alliance markers: {len(self.sim_state.phase_manager.pending_alliance_markers)}")
-                            if not self.sim_state.phase_manager.pending_alliance_markers:
-                                self.sim_state.complete_round()
-                else:
-                    # Not an AI battle, reset the timer tracking
-                    if self._ai_battle_delay_timer is not None:
-                        self._ai_battle_delay_timer = 0.0
-                        self._ai_battle_territory = None
-
-            # SIMULTANEOUS MODE: Auto-resolve alliance markers where AI is the chooser (with delay)
-            if (not self.is_game_paused and
-                self.sim_state is not None and
-                self.sim_state.sim_phase == 'resolving' and
-                not self.game_state.pending_battles and  # Only after all battles resolved
-                self.sim_state.phase_manager.pending_alliance_markers and
-                not getattr(self, 'alliance_choice_popup_visible', False)):  # Don't auto-resolve if popup is open
-                # Check if the next alliance marker's chooser is an AI
-                next_marker = self.sim_state.phase_manager.pending_alliance_markers[0]
-                chooser = next_marker.get('chooser')
-                if chooser is not None and self.game_state.player_is_ai[chooser]:
-                    # Track when this AI alliance marker was first detected (for 2-second delay)
-                    if self._ai_alliance_delay_timer is None:
-                        self._ai_alliance_delay_timer = 0.0
-                        self._ai_alliance_territory = next_marker['territory']
-                        logger.info(f"[SIM] AI alliance marker detected at {next_marker['territory']} - showing grey marker for 2 seconds")
-
-                    # Check if we're still on the same marker
-                    if self._ai_alliance_territory != next_marker['territory']:
-                        # New marker, reset timer
-                        self._ai_alliance_delay_timer = 0.0
-                        self._ai_alliance_territory = next_marker['territory']
-                        logger.info(f"[SIM] New AI alliance marker detected at {next_marker['territory']} - resetting timer")
-
-                    # Increment timer
-                    self._ai_alliance_delay_timer += delta_time
-
-                    # Only auto-resolve after 2 seconds
-                    if self._ai_alliance_delay_timer >= 2.0:
-                        territory = next_marker['territory']
-                        allied_players = next_marker['players']
-                        logger.info(f"[SIM] Auto-resolving alliance marker at {territory} - AI player {chooser} is chooser")
-
-                        # AI logic: Choose player with least territories; if tied, random
-                        territory_counts = {}
-                        for player_id in allied_players:
-                            count = sum(1 for t, owner in self.game_state.territory_owners.items() if owner == player_id)
-                            territory_counts[player_id] = count
-
-                        min_territories = min(territory_counts.values())
-                        candidates = [p for p, c in territory_counts.items() if c == min_territories]
-
-                        chosen_owner = random.choice(candidates)
-                        logger.info(f"[SIM] AI chose player {chosen_owner} (had {territory_counts[chosen_owner]} territories, candidates: {candidates})")
-
-                        # Assign territory
-                        self.sim_state.phase_manager.alliance_handler.assign_territory(territory, chosen_owner)
-
-                        # MULTIPLAYER: Broadcast alliance choice to clients
-                        if self.multiplayer_mode and self.local_player_index == 0:
-                    
-                            self._send_action_to_remote(MessageType.SIM_ALLIANCE_CHOICE, {
-                                'territory': territory,
-                                'new_owner': chosen_owner
-                            })
-                            logger.info(f"[HOST] Broadcast AI SIM_ALLIANCE_CHOICE: {territory} -> player {chosen_owner}")
-
-                        # Reset timer for next marker
-                        self._ai_alliance_delay_timer = 0.0
-                        self._ai_alliance_territory = None
-
-                        # Remove this marker from pending
-                        self.sim_state.phase_manager.pending_alliance_markers.pop(0)
-
-                        # Check if all alliance markers resolved
-                        if not self.sim_state.phase_manager.pending_alliance_markers:
-                            logger.info(f"[SIM] All alliance markers resolved. Completing round.")
-                            self.sim_state.complete_round()
-                else:
-                    # Not an AI alliance marker, reset the timer tracking
-                    if self._ai_alliance_delay_timer is not None:
-                        self._ai_alliance_delay_timer = 0.0
-                        self._ai_alliance_territory = None
-
-            # SIMULTANEOUS MODE: Check if a new round started and trigger AI planning
-            # Skip if game has ended - no new rounds after victory/defeat
-            if (not self.is_game_paused and self.sim_state is not None
-                    and self.last_sim_round is not None and self.game_state.phase != 'ended'):
-                current_round = self.sim_state.round_number
-                if current_round != self.last_sim_round:
-                    logger.info(f"[SIMULTANEOUS] New round detected: {self.last_sim_round} -> {current_round}")
-                    self.last_sim_round = current_round
-
-                    # Trigger turn announcement for the new round (Turn X)
-                    if self.turn_announcement_effect is None:
-                        self.turn_announcement_effect = TurnAnnouncementEffect(
-                            WINDOW_WIDTH,
-                            WINDOW_HEIGHT,
-                            custom_text=f"Turn {current_round}",
-                            on_complete=None  # No callback needed for sim mode
-                        )
-                        logger.info(f"[SIMULTANEOUS] Triggered Turn {current_round} announcement")
-
-                    # Trigger AI planning for the new round
-                    if self.sim_ai is not None and self.sim_state.sim_phase == 'planning':
-                        logger.info(f"[SIMULTANEOUS] Triggering AI planning for round {current_round}")
-                        self.sim_ai.start_planning_phase()
 
             # Handle AI player turn (optimized: check on player change OR phase change OR turn announcement ending)
             player_changed = self.game_state.current_player != self.previous_ai_check
@@ -13412,6 +13204,9 @@ class Game:
                     'payload': (self._battle_resolve_payload(
                         battle, territory, battle_seed, alliance_marker,
                         self.game_state.last_battle_reports) if self.multiplayer_mode else None),
+                    # When FIGHT was pressed: a report left open this long is closed by
+                    # the simultaneous-mode AFK rules (_sim_afk_watchdog)
+                    'fought_at': time.monotonic(),
                 }
                 return True
 
@@ -13853,8 +13648,8 @@ class Game:
                 markers_pending = len(pm.pending_alliance_markers) if pm else 0
                 logger.info(f"[NETWORK] All battles resolved (sim mode). Alliance markers: {markers_pending}")
 
-                # HOST: Complete round if no more battles/markers
-                if self.local_player_index == 0 and markers_pending == 0:
+                # HOST: Complete round if no more battles/markers (and no report of ours open)
+                if self.local_player_index == 0 and self._sim_round_may_end():
                     logger.info(f"[HOST] All conflicts resolved after remote battle, completing round")
                     self.sim_state.complete_round()
             else:
@@ -14114,45 +13909,13 @@ class Game:
                         return True  # Consume click but do nothing
 
                     # Convert human player's movement orders from game_state to sim_state queue
-                    for order in self.game_state.movement_orders:
-                        sim_order = {
-                            'type': 'movement',
-                            'player_id': local_player,
-                            'from_territory': order.from_territory,
-                            'to_territory': order.to_territory,
-                            'army_count': order.army_count,
-                            'unit_ids': order.unit_ids if hasattr(order, 'unit_ids') else []
-                        }
-                        self.sim_state.add_order(local_player, sim_order)
-                        logger.debug(f"[SIM] Converted order: {order.from_territory} -> {order.to_territory}")
-
-                    # Clear the game_state movement orders (they're now in sim_state)
-                    # Reset unit statuses first
-                    for order in self.game_state.movement_orders:
-                        if hasattr(order, 'unit_ids') and order.unit_ids:
-                            garrison = self.game_state.territory_garrisons.get(order.from_territory, {}).get(local_player)
-                            if garrison and 'units' in garrison:
-                                for unit in garrison['units']:
-                                    if unit.get('id') in order.unit_ids:
-                                        unit['status'] = 'ready'
-                                        unit['order'] = None
-                    self.game_state.movement_orders.clear()
+                    self._sim_queue_local_movement_orders(local_player)
 
                     # Now mark the player as ready
                     self.sim_state.mark_ready(local_player)
 
-                    # MULTIPLAYER: Send SIM_PLAYER_READY with orders to host
-                    if self.multiplayer_mode:
-                
-                        # Include orders in the ready message so host can merge them
-                        orders_to_send = []
-                        for order in self.sim_state.player_orders.get(local_player, []):
-                            orders_to_send.append(order)
-                        self._send_action_to_remote(MessageType.SIM_PLAYER_READY, {
-                            'player_id': local_player,
-                            'orders': orders_to_send
-                        })
-                        logger.info(f"[SIM] Sent ready signal with {len(orders_to_send)} orders")
+                    # MULTIPLAYER client: Send SIM_PLAYER_READY with orders to host
+                    self._sim_send_local_ready(local_player, "End Turn")
 
                 # SEQUENTIAL MODE: Normal turn advancement
                 elif self.multiplayer_mode:
@@ -14998,7 +14761,7 @@ class Game:
         self.trigger_click_flash('top_button', 'resolve_all_battles')
         self._resolve_all_pending_battles()
 
-    def _resolve_all_pending_battles(self):
+    def _resolve_all_pending_battles(self, any_resolver=False):
         """
         Auto-resolve all pending battles where the local player is the resolver.
 
@@ -15007,7 +14770,12 @@ class Game:
         elimination sync, and turn/round advancement after all battles are done.
 
         Called by _handle_resolve_all_battles_click() when the player clicks
-        the "Resolve Remaining Battles" button during battle phase.
+        the "Resolve Remaining Battles" button during battle phase, and by the
+        simultaneous-mode AFK rules (_sim_afk_watchdog).
+
+        Args:
+            any_resolver: Simultaneous multiplayer host fallback - also settle battles
+                whose resolver is another player (absent / stuck)
         """
         local_player = self.get_local_player()
         safety_limit = 100  # Prevent infinite loop
@@ -15022,7 +14790,8 @@ class Game:
             for idx, b in enumerate(self.game_state.pending_battles):
                 if self.sim_state is not None:
                     # Simultaneous mode: only resolve battles where we're the designated resolver
-                    if getattr(b, 'resolver', None) == local_player:
+                    # (the host's fallback takes any battle)
+                    if any_resolver or getattr(b, 'resolver', None) == local_player:
                         resolvable_idx = idx
                         break
                 else:
@@ -15059,13 +14828,13 @@ class Game:
         # Post-loop: advance turn or complete round
         if not self.game_state.pending_battles:
             if self.sim_state is not None:
-                # Simultaneous mode: complete round if no pending alliance markers
-                if self.sim_state.sim_phase == 'resolving':
-                    if not self.sim_state.phase_manager.pending_alliance_markers:
-                        if not self.multiplayer_mode or self.local_player_index == 0:
-                            self.sim_state.complete_round()
-                        else:
-                            logger.info(f"[CLIENT] Waiting for SIM_ROUND_COMPLETE from host")
+                # Simultaneous mode: complete round if no pending alliance markers (and
+                # no battle report of ours still open - see _sim_round_may_end)
+                if self._sim_round_may_end():
+                    if not self.multiplayer_mode or self.local_player_index == 0:
+                        self.sim_state.complete_round()
+                    else:
+                        logger.info(f"[CLIENT] Waiting for SIM_ROUND_COMPLETE from host")
             else:
                 # Sequential mode: advance to next player
                 if self.game_state.ready_to_advance_turn:
@@ -15268,20 +15037,30 @@ class Game:
                 if button_rect.collidepoint(pos):
                     # Assign territory to chosen player
                     territory = self.alliance_choice_territory
+                    pm = self.sim_state.phase_manager if self.sim_state is not None else None
+                    if (pm is None or self.sim_state.sim_phase != 'resolving'
+                            or not any(m.get('territory') == territory
+                                       for m in pm.pending_alliance_markers)):
+                        # Already chosen elsewhere (the host's AFK fallback) - a second
+                        # choice used to end the next round as well
+                        logger.info(f"[ALLIANCE] Choice for {territory} was already made - closing the popup")
+                        self.alliance_choice_popup_visible = False
+                        return True
                     logger.info(f"[ALLIANCE] Player chose to assign {territory} to player {player_id}")
 
-                    # Use phase manager to resolve the alliance marker
-                    self.sim_state.phase_manager.resolve_alliance_marker(territory, player_id)
-
                     # Send alliance choice to other players in multiplayer
-                    # Both host and client need to send - host broadcasts to clients, client sends to host
+                    # Both host and client need to send - host broadcasts to clients, client sends to host.
+                    # BEFORE resolving locally: on the host that can end the round, and
+                    # SIM_ROUND_COMPLETE must not reach the clients ahead of the choice.
                     if self.multiplayer_mode:
-                
                         self._send_action_to_remote(MessageType.SIM_ALLIANCE_CHOICE, {
                             'territory': territory,
                             'new_owner': player_id
                         })
                         logger.debug(f"[NETWORK] Sent SIM_ALLIANCE_CHOICE: {territory} -> player {player_id}")
+
+                    # Use phase manager to resolve the alliance marker
+                    self.sim_state.phase_manager.resolve_alliance_marker(territory, player_id)
 
                     # Close popup
                     self.alliance_choice_popup_visible = False

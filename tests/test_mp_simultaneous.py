@@ -45,8 +45,6 @@ class TestHarnessSanity:
 
 class TestOrderExecution:
 
-    @pytest.mark.xfail(strict=True, reason="H12: the host drops a second order on the same route "
-                       "(an army split into two orders A->B)")
     def test_split_army_moves_both_groups(self, make_session):
         session = make_session(num_players=2, turn_mode='simultaneous')
         a, b, _ = h.adjacent_triple()
@@ -60,8 +58,6 @@ class TestOrderExecution:
         for index in (0, 1):
             assert len(h.garrison_summary(session.gs(index), b).get(1, [])) == 4
 
-    @pytest.mark.xfail(strict=True, reason="H11: clients execute the raw merged order list, "
-                       "including orders the host's validation rejected")
     def test_client_executes_only_what_the_host_executes(self, make_session):
         session = make_session(num_players=2, turn_mode='simultaneous')
         a, b, c = h.adjacent_triple()
@@ -89,6 +85,21 @@ class TestOrderExecution:
 class TestBattleResolution:
 
     def test_fight_resolves_the_battle_that_was_opened(self, make_session):
+        client, b = self._client_window_on_battle_two(make_session)
+        h.fight(client)
+        assert client.game_state.territory_owners[b] == 1
+
+    def test_the_windows_own_fight_button_survives_the_shift(self, make_session):
+        """Through the battle window's REAL FIGHT button (h.fight stubs it): the window
+        read its battle at the index saved when it opened - past the end of the list
+        once battle #1 was gone, so the click crashed with an IndexError."""
+        client, b = self._client_window_on_battle_two(make_session)
+        ui = client.enhanced_battle_ui
+        assert client.handle_battle_popup_click(ui.resolve_button_rect.center) is True
+        assert client.game_state.territory_owners[b] == 1
+
+    def _client_window_on_battle_two(self, make_session):
+        """The client's window shows battle #2 while the host resolves battle #1."""
         session = make_session(num_players=2, turn_mode='simultaneous')
         a, b, _ = h.adjacent_triple()
         cavalry = h.units('Cavalry', 'Cavalry', 'Cavalry', status='moved')
@@ -111,15 +122,11 @@ class TestBattleResolution:
         h.close_battle(host)
         session.flush()
         client._process_network_messages()            # the client learns battle #1 is gone
-        h.fight(client)
-        assert client.game_state.territory_owners[b] == 1
+        return client, b
 
 
 class TestRoundSync:
 
-    @pytest.mark.xfail(strict=True, reason="M17: when the host readies last, its own SIM_PLAYER_READY "
-                       "goes out after the round already ended, so clients list the host as ready "
-                       "in the new round")
     def test_waiting_list_is_accurate_in_the_next_round(self, make_session):
         session = make_session(num_players=2, turn_mode='simultaneous')
         ready_both(session)
@@ -136,8 +143,6 @@ class TestRoundSync:
         client_sim.eliminate_player(1)
         assert 1 in client_sim.eliminated_players
 
-    @pytest.mark.xfail(strict=True, reason="M15: the host broadcasts SIM_ROUND_COMPLETE before its "
-                       "own SIM_ALLIANCE_CHOICE")
     def test_host_alliance_choice_is_sent_before_the_round_ends(self, make_session):
         session = make_session(num_players=2, turn_mode='simultaneous')
         host = session.game(0)
@@ -161,8 +166,6 @@ class TestRoundSync:
 
 class TestAiPlanning:
 
-    @pytest.mark.xfail(strict=True, reason="M10: clients also run SimultaneousAI planning for the "
-                       "host's AI slots")
     def test_clients_do_not_plan_for_ai_slots(self, make_session):
         session = make_session(num_players=3, ai_slots=(2,), turn_mode='simultaneous')
         assert session.game(1).sim_ai is None
@@ -182,8 +185,6 @@ def _sim(num_players=2, player_is_ai=None):
 
 class TestReadiness:
 
-    @pytest.mark.xfail(strict=True, reason="H14: a multiplayer host starts execution on whatever "
-                       "thread marks the last player ready (e.g. an AI planning thread)")
     def test_host_execution_never_starts_on_a_background_thread(self):
         gs, sim = _sim(player_is_ai=[False, True])
         sim.is_multiplayer_host = True
@@ -198,8 +199,6 @@ class TestReadiness:
         sim.check_deferred_execution()                # the main loop picks it up
         assert started_on == [threading.main_thread()]
 
-    @pytest.mark.xfail(strict=True, reason="L7: a human with nothing to do is auto-readied in "
-                       "multiplayer but never sends SIM_PLAYER_READY")
     def test_humans_are_not_auto_readied_in_multiplayer(self):
         gs, sim = _sim()
         territory = h.spread_territories(2)[1]
@@ -223,8 +222,6 @@ class TestAiHeroAbilities:
         gs.hero_ownership[1].add(hero)
         return gs, sim, hero, home, target
 
-    @pytest.mark.xfail(strict=True, reason="M11: the simultaneous AI ability executor ignores "
-                       "Decisive Strike, Valorous Charge, Royal Charisma and Regicide")
     def test_ai_decisive_strike_is_executed(self):
         gs, sim, hero, _, target = self._hero_setup('Decisive Strike')
         h.place(gs, target, 0, h.units('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Swordsman', 'Archer'))
@@ -233,8 +230,6 @@ class TestAiHeroAbilities:
                                                      'target': target})
         assert len(gs.territory_garrisons[target][0]['units']) == 3
 
-    @pytest.mark.xfail(strict=True, reason="M16: targeted AI abilities in simultaneous mode never go "
-                       "on cooldown, so the AI casts them every round")
     def test_ai_targeted_ability_goes_on_cooldown(self):
         gs, sim, hero, home, _ = self._hero_setup('Relentless Charge')
         h.place(gs, home, 1, h.units('Swordsman'))

@@ -176,6 +176,7 @@ AvareonWar/
 - [tests/test_mp_sequential.py](tests/test_mp_sequential.py) / [tests/test_mp_simultaneous.py](tests/test_mp_simultaneous.py) / [tests/test_mp_progression.py](tests/test_mp_progression.py) - Sequential / simultaneous sync and achievements/XP for the local player (multiplayer audit findings)
 - [tests/test_mp_battles.py](tests/test_mp_battles.py) - Seeded battle replay on receivers (seed + full survivors, hero/Keep/report once, early result held, disagreeing replay corrected, seedless fallback with allies, FIGHT on a vanished battle, dice ties reproduce)
 - [tests/test_mp_foundations.py](tests/test_mp_foundations.py) - State snapshot round trip / per-PC chat / AI flags / cleared work in progress / income, Decisive Strike + Valorous Charge picks, integer default unit ids
+- [tests/test_mp_sim_flow.py](tests/test_mp_sim_flow.py) - Simultaneous multiplayer: host state wins at execution start, 3- and 4-player rounds end identical (incl. per-PC current_player), round end clears leftovers, host-only AI battles / choices / round ends, SIM_READY_STATE waiting list, client timers ready only themselves, AFK (90 s own / 180 s host, report left open, host's own window), round end waits for the host's open battle report + keeps its alliance marker in its round, late alliance choice / stale popup never end the next round, AI takeover while planning / resolving, order validation (units used twice, count from unit list), alliance marker removal by territory
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -477,6 +478,9 @@ After making code changes, ask yourself:
 - Change multiplayer sync logging/desync diagnosis → `sync_logger.py`, `network_config.py` (message types), `main.py` (hooks)
 - Change internet play / UPnP → `network/upnp.py` and `network_config.py`
 - Modify simultaneous mode → `simultaneous/sim_state.py`, `sim_conflict_resolver.py`
+- Simultaneous multiplayer flow → host: `main.py` `_sim_start_execution_phase()` (validate + apply non-movement + `SIM_ALL_READY{snapshot, movement_orders}`) / `_sim_broadcast_round_complete()` (snapshot); client: `_sim_apply_all_ready()` / `_sim_apply_round_complete()` (restore `current_player` = local after a snapshot). Per-frame work: `_update_simultaneous()` (timers, `SIM_READY_STATE`, host-only AI resolvers / choosers, `_sim_afk_watchdog()`, new-round AI). **Any new "end the round now?" check must use `Game._sim_round_may_end()`** (it waits for an open battle report of ours). See "Multiplayer model (the host is the truth)" in CODE_GUIDE.md
+- AI takeover of a disconnected player → `main.py` `_take_over_disconnected_player()` + `SimultaneousAI.ensure_player()`
+- Simultaneous AFK timings → `Game.SIM_AFK_RESOLVE_SECONDS` / `SIM_HOST_FALLBACK_SECONDS` / `SIM_AI_ACTION_DELAY` in `main.py`
 - Modify victory/elimination → `game_state/victory.py` (check_victory, eliminate_player, eliminate_player_disconnect)
 - Modify Battle Reports (capture) → `game_state/military.py` `_capture_battle_reports()` / `_capture_uncontested_report()` — hook lives in `resolve_battle()`, NOT `_update_battle_results()` (the tie path destroys buildings first and early-returns)
 - Modify Battle Report popup visuals → `ui/battle_report_popup.py`

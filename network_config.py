@@ -125,8 +125,9 @@ class MessageType(str, enum.Enum):
     # Simultaneous Mode - Planning Phase
     SIM_ORDER_QUEUED = "SIM_ORDER_QUEUED"          # Player queued an order (not broadcast to others)
     SIM_PLAYER_READY = "SIM_PLAYER_READY"          # Player finished planning, ready to execute
-    SIM_ALL_READY = "SIM_ALL_READY"                # All players ready, includes merged order list
+    SIM_ALL_READY = "SIM_ALL_READY"                # All players ready: host's state snapshot + the movement to run
     SIM_TIMER_UPDATE = "SIM_TIMER_UPDATE"          # Timer sync between host/client
+    SIM_READY_STATE = "SIM_READY_STATE"            # Host -> clients: who is ready this round (the "Waiting for" list)
 
     # Simultaneous Mode - Resolution Phase
     SIM_CROSSING_CONFLICT = "SIM_CROSSING_CONFLICT"  # Crossing army conflict detected

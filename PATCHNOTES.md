@@ -27,6 +27,29 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 - If a player leaves while the others are loading, the game no longer waits for them forever.
 - If the host leaves, everyone else is told and returns to the menu.
 
+### Simultaneous turns
+
+- Every round now plays out identically for every player: the host checks all orders,
+  carries out everyone's buildings, training and research, and every player watches the
+  same armies march into the same battles. Before, players could end up seeing different
+  moves and battles.
+- Fixed: splitting an army into two groups heading for the same territory moved only one
+  of them.
+- The "Waiting for..." list now always shows who is really still planning.
+- In multiplayer you are marked ready only when you press **End Turn** (or your timer runs
+  out) - never automatically.
+- Away from the keyboard? Battles you leave untouched for 90 seconds are fought for you,
+  a battle report left open for 90 seconds closes by itself, and after 3 minutes the host
+  settles any battle still open, so a round can never get stuck.
+- Fixed: when the host was still reading a battle report as the last battle ended, an
+  allied territory choice could be lost and turn up again in the next round.
+- Fixed: an alliance choice made at the very end of a round could cut the next round's
+  planning short.
+- If a player leaves the game, an AI takes over their empire (Medium difficulty) and
+  carries on - even finishing the current round for them.
+- Computer players now use all of their Heroes' targeted abilities, and wait for the
+  cooldown like everyone else.
+
 ### Battles and heroes
 
 - Battles now play out the same way for every player. Fixed: when another player won a

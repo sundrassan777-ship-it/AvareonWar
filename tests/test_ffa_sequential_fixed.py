@@ -222,7 +222,10 @@ def run_fixed_test(num_turns=40, verbose=True):
     return {
         'turns': final_turn,
         'battles': total_battles,
-        'territories': final_terr
+        'territories': final_terr,
+        # A perfect battle tie (equal strength AND equal dice) makes the territory neutral -
+        # a real game rule. Counting only players' territories made this test 'flaky'.
+        'neutral_territories': sum(1 for owner in game.territory_owners.values() if owner == -1),
     }
 
 
@@ -236,7 +239,7 @@ def test_ffa_sequential_fixed():
     assert results is not None, "Test runner returned None"
     assert results['turns'] > 0, "No turns were completed"
     # Territory counts should sum to 57 (total map territories)
-    assert sum(results['territories']) == 57, f"Territory sum != 57: {results['territories']}"
+    assert sum(results['territories']) + results['neutral_territories'] == 57, f"Territory sum != 57: {results['territories']} + {results['neutral_territories']} neutral"
     assert all(t >= 0 for t in results['territories']), f"Negative territory count: {results['territories']}"
 
 

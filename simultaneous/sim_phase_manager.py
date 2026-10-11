@@ -112,6 +112,23 @@ class SimPhaseManager:
         Args:
             resolved_orders: Dictionary of {player_id: [orders]} after conflict resolution
         """
+        # Steps 2-3: merge + validate
+        valid_orders = self.prepare_orders(resolved_orders)
+
+        # Step 4: Execute orders (creates animations)
+        self._execute_orders(valid_orders)
+
+    def prepare_orders(self, resolved_orders: Dict[int, List[dict]]) -> List[dict]:
+        """
+        Merge every player's orders into one list (duplicates dropped) and keep the
+        valid ones - what will actually be executed this round.
+
+        Args:
+            resolved_orders: {player_id: [orders]} after crossing-conflict resolution
+
+        Returns:
+            The valid orders, each tagged with player_id
+        """
         # Step 2: Merge all orders into unified execution queue
         merged_orders = self._merge_orders(resolved_orders)
         sim_log.phase(f"Merged {len(merged_orders)} orders from all players")
@@ -121,9 +138,34 @@ class SimPhaseManager:
         sim_log.phase(f"{len(valid_orders)} valid orders after validation")
         for order in valid_orders:
             sim_log.order(order.get('player_id'), order.get('type'), str(order))
+        return valid_orders
 
-        # Step 4: Execute orders (creates animations)
-        self._execute_orders(valid_orders)
+    def begin_authoritative_execution(self, resolved_orders: Dict[int, List[dict]]) -> List[dict]:
+        """
+        Multiplayer host: start the round's execution with the host as the single
+        source of truth.
+
+        Validates every order and applies all non-movement orders (builds, training,
+        research, castle upgrades, demolitions, hero abilities, hero training) here.
+        The caller then snapshots the state, sends it to the clients together with the
+        returned movement orders (SIM_ALL_READY) and starts the movement with
+        _execute_movement_orders(). Clients apply that snapshot and run only those
+        movements, so every PC ends up with the same arrivals and battles. Clients used
+        to execute the raw merged order list themselves - including orders the host had
+        rejected.
+
+        Returns:
+            The validated movement orders (to send, then execute)
+        """
+        self.sim_state.sim_phase = 'executing'
+        self.execution_complete = False
+        self.animations_complete = False
+
+        valid_orders = self.prepare_orders(resolved_orders)
+        movement_orders = [o for o in valid_orders if o.get('type') == 'movement']
+        self._execute_orders([o for o in valid_orders if o.get('type') != 'movement'],
+                             start_movement=False)
+        return movement_orders
 
     def _merge_orders(self, player_orders: Dict[int, List[dict]]) -> List[dict]:
         """
@@ -140,7 +182,7 @@ class SimPhaseManager:
         """
         merged = []
         # Track seen movement orders to prevent duplicates
-        # Key: (player_id, source_territory, target_territory)
+        # Key: (player_id, source, target, the exact units)
         seen_movement_orders = set()
 
         for player_id, orders in player_orders.items():
@@ -149,12 +191,17 @@ class SimPhaseManager:
                 order_copy = order.copy()
                 order_copy['player_id'] = player_id
 
-                # Deduplicate movement orders by (player, source, target)
+                # Deduplicate movement orders: only an EXACT repeat (same units on the
+                # same route) is dropped. The key used to be just (player, source,
+                # target), so an army split into two orders along one route lost its
+                # second half.
                 if order_copy.get('type') == 'movement':
                     dedup_key = (
                         player_id,
                         order_copy.get('from_territory'),
-                        order_copy.get('to_territory')
+                        order_copy.get('to_territory'),
+                        tuple(sorted(order_copy.get('unit_ids') or [])),
+                        order_copy.get('army_count')
                     )
                     if dedup_key in seen_movement_orders:
                         sim_log.detail(
@@ -194,12 +241,58 @@ class SimPhaseManager:
             List of valid orders
         """
         valid = []
+        # Units claimed by movement orders accepted so far: {(player, territory): ids}
+        # and count-only claims {(player, territory): n}
+        claimed_ids = {}
+        claimed_counts = {}
 
         for order in orders:
-            if self._is_order_valid(order):
-                valid.append(order)
+            if not self._is_order_valid(order):
+                continue
+            if (order.get('type') == 'movement'
+                    and not self._claim_movement_units(order, claimed_ids, claimed_counts)):
+                sim_log.detail(f"Movement order rejected - its units are missing, not ready or "
+                               f"already used by another order: {order}")
+                continue
+            valid.append(order)
 
         return valid
+
+    def _claim_movement_units(self, order: dict, claimed_ids: dict, claimed_counts: dict) -> bool:
+        """
+        A movement order may only take units that exist in its source garrison, are
+        ready to move, and are not taken by an order accepted before it.
+
+        Executing an order whose units were gone still took its army_count off the
+        garrison and made the missing units up as default Swordsmen at the destination.
+        """
+        player_id = order.get('player_id')
+        from_territory = order.get('from_territory')
+        key = (player_id, from_territory)
+        garrison = self.gs.territory_garrisons.get(from_territory, {}).get(player_id, {})
+        unit_ids = order.get('unit_ids') or []
+        taken = claimed_ids.setdefault(key, set())
+
+        if unit_ids:
+            ready_ids = {u.get('id') for u in garrison.get('units', [])
+                         if u.get('status', 'ready') == 'ready'}
+            if (len(set(unit_ids)) != len(unit_ids)
+                    or any(uid not in ready_ids or uid in taken for uid in unit_ids)):
+                return False
+            if order.get('army_count') != len(unit_ids):
+                # The units decide: a larger count would invent units on arrival
+                sim_log.detail(f"army_count {order.get('army_count')} -> {len(unit_ids)} (unit list)")
+                order['army_count'] = len(unit_ids)
+            taken.update(unit_ids)
+            return True
+
+        # Count-only order (no unit list): enough unmoved units must be left
+        count = order.get('army_count', 0)
+        used = claimed_counts.get(key, 0) + len(taken)
+        if count <= 0 or used + count > garrison.get('unmoved', 0):
+            return False
+        claimed_counts[key] = claimed_counts.get(key, 0) + count
+        return True
 
     def _is_order_valid(self, order: dict) -> bool:
         """
@@ -254,24 +347,17 @@ class SimPhaseManager:
             else:
                 return False
 
-        # In multiplayer mode, skip garrison validation for remote player orders
-        # Remote orders were already validated on the sender's side before sending
-        # Host doesn't have accurate garrison data for remote players (training not synced)
-        local_player = self.sim_state.local_player_index
-        is_remote_order = local_player is not None and player_id != local_player
+        # Garrison check for EVERY player's order. (Remote players' orders used to skip
+        # it because the host's copy of their garrisons could be stale; the host's state
+        # is now what every PC applies at round start and round end.) The exact units
+        # are checked in _claim_movement_units().
+        garrison = self.gs.territory_garrisons.get(from_territory, {})
+        player_garrison = garrison.get(player_id, {})
+        unmoved = player_garrison.get('unmoved', 0)
 
-        if not is_remote_order:
-            # Only validate garrison for local player orders
-            # Check player owns/has garrison in from_territory
-            garrison = self.gs.territory_garrisons.get(from_territory, {})
-            player_garrison = garrison.get(player_id, {})
-            unmoved = player_garrison.get('unmoved', 0)
-
-            if army_count > unmoved:
-                sim_log.detail(f"Movement validation failed: P{player_id} has {unmoved} unmoved, wants {army_count}")
-                return False
-        else:
-            sim_log.detail(f"Skipping garrison validation for remote player {player_id} order")
+        if army_count > unmoved:
+            sim_log.detail(f"Movement validation failed: P{player_id} has {unmoved} unmoved, wants {army_count}")
+            return False
 
         # Check destination army limit
         dest_garrison = self.gs.territory_garrisons.get(to_territory, {})
@@ -336,7 +422,7 @@ class SimPhaseManager:
 
         return has_barracks
 
-    def _execute_orders(self, orders: List[dict]):
+    def _execute_orders(self, orders: List[dict], start_movement: bool = True):
         """
         Execute all validated orders.
 
@@ -345,6 +431,8 @@ class SimPhaseManager:
 
         Args:
             orders: List of valid order dictionaries
+            start_movement: False = apply everything except movement (the multiplayer
+                host snapshots the state before the armies set off)
         """
         # Separate by type
         movement_orders = [o for o in orders if o.get('type') == 'movement']
@@ -385,7 +473,8 @@ class SimPhaseManager:
             self._apply_train_hero_order(order)
 
         # Execute movement orders (creates animations)
-        self._execute_movement_orders(movement_orders)
+        if start_movement:
+            self._execute_movement_orders(movement_orders)
 
     def _apply_build_order(self, order: dict):
         """Apply a build order to game state."""
@@ -545,21 +634,34 @@ class SimPhaseManager:
             result = self.gs.activate_hero_ability(hero_type, ability_index)
 
             if result == 'requires_targeting' and target:
-                # Execute targeted abilities
-                if ability_name == 'Relentless Charge':
-                    # FIX: Arguments were swapped - signature is (target_territory, owner)
-                    self.gs.execute_relentless_charge(target, player_id)
-                    sim_log.order(player_id, "hero_ability", f"Relentless Charge on {target}")
-                elif ability_name == 'Aggressive Diplomacy':
-                    # FIX: Arguments were swapped - signature is (target_territory, owner)
-                    self.gs.execute_aggressive_diplomacy(target, player_id)
-                    sim_log.order(player_id, "hero_ability", f"Aggressive Diplomacy on {target}")
-                elif ability_name == 'Levy':
-                    # FIX: Arguments were swapped - signature is (target_territory, owner)
-                    self.gs.execute_levy(target, player_id)
-                    sim_log.order(player_id, "hero_ability", f"Levy on {target}")
-                else:
+                # Execute targeted abilities - every one the AI can choose (only the first
+                # three used to be handled; Decisive Strike, Valorous Charge, Royal
+                # Charisma and Regicide orders were dropped with an error). Signatures are
+                # (target_territory, owner).
+                execute = {
+                    'Relentless Charge': self.gs.execute_relentless_charge,
+                    'Aggressive Diplomacy': self.gs.execute_aggressive_diplomacy,
+                    'Levy': self.gs.execute_levy,
+                    'Decisive Strike': self.gs.execute_decisive_strike,
+                    'Valorous Charge': self.gs.execute_valorous_charge,
+                    'Royal Charisma': self.gs.execute_royal_charisma,
+                    'Regicide': self.gs.execute_regicide,
+                }.get(ability_name)
+                if execute is None:
                     sim_log.error(f"Unknown targeted ability: {ability_name}")
+                else:
+                    outcome = execute(target, player_id)
+                    succeeded = outcome[0] if isinstance(outcome, tuple) else bool(outcome)
+                    if succeeded:
+                        # Targeted abilities go on cooldown once they land (immediate
+                        # ones do it inside activate_hero_ability). Without this the
+                        # AI cast them again every round.
+                        cooldown = abilities[ability_index].get('cooldown', 0)
+                        self.gs.hero_ability_cooldowns.setdefault(player_id, {}) \
+                            .setdefault(hero_type, {})[ability_name] = cooldown
+                        sim_log.order(player_id, "hero_ability", f"{ability_name} on {target}")
+                    else:
+                        sim_log.error(f"Hero ability {ability_name} on {target} failed: {outcome}")
             elif result is True:
                 sim_log.order(player_id, "hero_ability", f"{hero_type}'s {ability_name}")
             elif isinstance(result, str) and result != 'requires_targeting':
@@ -1290,13 +1392,21 @@ class SimPhaseManager:
         """
         self.alliance_handler.assign_territory(territory, new_owner)
 
-        if self.pending_alliance_markers:
-            self.pending_alliance_markers.pop(0)
+        # Remove THIS territory's marker (it used to pop the first one, whichever
+        # territory was chosen)
+        for i, marker in enumerate(self.pending_alliance_markers):
+            if marker.get('territory') == territory:
+                self.pending_alliance_markers.pop(i)
+                break
 
         # If no more markers, complete round
         # In multiplayer, only host completes (broadcasts SIM_ROUND_COMPLETE)
-        # Client waits for SIM_ROUND_COMPLETE from host
-        if not self.pending_alliance_markers and not self.pending_battles:
+        # Client waits for SIM_ROUND_COMPLETE from host. Battles live in
+        # gs.pending_battles once set up for the UI (this list is emptied then).
+        # Only while resolving: a choice arriving after the round ended must not end the
+        # next one as well.
+        if (self.sim_state.sim_phase == 'resolving' and not self.pending_alliance_markers
+                and not self.pending_battles and not self.gs.pending_battles):
             if not self.sim_state.is_multiplayer_client:
                 self.sim_state.complete_round()
             else:

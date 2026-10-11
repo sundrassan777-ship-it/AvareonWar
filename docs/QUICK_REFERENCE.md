@@ -390,8 +390,8 @@ MOVEMENT_ORDER, BUILDING_ORDER, TRAINING_ORDER
 EXECUTE_ORDERS, BATTLE_RESOLVE, TURN_END
 
 # Simultaneous
-SIM_PLAYER_READY, SIM_ALL_READY, SIM_TIMER_UPDATE
-SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
+SIM_PLAYER_READY, SIM_READY_STATE, SIM_ALL_READY, SIM_TIMER_UPDATE
+SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE   # (SIM_BATTLE_RESULT: legacy, unused)
 ```
 
 **Disconnect Behavior:**
@@ -436,6 +436,14 @@ server.send_to_player(player_idx, msg)
 - Trained units: spawn with "Moved" status (can't move that turn)
 - Defensive battles: original owner keeps territory
 - Alliance arrivals: biggest army clicks blue marker to assign owner
+
+**Multiplayer (main.py `Game` constants):**
+| Setting | Value | Meaning |
+|---------|-------|---------|
+| `SIM_AFK_RESOLVE_SECONDS` | 90 s | Untouched own battles / choices resolve themselves; a battle report left open this long after FIGHT closes |
+| `SIM_HOST_FALLBACK_SECONDS` | 180 s | Host settles everything still open in the resolving phase |
+| `SIM_AI_ACTION_DELAY` | 2 s | AI resolver / chooser waits (grey marker visible) |
+| Takeover difficulty | Medium | AI replacing a disconnected player |
 
 **Phase Flow:** Planning → Execution → Resolution → Next Round
 

@@ -164,6 +164,21 @@ class TestDisconnectNotices:
         assert MessageType.RECONNECT_REJECT in [m['type'] for m in drain(client.message_queue)]
 
 
+class TestHostOnlyMessages:
+
+    @pytest.mark.parametrize('msg_type', [MessageType.SIM_ROUND_COMPLETE, MessageType.SIM_ALL_READY,
+                                          MessageType.SIM_READY_STATE, MessageType.SIM_TIMER_UPDATE])
+    def test_a_client_cannot_send_host_messages(self, msg_type):
+        """A fake round end from a client would make the host run the client-side path."""
+        net = h.Network()
+        client = net.add_client(1)
+        other = net.add_client(2)
+        client.send_message(client.protocol.encode_message(msg_type, {'round_number': 9}))
+        net.flush()
+        assert drain(net.server.message_queue) == []
+        assert drain(other.message_queue) == []
+
+
 class TestMessageQueue:
 
     def test_requeued_messages_go_back_in_front_in_order(self):

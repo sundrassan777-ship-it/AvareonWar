@@ -641,7 +641,14 @@ tab's "No active quests". Tests: `tests/test_font_italic.py`.
 
 Never index `pending_battles` with an index saved earlier: another player's result can
 pop an earlier battle while the window is open (the old FIGHT resolved the wrong battle
-or crashed with IndexError).
+or crashed with IndexError). That includes `EnhancedBattleInterface` itself: it reads its
+battle only while opening (`_extract_battle_data()`); later code uses the cached fields
+(`self.territory` etc.). Tests that stub `handle_click` (`mp_harness.fight()`) skip the
+window's own FIGHT code - `test_the_windows_own_fight_button_survives_the_shift` clicks
+the real button.
+
+The simultaneous round waits for steps 4-5: `Game._sim_round_may_end()` is False while
+`_resolved_battle_info` is set (see "When the round may end").
 
 **Key method in battle_interface.py:**
 ```python
@@ -1926,15 +1933,18 @@ Every action that modifies game state must send a network message. Pattern:
 
 ✅ **Adding state to sync safety nets:**
 When adding new game state fields that could diverge between host and client:
-1. Add to `_send_full_state_sync()` state_data dict (sequential mode safety net)
-2. Add to `_sim_broadcast_round_complete()` authoritative_data dict (sim mode safety net)
-3. Add apply logic in both `FULL_STATE_SYNC` and `SIM_ROUND_COMPLETE` handlers
-4. Consider adding to `calculate_state_checksum()` in `game_state/__init__.py` for desync detection
+1. **Add it to `save_manager.serialize_game_state()` / `deserialize_game_state()`** - the
+   whole-game snapshots (`network/state_snapshot.py`) are built on them, so simultaneous
+   mode (`SIM_ALL_READY`, `SIM_ROUND_COMPLETE`) carries it automatically
+2. Sequential mode still uses the hand list in `_send_full_state_sync()` + the
+   `FULL_STATE_SYNC` handler (until Phase 5 of the multiplayer audit moves it to snapshots)
+3. Consider adding to `calculate_state_checksum()` in `game_state/__init__.py` for desync detection
 
-✅ **Client SIM_ROUND_COMPLETE handler must mirror host's `complete_round()`:**
-When adding new per-round logic in `sim_state.complete_round()`, ensure the client handler in
-`main.py _handle_network_message(SIM_ROUND_COMPLETE)` calls the same methods. Currently both call:
-`collect_income()`, `finish_constructions()`, `finish_research()`, `finish_castle_upgrades()`, `_tick_building_xp()`
+✅ **Client SIM_ROUND_COMPLETE handler (`_sim_apply_round_complete()`):** the client runs its
+own `collect_income()`, `finish_constructions()`, `finish_research()`,
+`finish_castle_upgrades()`, `_tick_building_xp()` ONLY for its Action Log lines; the host's
+snapshot then replaces every value. New per-round logic in `sim_state.complete_round()` needs
+nothing here unless it should write Action Log lines on clients too.
 
 ⚠️ **Do NOT call `finish_training()` or `finish_hero_training()` in the client handler.**
 The host already runs these in `complete_round()` and sends the results (garrisons with trained units,
@@ -2269,9 +2279,10 @@ The local human's build / train / research / castle / hero-training clicks are *
 immediately** (visual feedback) **and** queued with `sim_state.add_order()` (sync). The
 executor must skip that player's queued copies: `SimPhaseManager._executed_at_click()` checks
 `sim_state.click_executed_player`, which `main.py` sets to the local human in single-player
-**and** multiplayer. Don't use `local_player_index` for this — it is multiplayer-only (and
-also switches off garrison validation for other players' orders); using it applied every
-map-icon training twice in single-player (two units, double gold).
+**and** multiplayer. Don't use `local_player_index` for this — it is multiplayer-only; using
+it applied every map-icon training twice in single-player (two units, double gold). (In
+multiplayer only the host executes queued orders; clients take the result from its
+snapshot.)
 
 All three build/train inputs (map quick-icons, bottom panel, keyboard shortcuts) go through
 `Game._try_start_construction()` / `_try_start_training()`: local execute + sim order *or*
@@ -2320,49 +2331,85 @@ Turn Mode dropdown added to:
 ### Network Messages
 
 Simultaneous-specific messages in `network_config.py`:
-- `SIM_PLAYER_READY` - Player finished planning
-- `SIM_ALL_READY` - All ready, merged orders attached
+- `SIM_PLAYER_READY` - Client finished planning; carries its orders (client -> host only)
+- `SIM_READY_STATE` - Host -> clients: `{round, ready}` - who is ready (the "Waiting for" list)
+- `SIM_ALL_READY` - Host -> clients: state snapshot + the validated movement orders + forced defenders
 - `SIM_TIMER_UPDATE` - Timer sync between host/client
-- `SIM_BATTLE_RESULT` - Battle outcome from resolver
-- `SIM_ALLIANCE_CHOICE` - Territory owner selection
-- `SIM_ROUND_COMPLETE` - Round finished, carries authoritative state
+- `SIM_ALLIANCE_CHOICE` - Territory owner selection (from the chooser; relayed)
+- `SIM_ROUND_COMPLETE` - Round finished: the new round's state snapshot + sim round data
+- `BATTLE_RESOLVE` - battle results in both modes (seeded replay, see Network System)
+- `SIM_BATTLE_RESULT` - legacy, no longer sent
 
-### State Synchronization (Multiplayer Sim Mode)
+`SIM_ALL_READY`, `SIM_ROUND_COMPLETE`, `SIM_READY_STATE` and `SIM_TIMER_UPDATE` are
+host-only: the server drops them from clients (`_HOST_ONLY_TYPES`).
 
-The host is authoritative. At round end, `SIM_ROUND_COMPLETE` broadcasts state to prevent desync.
+### Multiplayer model (the host is the truth)
 
-**Synced in SIM_ROUND_COMPLETE (main.py `_sim_broadcast_round_complete()`):**
+**Execution start (`_sim_start_execution_phase()`, host):** crossing conflicts →
+`SimPhaseManager.begin_authoritative_execution()` validates every order (incl. remote ones:
+adjacency, garrison, exact units via `_claim_movement_units()`) and applies all NON-movement
+orders → `SIM_ALL_READY{snapshot, movement_orders, forced_defenders}` → the host starts the
+movement. Clients (`_sim_apply_all_ready()`) apply the snapshot and run exactly those
+movements, so every PC detects the same arrivals and battles. Clients never execute orders
+themselves any more (they used to run the raw merged list, incl. orders the host rejected).
 
-| Data | Purpose | Location |
-|------|---------|----------|
-| `player_gold` | Prevents income calculation drift | Line ~1920 |
-| `territory_owners` | Battle results synchronized | Line ~1922 |
-| `eliminated_players` | Skip income/construction for eliminated | Line ~1924 |
-| `heroes` | Hero passive abilities (Haste, Defiance) | Line ~1926 |
-| `hero_training_queue` | In-progress training with timers | Line ~1928 |
-| `hero_ability_cooldowns` | Ability availability | Line ~1933 |
-| `hero_silence_status` | Vow of Silence effect | Line ~1938 |
-| `player_tech_researched` | Completed technologies | Line ~1944 |
-| `research_in_progress` | Current research timers | Line ~1948 |
-| `player_tech_available` | Unlocked tech tree nodes | Line ~1952 |
-| `tech_effects` | 10 derived bonus arrays | Line ~1956 |
+**Round end:** only the host runs `complete_round()` (guarded in `sim_state`; clients that
+call it are ignored). Its callback sends `SIM_ROUND_COMPLETE` with the new round's snapshot;
+`_sim_apply_round_complete()` closes any open battle window, drops leftover battles /
+markers, runs the client's Action-Log bookkeeping, `start_planning_phase()`, then applies the
+snapshot.
 
-**Tech Effect Arrays (inside `tech_effects`):**
-- `royal_decree_discount` - Royal Decree: 15% off Heroes/Keeps
-- `training_cost_discount` - Improved Training: 20% off Swordsmen/Pikemen
-- `cavalry_cost_discount` - Animal Handling: 25% off Cavalry
-- `archer_keep_strength_bonus` - Battlement Archery: +50% Archer strength at Keeps
-- `farm_destruction_gold_bonus` - Raze the Countryside: +30g on enemy Farm destruction
-- `cavalry_strength_bonus` - Cavalry Tactics: +33% Cavalry strength
-- `divide_conquer_bonus` - Divide and Conquer: +20% Pikemen/Swordsmen strength
-- `barracks_cost_discount` - Makeshift Barracks: 25% off Barracks
-- `barracks_full_refund` - Makeshift Barracks: 100% demolish refund
-- `hero_keep_defense_bonus` - Last Resort: +100% Keep/Castle defense with heroes
+**When the round may end:** every host-side "anything left?" check goes through
+`Game._sim_round_may_end()` - resolving phase, no battle, no alliance marker, **and no battle
+report of ours still open**. A battle's result is sent (and its alliance marker queued) only
+when its report window closes (`_finalize_enhanced_battle()`, which then ends the round
+itself); ending the round under the host's open report lost that alliance choice and leaked
+the marker into the next round. The resolving-phase check stops a late `SIM_ALLIANCE_CHOICE`
+from ending the NEXT round (`resolve_alliance_marker()` has the same guard, and the choice
+popup ignores a click once its marker is gone). New completion sites must use the helper.
 
-✅ **Add new synced state:**
-1. Add to `authoritative_data` dict in `_sim_broadcast_round_complete()` (main.py ~1917)
-2. Add handler in `SIM_ROUND_COMPLETE` receiver (main.py ~1643)
-3. Test with 2-player multiplayer sim mode
+**current_player is per PC in simultaneous mode** (always the local player - the UI acts for
+it). After applying a host snapshot, restore it with `get_local_player()`; snapshots carry the
+host's value.
+
+**Host only:** AI planning (clients have no `sim_ai`), AI battle auto-resolve
+(`_auto_resolve_ai_battle()`, first battle with an AI resolver), AI alliance choices
+(`_auto_choose_alliance_owner()`), round ends. Clients get the results over the network.
+
+**Readiness:** the multiplayer host always starts execution from the main loop
+(`mark_ready()` sets `_execution_pending`; `check_deferred_execution()` calls the callback) -
+never on an AI planning thread. Humans are never auto-readied in multiplayer
+(`_check_auto_ready()`), and a timer may only ready players this PC speaks for
+(`sim_state._may_auto_ready()`: a client only itself; the host itself + AIs). Clients send
+`SIM_PLAYER_READY` (`_sim_send_local_ready()`); the host sends `SIM_READY_STATE` whenever its
+ready set changes (`_sim_broadcast_ready_state()`, compared every frame); clients set only
+OTHER players' flags from it and ignore other rounds.
+
+**Per-frame work** lives in `Game._update_simultaneous()` (deferred execution, timers, ready
+broadcast, AI resolvers / choosers, AFK rules, new-round AI planning) - `Game.run()` and the
+test harness call the same method.
+
+**AFK rules (multiplayer, `_sim_afk_watchdog()`):** `SIM_AFK_RESOLVE_SECONDS` (90 s) without
+touching battles → that PC resolves its own battles / alliance choices (an open battle window
+or choice popup counts as busy); a battle report left open that long after FIGHT is closed
+(`_resolved_battle_info['fought_at']`), since it holds the round; `SIM_HOST_FALLBACK_SECONDS`
+(180 s) of resolving → the host settles every battle and choice still open, its own included
+(`_resolve_all_pending_battles(any_resolver=True)`, `_auto_choose_alliance_owner()`). A battle
+window whose battle was settled meanwhile closes (`_close_stale_battle_window()`); a choice
+popup closes when its choice is made elsewhere (`_close_alliance_choice_popup()`).
+Single-player never auto-resolves.
+
+**AI takeover:** `PLAYER_DISCONNECT` → `_take_over_disconnected_player()`: every PC marks the
+slot AI (Medium); the host gives it an AIPlayer (`SimultaneousAI.ensure_player()`) and lets it
+plan the current round if the player had not readied. Their battles / choices then go through
+the AI auto-resolve.
+
+**Orders:** `_merge_orders()` drops only EXACT duplicates (same units, same route) - an army
+split into two orders along one route keeps both halves. `_claim_movement_units()` rejects
+orders whose units are missing / not ready / already used by an earlier order, and sets
+`army_count` to the unit list's length (excess units used to appear as default Swordsmen).
+
+Tests: `tests/test_mp_simultaneous.py`, `tests/test_mp_sim_flow.py`.
 
 ✅ **Fix cancel action not syncing:**
 - Cancel handlers must remove queued orders from `sim_state.player_orders[local_player]`

@@ -87,6 +87,15 @@ _SEQ_EXEMPT_TYPES = frozenset({
 # Time allowed for the tiny reject / farewell messages to peers we are dropping anyway
 _FAREWELL_SEND_TIMEOUT = 1.0  # seconds
 
+# Messages only the HOST sends. One arriving from a client (a modified client or a bug)
+# is dropped: the host would otherwise run the client-side handling of e.g. a round end.
+_HOST_ONLY_TYPES = frozenset({
+    MessageType.SIM_ALL_READY,
+    MessageType.SIM_ROUND_COMPLETE,
+    MessageType.SIM_READY_STATE,
+    MessageType.SIM_TIMER_UPDATE,
+})
+
 
 @dataclass
 class ClientConnection:
@@ -601,6 +610,10 @@ class NetworkServer:
             return
 
         msg_type = message.get('type')
+
+        if msg_type in _HOST_ONLY_TYPES:
+            logger.warning(f"Dropped host-only {msg_type} sent by player {from_player_index}")
+            return
 
         # Security (H1): Sequence number validation to prevent replay attacks.
         # Reject messages with seq <= the last seq accepted on this connection.

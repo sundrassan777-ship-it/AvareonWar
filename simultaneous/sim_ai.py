@@ -83,6 +83,16 @@ class SimultaneousAI:
 
         sim_log.detail(f"SimultaneousAI initialized for {self.gs.num_players} players")
 
+    def ensure_player(self, player_id: int, difficulty: int = 1):
+        """
+        Give a slot that became AI mid-game its AIPlayer (the AI taking over a player who
+        disconnected). AIPlayers used to be created only once, at game start, so a
+        taken-over slot never planned anything. Default difficulty: Medium.
+        """
+        if player_id not in self.ai_players:
+            self.ai_players[player_id] = AIPlayer(player_id, difficulty)
+            sim_log.ai(player_id, f"Created AIPlayer for takeover (difficulty {difficulty})")
+
     def start_planning_phase(self):
         """
         Called when a new planning phase starts.
@@ -92,6 +102,8 @@ class SimultaneousAI:
         sim_log.phase("Starting planning phase for AI players")
         for player_id in range(self.gs.num_players):
             if self.gs.player_is_ai[player_id]:
+                difficulty = self.gs.player_ai_difficulty[player_id]
+                self.ensure_player(player_id, 1 if difficulty is None else difficulty)
                 self.ai_ready[player_id] = False
                 self._start_ai_planning(player_id)
                 sim_log.ai(player_id, "Started planning thread")

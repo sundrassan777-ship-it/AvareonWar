@@ -23,10 +23,11 @@ What is simulated:
   - Network threads: Network.flush() runs the drain functions those threads run.
   - The game loop: Peer.step() runs only the multiplayer-relevant part of Game.run()
     (network messages, army animations, the simultaneous-mode "animations finished"
-    hand-off, turn announcements with their real duration). Main-loop-only blocks
-    (AI turns, the sequential planning timer, simultaneous AI auto-resolve) are NOT
-    copied here - copying them would test the copy, not the game. Tests for those
-    call the methods the fix phases extract them into.
+    hand-off, Game._update_simultaneous() - the SAME method Game.run() calls for
+    timers, AI resolvers, AFK rules and new rounds - and turn announcements with their
+    real duration). Main-loop blocks that still live inline in Game.run() (sequential
+    AI turns and planning timer) are NOT copied here - copying them would test the
+    copy, not the game; they get tested once extracted into methods.
 
 Usage:
     session = Session(num_players=2)                 # host 0 + client 1, sequential
@@ -239,6 +240,11 @@ class Peer:
                 and sim.phase_manager is not None
                 and not sim.phase_manager.animations_complete):
             sim.phase_manager.on_animations_complete()
+        # Game.run()'s simultaneous-mode frame work - the SAME method: deferred
+        # execution start, planning timers, ready-state broadcast, AI resolvers /
+        # choosers, AFK rules, new-round AI planning
+        if sim is not None:
+            game._update_simultaneous(dt)
         # Turn announcement: Game.run() starts a TurnAnnouncementEffect whose
         # on_complete is _complete_turn_announcement(); keep its real duration
         if gs.turn_announcement_active:
