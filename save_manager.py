@@ -212,6 +212,8 @@ def serialize_game_state(gs):
     # --- Eliminated players (sets -> sorted lists) ---
     state['eliminated_players'] = sorted(list(gs.eliminated_players))
     state['disconnect_eliminations'] = sorted(list(gs.disconnect_eliminations))
+    # Multiplayer AI takeovers: {player: action XP when they left} (anti win-farming)
+    state['ai_takeover_xp'] = {str(p): xp for p, xp in getattr(gs, 'ai_takeover_xp', {}).items()}
 
     # --- Buildings started this turn ---
     state['buildings_started_this_turn'] = sorted(list(gs.buildings_started_this_turn))
@@ -416,6 +418,7 @@ def deserialize_game_state(gs, data):
     # --- Eliminated players (lists -> sets) ---
     gs.eliminated_players = set(data.get('eliminated_players', []))
     gs.disconnect_eliminations = set(data.get('disconnect_eliminations', []))
+    gs.ai_takeover_xp = {int(p): xp for p, xp in data.get('ai_takeover_xp', {}).items()}
 
     # --- Buildings started this turn (list -> set) ---
     gs.buildings_started_this_turn = set(data.get('buildings_started_this_turn', []))

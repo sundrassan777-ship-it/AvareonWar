@@ -1610,6 +1610,14 @@ legitimately differs between host and client — putting them in the checksum wo
 - External code can call `notify_animation_complete()` to wake the AI thread immediately
 - Falls back to 100ms timeout if event not signaled (backward-compatible)
 
+**Multiplayer (sequential):** only the host runs AI turns (`Game._update_ai_turn_start()`),
+and the AI's work reaches the other PCs through GameState hooks: moves via
+`execute_all_orders()` (EXECUTE_ORDERS), battles via **`game_state.resolve_battle_shared()`**
+(seeded BATTLE_RESOLVE - never call `resolve_battle()` from AI code), the turn end via
+`_advance_to_next_player()` (TURN_END). Those run on the AI's worker thread; the network
+sends are queued for the main loop (see "Sequential multiplayer: the turn owner is the
+truth"). An empire taken over mid-game gets its `AIPlayer` from `Game.handle_ai_turn()`.
+
 #### When to Modify
 
 ✅ **Add new AI decision type:**
@@ -1949,13 +1957,30 @@ When adding new game state fields that could diverge between host and client:
 2. Consider adding to `calculate_state_checksum()` in `game_state/__init__.py` (sync logger
    turn snapshots)
 
-✅ **Sequential multiplayer: the turn owner is the truth** (multiplayer audit, Phase 5;
-tests `tests/test_mp_sequential.py`, `tests/test_mp_seq_flow.py`). The PC whose human player
-takes the turn plays it; every other PC replays it:
-- `EXECUTE_ORDERS{snapshot}` - sent by `Game._end_local_turn()` (the End Turn button AND the
-  owner's planning timer) when there are planned moves: the owner's state with the moves.
-  Receivers (`_handle_remote_execute_orders()`) diff it against their own state
+✅ **Sequential multiplayer: the turn owner is the truth** (multiplayer audit, Phases 5-6;
+tests `tests/test_mp_sequential.py`, `tests/test_mp_seq_flow.py`, `tests/test_mp_seq_ai.py`).
+The turn owner plays the turn; every other PC replays it. Owner
+(`Game._is_turn_owner_of()`): a human player's own PC; **the host for computer players**
+(lobby AI slots and taken-over empires) - only the host runs the AI (`_update_ai_turn_start()`
+→ `handle_ai_turn()`); every PC used to run its own copy with its own dice (C1).
+- `EXECUTE_ORDERS{snapshot}` - sent by the GameState hook `on_orders_executing` →
+  `Game._on_orders_executing()` at the start of `execute_all_orders()` (End Turn, the planning
+  timer, the AI - one place): the owner's state with the moves. Receivers
+  (`_handle_remote_execute_orders()`) diff it against their own state
   (`_report_snapshot_divergence()`), apply it and run `execute_all_orders()`.
+- The AI resolves battles with `GameState.resolve_battle_shared()` → hook
+  `shared_battle_resolver` → `Game._resolve_and_share_battle()` (seeded + `BATTLE_RESOLVE`).
+  **AI code must never call `resolve_battle()` directly** - nobody else would see the result.
+- **Threads:** the sequential AI plays on a worker thread, so these hooks run there. They
+  build their snapshot at once; `_send_action_to_remote()` queues a send from a non-main
+  thread (`_outgoing_from_threads`) and the main loop sends it (`_flush_thread_messages()`,
+  also run before every main-thread send - the order of events is kept). Message encoding
+  is not thread-safe: never call `_send_now()` off the main thread.
+- **Takeover** (`_take_over_disconnected_player()`): when the player who left is the current
+  player, the host finishes their turn (`_continue_turn_as_ai()`): planning → their planned
+  moves are dropped and the AI plays; moves under way → the host ends the turn once its
+  replay is done; battles → `_resolve_all_pending_battles()`. AIs are created per player as
+  needed (`handle_ai_turn()`, M13). `gs.ai_takeover_xp` keeps their XP for anti-farming.
 - `BATTLE_RESOLVE` - each battle, replayed from the resolver's seed (see "Battle sync").
 - `TURN_END{snapshot}` - sent by the GameState hook `on_turn_advanced` →
   `Game._on_turn_advanced()` from `_advance_to_next_player()`, i.e. only once the turn has
@@ -1978,8 +2003,10 @@ takes the turn plays it; every other PC replays it:
   `SEQ_AFK_RESOLVE_SECONDS` untouched, a report left open that long closes, everything is
   settled after `SEQ_BATTLE_FALLBACK_SECONDS`. `_resolve_all_pending_battles()` does not
   advance under an open report (its Close advances, after sending the result).
-- **Game end:** `_send_final_state_if_owner()` sends one last `TURN_END{snapshot, final}`.
-- AI turns still run on every PC (host-only AI turns: Phase 6 of the audit).
+- **Game end:** `_send_final_state_if_owner()` sends one last `TURN_END{snapshot, final}`
+  (for an AI turn, once the AI has stopped).
+- **Logs:** network log lines summarise snapshots (`Game._payload_for_log()`,
+  `sync_logger._sanitize_data()`) - logging them whole wrote ~80 KB twice per turn.
 
 ✅ **Client SIM_ROUND_COMPLETE handler (`_sim_apply_round_complete()`):** the client runs its
 own `collect_income()`, `finish_constructions()`, `finish_research()`,

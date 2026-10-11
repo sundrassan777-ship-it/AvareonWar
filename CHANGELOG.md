@@ -2,6 +2,38 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-12 - Multiplayer audit, Phase 6: computer players and takeover in sequential mode
+
+Branch `fix/multiplayer-sync`. Developer guide: "Sequential multiplayer: the turn owner is the
+truth" (Network System) and the AI System section in CODE_GUIDE.md.
+- **C1** Only the host runs computer players' turns: the host owns them
+  (`Game._is_turn_owner_of()`), and the AI-turn start moved out of `Game.run()` into
+  `_update_ai_turn_start()` (called by `_update_sequential_turn()`, so the test harness runs
+  it too). Every PC used to run its own copy of the AI, with its own random choices, and
+  nothing was sent.
+- The AI's turn reaches the other PCs like a human owner's, through GameState hooks:
+  `on_orders_executing` (start of `execute_all_orders()`; EXECUTE_ORDERS{snapshot} - now
+  the one place for End Turn, the planning timer and the AI), the AI's battles via the new
+  `GameState.resolve_battle_shared()` → `shared_battle_resolver` → seeded BATTLE_RESOLVE,
+  and the existing `on_turn_advanced` (TURN_END). The host's timer ends AI turns; the
+  AFK watchdog and the final state wait while the AI is still at work.
+- The AI plays on a worker thread: `_send_action_to_remote()` queues sends from any
+  non-main thread (`_outgoing_from_threads`), the main loop sends them
+  (`_flush_thread_messages()`), and every main-thread send flushes the queue first - the
+  order of events is kept and message encoding stays on one thread.
+- **C3 / M13 (sequential)** A player who leaves during their own turn has it finished by
+  the AI on the host (`_continue_turn_as_ai()`): planning (their planned moves dropped, the
+  AI plays), moves under way (the host ends the turn once its replay is done), battles
+  (resolved and shared). `handle_ai_turn()` creates an `AIPlayer` for a taken-over empire
+  (they were created once, so such an empire never moved).
+- **Anti-farming:** `player_level._is_disconnect_farming()` counts AI takeovers like
+  disconnect eliminations, with the XP the player had when they left
+  (`gs.ai_takeover_xp`, in saves / snapshots).
+- **Found on the way:** every network log line held whole state snapshots (~80 KB, twice
+  per turn, to the log file AND the console, formatted even when not logged) - now
+  summarised (`Game._payload_for_log()`, `sync_logger._sanitize_data()`).
+- Tests: `tests/test_mp_seq_ai.py` (11).
+
 ## 2026-10-11 - Multiplayer audit, Phase 5: sequential mode - the turn owner is the truth
 
 Branch `fix/multiplayer-sync`. Developer guide: "Sequential multiplayer: the turn owner is the

@@ -904,7 +904,9 @@ class AIPlayer:
 
                     logger.info(f"Resolving battle in {territory_name} (Players: {[p+1 for p in players_involved]})")
 
-                    success = game_state.resolve_battle(battle_idx)
+                    # The turn owner's resolution: in multiplayer the host seeds it and
+                    # sends it, so every PC replays the same battle (resolve_battle_shared)
+                    success = game_state.resolve_battle_shared(battle_idx)
                     if success:
                         logger.info(f"Resolved battle in {territory_name}")
                     else:

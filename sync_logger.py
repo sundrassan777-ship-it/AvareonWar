@@ -356,6 +356,11 @@ def _sanitize_data(data):
         # Skip 'order' fields (contain MovementOrder objects)
         if key == 'order':
             continue
+        # A whole-game state snapshot (~80 KB): summarised without turning it into a
+        # string first (twice per turn)
+        if key == 'snapshot':
+            sanitized[key] = '<state snapshot>'
+            continue
         # Truncate very large nested structures (e.g. full state payloads)
         if isinstance(value, dict) and len(str(value)) > 5000:
             sanitized[key] = f"<truncated dict, {len(value)} keys>"

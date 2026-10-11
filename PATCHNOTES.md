@@ -68,6 +68,13 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   battle report left open for 90 seconds closes by itself, and after 3 minutes every open
   battle is settled, so the other players never wait forever.
 - When the game ends, every player's summary shows the same final numbers.
+- Computer players now play the same turn for everyone: the host plays them, and every
+  player watches the same moves and battles. Before, each player's game ran its own
+  computer players, which could make completely different moves on each screen.
+- If a player leaves the game during their own turn, an AI (Medium difficulty) now
+  finishes that turn for them and plays on - the game used to wait for them forever.
+- Beating an empire whose player left right at the start no longer gives player-level XP,
+  even though an AI took it over.
 
 ### Battles and heroes
 

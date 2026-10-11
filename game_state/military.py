@@ -1146,7 +1146,14 @@ class MilitaryMixin:
         if not self.movement_orders:
             self.add_message("No orders to execute")
             return
-        
+
+        # Sequential multiplayer: the turn owner's PC tells the other PCs, BEFORE anything
+        # changes - its state with these orders, which they replay (EXECUTE_ORDERS). One
+        # hook for every way a turn's moves start: End Turn, the planning timer, the AI.
+        on_orders_executing = getattr(self, 'on_orders_executing', None)
+        if on_orders_executing is not None:
+            on_orders_executing()
+
         # Clear army selection
         self.selected_army = None
 
@@ -2428,6 +2435,21 @@ class MilitaryMixin:
             structures_destroyed=destroyed, structures_captured=captured,
             structures_remaining=remaining, unit_breakdown={},
             attacker_lost=0, attacker_survivors=0))
+
+    def resolve_battle_shared(self, battle_index):
+        """
+        Resolve a battle as the turn owner - what the sequential AI calls. Sequential
+        multiplayer (the host plays the AI's turns): main.py resolves it with a seed and
+        sends the result (BATTLE_RESOLVE), so every other PC replays the same battle - the
+        AI used to resolve it with its own dice and tell nobody. Otherwise: resolve_battle().
+
+        Returns:
+            bool: True if the battle was resolved
+        """
+        resolver = getattr(self, 'shared_battle_resolver', None)
+        if resolver is not None:
+            return resolver(battle_index)
+        return self.resolve_battle(battle_index)
 
     def resolve_battle(self, battle_index, rng=None):
         """

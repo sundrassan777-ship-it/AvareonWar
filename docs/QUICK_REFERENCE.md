@@ -451,11 +451,12 @@ server.send_to_player(player_idx, msg)
 
 ## 🔁 Sequential Multiplayer Quick Reference
 
-**The turn owner (the PC of the player whose turn it is) is the truth:**
+**The turn owner is the truth** - the PC of the human whose turn it is, or the **host** for a
+computer player (only the host runs the AI; its messages are sent by the main loop):
 | Message | Sent by | Carries | Receivers |
 |---------|---------|---------|-----------|
-| `EXECUTE_ORDERS` | owner, End Turn / its timer, with planned moves | state snapshot (moves included) | apply it, replay the moves |
-| `BATTLE_RESOLVE` | owner, per battle (on Close) | seed + outcome | replay the battle |
+| `EXECUTE_ORDERS` | owner, when its moves start (End Turn / timer / AI - `on_orders_executing` hook) | state snapshot (moves included) | apply it, replay the moves |
+| `BATTLE_RESOLVE` | owner, per battle (human: on Close; AI: `resolve_battle_shared()`) | seed + outcome | replay the battle |
 | `TURN_END` | owner, once the turn has really ended (`on_turn_advanced` hook) | state snapshot after the advance | apply it, play the announcement |
 | `TURN_END` + `final` | owner, game ended in its turn | final state | apply it |
 

@@ -55,6 +55,8 @@ import json
 import os
 import time
 import random
+import threading
+from collections import deque
 import map_data
 from game_state import GameState
 from network_config import MessageType
@@ -593,6 +595,11 @@ class Game:
         # that has happened (or after a limit).
         self._held_network_messages = []
         self._held_network_since = None
+        # Messages "sent" from another thread (the sequential AI's turn runs on a worker
+        # thread on the host): queued here in order and sent by the main loop
+        # (_flush_thread_messages). Message encoding is not thread-safe, and a main-thread
+        # send flushes this queue first, so the order of events is kept.
+        self._outgoing_from_threads = deque()
 
         # Window focus tracking — throttle FPS when unfocused (Steam requirement)
         self._window_focused = True
@@ -1632,9 +1639,13 @@ class Game:
         # with a state snapshot), and the other PCs never advance a turn on their own.
         # (Turn-start completions are no longer sent - UNIT_COMPLETE re-added units every
         # PC had already trained itself, H1 - every PC runs them from the same state.)
+        # The same owner sends EXECUTE_ORDERS when the turn's moves start, and the AI's
+        # battles are seeded and sent (the host plays the computer players' turns).
         if self.multiplayer_mode and self.sim_state is None:
             self.game_state.on_turn_advanced = self._on_turn_advanced
             self.game_state.turn_advance_gate = self._owns_current_turn
+            self.game_state.on_orders_executing = self._on_orders_executing
+            self.game_state.shared_battle_resolver = self._resolve_and_share_battle
 
         # UIRenderer needs layout values (dynamic, not static constants)
         layout_values = {
@@ -1705,6 +1716,9 @@ class Game:
         """Process incoming network messages from remote player"""
         if not self.network_connection:
             return
+
+        # Messages queued by another thread (the host's sequential AI turn) go out first
+        self._flush_thread_messages()
 
         # Check for disconnection
         if hasattr(self.network_connection, 'disconnected') and self.network_connection.disconnected:
@@ -1802,7 +1816,7 @@ class Game:
         msg_type = message.get('type')
         data = message.get('data', {})
 
-        logger.debug(f"[NETWORK] Received {msg_type}: {data}")
+        logger.debug(f"[NETWORK] Received {msg_type}: {self._payload_for_log(data)}")
 
         # VALIDATION: Ensure local_player_index is initialized
         if self.local_player_index is None:
@@ -2603,13 +2617,39 @@ class Game:
         """
         Send an action to the remote player.
 
+        Safe from any thread: a call from another thread (the sequential AI's turn on the
+        host) is queued and sent by the main loop; a main-thread send first sends what
+        other threads queued, so messages leave in the order things happened.
+
         Args:
             action_type: Type of action (e.g., MessageType.MOVEMENT_ORDER)
             data: Action data dict
         """
         if not self.network_connection:
             return
+        if threading.current_thread() is not threading.main_thread():
+            self._outgoing_from_threads.append((action_type, data))
+            return
+        self._flush_thread_messages()
+        self._send_now(action_type, data)
 
+    def _flush_thread_messages(self):
+        """Main thread: send the messages other threads queued, in order."""
+        while self._outgoing_from_threads:
+            action_type, data = self._outgoing_from_threads.popleft()
+            self._send_now(action_type, data)
+
+    @staticmethod
+    def _payload_for_log(data):
+        """The message data for a log line - a state snapshot (~80 KB) is summarised.
+        Logging it whole wrote it to the log file and console twice per turn."""
+        if isinstance(data, dict) and 'snapshot' in data:
+            return {key: ('<state snapshot>' if key == 'snapshot' else value)
+                    for key, value in data.items()}
+        return data
+
+    def _send_now(self, action_type: str, data: dict):
+        """Encode and send one message (main thread only - see _send_action_to_remote)."""
         # Sync logger: record outgoing action before sending
         sync_logger = getattr(self.game_state, 'sync_logger', None)
         if sync_logger:
@@ -2625,7 +2665,7 @@ class Game:
         current_seq = self.network_connection.protocol._sequence_number
         message = self.network_connection.protocol.encode_message(action_type, data)
         self.network_connection.send_message(message)
-        logger.info(f"[NETWORK] Sent {action_type} (seq={current_seq}): {data}")
+        logger.info(f"[NETWORK] Sent {action_type} (seq={current_seq}): {self._payload_for_log(data)}")
 
     # ========== SIMULTANEOUS MODE NETWORK HELPERS ==========
 
@@ -3270,13 +3310,21 @@ class Game:
         (owner decision). Every PC marks the slot as AI; the host also gives the slot an
         AIPlayer and, in a simultaneous planning phase, lets it plan this round. In the
         resolving phase their battles / choices are picked up by the AI auto-resolve.
-        (Sequential-mode takeover: see Phase 6 of the multiplayer audit.)
+        Sequential mode: the host plays computer players' turns, and finishes the current
+        turn for them if it was theirs (_continue_turn_as_ai).
         """
         gs = self.game_state
         if not (0 <= player_index < gs.num_players):
             return
+        # The action XP they had earned themselves - a win against an empire whose player
+        # left at once must not count (player_level._is_disconnect_farming)
+        if not gs.player_is_ai[player_index] and player_index not in gs.ai_takeover_xp:
+            gs.ai_takeover_xp[player_index] = gs.player_stats.get(player_index, {}).get('xp_earned', 0)
         gs.player_is_ai[player_index] = True
         gs.player_ai_difficulty[player_index] = 1  # Medium
+        if (self.sim_state is None and self.local_player_index == 0
+                and gs.phase == 'playing' and gs.current_player == player_index):
+            self._continue_turn_as_ai(player_index)
         sim = self.sim_state
         if sim is not None and self.sim_ai is not None and self.local_player_index == 0:
             self.sim_ai.ensure_player(player_index, 1)
@@ -3286,6 +3334,31 @@ class Game:
                 self.sim_ai.ai_ready[player_index] = False
                 self.sim_ai._start_ai_planning(player_index)
                 logger.info(f"[HOST] AI took over Player {player_index + 1} - planning their round")
+
+    def _continue_turn_as_ai(self, player):
+        """
+        Host, sequential mode: `player` left during their own turn - finish it for them as
+        the AI. Their turn would otherwise never end: every PC waited for their TURN_END.
+        - turn announcement still running: the AI starts when it ends (as any AI turn);
+        - planning: their planned moves are dropped (they would be mixed with the AI's) and
+          the AI plays the turn;
+        - their moves were under way: once our replay of them has finished, the turn ends
+          here (still running: _process_arrivals ends it - the host owns the turn now);
+        - battles: what is left is fought here, then the turn ends.
+        """
+        gs = self.game_state
+        logger.info(f"[HOST] Player {player + 1} left during their turn ({gs.turn_phase}) - the AI finishes it")
+        if gs.turn_announcement_active:
+            return
+        if gs.turn_phase == 'planning':
+            gs.cancel_all_orders(player=player)
+            self.handle_ai_turn()
+        elif gs.turn_phase == 'execution':
+            if not (gs.active_animations or gs.pending_arrivals):
+                gs._advance_to_next_player()
+        elif gs.turn_phase == 'battles':
+            # Seeded and sent like any battle, then the turn advances (TURN_END)
+            self._resolve_all_pending_battles()
 
     # ========== SEQUENTIAL MODE: TURN OWNERSHIP ==========
 
@@ -3297,37 +3370,44 @@ class Game:
     # even with a battle window open (a player who walked away from one)
     SEQ_BATTLE_FALLBACK_SECONDS = 180.0
 
-    def _is_local_human_turn(self, player):
-        """Sequential multiplayer: `player` is this PC's own (human) player."""
-        gs = self.game_state
-        return (self.multiplayer_mode and self.sim_state is None
-                and player is not None and player == self.local_player_index
-                and 0 <= player < gs.num_players and not gs.player_is_ai[player])
-
-    def _owns_current_turn(self):
+    def _is_turn_owner_of(self, player):
         """
-        Does this PC play the current turn? In sequential multiplayer the turn owner's PC
-        advances the turn and sends its result; every other PC replays the turn and waits
-        for TURN_END (GameState.turn_advance_gate). Single-player always does. AI turns
-        still run on every PC (host-only AI turns: Phase 6 of the multiplayer audit).
+        Sequential multiplayer: does this PC play `player`'s turns? A human player's own
+        PC; the HOST for computer players (lobby AI slots, and empires the AI took over
+        when their player left). The owner advances the turn and sends its result; every
+        other PC replays it and waits for TURN_END. Single-player / simultaneous: always.
+        (AI turns used to run on every PC, each with its own random choices - C1.)
         """
         if not self.multiplayer_mode or self.sim_state is not None:
             return True
         gs = self.game_state
-        current = gs.current_player
-        if gs.player_is_ai[current]:
-            return True
-        return current == self.local_player_index
+        if player is None or not (0 <= player < gs.num_players):
+            return False
+        if gs.player_is_ai[player]:
+            return self.local_player_index == 0
+        return player == self.local_player_index
+
+    def _owns_current_turn(self):
+        """Does this PC play the current turn (GameState.turn_advance_gate)? See
+        _is_turn_owner_of()."""
+        return self._is_turn_owner_of(self.game_state.current_player)
+
+    def _ai_turn_running(self):
+        """The current player's AI is still playing its turn here (on its worker thread)."""
+        ai = self.ai_players.get(self.game_state.current_player) if self.ai_players else None
+        return bool(ai is not None and getattr(ai, 'turn_in_progress', False))
 
     def _on_turn_advanced(self, previous_player):
         """
-        GameState hook (_advance_to_next_player): a turn just ended on this PC. If it was
-        our own turn, the other PCs get its result - TURN_END with the state snapshot, sent
-        only now that the turn has really ended (moves arrived, battles fought). They apply
-        it and start the next turn from it. (It used to be sent at the End Turn click,
-        before the moves ran.)
+        GameState hook (_advance_to_next_player): a turn just ended on this PC. If this PC
+        played it - our own turn, or a computer player's on the host - the other PCs get
+        its result: TURN_END with the state snapshot, sent only now that the turn has
+        really ended (moves arrived, battles fought). They apply it and start the next
+        turn from it. May run on the AI's worker thread: the snapshot is taken now, the
+        send is queued for the main loop (_send_action_to_remote).
         """
-        if not self._is_local_human_turn(previous_player):
+        if not (self.multiplayer_mode and self.sim_state is None
+                and self._is_turn_owner_of(previous_player)):
             return
         from network.state_snapshot import build_snapshot
         self._send_action_to_remote(MessageType.TURN_END, {
@@ -3338,16 +3418,50 @@ class Game:
         if sync_logger:
             sync_logger.record_turn_snapshot(self.game_state.turn_number)
 
+    def _on_orders_executing(self):
+        """
+        GameState hook (execute_all_orders, before anything moves): if this PC owns the
+        turn, the other PCs get EXECUTE_ORDERS with its state - the planned moves included
+        - and replay the same moves (_handle_remote_execute_orders). One place for every
+        way a turn's moves start: End Turn, the planning timer and the AI. May run on the
+        AI's worker thread (the snapshot is taken now, the send is queued).
+        """
+        if not (self.multiplayer_mode and self.sim_state is None and self._owns_current_turn()):
+            return
+        from network.state_snapshot import build_snapshot
+        gs = self.game_state
+        self._send_action_to_remote(MessageType.EXECUTE_ORDERS, {
+            'player_index': gs.current_player,
+            'snapshot': build_snapshot(gs),
+        })
+
+    def _resolve_and_share_battle(self, battle_index):
+        """
+        GameState.shared_battle_resolver - how the turn owner resolves a battle in
+        sequential multiplayer; the AI's resolve_battle_shared() lands here (on the host).
+        Seeded, and the result sent (BATTLE_RESOLVE), so every PC replays the same battle -
+        the AI used to resolve with its own dice and tell nobody. Runs on the AI's worker
+        thread (the send is queued for the main loop).
+
+        Returns:
+            bool: True if the battle was resolved
+        """
+        battle, seed = self._resolve_battle_locally(battle_index)
+        if self.multiplayer_mode and self.sim_state is None and self._owns_current_turn():
+            self._send_action_to_remote(MessageType.BATTLE_RESOLVE, self._battle_resolve_payload(
+                battle, battle.territory, seed, None, list(self.game_state.last_battle_reports)))
+        return bool(battle.resolved)
+
     def _end_local_turn(self, reason="End Turn"):
         """
         The local player ends their sequential-mode turn: the End Turn button and, in
         multiplayer, the planning timer - one path for both.
 
         Multiplayer: refused while the button is greyed (armies moving, battles open) - the
-        click used to send the turn's messages again (M4). With planned moves,
-        EXECUTE_ORDERS carrying the state snapshot goes out first, so every PC plays the
-        same moves; TURN_END follows from the turn-advance hook once the turn has really
-        ended. Single-player: next_player() itself refuses those states with a message.
+        click used to send the turn's messages again (M4). The other PCs then get
+        EXECUTE_ORDERS (moves starting) and TURN_END (turn over) from the GameState hooks
+        (_on_orders_executing, _on_turn_advanced). Single-player: next_player() itself
+        refuses those states with a message.
 
         Returns:
             bool: True if the turn was ended (or its moves started)
@@ -3357,12 +3471,6 @@ class Game:
             if gs.turn_phase == 'execution' or (gs.turn_phase == 'battles' and gs.pending_battles):
                 logger.debug(f"[TURN] {reason} ignored - turn phase '{gs.turn_phase}'")
                 return False
-            if gs.turn_phase == 'planning' and gs.movement_orders:
-                from network.state_snapshot import build_snapshot
-                self._send_action_to_remote(MessageType.EXECUTE_ORDERS, {
-                    'player_index': gs.current_player,
-                    'snapshot': build_snapshot(gs),
-                })
         logger.info(f"[TURN] Player {gs.current_player + 1} ends the turn ({reason})")
         gs.next_player()
         return True
@@ -3370,28 +3478,65 @@ class Game:
     def _update_sequential_turn(self, delta_time):
         """
         One frame of sequential-mode turn bookkeeping - Game.run() and the multiplayer test
-        harness call this same method: the planning timer (multiplayer: on the turn owner's
-        PC only), the multiplayer AFK rules for battles, and the final state at game end.
+        harness call this same method: starting a computer player's turn (multiplayer: on
+        the host only), the planning timer (multiplayer: on the turn owner's PC only), the
+        multiplayer AFK rules for battles, and the final state at game end.
         """
         gs = self.game_state
-        if self.sim_state is not None or gs.game_mode != 'sequential':
+        if self.sim_state is not None:
+            return
+        self._update_ai_turn_start()
+        if gs.game_mode != 'sequential':
             return
         # Planning timer - skipped during a mission intro that pauses the game
         timer_allowed = not (self.tutorial_mission
                              and getattr(self.tutorial_mission, 'game_paused', False))
         if timer_allowed and not self.is_game_paused:
-            if not self.multiplayer_mode or gs.player_is_ai[gs.current_player]:
-                # Single-player; multiplayer AI turns still run on every PC (Phase 6)
+            if not self.multiplayer_mode:
                 gs.check_planning_timer_expired()
-            elif gs.current_player == self.local_player_index and gs.planning_time_expired():
-                # Only the turn owner's timer ends the turn, through the End Turn path so
-                # its planned moves reach the other PCs. Every PC used to end the turn on
-                # its own clock: moves ran on one PC only, or the turn passed twice (C2)
-                gs.add_message("Planning time expired! Executing turn...")
-                self._end_local_turn("planning time expired")
+            elif self._owns_current_turn() and gs.planning_time_expired():
+                # Only the turn owner's timer ends the turn (every PC used to end it on its
+                # own clock: moves ran on one PC only, or the turn passed twice - C2)
+                if gs.player_is_ai[gs.current_player]:
+                    # The host's computer player, as in single-player; its moves still go
+                    # out through the EXECUTE_ORDERS hook
+                    gs.check_planning_timer_expired()
+                else:
+                    # Through the End Turn path, so the planned moves reach the other PCs
+                    gs.add_message("Planning time expired! Executing turn...")
+                    self._end_local_turn("planning time expired")
         if self.multiplayer_mode:
             self._seq_afk_watchdog()
             self._send_final_state_if_owner()
+
+    def _update_ai_turn_start(self):
+        """
+        Start a computer player's turn once its planning phase begins (checked when the
+        current player, the game phase or the turn announcement changes). Multiplayer:
+        only the turn owner - the host - runs the AI; every PC used to run its own copy,
+        with its own random choices, and nothing was sent (C1).
+        """
+        gs = self.game_state
+        player_changed = gs.current_player != self.previous_ai_check
+        phase_changed = gs.phase != self.previous_phase
+        announcement_ended = self.previous_turn_announcement and not gs.turn_announcement_active
+        if not (player_changed or phase_changed or announcement_ended):
+            return
+        self.previous_ai_check = gs.current_player
+        self.previous_phase = gs.phase
+        self.previous_turn_announcement = gs.turn_announcement_active
+
+        # Don't process AI turns while game is paused
+        if self.is_game_paused:
+            return
+        # Handle setup phase (AI claiming starting territories)
+        if gs.is_ai_player() and gs.phase == 'setup':
+            self.handle_ai_setup()
+        # Handle playing phase (normal AI turn) - SEQUENTIAL MODE ONLY
+        # In simultaneous mode, AI is handled separately by sim_ai
+        elif (gs.is_ai_player() and gs.phase == 'playing' and gs.turn_phase == 'planning'
+                and not gs.turn_announcement_active and self._owns_current_turn()):
+            self.handle_ai_turn()
 
     def _seq_afk_watchdog(self):
         """
@@ -3404,12 +3549,14 @@ class Game:
         - after SEQ_BATTLE_FALLBACK_SECONDS of battles everything still open is resolved,
           even with a battle window open.
         Also covers battles left over when the game ended (the victory screen waits for
-        them on every PC).
+        them on every PC), and a computer player's turn on the host whose AI stopped with
+        battles still open (never while its AI is still at work).
         """
         gs = self.game_state
         now = time.monotonic()
-        if not (gs.turn_phase == 'battles' and gs.phase in ('playing', 'ended')
-                and self._is_local_human_turn(gs.current_player)):
+        if not (self.multiplayer_mode and self.sim_state is None
+                and gs.turn_phase == 'battles' and gs.phase in ('playing', 'ended')
+                and self._owns_current_turn() and not self._ai_turn_running()):
             self._seq_battles_since = None
             return
         if self._seq_battles_since is None:
@@ -3436,18 +3583,20 @@ class Game:
 
     def _send_final_state_if_owner(self):
         """
-        Sequential multiplayer: the game ended during our own turn - send the final state
-        once (TURN_END with the snapshot; no turn follows, so the turn-advance hook never
-        fires). Waits until our moves and battles are done, so every battle result went
+        Sequential multiplayer: the game ended during a turn this PC played (our own, or a
+        computer player's on the host) - send the final state once (TURN_END with the
+        snapshot; no turn follows, so the turn-advance hook never fires). Waits until the
+        moves and battles are done (and the AI has stopped), so every battle result went
         out first. Every PC's recap and progression then use the same numbers.
         """
         gs = self.game_state
         if gs.phase != 'ended' or self._final_state_sent:
             return
-        if not self._is_local_human_turn(gs.current_player):
+        if not (self.multiplayer_mode and self.sim_state is None and self._owns_current_turn()):
             return
         if (gs.active_animations or gs.pending_arrivals or gs.pending_battles
-                or self.enhanced_battle_ui is not None or self.battle_popup_visible):
+                or self.enhanced_battle_ui is not None or self.battle_popup_visible
+                or self._ai_turn_running()):
             return
         self._final_state_sent = True
         from network.state_snapshot import build_snapshot
@@ -3456,7 +3605,7 @@ class Game:
             'snapshot': build_snapshot(gs),
             'final': True,
         })
-        logger.info("[TURN] Game over in our turn - final state sent")
+        logger.info("[TURN] Game over in a turn this PC played - final state sent")
 
     def is_local_player_active(self) -> bool:
         """
@@ -11596,30 +11745,8 @@ class Game:
                 if self.sim_state is None or self.sim_state.sim_phase != 'resolving':
                     self._battle_sound_played = False
 
-            # Handle AI player turn (optimized: check on player change OR phase change OR turn announcement ending)
-            player_changed = self.game_state.current_player != self.previous_ai_check
-            phase_changed = self.game_state.phase != self.previous_phase
-            announcement_ended = self.previous_turn_announcement and not self.game_state.turn_announcement_active
-
-            if player_changed or phase_changed or announcement_ended:
-                self.previous_ai_check = self.game_state.current_player
-                self.previous_phase = self.game_state.phase
-                self.previous_turn_announcement = self.game_state.turn_announcement_active
-
-                # Don't process AI turns while game is paused
-                if not self.is_game_paused:
-                    # Handle setup phase (AI claiming starting territories)
-                    if (self.game_state.is_ai_player() and
-                        self.game_state.phase == 'setup'):
-                        self.handle_ai_setup()
-                    # Handle playing phase (normal AI turn) - SEQUENTIAL MODE ONLY
-                    # In simultaneous mode, AI is handled separately by sim_ai
-                    elif (self.game_state.is_ai_player() and
-                        self.game_state.phase == 'playing' and
-                        self.game_state.turn_phase == 'planning' and
-                        not self.game_state.turn_announcement_active and
-                        self.sim_state is None):
-                        self.handle_ai_turn()
+            # (A computer player's turn is started by _update_sequential_turn() above -
+            # _update_ai_turn_start(); multiplayer: on the host only)
 
             # Detect turn changes and clear UI selections
             if self.game_state.current_player != self.previous_player:
@@ -16367,6 +16494,15 @@ class Game:
             self.initialize_ai_players()
 
         current_player = self.game_state.current_player
+
+        # A player the AI took over mid-game (multiplayer: they left) has no AIPlayer yet -
+        # they used to be created once, at the first AI turn, so the empire never moved (M13)
+        if (current_player not in self.ai_players
+                and self.game_state.player_is_ai[current_player]):
+            from ai_player import AIPlayer
+            difficulty = self.game_state.player_ai_difficulty[current_player]
+            self.ai_players[current_player] = AIPlayer(current_player, 1 if difficulty is None else difficulty)
+            logger.info(f"[AI] Created AI Player {current_player + 1} for a takeover")
 
         # Check if AI player exists and hasn't already started their turn
         if current_player in self.ai_players:

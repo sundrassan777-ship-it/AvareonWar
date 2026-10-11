@@ -24,11 +24,12 @@ What is simulated:
   - The game loop: Peer.step() runs only the multiplayer-relevant part of Game.run()
     (network messages, army animations, the simultaneous-mode "animations finished"
     hand-off, Game._update_simultaneous() / Game._update_sequential_turn() - the SAME
-    methods Game.run() calls for timers, AI resolvers, AFK rules, new rounds and the
-    final state - and turn announcements with their real duration). Main-loop blocks
-    that still live inline in Game.run() (sequential AI turns) are NOT copied here -
-    copying them would test the copy, not the game; they get tested once extracted
-    into methods.
+    methods Game.run() calls for timers, AI turns and resolvers, AFK rules, new rounds
+    and the final state - and turn announcements with their real duration). Main-loop
+    code is never copied here - that would test the copy, not the game; anything a test
+    needs is extracted into a method Game.run() calls.
+  - The AI's worker threads are real: a test that lets the AI play steps the session
+    with tiny real sleeps (and usually patches AIPlayer._pace to a no-op).
 
 Usage:
     session = Session(num_players=2)                 # host 0 + client 1, sequential

@@ -619,8 +619,19 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # the result (TURN_END with a state snapshot) to the other PCs.
         # turn_advance_gate(): False on a PC that only replays another player's turn - it
         # must not advance on its own, the owner's TURN_END does it (may_advance_turn()).
+        # on_orders_executing(): a turn's moves are about to start (execute_all_orders) -
+        # the owner sends its state with them (EXECUTE_ORDERS).
+        # shared_battle_resolver(index): how the turn owner resolves a battle in
+        # multiplayer - seeded and sent to the other PCs (resolve_battle_shared(), the AI).
         self.on_turn_advanced = None
         self.turn_advance_gate = None
+        self.on_orders_executing = None
+        self.shared_battle_resolver = None
+
+        # Multiplayer: {player: their action XP when the AI took over their empire (they
+        # disconnected)}. A win against an empire whose player left at once does not count
+        # for XP (anti win-farming, player_level._is_disconnect_farming).
+        self.ai_takeover_xp = {}
 
         # Phase B: Exclusive tab system state
         self.active_sidebar_tab = 'action_queue'  # Default active tab

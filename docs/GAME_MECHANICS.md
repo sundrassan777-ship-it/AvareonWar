@@ -455,8 +455,11 @@ by the AI for the rest of the game instead):
 - Chat messages notify all players of disconnect and elimination events
 
 **Anti-Win-Farming (Multiplayer):**
-- If all enemies were eliminated via disconnect and none earned >= 50 XP from gameplay actions, no XP is awarded for the game
-- Prevents exploiting disconnect elimination for easy XP farming
+- If every enemy left the game - eliminated via disconnect, or disconnected and replaced by
+  the AI - and none of them had earned >= 50 XP from gameplay actions while they played, no
+  XP is awarded for the game (for a replaced player: the XP they had when they left, not
+  what the AI earned afterwards)
+- Prevents a player leaving at once so the other can beat the AI for easy XP
 - If at least one enemy was defeated normally (through battles), or had >= 50 XP, XP is awarded normally
 
 **Planned:**
@@ -800,13 +803,18 @@ affected.
   battle still open is settled - the other players never wait forever.
 - **Cancelling a construction** refunds it on every player's screen.
 - **Game end:** the final state is shared, so every player's recap shows the same numbers.
-- Computer players' turns still play out on every PC (until host-run AI turns arrive).
+- **Computer players** are played by the host: their moves and battles reach every player
+  like a human player's (what they built shows up when their moves start, or at the end
+  of their turn).
+- **Leaving:** a player who disconnects is replaced by a **Medium AI** - even in the
+  middle of their own turn, which the AI then finishes.
 
 ### Disconnect Handling
 
 **Client Disconnects:**
 1. The host and every other player are told (`PLAYER_DISCONNECT`)
-2. The AI takes over the empire (Medium difficulty) for the rest of the game
+2. The AI takes over the empire (Medium difficulty) for the rest of the game, played by
+   the host - including the rest of the current turn or round
 3. Rejoining a game in progress is not possible at launch; new connections to a running
    game are refused ("The game has already started")
 

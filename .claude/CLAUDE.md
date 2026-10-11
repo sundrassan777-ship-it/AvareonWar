@@ -177,6 +177,7 @@ AvareonWar/
 - [tests/test_mp_battles.py](tests/test_mp_battles.py) - Seeded battle replay on receivers (seed + full survivors, hero/Keep/report once, early result held, disagreeing replay corrected, seedless fallback with allies, FIGHT on a vanished battle, dice ties reproduce)
 - [tests/test_mp_foundations.py](tests/test_mp_foundations.py) - State snapshot round trip / per-PC chat / AI flags / cleared work in progress / income, Decisive Strike + Valorous Charge picks, integer default unit ids
 - [tests/test_mp_seq_flow.py](tests/test_mp_seq_flow.py) - Sequential multiplayer (the turn owner is the truth): a 3-player turn identical everywhere, a 4-player full round, only the owner sends TURN_END, receivers never advance on their own, TURN_END waits for the replay, messages wait for our turn-start effects, a stale clock never cuts a turn short, only the owner's timer ends the turn (C2), desync reported + corrected at EXECUTE_ORDERS, a 3-player battle, AFK (untouched battles, report left open, abandoned window), final state at game end
+- [tests/test_mp_seq_ai.py](tests/test_mp_seq_ai.py) - Sequential multiplayer computer players + takeover: only the host runs the AI (C1), the AI's moves / battles reach every PC (queued from its worker thread, kept in order), a player leaving while planning / after their moves / during their battles has the turn finished by the AI on the host, anti-farming with AI takeovers, snapshots summarised in logs
 - [tests/test_mp_sim_flow.py](tests/test_mp_sim_flow.py) - Simultaneous multiplayer: host state wins at execution start, 3- and 4-player rounds end identical (incl. per-PC current_player), round end clears leftovers, host-only AI battles / choices / round ends, SIM_READY_STATE waiting list, client timers ready only themselves, AFK (90 s own / 180 s host, report left open, host's own window), round end waits for the host's open battle report + keeps its alliance marker in its round, late alliance choice / stale popup never end the next round, AI takeover while planning / resolving, order validation (units used twice, count from unit list), alliance marker removal by territory
 
 **Configuration:**
@@ -458,7 +459,7 @@ After making code changes, ask yourself:
 - Whole-game "true state" message → `network/state_snapshot.py` (new GameState fields go into `save_manager.serialize/deserialize_game_state`)
 - Modify battle bar volley animation → `ui/effects/battle_interface.py` (`BattleBarVolleyEffect`)
 - Modify "Resolve Remaining Battles" button → `rendering/ui_renderer.py` `_draw_resolve_all_battles_button()`, `main.py` `_resolve_all_pending_battles()`
-- Change AI behavior → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py`
+- Change AI behavior → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py` (AI code resolves battles with `game_state.resolve_battle_shared()`, never `resolve_battle()` - multiplayer replays them)
 - Add UI element → `main.py` or `rendering/ui_renderer.py`
 - Add visual effect → `ui/effects/` directory
 - Change floating chat notifications → `ui/effects/chat_notification_effect.py`
@@ -480,8 +481,8 @@ After making code changes, ask yourself:
 - Change internet play / UPnP → `network/upnp.py` and `network_config.py`
 - Modify simultaneous mode → `simultaneous/sim_state.py`, `sim_conflict_resolver.py`
 - Simultaneous multiplayer flow → host: `main.py` `_sim_start_execution_phase()` (validate + apply non-movement + `SIM_ALL_READY{snapshot, movement_orders}`) / `_sim_broadcast_round_complete()` (snapshot); client: `_sim_apply_all_ready()` / `_sim_apply_round_complete()` (restore `current_player` = local after a snapshot). Per-frame work: `_update_simultaneous()` (timers, `SIM_READY_STATE`, host-only AI resolvers / choosers, `_sim_afk_watchdog()`, new-round AI). **Any new "end the round now?" check must use `Game._sim_round_may_end()`** (it waits for an open battle report of ours). See "Multiplayer model (the host is the truth)" in CODE_GUIDE.md
-- Sequential multiplayer flow → owner: `main.py` `_end_local_turn()` (End Turn + timer; `EXECUTE_ORDERS{snapshot}`) and `_on_turn_advanced()` (GameState `on_turn_advanced` hook in `_advance_to_next_player()`; `TURN_END{snapshot}`); receivers: `_handle_remote_execute_orders()` / `_handle_remote_turn_end()` (+ `GameState._after_turn_advance()`). Per-frame: `_update_sequential_turn()` (owner-only timer, `_seq_afk_watchdog()`, final state). **Only the turn owner's PC may advance a turn** (`GameState.may_advance_turn()` / `Game._owns_current_turn()`). See "Sequential multiplayer: the turn owner is the truth" in CODE_GUIDE.md
-- AI takeover of a disconnected player → `main.py` `_take_over_disconnected_player()` + `SimultaneousAI.ensure_player()`
+- Sequential multiplayer flow → owner (`Game._is_turn_owner_of()`: the human's PC, the HOST for computer players): `main.py` `_end_local_turn()` (End Turn + timer), GameState hooks `on_orders_executing` → `_on_orders_executing()` (`EXECUTE_ORDERS{snapshot}`), `shared_battle_resolver` → `_resolve_and_share_battle()` (the AI's battles), `on_turn_advanced` → `_on_turn_advanced()` (`TURN_END{snapshot}`); sends from the AI's worker thread are queued for the main loop (`_send_action_to_remote()` / `_flush_thread_messages()`); receivers: `_handle_remote_execute_orders()` / `_handle_remote_turn_end()` (+ `GameState._after_turn_advance()`). Per-frame: `_update_sequential_turn()` (`_update_ai_turn_start()` - host-only AI, owner-only timer, `_seq_afk_watchdog()`, final state). **Only the turn owner's PC may advance a turn** (`GameState.may_advance_turn()` / `Game._owns_current_turn()`). See "Sequential multiplayer: the turn owner is the truth" in CODE_GUIDE.md
+- AI takeover of a disconnected player → `main.py` `_take_over_disconnected_player()` + `SimultaneousAI.ensure_player()` (simultaneous) / `_continue_turn_as_ai()` + `handle_ai_turn()` (sequential: finishes their current turn on the host)
 - Simultaneous AFK timings → `Game.SIM_AFK_RESOLVE_SECONDS` / `SIM_HOST_FALLBACK_SECONDS` / `SIM_AI_ACTION_DELAY` in `main.py`
 - Sequential AFK timings → `Game.SEQ_AFK_RESOLVE_SECONDS` / `SEQ_BATTLE_FALLBACK_SECONDS` in `main.py` (`_seq_afk_watchdog()`)
 - Modify victory/elimination → `game_state/victory.py` (check_victory, eliminate_player, eliminate_player_disconnect)
@@ -495,7 +496,7 @@ After making code changes, ask yourself:
 - Change how a multiplayer game starts (Host / Join / Steam invite) → `network/multiplayer_setup.py` `build_multiplayer_config()` / `run_client_lobby()` + `main.py` `_play_multiplayer_game()` — one path for all three, never a per-path copy
 - Change lobby launch rules → `network/lobby.py` `launch_blocker()` + `config/setup_tooltips.py` `launch_<reason>`
 - Write a multiplayer sync test → `tests/mp_harness.py` (`Session`, `click_end_turn`, `fight`, ...)
-- Modify anti-win-farming XP → `player_level.py` (_is_disconnect_farming, DISCONNECT_FARMING_XP_THRESHOLD)
+- Modify anti-win-farming XP → `player_level.py` (_is_disconnect_farming, DISCONNECT_FARMING_XP_THRESHOLD; AI takeovers count via `gs.ai_takeover_xp`)
 - Add new achievement → `achievement_manager.py` ACHIEVEMENTS list
 - Add achievement reward icon → `achievement_manager.py` ALL_REWARD_ICON_PATHS
 - Change achievement panel UI → `achievement_panel.py`
