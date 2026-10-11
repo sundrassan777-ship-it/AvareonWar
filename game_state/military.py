@@ -1916,19 +1916,23 @@ class MilitaryMixin:
 
         return surviving_armies
 
-    def _handle_battle_tie_with_dice(self, battle, players_with_max, player_armies, territory):
+    def _handle_battle_tie_with_dice(self, battle, players_with_max, player_armies, territory,
+                                     rng=None):
         """
         Handle battle tie using dice roll system.
-        
+
         Phase 6: Extracted from resolve_battle() for maintainability.
+
+        Args:
+            rng: Random source for the dice (see resolve_battle); None = module random
         """
-        import random
-        
+        rng = rng or random
+
         # Roll dice only for tied players
         results = {}
         for player in players_with_max:
             army_count = battle.armies[player]
-            roll = sum(random.randint(1, 6) for _ in range(army_count))
+            roll = sum(rng.randint(1, 6) for _ in range(army_count))
             results[player] = roll
             player_label = "Neutral" if player == -1 else f"Player {player + 1}"
             self.add_message(f"  {player_label} ({army_count} armies) rolls: {roll}")
@@ -1981,12 +1985,18 @@ class MilitaryMixin:
             
             return winner, surviving_armies
 
-    def _update_battle_results(self, battle, winner, surviving_armies, player_compositions, territory):
+    def _update_battle_results(self, battle, winner, surviving_armies, player_compositions, territory,
+                               rng=None):
         """
         Update game state with battle results.
-        
+
         Phase 6: Extracted from resolve_battle() for maintainability.
+
+        Args:
+            rng: Random source for the Safe Haven retreat pick (see resolve_battle);
+                None = module random
         """
+        rng = rng or random
         if winner == -1 and surviving_armies == 0:
             # Perfect tie / mutual elimination with no surviving armies.
             # Dice-tie path already clears garrisons before returning (-1, 0), but
@@ -2051,9 +2061,8 @@ class MilitaryMixin:
                     current_keep_armies = self.get_territory_total_armies(keep_territory)
                     if current_keep_armies < self.MAX_ARMIES_PER_TERRITORY:
                         # Pick a random unit type from loser's composition
-                        import random
                         available_types = list(loser_comp.keys())
-                        retreating_unit_type = random.choice(available_types)
+                        retreating_unit_type = rng.choice(available_types)
 
                         # Add retreating unit to Keep territory
                         if keep_territory not in self.army_units:
@@ -2420,9 +2429,16 @@ class MilitaryMixin:
             structures_remaining=remaining, unit_breakdown={},
             attacker_lost=0, attacker_survivors=0))
 
-    def resolve_battle(self, battle_index):
+    def resolve_battle(self, battle_index, rng=None):
         """
         Resolve a battle using deterministic combat with unit type effectiveness.
+
+        Multiplayer: pass rng=random.Random(seed). The only random parts of a battle
+        (tie dice, the Safe Haven retreat pick) then come from that seed, so another PC
+        holding the same pre-battle state replays the battle exactly - with every side
+        effect (buildings, heroes, ability gold, stats, reports) - from the resolver's
+        seed (main.py BATTLE_RESOLVE). rng=None uses the module-level random, exactly as
+        before (single-player).
         
         Phase 6: Refactored into sub-methods for maintainability.
         Main method now orchestrates battle resolution:
@@ -2464,7 +2480,8 @@ class MilitaryMixin:
         
         Args:
             battle_index: Index into self.pending_battles list
-        
+            rng: Random source (random.Random) for the battle's random parts, or None
+
         Returns:
             bool: True if battle resolved successfully, False if invalid/already resolved
         """
@@ -2527,8 +2544,9 @@ class MilitaryMixin:
             )
             
             # Step 3: Update game state
-            self._update_battle_results(battle, winner, surviving_armies, player_compositions, territory)
-        
+            self._update_battle_results(battle, winner, surviving_armies, player_compositions, territory,
+                                        rng=rng)
+
         else:
             # NORMAL BATTLE: Use effective strength to determine winner
             
@@ -2546,17 +2564,19 @@ class MilitaryMixin:
                 )
                 
                 # Step 4: Update game state
-                self._update_battle_results(battle, winner, surviving_armies, player_compositions, territory)
-            
+                self._update_battle_results(battle, winner, surviving_armies, player_compositions,
+                                            territory, rng=rng)
+
             else:
                 # Tie - use dice roll system
                 self.add_message(f"  TIE detected! Rolling dice to determine winner...")
                 winner, surviving_armies = self._handle_battle_tie_with_dice(
-                    battle, players_with_max, player_armies, territory
+                    battle, players_with_max, player_armies, territory, rng=rng
                 )
-                
+
                 # Update game state
-                self._update_battle_results(battle, winner, surviving_armies, player_compositions, territory)
+                self._update_battle_results(battle, winner, surviving_armies, player_compositions,
+                                            territory, rng=rng)
         
         # Tutorial hook: notify battle resolved (only if player 0 won)
         if self.tutorial_mission and winner == 0:

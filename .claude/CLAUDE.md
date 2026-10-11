@@ -174,6 +174,8 @@ AvareonWar/
 - [tests/test_mp_transport.py](tests/test_mp_transport.py) - Sequence numbers (PONG/DISCONNECT exempt, per connection), disconnect notices (lobby + in game, send failures, once), refused rejoin, requeue order, real sockets (large frames to a slow reader, refusal reasons)
 - [tests/test_mp_lobby.py](tests/test_mp_lobby.py) - Lobby leave/join by server index, launch rules + tooltip, shared seed/map/config, loading screen (keeps messages, Escape, host skips leavers, lost host), real-socket connect -> lobby -> launch -> loading handshake
 - [tests/test_mp_sequential.py](tests/test_mp_sequential.py) / [tests/test_mp_simultaneous.py](tests/test_mp_simultaneous.py) / [tests/test_mp_progression.py](tests/test_mp_progression.py) - Sequential / simultaneous sync and achievements/XP for the local player (multiplayer audit findings)
+- [tests/test_mp_battles.py](tests/test_mp_battles.py) - Seeded battle replay on receivers (seed + full survivors, hero/Keep/report once, early result held, disagreeing replay corrected, seedless fallback with allies, FIGHT on a vanished battle, dice ties reproduce)
+- [tests/test_mp_foundations.py](tests/test_mp_foundations.py) - State snapshot round trip / per-PC chat / AI flags / cleared work in progress / income, Decisive Strike + Valorous Charge picks, integer default unit ids
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -203,6 +205,7 @@ AvareonWar/
 - [network/protocol.py](network/protocol.py) - Message serialization
 - [network/message_queue.py](network/message_queue.py) - Thread-safe queue
 - [network/upnp.py](network/upnp.py) - UPnP port forwarding and public IP detection for internet play
+- [network/state_snapshot.py](network/state_snapshot.py) - Whole-game snapshots (`build_snapshot` / `apply_snapshot`) on top of the save serializer, for "this is the true state" messages
 - [network/lobby.py](network/lobby.py) - Multiplayer lobby management
 - [network/multiplayer_setup.py](network/multiplayer_setup.py) - Multiplayer configuration UI
 - [network/territory_selector.py](network/territory_selector.py) - Multiplayer territory selection UI
@@ -447,7 +450,10 @@ After making code changes, ask yourself:
 - Add new unit type → `game_state/__init__.py` UNIT_TYPES class attribute
 - Add new building → `game_state/data_definitions.py` BUILDING_TYPES dict
 - Change balance/costs → `game_state/economy.py` or `economic_data.json`
-- Modify combat → `game_state/military.py` resolve_battle() method
+- Modify combat → `game_state/military.py` resolve_battle() method — any randomness must use its `rng` parameter (multiplayer replays battles from the resolver's seed)
+- Resolve a battle from a new place → `main.py` `_resolve_battle_locally()` + `_battle_resolve_payload()` (never call `resolve_battle()` directly in multiplayer code); receiving side `_handle_remote_battle_resolve()`. See "Battle sync" in CODE_GUIDE.md
+- A hero ability that picks units at random → ship the picks (`picked_units` / Royal Charisma `stolen_units`), receivers pass `pre_selected_units`
+- Whole-game "true state" message → `network/state_snapshot.py` (new GameState fields go into `save_manager.serialize/deserialize_game_state`)
 - Modify battle bar volley animation → `ui/effects/battle_interface.py` (`BattleBarVolleyEffect`)
 - Modify "Resolve Remaining Battles" button → `rendering/ui_renderer.py` `_draw_resolve_all_battles_button()`, `main.py` `_resolve_all_pending_battles()`
 - Change AI behavior → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py`

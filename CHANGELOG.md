@@ -2,6 +2,43 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-11 - Multiplayer audit, Phase 3: battles replayed everywhere, shared groundwork
+
+Branch `fix/multiplayer-sync`. Developer guide: "Battle sync (seeded replay) and held
+messages" and "State snapshots" in CODE_GUIDE.md.
+- **H2 / H3 / C5 (crash)** A battle resolved on one PC is now **replayed** on the others:
+  `resolve_battle(index, rng=None)` takes a random source (tie dice, Safe Haven retreat);
+  every resolve site goes through `Game._resolve_battle_locally()` (seeded in multiplayer)
+  and `_battle_resolve_payload()` (`battle_seed` + post-battle `garrisons` with full unit
+  dicts). `_handle_remote_battle_resolve()` replays from the seed - buildings destroyed,
+  heroes slain, ability gold, stats, local Battle Reports and hero toasts on every PC (the
+  old receiver copied only owner + survivors, and survivors lost type / xp / level) - then
+  checks the result against the resolver's and applies theirs if the states had drifted.
+  Seedless messages keep the old apply, now with all garrisons. `_create_default_units()`
+  makes integer ids (string ids crashed the next arrival with `max(ids) + 1`).
+- **Held messages:** a battle result that arrives while the receiver's own copy of the
+  move is still animating is held, with everything after it, until the battle exists
+  (`_hold_network_message()` / `_release_held_network_messages()`; was rejected, leaving
+  the battle stuck).
+- **H13** FIGHT looks the battle up by territory (`selected_battle_territory`); a battle
+  resolved elsewhere while the window was open closes the window instead of resolving the
+  wrong battle or crashing.
+- **M3** Decisive Strike / Valorous Charge send their random picks (`picked_units`);
+  receivers apply exactly those (`pre_selected_units`, stand-ins if a unit is missing).
+- **C6** `sim_state.eliminated_players` stays a list after `SIM_ROUND_COMPLETE` (a set
+  crashed the next elimination on clients).
+- **H5** Cheats are single-player only: the keyboard guard checked attributes `Game` never
+  had; the chat gold cheat ran on every PC for every received line.
+- **M2** Team chat keeps its channel on receipt (enemies could read it).
+- **L3** Network ownership changes invalidate the income / army caches.
+- New `network/state_snapshot.py` (`build_snapshot` / `apply_snapshot`) on the save
+  serializer - used from Phase 4.
+- Alliance-marker logic (three copies) and the Capital Assault sim-elimination sync (three
+  copies) are shared helpers (`_alliance_marker_for()`, `_sync_battle_eliminations_to_sim()`).
+- Tests: `tests/test_mp_battles.py` (7), `tests/test_mp_foundations.py` (10); strict xfails
+  removed for C5 (crash) C6 H2 H3 H5 H13 L3 M2 M3. `test_code_quality_fixes.py`'s cheat-guard
+  tests pinned the broken attribute names and now check the real ones.
+
 ## 2026-10-11 - Multiplayer audit, Phases 1-2: sync test harness; connection, lobby and launch
 
 Branch `fix/multiplayer-sync` (pre-launch multiplayer audit; finding IDs C/H/M/L as in the

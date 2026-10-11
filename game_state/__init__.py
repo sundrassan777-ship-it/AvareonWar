@@ -985,8 +985,9 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         channel_tag = "[TEAM]" if channel == "team" else "[ALL]"
         logger.info(f"[CHAT] {channel_tag} [{timestamp}] Player {player_id + 1}: {message}")
 
-        # Check for cheat code
-        if message.strip().lower() == "jurvikisrichboi":
+        # Check for cheat code - single-player only. In multiplayer every PC runs this
+        # for every chat line it receives, so the cheat worked online (for anyone).
+        if not self.network_mode and message.strip().lower() == "jurvikisrichboi":
             self.player_gold[player_id] += 3000
             self.add_message(f"Player {player_id + 1} used cheat code: +3000 Gold!")
             logger.info(f"[CHEAT] Player {player_id + 1} gained 3000 gold!")

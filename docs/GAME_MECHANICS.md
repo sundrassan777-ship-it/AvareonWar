@@ -766,9 +766,17 @@ identical game. A player joins the slot the host's server assigned and keeps it.
 
 The host (Player 0) is authoritative:
 - Runs all game logic and AI
-- Resolves all battles
 - Broadcasts state changes to clients
 - Controls game flow and timing
+
+**Battles:** fought by the player whose turn it is (sequential) or by the battle's
+designated resolver (simultaneous). Every other PC replays the same battle from its
+random seed, so destroyed buildings, slain heroes, ability gold and reports happen for
+everyone at once, and veteran survivors keep their experience. Decisive Strike, Valorous
+Charge and Royal Charisma send the units they picked, so every player sees the same units
+affected.
+
+**Cheat codes** work in single-player only. **Team chat** is shown to allies only.
 
 **Host-Only Actions:**
 - Kick players from lobby

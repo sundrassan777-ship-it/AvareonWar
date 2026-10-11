@@ -257,6 +257,7 @@ class Peer:
         queue = game.network_connection.message_queue
         return bool(gs.active_animations or gs.turn_announcement_active
                     or queue.has_incoming_messages()
+                    or getattr(game, '_held_network_messages', None)
                     or getattr(game, '_pending_full_state_sync', None) is not None)
 
 

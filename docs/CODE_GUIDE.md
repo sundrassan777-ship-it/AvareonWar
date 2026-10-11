@@ -630,10 +630,18 @@ tab's "No active quests". Tests: `tests/test_font_italic.py`.
 
 **Battle resolution flow:**
 1. Player clicks territory with battle marker → `EnhancedBattleInterface` opens
-2. Player clicks FIGHT → `game_state.resolve_battle()` called immediately
+   (`selected_battle_territory` remembers which battle)
+2. Player clicks FIGHT → the battle is looked up **by territory**
+   (`_selected_battle_current_index()`; gone = resolved elsewhere → `_close_battle_window()`)
+   and resolved via `_resolve_battle_locally()` (multiplayer: seeded, see "Battle sync")
 3. Actual survivors passed to UI via `set_actual_battle_result()`
-4. Battle info stored in `_resolved_battle_info` for deferred cleanup
-5. Player clicks CLOSE → cleanup applied using stored info
+4. Battle info stored in `_resolved_battle_info` for deferred cleanup - in multiplayer
+   including the `BATTLE_RESOLVE` payload, **built on FIGHT** from the battle's outcome
+5. Player clicks CLOSE → alliance marker queued, payload sent, cleanup applied
+
+Never index `pending_battles` with an index saved earlier: another player's result can
+pop an earlier battle while the window is open (the old FIGHT resolved the wrong battle
+or crashed with IndexError).
 
 **Key method in battle_interface.py:**
 ```python
@@ -675,7 +683,9 @@ Modelled on BFME2's War of the Ring auto-resolve. **Visual layer only** — it n
 - **Use the private RNG.** The schedule draws from `random.Random(seed)`, never the global
   `random`. `_pre_calculate_battle_result()` still calls `random.seed()` on the global RNG
   immediately before `resolve_battle()` rolls its tie dice — leave that alone, removing it
-  changes tie outcomes. `TestDeterminism.test_does_not_disturb_the_global_rng` guards this.
+  changes single-player tie outcomes. `TestDeterminism.test_does_not_disturb_the_global_rng`
+  guards this. (Multiplayer battles roll from their own `rng` - see "Battle sync" - so the
+  global seeding does not reach them; `set_actual_battle_result()` re-aims the bars.)
 - **Nothing is allocated per frame.** Fills, burn chunks and bar backgrounds are drawn
   straight to the screen; lances, impact bursts and the frame flare are pre-rendered in
   `__init__`. The old version cleared and blitted a full-screen SRCALPHA surface every
@@ -1355,9 +1365,10 @@ Tests: `test_battle_reports.py`, `test_battle_report_popup.py`,
 #### When to modify
 
 **`heroes_slain`** — names of the defender's heroes killed in that battle (their Keep fell),
-taken from `_battle_hero_deaths` (reset per `resolve_battle()`). A defending multiplayer client
-never runs the battle, so the `BATTLE_RESOLVE` receiver turns these into
-`hero_death_events` for the "Our Hero, X, has been slain in Y!" toast.
+taken from `_battle_hero_deaths` (reset per `resolve_battle()`). Multiplayer receivers
+normally **replay** the battle and record the deaths themselves; only the fallback path
+(seedless message / battle missing) turns these into `hero_death_events` for the "Our
+Hero, X, has been slain in Y!" toast.
 
 **Adding a field to a report** — add it in `_make_battle_report()` and keep it
 JSON-safe. The snapshot crosses the network, so **no tuples** (JSON turns them into
@@ -1535,21 +1546,23 @@ Use `close_battle_report_detail()`.
 
 #### Multiplayer
 
-**A client never runs `resolve_battle()`** — the `BATTLE_RESOLVE` handler applies the
-winner, garrison and ownership directly. The capture hook therefore never fires on the
-defending client, the one player who needs the report, so reports ride along on that
-message as a `battle_reports` key.
+**Receivers replay the battle** (since the multiplayer audit, Phase 3 - see "Battle sync"
+under Network System): `resolve_battle()` runs on every PC from the resolver's seed, so the
+capture hook fires on the defending client too and its report reaches
+`battle_report_inbox` like any local battle. The `battle_reports` key still rides along on
+`BATTLE_RESOLVE`, but it is **only read on the fallback path** (seedless message from an
+older sender, or the battle missing here) - reading it on a replay would show every report
+twice.
 
 - It is a key on the **existing** payload, not a new message type:
   `validate_message_data()` has no `BATTLE_RESOLVE` branch, the server relays the original
-  bytes, and the receiver reads via `.get()`, so older builds ignore it.
-- **Do not bump `NETWORK_VERSION`** for an additive key. `server.py` compares versions by
-  exact string (despite the "MAJOR only" comment in `network_config.py`), so any bump locks
-  out every peer on the old build.
-- There are **four** send sites. Three read `game_state.last_battle_reports` live;
-  `_finalize_enhanced_battle()` must use the copy stashed in `_resolved_battle_info`,
-  because it broadcasts on the CLOSE click, arbitrary frames after `resolve_battle()` ran
-  on the FIGHT click, by which time another battle could have overwritten the live list.
+  bytes, and the receiver reads via `.get()`.
+- `server.py` compares `NETWORK_VERSION` by exact string, so any bump locks out every peer
+  on an older build - bump only for real protocol breaks (2.0.0 was one).
+- Every send site builds its payload with `_battle_resolve_payload()`.
+  `_finalize_enhanced_battle()` sends the payload built on the FIGHT click (stashed in
+  `_resolved_battle_info`): it broadcasts on the CLOSE click, arbitrary frames later, when
+  the live `last_battle_reports` and the territory could already hold something else.
 - `queue_battle_report()` keeps only the local slot in multiplayer. The resolver also
   captures reports for remote defenders (it ran the battle); they reach their owner over
   the wire, and keeping them would build queues this client can never display.
@@ -1906,7 +1919,9 @@ Every action that modifies game state must send a network message. Pattern:
 3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish)
 4. `FULL_STATE_SYNC` sent by host at every turn boundary as safety net (sequential mode)
 5. `SIM_ROUND_COMPLETE` sent by host at every round end as safety net (simultaneous mode)
-6. All randomness must be resolved on sender side; include results in message (e.g., Royal Charisma stolen_units)
+6. All randomness must be resolved on sender side; include results in message (e.g., Royal Charisma
+   `stolen_units`, Decisive Strike / Valorous Charge `picked_units` → `pre_selected_units`).
+   Battles send a seed instead (see "Battle sync")
 7. Send messages in **both modes** — don't guard with `self.sim_state is None` unless sequential-only logic
 
 ✅ **Adding state to sync safety nets:**
@@ -2089,6 +2104,60 @@ elif msg_type == MessageType.YOUR_NEW_MESSAGE:
     # Handle the message
     self.game_state.do_something(data)
 ```
+
+### Battle sync (seeded replay) and held messages
+
+**Every battle resolution goes through `Game._resolve_battle_locally(index)`** (FIGHT,
+Resolve Remaining Battles, AI auto-resolve, the old popup). In multiplayer it draws a seed
+and calls `game_state.resolve_battle(index, rng=random.Random(seed))`; single-player passes
+no rng (unchanged). The message comes from `_battle_resolve_payload()`: `battle_seed`,
+`garrisons` (the territory's garrisons after the battle, full unit dicts incl. xp/level),
+`surviving_units`, `alliance_marker`, `battle_reports`.
+
+**Receivers replay it** (`_handle_remote_battle_resolve()`): find the battle by territory,
+`resolve_battle(index, rng=Random(battle_seed))` - so destroyed buildings, slain heroes,
+Pillage / Scavenge gold, Safe Haven, stats, the local Battle Report and hero-death toast
+all happen on every PC (the old receiver only copied owner + survivors). Then
+`_enforce_remote_battle_outcome()` compares owner + garrisons with the resolver's; if the
+states had drifted, the resolver's outcome wins (`_apply_battle_outcome()`, which is also
+the fallback for seedless messages and missing battles).
+
+Rules:
+- **Randomness inside battle code must use the `rng` parameter** (`_handle_battle_tie_with_dice`,
+  `_update_battle_results` Safe Haven). A bare `random.*` call there makes replays diverge.
+- **Hero abilities that pick units at random ship the picks**, not a seed: unit order can
+  differ between PCs. Royal Charisma `stolen_units`; Decisive Strike / Valorous Charge
+  `picked_units` (`_last_decisive_strike_removed` / `_last_valorous_charge_moved` →
+  `pre_selected_units`, matched by `HeroMixin._match_pre_selected_units()`, which uses a
+  same-owner same-type stand-in when a picked unit is missing).
+
+**Held messages:** a result can arrive while this PC's own copy of the move is still
+animating, so the battle does not exist here yet. `_handle_remote_battle_resolve()` then
+calls `_hold_network_message()`; that message **and every later one** wait in
+`_held_network_messages` (order kept) until `_battles_may_still_appear()` is False
+(no animations / pending arrivals / sim execution), then `_release_held_network_messages()`
+replays them; after `_NETWORK_HOLD_LIMIT` (15 s) they are applied anyway
+(`allow_hold=False`). The test harness counts held messages as "busy".
+
+**Cheats are single-player only:** `KeyboardHandler._handle_cheat_code()` checks
+`game_instance.multiplayer_mode` / `network_connection` and `game_state.network_mode`;
+`GameState.add_chat_message()` skips the gold cheat when `network_mode` (it ran on every PC
+for every received chat line).
+
+**Chat channel:** the `CHAT_MESSAGE` receiver passes `channel` to `add_chat_message()` -
+team chat used to arrive as 'all' chat on every PC.
+
+### State snapshots (network/state_snapshot.py)
+
+`build_snapshot(gs)` / `apply_snapshot(gs, data)`: the whole GameState in one JSON-safe
+dict, for every "this is the true state now" message (used from Phases 4-5 of the
+multiplayer audit: simultaneous `SIM_ALL_READY`, sequential `EXECUTE_ORDERS` /
+`TURN_END`). Built on `save_manager.serialize_game_state()` / `deserialize_game_state()`:
+**a new GameState field goes into save_manager, and snapshots carry it too.** Left out:
+`chat_messages`, `messages` (kept per PC). Added: `player_is_ai`. Applying clears
+animations, arrivals, pending battles and `ready_to_advance_turn`, rebuilds the legacy army
+counters and invalidates the income / army / bonus caches. `sim_state` round data travels
+separately. Tests: `tests/test_mp_foundations.py`.
 
 ### Multiplayer Mode Checks
 

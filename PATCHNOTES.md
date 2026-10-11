@@ -27,6 +27,25 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 - If a player leaves while the others are loading, the game no longer waits for them forever.
 - If the host leaves, everyone else is told and returns to the menu.
 
+### Battles and heroes
+
+- Battles now play out the same way for every player. Fixed: when another player won a
+  battle, your screen could still show the defeated side's buildings and Heroes, and the
+  winning units lost their veteran experience.
+- Fixed: a game could crash when sending reinforcements into a territory that was just
+  captured by another player.
+- Fixed: **Decisive Strike** and **Valorous Charge** could hit or move different units on
+  different players' screens.
+- Fixed (simultaneous turns): pressing **Fight** right after another player finished their
+  battle could fight the wrong battle, or crash.
+- Fixed (simultaneous turns): a player being knocked out of the game could crash the game
+  for the others.
+
+### Chat
+
+- **Team chat** is now seen by your allies only. Before, enemies could read it too.
+- Cheat codes no longer work in multiplayer.
+
 ### Connection
 
 - Fixed: actions such as **End Turn** could occasionally get lost on their way to the host,

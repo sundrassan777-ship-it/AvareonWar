@@ -116,15 +116,11 @@ class TestClientAttackOnTheHost:
         session, _, b = outcome
         assert session.gs(0).territory_owners[b] == session.gs(1).territory_owners[b] == 1
 
-    @pytest.mark.xfail(strict=True, reason="H2: BATTLE_RESOLVE applies only owner + garrison; the "
-                       "host never destroys the captured buildings and its sync restores them")
     def test_the_captured_farm_is_destroyed_on_both_peers(self, outcome):
         session, _, b = outcome
         assert not session.gs(0).buildings.get(b)
         assert not session.gs(1).buildings.get(b)
 
-    @pytest.mark.xfail(strict=True, reason="H3/C5: survivors reach the host without type, XP or "
-                       "level (or as default Swordsmen with string IDs after a stale sync)")
     def test_survivors_keep_their_type_and_veterancy(self, outcome):
         session, _, b = outcome
         for index in (0, 1):
@@ -134,8 +130,6 @@ class TestClientAttackOnTheHost:
             assert all(isinstance(u['id'], int) for u in survivors)
             assert all(u.get('level', 0) >= 2 for u in survivors)
 
-    @pytest.mark.xfail(strict=True, reason="C5: string unit IDs left by a missing survivor list "
-                       "crash _process_arrivals (max(ids) + 1) when the territory is reinforced")
     def test_reinforcing_the_captured_territory_does_not_crash(self, outcome):
         session, a, b = outcome
         h.click_end_turn(session.game(0))             # host's turn ends -> back to the client
@@ -190,8 +184,6 @@ class TestEndTurnButton:
 
 class TestChat:
 
-    @pytest.mark.xfail(strict=True, reason="M2: team chat arrives as 'all' chat on other PCs, so "
-                       "enemies read it")
     def test_team_chat_stays_within_the_team(self, make_session):
         session = make_session(num_players=3, teams=[0, 0, 1])
         h.send_chat(session.game(1), "attack at dawn", channel='team')
@@ -202,8 +194,6 @@ class TestChat:
         assert "attack at dawn" in visible(0)        # the ally (host) reads it
         assert "attack at dawn" not in visible(2)    # the enemy does not
 
-    @pytest.mark.xfail(strict=True, reason="H5: the chat gold cheat works in multiplayer and runs "
-                       "on every PC")
     def test_gold_cheat_is_disabled_in_multiplayer(self, make_session):
         session = make_session(num_players=2)
         before = [session.gs(i).player_gold[0] for i in (0, 1)]
@@ -211,8 +201,6 @@ class TestChat:
         session.run_until_quiet()
         assert [session.gs(i).player_gold[0] for i in (0, 1)] == before
 
-    @pytest.mark.xfail(strict=True, reason="H5: chat cheat codes are not blocked in multiplayer "
-                       "(the guard checks attributes Game does not have)")
     def test_unit_cheat_is_disabled_in_multiplayer(self, make_session):
         session = make_session(num_players=2)
         host = session.game(0)
@@ -225,8 +213,6 @@ class TestChat:
 
 class TestHeroAbilities:
 
-    @pytest.mark.xfail(strict=True, reason="M3: Decisive Strike picks its victims with random.sample "
-                       "separately on every PC")
     def test_decisive_strike_removes_the_same_units_everywhere(self, make_session, monkeypatch):
         session = make_session(num_players=2)
         host_capital, client_capital = h.spread_territories(2)
@@ -259,8 +245,6 @@ class TestHeroAbilities:
 
 class TestIncomeCache:
 
-    @pytest.mark.xfail(strict=True, reason="L3: ownership changes applied from the network do not "
-                       "invalidate the income cache")
     def test_income_follows_a_networked_capture(self, make_session):
         session = make_session(num_players=2)
         host = session.game(0)

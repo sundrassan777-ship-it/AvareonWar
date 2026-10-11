@@ -88,8 +88,6 @@ class TestOrderExecution:
 
 class TestBattleResolution:
 
-    @pytest.mark.xfail(strict=True, reason="H13: FIGHT resolves pending_battles[index] with the "
-                       "index saved when the window opened; a battle resolved elsewhere shifts it")
     def test_fight_resolves_the_battle_that_was_opened(self, make_session):
         session = make_session(num_players=2, turn_mode='simultaneous')
         a, b, _ = h.adjacent_triple()
@@ -130,8 +128,6 @@ class TestRoundSync:
         assert client_sim.round_number == 2
         assert not client_sim.players_ready.get(0, False)
 
-    @pytest.mark.xfail(strict=True, reason="C6: SIM_ROUND_COMPLETE turns sim_state.eliminated_players "
-                       "into a set; the next elimination crashes the client (.append)")
     def test_client_survives_an_elimination_after_round_sync(self, make_session):
         session = make_session(num_players=2, turn_mode='simultaneous')
         session.game(0)._sim_broadcast_round_complete(2)

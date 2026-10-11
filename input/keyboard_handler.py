@@ -309,13 +309,15 @@ class KeyboardHandler:
         Returns:
             bool: True if cheat code was handled, False otherwise
         """
-        # C5: Block cheats in multiplayer games - cheats could desync game state
+        # C5: Block cheats in multiplayer games - cheats could desync game state.
+        # Game keeps its connection in `network_connection` (the old check looked for
+        # `network_client` / `network_server`, which Game never has, so cheats worked online).
         game_instance = ui_state.get('game_instance')
-        if game_instance:
-            if hasattr(game_instance, 'network_client') and game_instance.network_client:
-                return False
-            if hasattr(game_instance, 'network_server') and game_instance.network_server:
-                return False
+        if game_instance is not None and (getattr(game_instance, 'multiplayer_mode', False)
+                                          or getattr(game_instance, 'network_connection', None)):
+            return False
+        if getattr(game_state, 'network_mode', False):
+            return False
 
         chat_text_original = chat_text.strip()
         chat_text = chat_text_original.lower()

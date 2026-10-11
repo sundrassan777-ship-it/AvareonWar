@@ -464,22 +464,31 @@ class TestCameraHandler:
 
 class TestKeyboardHandler:
     def test_multiplayer_cheat_guard_exists(self):
+        # Game keeps its connection in network_connection / multiplayer_mode. (This test
+        # used to require `network_client` / `network_server` - attributes Game never
+        # has - which is why the guard never fired and cheats worked online.)
         from input.keyboard_handler import KeyboardHandler
         source = inspect.getsource(KeyboardHandler._handle_cheat_code)
-        assert 'network_client' in source
-        assert 'network_server' in source
+        assert 'network_connection' in source
+        assert 'multiplayer_mode' in source
 
     def test_cheat_guard_returns_false_for_multiplayer(self):
+        from types import SimpleNamespace
         from input.keyboard_handler import KeyboardHandler
         handler = KeyboardHandler()
-        mock_game_state = Mock()
-        mock_game_state.territory_owners = {}
-        mock_game_instance = Mock()
-        mock_game_instance.network_client = Mock()
-        mock_game_instance.network_server = None
-        ui_state = {'game_instance': mock_game_instance}
-        result = handler._handle_cheat_code('youhavemysword1', mock_game_state, ui_state)
+        game_state = SimpleNamespace(territory_owners={}, network_mode=False)
+        game_instance = SimpleNamespace(multiplayer_mode=True, network_connection=object())
+        ui_state = {'game_instance': game_instance}
+        result = handler._handle_cheat_code('youhavemysword1', game_state, ui_state)
         assert result is False
+
+    def test_cheat_guard_also_reads_the_game_state(self):
+        """No game instance in ui_state: the GameState's own network flag still blocks."""
+        from types import SimpleNamespace
+        from input.keyboard_handler import KeyboardHandler
+        handler = KeyboardHandler()
+        game_state = SimpleNamespace(territory_owners={}, network_mode=True)
+        assert handler._handle_cheat_code('youhavemysword1', game_state, {}) is False
 
 
 # ============================================================================
