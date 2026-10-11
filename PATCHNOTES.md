@@ -4,6 +4,39 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Multiplayer: Smoother Connections
+
+*11 October 2026*
+
+### Joining and the lobby
+
+- When you can't join a game, you now see why: the lobby is full, the game has already
+  started, you are on a different version of the game, or nobody is hosting at that address.
+- Leaving a lobby now frees your seat for everyone, including the host. The host used to
+  keep a "ghost" player who stopped the game from starting.
+- Two players with the same name no longer end up controlling the same seat.
+- The host can launch only when the game is ready: at least two players, no empty seat
+  between players, at least two teams, and a starting territory for everyone. Hover over
+  the greyed-out **Launch Game** button to see what is missing.
+- Players who join through a **Steam invite** now play on the map the host picked.
+- With **Neutral Armies** on, every player now sees the same neutral garrisons.
+
+### Loading
+
+- Press **Esc** on the loading screen to leave instead of waiting.
+- If a player leaves while the others are loading, the game no longer waits for them forever.
+- If the host leaves, everyone else is told and returns to the menu.
+
+### Connection
+
+- Fixed: actions such as **End Turn** could occasionally get lost on their way to the host,
+  leaving the game stuck.
+- Fixed: players on slower connections could be dropped when the game sent a large update.
+- When a player leaves a game in progress, everyone is told. Rejoining a game in progress is
+  not possible yet.
+
+---
+
 ## A Better Game Setup
 
 *10 October 2026*

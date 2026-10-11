@@ -37,7 +37,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from network_config import (
     DEFAULT_PORT, MESSAGE_BUFFER_SIZE, HEARTBEAT_INTERVAL,
-    CONNECTION_TIMEOUT, MAX_CLIENTS, RECONNECTION_TIMEOUT, MessageType
+    CONNECTION_TIMEOUT, MAX_CLIENTS, RECONNECTION_TIMEOUT, RECONNECT_ENABLED,
+    SEND_TIMEOUT, MessageType
 )
 from network.protocol import NetworkProtocol, MessageBuffer
 from network.message_queue import NetworkMessageQueue
@@ -72,6 +73,20 @@ _RELAY_MESSAGE_TYPES = frozenset({
     MessageType.SIM_ALLIANCE_CHOICE,
 })
 
+# Message types the anti-replay sequence check ignores (and which do not advance the
+# accepted counter). The client's network thread answers a PING the instant it arrives,
+# so its PONG can carry a NEWER sequence number than game messages still waiting in the
+# client's send queue; checking PONG made the server drop those game messages as
+# "replays" (lost END TURN / READY / battle results -> hung games). DISCONNECT is sent
+# straight from the closing thread for the same reason.
+_SEQ_EXEMPT_TYPES = frozenset({
+    MessageType.PONG,
+    MessageType.DISCONNECT,
+})
+
+# Time allowed for the tiny reject / farewell messages to peers we are dropping anyway
+_FAREWELL_SEND_TIMEOUT = 1.0  # seconds
+
 
 @dataclass
 class ClientConnection:
@@ -85,6 +100,10 @@ class ClientConnection:
     last_pong_time: float = 0.0
     ping_sent_time: float = 0.0
     connected: bool = True
+    # Highest sequence number accepted on THIS connection (anti-replay). Kept per
+    # connection, not per slot index, so a new player taking a vacated slot starts
+    # fresh - a per-index counter rejected every message of the newcomer.
+    last_seq: int = -1
 
 
 @dataclass
@@ -179,9 +198,8 @@ class NetworkServer:
         self._reconnect_rate_limit_window = 30.0  # seconds
         self._reconnect_rate_limit_max = 5  # max reconnect attempts per window per IP
 
-        # Security: per-client sequence number tracking (H1 fix — anti-replay)
-        # Maps player_index -> last accepted sequence number
-        self._client_last_seq = {}  # {player_index: int}
+        # Security (H1 anti-replay): the last accepted sequence number now lives on each
+        # ClientConnection (last_seq), so it resets with the connection.
 
         # UPnP port forwarding manager (created on demand via setup_upnp())
         self.upnp_manager = None
@@ -230,6 +248,8 @@ class NetworkServer:
             for player_index, client in list(self.clients.items()):
                 try:
                     disconnect_msg = self.protocol.create_disconnect("Server closing")
+                    # Short timeout: a dead peer must not hold up quitting
+                    client.socket.settimeout(_FAREWELL_SEND_TIMEOUT)
                     client.socket.sendall(disconnect_msg)
                 except (OSError, BrokenPipeError, ConnectionResetError, AttributeError):
                     pass
@@ -299,6 +319,9 @@ class NetworkServer:
         try:
             # Accept connection first, then validate
             client_socket, client_address = self.socket.accept()
+            # Whether an accepted socket inherits non-blocking mode is OS-dependent; the
+            # reject replies below are tiny, so a short timeout is plenty
+            client_socket.settimeout(_FAREWELL_SEND_TIMEOUT)
 
             # Phase 6A: Rate limit connections per IP
             # Prevents a single IP from flooding the server with connection attempts
@@ -310,45 +333,53 @@ class NetworkServer:
             if len(attempts) >= self._rate_limit_max:
                 logger.warning(f"Rate limited connection from {client_ip} "
                                f"({len(attempts)} attempts in {self._rate_limit_window}s)")
-                try:
-                    reject_msg = self.protocol.create_connect_reject(
-                        "Too many connection attempts")
-                    client_socket.sendall(reject_msg)
-                    client_socket.close()
-                except Exception:
-                    pass
+                self._reject_connection(client_socket, "Too many connection attempts")
                 return
             attempts.append(now)
             self._connection_attempts[client_ip] = attempts
 
+            if self.game_started and not RECONNECT_ENABLED:
+                # Nobody can join a running game (rejoining is switched off). Accepting
+                # used to hand a stranger a free slot whose messages were relayed to
+                # every player.
+                logger.warning(f"Rejected connection from {client_address} - game in progress")
+                self._reject_connection(client_socket, "The game has already started")
+                return
+
             # M13 fix: Hold lock across check + insert to prevent TOCTOU race
+            reject_reason = None
             with self._clients_lock:
                 if len(self.clients) >= MAX_CLIENTS:
-                    reject_msg = self.protocol.create_connect_reject("Lobby is full")
-                    client_socket.sendall(reject_msg)
-                    client_socket.close()
-                    logger.warning(f"Rejected connection from {client_address} - lobby full")
-                    return
+                    reject_reason = "Lobby is full"
+                else:
+                    # Find next available player index
+                    player_index = self._get_next_player_index()
+                    if player_index is None:
+                        reject_reason = "No slots available"
+                    else:
+                        # Blocking sends with a time limit (L4). A non-blocking sendall()
+                        # fails as soon as the kernel buffer is full, after an unknown
+                        # part of the frame went out, so a large message (state snapshot)
+                        # cut the connection. Reads stay non-blocking in effect: recv()
+                        # only runs after select() reported the socket readable.
+                        client_socket.settimeout(SEND_TIMEOUT)
 
-                client_socket.setblocking(False)
+                        # Create client connection object
+                        client = ClientConnection(
+                            socket=client_socket,
+                            address=client_address,
+                            player_index=player_index,
+                            last_pong_time=time.monotonic()
+                        )
 
-                # Find next available player index
-                player_index = self._get_next_player_index()
-                if player_index is None:
-                    reject_msg = self.protocol.create_connect_reject("No slots available")
-                    client_socket.sendall(reject_msg)
-                    client_socket.close()
-                    return
+                        self.clients[player_index] = client
 
-                # Create client connection object
-                client = ClientConnection(
-                    socket=client_socket,
-                    address=client_address,
-                    player_index=player_index,
-                    last_pong_time=time.monotonic()
-                )
-
-                self.clients[player_index] = client
+            if reject_reason:
+                # Outside the lock: the reject waits briefly for the peer (see
+                # _reject_connection) and must not hold up the lobby meanwhile
+                logger.warning(f"Rejected connection from {client_address} - {reject_reason}")
+                self._reject_connection(client_socket, reject_reason)
+                return
 
             logger.info(f"Client connected from {client_address} as Player {player_index + 1}")
 
@@ -360,6 +391,32 @@ class NetworkServer:
             pass
         except OSError as e:
             logger.error(f"Accept error: {e}")
+
+    def _reject_connection(self, client_socket, reason: str):
+        """
+        Turn a new connection away with a reason the joining player gets to see.
+
+        The peer's CONNECT_REQUEST is usually already waiting, unread, when we reject.
+        Closing a socket with unread data makes Windows reset the connection, and the
+        reset throws away our CONNECT_REJECT before the client reads it - the player
+        saw no reason at all. So: send, close our sending side, read what is waiting
+        (briefly), then close.
+        """
+        try:
+            client_socket.settimeout(_FAREWELL_SEND_TIMEOUT)
+            client_socket.sendall(self.protocol.create_connect_reject(reason))
+            client_socket.shutdown(socket.SHUT_WR)
+            client_socket.settimeout(0.2)
+            for _ in range(8):
+                if not client_socket.recv(MESSAGE_BUFFER_SIZE):
+                    break  # the client closed its end after reading the reject
+        except Exception:
+            pass  # best effort - the connection is being dropped anyway
+        finally:
+            try:
+                client_socket.close()
+            except OSError:
+                pass
 
     def _get_next_player_index(self) -> Optional[int]:
         """
@@ -441,8 +498,8 @@ class NetworkServer:
                 if message:
                     self._handle_received_message(message, player_index, message_bytes)
 
-        except BlockingIOError:
-            # No data available
+        except (BlockingIOError, socket.timeout):
+            # No data available (select() said readable, but nothing came after all)
             pass
         except ConnectionResetError:
             logger.warning(f"Connection reset by Player {player_index + 1}")
@@ -501,16 +558,19 @@ class NetworkServer:
         self._cleanup_disconnected()
 
     def _cleanup_disconnected(self):
-        """Remove disconnected clients from the dict"""
+        """Drop clients whose socket failed (marked connected=False by a send error).
+
+        Goes through _disconnect_client() so the drop is announced like any other
+        disconnect - LOBBY_LEAVE in the lobby, PLAYER_DISCONNECT in game, to the other
+        clients and to the host. These used to be removed silently: a ghost slot in the
+        lobby, or a player in game whose seat nobody took over.
+        """
         with self._clients_lock:
-            to_remove = [idx for idx, c in self.clients.items() if not c.connected]
-            for idx in to_remove:
-                try:
-                    self.clients[idx].socket.close()
-                except OSError:
-                    pass
-                del self.clients[idx]
-                logger.debug(f"Cleaned up disconnected Player {idx + 1}")
+            dead = [idx for idx, c in self.clients.items() if not c.connected]
+        for idx in dead:
+            # A nested cleanup (from the leave broadcast) may already have removed it;
+            # _disconnect_client() is a no-op then
+            self._disconnect_client(idx, "Connection lost")
 
         # Update connection state
         with self._clients_lock:
@@ -540,20 +600,23 @@ class NetworkServer:
                            f"{from_player_index}, ignoring")
             return
 
-        # Security (H1): Sequence number validation to prevent replay attacks.
-        # Reject messages with seq <= last accepted seq for this client.
-        msg_seq = message.get('seq')
-        if isinstance(msg_seq, int):
-            last_seq = self._client_last_seq.get(from_player_index, -1)
-            if msg_seq <= last_seq:
-                msg_type_hint = message.get('type', '?')
-                logger.warning(f"Replay/duplicate detected from player "
-                               f"{from_player_index}: seq {msg_seq} <= {last_seq} "
-                               f"(msg_type={msg_type_hint})")
-                return
-            self._client_last_seq[from_player_index] = msg_seq
-
         msg_type = message.get('type')
+
+        # Security (H1): Sequence number validation to prevent replay attacks.
+        # Reject messages with seq <= the last seq accepted on this connection.
+        # Exempt types (PONG, DISCONNECT) are neither checked nor counted - see
+        # _SEQ_EXEMPT_TYPES for why checking them dropped real game messages.
+        msg_seq = message.get('seq')
+        if isinstance(msg_seq, int) and msg_type not in _SEQ_EXEMPT_TYPES:
+            with self._clients_lock:
+                connection = self.clients.get(from_player_index)
+                if connection is not None:
+                    if msg_seq <= connection.last_seq:
+                        logger.warning(f"Replay/duplicate detected from player "
+                                       f"{from_player_index}: seq {msg_seq} <= "
+                                       f"{connection.last_seq} (msg_type={msg_type})")
+                        return
+                    connection.last_seq = msg_seq
 
         # 3+ player relay: forward gameplay messages to other clients so they
         # can see each other's actions in real-time. The host still receives
@@ -675,6 +738,20 @@ class NetworkServer:
         Finds matching disconnected player by name and verifies password.
         If valid, restores the player to their original slot.
         """
+        if not RECONNECT_ENABLED:
+            # Rejoining a running game is switched off for launch (network_config):
+            # refuse cleanly instead of half-restoring a seat the game cannot hand back
+            with self._clients_lock:
+                if from_socket_player_index in self.clients:
+                    try:
+                        reject_msg = self.protocol.encode_message(
+                            MessageType.RECONNECT_REJECT,
+                            {'reason': 'Rejoining a game in progress is not supported'})
+                        self.clients[from_socket_player_index].socket.sendall(reject_msg)
+                    except Exception:
+                        pass
+            return
+
         data = message.get('data', {})
         player_name = data.get('player_name', '')
         password = data.get('password', '')
@@ -892,39 +969,41 @@ class NetworkServer:
             allow_reconnect: If True and game started, player can reconnect
         """
         leave_msg = None
+        host_notice = None
         player_name = ""
         socket_to_close = None  # Collect socket ref to close outside lock
 
         with self._clients_lock:
-            if player_index in self.clients:
-                client = self.clients[player_index]
+            client = self.clients.pop(player_index, None)
+            if client is not None:
+                client.connected = False
                 player_name = client.player_name
 
-                # If game has started, save player info for reconnection
-                if self.game_started and allow_reconnect and client.password_hash:
-                    self.disconnected_players[player_index] = DisconnectedPlayer(
-                        player_index=player_index,
-                        player_name=client.player_name,
-                        password_hash=client.password_hash,
-                        disconnect_time=time.monotonic()
-                    )
-                    logger.info(f"Player {player_index + 1} ({player_name}) saved for reconnection")
-
-                    # Notify other clients about disconnect with AI takeover
-                    leave_msg = self.protocol.encode_message(MessageType.PLAYER_DISCONNECT, {
-                        'player_index': player_index,
-                        'ai_takeover': True
-                    })
+                if self.game_started:
+                    # In game: the player's seat is handed to the AI. Reconnecting is
+                    # switched off for launch (RECONNECT_ENABLED), so normally no
+                    # reconnect entry is kept - and so no DISCONNECT_ELIMINATION later.
+                    if RECONNECT_ENABLED and allow_reconnect and client.password_hash:
+                        self.disconnected_players[player_index] = DisconnectedPlayer(
+                            player_index=player_index,
+                            player_name=client.player_name,
+                            password_hash=client.password_hash,
+                            disconnect_time=time.monotonic()
+                        )
+                        logger.info(f"Player {player_index + 1} ({player_name}) saved for reconnection")
+                    notice = {'player_index': player_index, 'ai_takeover': True}
+                    leave_msg = self.protocol.encode_message(MessageType.PLAYER_DISCONNECT, notice)
+                    host_notice = {'type': MessageType.PLAYER_DISCONNECT, 'data': notice}
                 else:
-                    # Lobby phase - player just leaves
-                    leave_msg = self.protocol.encode_message(MessageType.LOBBY_LEAVE, {
-                        'player_index': player_index,
-                        'reason': reason
-                    })
+                    # Lobby phase - player just leaves. The host's lobby must hear it too:
+                    # it used to go to the other clients only, so the host kept a ghost
+                    # player, launched with them and hung on the loading screen.
+                    notice = {'player_index': player_index, 'reason': reason}
+                    leave_msg = self.protocol.encode_message(MessageType.LOBBY_LEAVE, notice)
+                    host_notice = {'type': MessageType.LOBBY_LEAVE, 'data': notice}
 
                 # Save socket reference for closing outside the lock
                 socket_to_close = client.socket
-                del self.clients[player_index]
                 logger.info(f"Player {player_index + 1} disconnected: {reason}")
 
         # Close the socket OUTSIDE the lock to avoid holding _clients_lock
@@ -935,16 +1014,13 @@ class NetworkServer:
             except OSError:
                 pass
 
-        # Broadcast outside the lock
+        # Tell the host's game loop / lobby first (in game: AI takeover), then the other
+        # clients. Only when a client was actually removed - calling this twice for the
+        # same player must not announce the disconnect twice.
+        if host_notice:
+            self.message_queue.receive_message(host_notice)
         if leave_msg:
             self._broadcast_raw(leave_msg)
-
-        # Notify game loop about disconnect (for AI takeover)
-        if self.game_started:
-            self.message_queue.receive_message({
-                'type': MessageType.PLAYER_DISCONNECT,
-                'data': {'player_index': player_index, 'ai_takeover': True}
-            })
 
         # Update connection state
         # Note: We do NOT set self.disconnected = True when clients disconnect
@@ -1120,14 +1196,18 @@ class NetworkServer:
 
     def set_game_started(self, started: bool = True):
         """
-        Mark the game as started, enabling reconnection for disconnected players.
+        Mark the game as started (called by the lobby at launch). From then on a client
+        that drops is reported as PLAYER_DISCONNECT (the host hands the seat to the AI)
+        instead of a lobby leave. It was never called before, so in-game disconnects
+        were handled as lobby leaves the game ignored.
 
         Args:
             started: Whether the game has started
         """
         self.game_started = started
         if started:
-            logger.info("Game started - reconnection enabled for disconnected players")
+            logger.info("Game started - disconnects are now in-game disconnects "
+                        f"(reconnect {'enabled' if RECONNECT_ENABLED else 'disabled'})")
 
     def is_player_disconnected(self, player_index: int) -> bool:
         """

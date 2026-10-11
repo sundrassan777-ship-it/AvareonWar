@@ -38,6 +38,74 @@ RED = (200, 0, 0)
 BLUE = (100, 150, 255)
 BRASS_COLOR = (181, 166, 66)
 
+# Option labels: the lobby sends indices, the game config stores the victory name
+VICTORY_OPTIONS = ["Domination (45+)", "Capital Assault", "Total Conquest"]
+TURN_MODE_OPTIONS = ["Sequential", "Simultaneous"]
+
+
+def build_multiplayer_config(selector) -> Dict:
+    """
+    The game config for a lobby that just launched, read from the finished
+    TerritorySelector. Host, Join Game and Steam-invite joins all build it here.
+
+    One builder so the flows cannot drift apart again: the Steam-invite copy never
+    passed map_id (invited players loaded Avareon whatever map the host picked), and
+    every PC rolled its own game_seed (different Neutral Armies). Both now come from
+    the selector, where the host's LOBBY_LAUNCH put them.
+    """
+    setup = MultiplayerSetup.__new__(MultiplayerSetup)
+    return setup._build_config_from_lobby(
+        selector.lobby_state, selector.victory_condition, selector.taxation_level,
+        selector.turn_mode, selector.neutral_armies, selector.randomize_bonuses,
+        selector.bonus_mapping, selector.gold_transfer,
+        map_id=selector.selected_map, game_seed=selector.game_seed)
+
+
+def run_client_lobby(screen, client) -> Optional[object]:
+    """
+    The lobby for a client that is already connected - Join Game and Steam invites.
+
+    Returns:
+        ('client', client, config) when the host launches the game,
+        'quit' on Alt+F4,
+        ('kicked', reason) when the host kicked us,
+        ('lost', reason) when the connection to the host dropped,
+        None when the player left the lobby.
+    The caller disconnects the client for anything but a launch.
+    """
+    selector = TerritorySelector(
+        screen, client, is_host=False,
+        num_players=4,  # Support up to 4 players
+        victory_condition=0,  # Will be updated from host
+        taxation_level=0,
+        turn_mode=0,
+        lobby_state=None,  # Client creates internally, synced from host
+        # The slot the server gave us (CONNECT_ACCEPT); it never changes in the lobby
+        local_player_index=client.player_index
+    )
+    result = selector.run()
+
+    if result == 'quit':
+        return 'quit'
+    if isinstance(result, tuple) and len(result) == 2 and result[0] == 'kicked':
+        return result
+    if not result:
+        if getattr(client, 'disconnected', False):
+            # Host closed the lobby / connection died - say so instead of silently
+            # dropping back to the menu
+            return ('lost', getattr(client, 'disconnect_reason', '') or "Lost connection to the host")
+        return None
+
+    config = build_multiplayer_config(selector)
+
+    active_players = selector.lobby_state.get_active_players()
+    logger.info(f"Game configured with {len(active_players)} players (we are slot {client.player_index}):")
+    for slot in active_players:
+        logger.info(f"  Slot {slot.index}: {slot.player_name} -> {slot.territory} (Team {slot.team + 1})")
+    logger.info(f"Settings from host: Victory={config['win_condition']}, Tax={config['taxation_level']}, "
+                f"Mode={config['game_mode']}, Map={config.get('map_id')}, Seed={config['game_seed']}")
+    return ('client', client, config)
+
 
 class MultiplayerSetup:
     """
@@ -45,6 +113,10 @@ class MultiplayerSetup:
 
     Handles host/join selection, connection, and initial setup.
     """
+
+    # Class-level so a bare MultiplayerSetup.__new__() (build_multiplayer_config) has them
+    victory_options = VICTORY_OPTIONS
+    turn_mode_options = TURN_MODE_OPTIONS
 
     def __init__(self, screen):
         """
@@ -110,11 +182,11 @@ class MultiplayerSetup:
 
         # Victory condition configuration (for host)
         self.victory_condition = 0  # 0=Domination, 1=Capital Assault, 2=Total Conquest
-        self.victory_options = ["Domination (45+)", "Capital Assault", "Total Conquest"]
+        self.victory_options = list(VICTORY_OPTIONS)
 
         # Turn mode configuration (for host)
         self.turn_mode = 0  # 0=Sequential, 1=Simultaneous
-        self.turn_mode_options = ["Sequential", "Simultaneous"]
+        self.turn_mode_options = list(TURN_MODE_OPTIONS)
 
         # Buttons for host/join selection - vertically stacked like main menu
         button_width = 400
@@ -362,21 +434,16 @@ class MultiplayerSetup:
             server.stop()
             return None
 
-        # Unpack return format: (lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer)
-        lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer = result
-
-        # Build config from LobbyState
-        config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode,
-                                                neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer)
-        # Multi-map support: include selected map_id from selector
-        config['map_id'] = selector.selected_map
+        # Build config from the launched lobby (shared builder: map_id + game_seed included)
+        config = build_multiplayer_config(selector)
 
         # Log configuration
-        active_players = lobby_state.get_active_players()
+        active_players = selector.lobby_state.get_active_players()
         logger.info(f"Game configured with {len(active_players)} players:")
         for slot in active_players:
             logger.info(f"  Slot {slot.index}: {slot.player_name} -> {slot.territory} (Team {slot.team + 1})")
-        logger.info(f"Settings: Victory={self.victory_options[victory_condition]}, Tax={taxation_level}, Mode={self.turn_mode_options[turn_mode]}, Map={selector.selected_map}")
+        logger.info(f"Settings: Victory={config['win_condition']}, Tax={config['taxation_level']}, "
+                    f"Mode={config['game_mode']}, Map={config.get('map_id')}, Seed={config['game_seed']}")
 
         return ('host', server, config)
 
@@ -405,71 +472,35 @@ class MultiplayerSetup:
         player_name = settings.get_player_name()
 
         if not client.connect(host_ip, player_name=player_name):
-            self._show_error(f"Failed to connect to {host_ip}")
+            # Say why (lobby full, version mismatch, nobody hosting, ...)
+            reason = client.disconnect_reason
+            self._show_error(f"Could not join {host_ip}" + (f": {reason}" if reason else ""))
             return None
 
         logger.info(f"Connected to server at {host_ip}")
 
-        # Get assigned player index from connection accept message
-        # The client will receive this during the connection handshake
-        local_player_index = getattr(client, 'player_index', 1)  # Default to 1 if not set
-
-        # Show territory selection screen
-        # Client doesn't pass settings - receives them from host via network
+        # Lobby (shared with Steam-invite joins in main.py)
         logger.info("Connected! Starting territory selection...")
-        selector = TerritorySelector(
-            self.screen, client, is_host=False,
-            num_players=4,  # Support up to 4 players
-            victory_condition=0,  # Will be updated from host
-            taxation_level=0,
-            turn_mode=0,
-            lobby_state=None,  # Client creates internally, synced from host
-            local_player_index=local_player_index
-        )
-        result = selector.run()
+        lobby_result = run_client_lobby(self.screen, client)
 
-        if result == 'quit':
+        if lobby_result == 'quit':
             # Alt+F4 pressed — propagate quit signal
             client.disconnect()
             return 'quit'
-        if not result:
+        if lobby_result is None:
             # User cancelled
             client.disconnect()
             return None
-
-        # Check if kicked by host
-        if isinstance(result, tuple) and len(result) == 2 and result[0] == 'kicked':
-            kick_reason = result[1]
+        if lobby_result[0] == 'kicked':
             client.disconnect()
-            self._show_error(f"You were kicked from the lobby: {kick_reason}")
+            self._show_error(f"You were kicked from the lobby: {lobby_result[1]}")
+            return None
+        if lobby_result[0] == 'lost':
+            client.disconnect()
+            self._show_error(f"Lost connection to the host: {lobby_result[1]}")
             return None
 
-        # Unpack return format: (lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer)
-        lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer = result
-
-        # Get the potentially updated local_player_index from selector
-        # (may have changed from LOBBY_STATE sync if host reassigned us to a different slot)
-        final_player_index = selector.local_player_index
-        logger.debug(f"Final player index after lobby: {final_player_index}")
-
-        # Update the client's player_index to match the lobby assignment
-        # This ensures network_connection.get_player_index() returns the correct slot
-        client.player_index = final_player_index
-
-        # Build config from LobbyState
-        config = self._build_config_from_lobby(lobby_state, victory_condition, taxation_level, turn_mode,
-                                                neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer)
-        # Multi-map support: include selected map_id from selector
-        config['map_id'] = selector.selected_map
-
-        # Log configuration
-        active_players = lobby_state.get_active_players()
-        logger.info(f"Game configured with {len(active_players)} players:")
-        for slot in active_players:
-            logger.info(f"  Slot {slot.index}: {slot.player_name} -> {slot.territory} (Team {slot.team + 1})")
-        logger.info(f"Settings from host: Victory={self.victory_options[victory_condition]}, Tax={taxation_level}, Mode={self.turn_mode_options[turn_mode]}, Map={selector.selected_map}")
-
-        return ('client', client, config)
+        return lobby_result
 
     def _render_host_waiting(self, local_ip: str, exit_button_rect=None, hovered_btn=None, clicked_btn=None):
         """Render waiting for client screen with MPSetBG.png background and OptionsMenuBG panel."""
@@ -821,9 +852,13 @@ class MultiplayerSetup:
     def _build_config_from_lobby(self, lobby_state: LobbyState, victory_condition: int,
                                   taxation_level: int, turn_mode: int,
                                   neutral_armies: bool = False, randomize_bonuses: bool = False,
-                                  bonus_mapping: dict = None, gold_transfer: int = 0) -> Dict:
+                                  bonus_mapping: dict = None, gold_transfer: int = 0,
+                                  map_id: str = None, game_seed: int = None) -> Dict:
         """
         Build game configuration dict from LobbyState.
+
+        Prefer build_multiplayer_config(selector), which passes everything below from
+        the launched lobby.
 
         Args:
             lobby_state: Finalized lobby state with all players configured
@@ -833,6 +868,9 @@ class MultiplayerSetup:
             neutral_armies: Whether neutral armies are enabled
             randomize_bonuses: Whether territory bonuses are randomized
             bonus_mapping: Host-generated randomized bonus mapping (for client sync)
+            map_id: Map the host picked (added to the config when given)
+            game_seed: The host's shared random seed from LOBBY_LAUNCH. Without it a
+                seed is rolled here - fine for one PC, but then every PC differs.
 
         Returns:
             Game configuration dict for GameState initialization
@@ -899,13 +937,33 @@ class MultiplayerSetup:
             # Read from lobby_state (not a 9th element of the selector's result tuple)
             'starting_gold': clamp_starting_gold(getattr(lobby_state, 'starting_gold', STARTING_GOLD_DEFAULT)),
             'bonus_mapping': bonus_mapping,  # Host-generated mapping for client sync
-            'game_seed': int(time.time() * 1000) % (2**31),  # Deterministic seed for neutral army placement
+            # Seed for neutral army placement: the host's shared seed, so every PC
+            # places the same garrisons (a fallback seed only when none was sent)
+            'game_seed': game_seed if isinstance(game_seed, int) else int(time.time() * 1000) % (2**31),
 
             # Full lobby state for reference
             'lobby_state': lobby_state
         }
+        if map_id:
+            config['map_id'] = map_id
 
         return config
+
+    @staticmethod
+    def _wrap_text(text, font, max_width):
+        """Word-wrap `text` into lines no wider than max_width (a single over-long word
+        stays on its own line)."""
+        lines, line = [], ''
+        for word in text.split():
+            candidate = f"{line} {word}" if line else word
+            if font.size(candidate)[0] <= max_width or not line:
+                line = candidate
+            else:
+                lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
+        return lines or ['']
 
     def _show_error(self, message: str):
         """Show error message"""
@@ -930,9 +988,13 @@ class MultiplayerSetup:
             error_rect = error_text.get_rect(center=(self.width // 2, self.height // 2 - 50))
             self.screen.blit(error_text, error_rect)
 
-            message_text = self.text_font.render(message, True, WHITE)
-            message_rect = message_text.get_rect(center=(self.width // 2, self.height // 2 + 50))
-            self.screen.blit(message_text, message_rect)
+            # Wrapped: connection errors now carry the host's reason and can be long
+            line_y = self.height // 2 + 50
+            for line in self._wrap_text(message, self.text_font, self.width - 120):
+                message_text = self.text_font.render(line, True, WHITE)
+                message_rect = message_text.get_rect(center=(self.width // 2, line_y))
+                self.screen.blit(message_text, message_rect)
+                line_y += self.text_font.get_linesize()
 
             inst_text = self.small_font.render("Click or press any key to continue", True, LIGHT_GRAY)
             inst_rect = inst_text.get_rect(center=(self.width // 2, self.height - 100))

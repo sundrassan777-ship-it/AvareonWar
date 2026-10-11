@@ -17266,6 +17266,104 @@ if __name__ == "__main__":
 
         return game_result
 
+    def _play_multiplayer_game(screen, mode, network_connection, setup_config):
+        """
+        Loading screen, game and recap for one multiplayer game. Hosting, Join Game and
+        Steam-invite joins all come through here, so the flows cannot drift apart again
+        (the Steam-invite copy had already lost the map choice).
+
+        Closes the network connection before returning.
+
+        Args:
+            mode: 'host' or 'client'
+            network_connection: NetworkServer (host) or NetworkClient (client)
+            setup_config: Game config from network.multiplayer_setup.build_multiplayer_config()
+
+        Returns:
+            (outcome, screen): outcome 'main_menu' or 'quit' (exit the app)
+        """
+        game = Game(existing_screen=screen, network_connection=network_connection)
+        screen = game.screen
+        # Host is Player 1; a client keeps the slot the server assigned when it joined
+        game.local_player_index = 0 if mode == 'host' else network_connection.get_player_index()
+
+        def close_connection():
+            if mode == 'host':
+                network_connection.stop()
+            else:
+                network_connection.disconnect()
+
+        # Stop menu music before multiplayer loading
+        music_manager.stop()
+
+        # Loading screen with multiplayer readiness sync. Escape (or a lost host) ends it
+        # early - back to the menu without starting the game.
+        loading = LoadingScreen(screen, game, setup_config,
+                                network_connection=network_connection)
+        if loading.run() != 'start':
+            logger.info(f"Multiplayer game not started ({loading.result}) - returning to menu")
+            close_connection()
+            return 'main_menu', screen
+
+        # Start game music after loading completes
+        music_manager.start_game_music()
+
+        if hasattr(game, 'game_state') and game.game_state:
+            # Attach game logger for multiplayer games
+            from game_logger import GameLogger
+            game.game_state.game_logger = GameLogger(game.game_state)
+
+            # Attach sync logger for multiplayer games (desync diagnosis)
+            from sync_logger import SyncLogger
+            game_id = game.game_state.game_logger.game_id if game.game_state.game_logger else None
+            game.game_state.sync_logger = SyncLogger(
+                game.game_state, game.local_player_index,
+                is_host=(mode == 'host'), game_id=game_id
+            )
+
+            # Attach replay recorder for multiplayer games
+            from replay_recorder import ReplayRecorder
+            game.game_state.replay_recorder = ReplayRecorder(game.game_state)
+
+        # Run game
+        result = game.run()
+
+        # Stop game music before recap
+        music_manager.stop()
+
+        # Show post-game recap screen if game ended with a winner
+        if show_recap_if_ended(game) == 'quit':
+            close_connection()
+            return 'quit', screen
+
+        close_connection()
+
+        if result != 'main_menu':
+            return 'quit', screen
+
+        settings.update_from_game(game)
+        settings.load()
+        screen = game.screen
+
+        # Check if we need to resize
+        initial_resolution = settings.get_resolution()
+        initial_fullscreen = settings.is_fullscreen()
+        # Refresh first: a VSync toggle during the game destroys the old
+        # display Surface, so the cached `screen` may be dead here.
+        screen = current_surface() or screen
+        current_size = screen.get_size()
+        current_flags = screen.get_flags()
+        current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
+
+        if current_size != initial_resolution or current_is_fullscreen != initial_fullscreen:
+            # Centralized so VSync is applied here too (see display_utils)
+            screen, _ = set_display_mode(
+                initial_resolution, initial_fullscreen, settings.get('vsync', False))
+            _set_app_icon()  # Re-apply icon after display recreation
+            pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
+
+        return 'main_menu', screen
+
     while True:
         # Re-fetch the live display surface each iteration. Toggling VSync requires
         # pygame.display.quit(), which DESTROYS the previous Surface object — a
@@ -17649,111 +17747,49 @@ if __name__ == "__main__":
             # Stop menu music
             music_manager.stop()
 
-            # Connect as client — reuses _run_join_setup logic from multiplayer_setup
+            # Connect as client, then the same lobby + game flow as Join Game
+            # (network.multiplayer_setup.run_client_lobby, _play_multiplayer_game)
             from network.client import NetworkClient
-            from network.territory_selector import TerritorySelector
+            from network.multiplayer_setup import run_client_lobby
 
             client = NetworkClient()
             player_name = settings.get_player_name()
 
             if not client.connect(host_ip, port=port, player_name=player_name):
-                logger.warning(f"Steam invite: failed to connect to {host_ip}:{port}")
-                # Fall back to main menu
+                logger.warning(f"Steam invite: failed to connect to {host_ip}:{port}: "
+                               f"{client.disconnect_reason}")
+                # Say why (lobby full, version mismatch, ...), then the main menu
+                MultiplayerSetup(screen)._show_error(
+                    "Could not join the game" +
+                    (f": {client.disconnect_reason}" if client.disconnect_reason else ""))
                 music_manager.start_menu_music()
                 continue
 
             logger.info(f"Steam invite: connected to {host_ip}:{port}")
-            local_player_index = getattr(client, 'player_index', 1)
+            lobby_result = run_client_lobby(screen, client)
 
-            # Show territory selection screen as client
-            selector = TerritorySelector(
-                screen, client, is_host=False,
-                num_players=4,
-                victory_condition=0,
-                taxation_level=0,
-                turn_mode=0,
-                lobby_state=None,
-                local_player_index=local_player_index
-            )
-            result = selector.run()
-
-            if result == 'quit':
+            if lobby_result == 'quit':
                 # Alt+F4 pressed — exit entire app
                 client.disconnect()
                 pygame.quit()
                 sys.exit()
-            if not result or (isinstance(result, tuple) and len(result) == 2 and result[0] == 'kicked'):
-                # Cancelled or kicked — disconnect and return to main menu
+            if lobby_result is None or lobby_result[0] in ('kicked', 'lost'):
+                # Left, kicked or lost the host — disconnect and return to main menu
                 client.disconnect()
+                if lobby_result is not None:
+                    MultiplayerSetup(screen)._show_error(
+                        f"You were kicked from the lobby: {lobby_result[1]}"
+                        if lobby_result[0] == 'kicked'
+                        else f"Lost connection to the host: {lobby_result[1]}")
                 music_manager.start_menu_music()
                 continue
 
-            # Unpack result and build config (same as multiplayer flow)
-            lobby_state, victory_condition, taxation_level, turn_mode, neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer = result
-            final_player_index = selector.local_player_index
-            client.player_index = final_player_index
-
-            # Build game config from lobby state (reuse MultiplayerSetup's builder)
-            # Create a lightweight instance just for the config builder method
-            mp_setup_tmp = MultiplayerSetup.__new__(MultiplayerSetup)
-            mp_setup_tmp.victory_options = ["Domination (45+)", "Capital Assault", "Total Conquest"]
-            mp_setup_tmp.turn_mode_options = ["Sequential", "Simultaneous"]
-            config = mp_setup_tmp._build_config_from_lobby(
-                lobby_state, victory_condition, taxation_level, turn_mode,
-                neutral_armies, randomize_bonuses, bonus_mapping, gold_transfer
-            )
-
-            # Initialize and run game (same as regular multiplayer flow)
-            game = Game(existing_screen=screen, network_connection=client)
-            screen = game.screen
-            game.local_player_index = final_player_index
-
-            loading = LoadingScreen(screen, game, config, network_connection=client)
-            loading.run()
-
-            music_manager.start_game_music()
-
-            from game_logger import GameLogger
-            if hasattr(game, 'game_state') and game.game_state:
-                game.game_state.game_logger = GameLogger(game.game_state)
-
-            # Attach sync logger for multiplayer (Steam invite client, always multiplayer)
-            if hasattr(game, 'game_state') and game.game_state:
-                from sync_logger import SyncLogger
-                game_id = game.game_state.game_logger.game_id if game.game_state.game_logger else None
-                game.game_state.sync_logger = SyncLogger(
-                    game.game_state, game.local_player_index,
-                    is_host=False, game_id=game_id
-                )
-
-            from replay_recorder import ReplayRecorder
-            if hasattr(game, 'game_state') and game.game_state:
-                game.game_state.replay_recorder = ReplayRecorder(game.game_state)
-
-            result = game.run()
-
-            music_manager.stop()
-            if show_recap_if_ended(game) == 'quit':
-                client.disconnect()
+            _, client, config = lobby_result
+            outcome, screen = _play_multiplayer_game(screen, 'client', client, config)
+            if outcome == 'quit':
                 pygame.quit()
                 sys.exit()
-
-            # Cleanup client connection
-            client.disconnect()
-
-            if result == 'main_menu':
-                settings.load()
-                initial_resolution = settings.get_resolution()
-                initial_fullscreen = settings.is_fullscreen()
-                # Centralized so VSync is applied here too (see display_utils)
-                screen, _ = set_display_mode(
-                    initial_resolution, initial_fullscreen, settings.get('vsync', False))
-                _set_app_icon()
-                pygame.mouse.set_visible(False)
-                continue
-            else:
-                pygame.quit()
-                sys.exit()
+            continue
 
         elif action == 'multiplayer':
             # Multiplayer setup flow
@@ -17778,95 +17814,12 @@ if __name__ == "__main__":
             mode, network_connection, setup_config = setup_result
             logger.info(f"Multiplayer mode: {mode}")
 
-            # Initialize game with config and network connection
-            game = Game(existing_screen=screen, network_connection=network_connection)
-            screen = game.screen
-
-            # Set local player index based on mode
-            if mode == 'host':
-                game.local_player_index = 0  # Host is Player 1
-            elif mode == 'client':
-                game.local_player_index = network_connection.get_player_index()  # Get from server
-
-            # Stop menu music before multiplayer loading
-            music_manager.stop()
-
-            # Show loading screen with multiplayer readiness sync
-            loading = LoadingScreen(screen, game, setup_config,
-                                    network_connection=network_connection)
-            loading.run()
-
-            # Start game music after loading completes
-            music_manager.start_game_music()
-
-            # Attach game logger for multiplayer games
-            from game_logger import GameLogger
-            if hasattr(game, 'game_state') and game.game_state:
-                game.game_state.game_logger = GameLogger(game.game_state)
-
-            # Attach sync logger for multiplayer games (desync diagnosis)
-            if hasattr(game, 'game_state') and game.game_state:
-                from sync_logger import SyncLogger
-                game_id = game.game_state.game_logger.game_id if game.game_state.game_logger else None
-                game.game_state.sync_logger = SyncLogger(
-                    game.game_state, game.local_player_index,
-                    is_host=(game.local_player_index == 0), game_id=game_id
-                )
-
-            # Attach replay recorder for multiplayer games
-            from replay_recorder import ReplayRecorder
-            if hasattr(game, 'game_state') and game.game_state:
-                game.game_state.replay_recorder = ReplayRecorder(game.game_state)
-
-            # Run game
-            result = game.run()
-
-            # Stop game music before recap
-            music_manager.stop()
-
-            # Show post-game recap screen if game ended with a winner
-            if show_recap_if_ended(game) == 'quit':
-                # Cleanup network before exit
-                if mode == 'host':
-                    network_connection.stop()
-                elif mode == 'client':
-                    network_connection.disconnect()
+            # Loading, game and recap (shared with Steam-invite joins)
+            outcome, screen = _play_multiplayer_game(screen, mode, network_connection, setup_config)
+            if outcome == 'quit':
                 pygame.quit()
                 sys.exit()
-
-            # Cleanup network connection
-            if mode == 'host':
-                network_connection.stop()
-            elif mode == 'client':
-                network_connection.disconnect()
-
-            # Handle game exit
-            if result == 'main_menu':
-                settings.update_from_game(game)
-                settings.load()
-                screen = game.screen
-
-                # Check if we need to resize
-                initial_resolution = settings.get_resolution()
-                initial_fullscreen = settings.is_fullscreen()
-                # Refresh first: a VSync toggle during the game destroys the old
-                # display Surface, so the cached `screen` may be dead here.
-                screen = current_surface() or screen
-                current_size = screen.get_size()
-                current_flags = screen.get_flags()
-                current_is_fullscreen = bool(current_flags & pygame.FULLSCREEN)
-
-                if current_size != initial_resolution or current_is_fullscreen != initial_fullscreen:
-                    # Centralized so VSync is applied here too (see display_utils)
-                    screen, _ = set_display_mode(
-                        initial_resolution, initial_fullscreen, settings.get('vsync', False))
-                    _set_app_icon()  # Re-apply icon after display recreation
-                    pygame.mouse.set_visible(False)  # Re-hide cursor after display recreation
-
-                continue
-            else:
-                pygame.quit()
-                sys.exit()
+            continue
         elif action == 'replays':
             # Replay browser and viewer flow
             from replay_browser import ReplayBrowser

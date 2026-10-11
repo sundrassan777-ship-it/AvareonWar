@@ -433,29 +433,52 @@ class LobbyState:
             return False
         return slot1.team == slot2.team and slot1.is_active() and slot2.is_active()
 
-    def can_launch(self) -> bool:
+    def launch_blocker(self) -> Optional[str]:
         """
-        Check if game can be launched.
+        Why the game cannot be launched yet, or None if it can.
 
-        Requirements:
-        - At least 2 active players
-        - At least 1 human player
-        - All active players have territories selected
+        Returns one of (the lobby shows config/setup_tooltips.py 'launch_<code>' on the
+        greyed Launch button):
+        - 'players':     fewer than 2 active players (or no human)
+        - 'gap':         an empty slot sits between occupied ones. The game numbers
+                         players 0..n-1 and the config is built per slot index, so a
+                         gap left a player without a name / territory and crashed
+                         ally checks in game. The host fills it (AI, or a joining
+                         player - the server hands out the lowest free slot) or empties
+                         the slots after it.
+        - 'teams':       every player is on the same team - the first victory check
+                         would end the game at once
+        - 'territories': a player has no starting territory yet
         """
         active = self.get_active_players()
         if len(active) < 2:
-            return False
+            return 'players'
 
         humans = [s for s in active if s.state in (SLOT_HUMAN, SLOT_DISCONNECTED)]
         if len(humans) < self.MIN_HUMANS:
-            return False
+            return 'players'
+
+        # Active slots must be exactly 0..n-1
+        if [slot.index for slot in active] != list(range(len(active))):
+            return 'gap'
+
+        if len({slot.team for slot in active}) < 2:
+            return 'teams'
 
         # All active players must have territories
         for slot in active:
             if not slot.territory:
-                return False
+                return 'territories'
 
-        return True
+        return None
+
+    def can_launch(self) -> bool:
+        """
+        Check if game can be launched (see launch_blocker() for the rules):
+        2+ active players incl. a human, no gaps between slots, 2+ teams, and every
+        active player has a starting territory.
+        """
+        return self.launch_blocker() is None
 
     def get_settings(self) -> dict:
         """Get game settings dict."""

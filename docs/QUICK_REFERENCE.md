@@ -356,9 +356,16 @@ Next Turn
 |---------|-------|-------------|
 | DEFAULT_PORT | 7777 | Server listen port |
 | MAX_CLIENTS | 3 | Host + 3 = 4 players |
+| NETWORK_VERSION | 2.0.0 | Must match exactly to join |
 | CONNECTION_TIMEOUT | 15.0s | No response = disconnect |
-| RECONNECTION_TIMEOUT | 60.0s | Window to reconnect (network_config.py; server.py uses 300s) |
+| RECONNECT_ENABLED | False | Rejoining a running game switched off for launch |
+| RECONNECTION_TIMEOUT | 60.0s | Window to reconnect (unused while RECONNECT_ENABLED is False) |
+| SEND_TIMEOUT | 10.0s | Longest one message may take to send before the peer counts as gone |
+| MESSAGE_BUFFER_SIZE | 64 KB | Bytes per socket read |
 | HEARTBEAT_INTERVAL | 5.0s | Ping frequency |
+
+**Lobby launch requirements:** 2+ players (incl. host), no empty slot between players,
+2+ teams, every player has a starting territory (`LobbyState.launch_blocker()`).
 
 **Player Slots:**
 | Slot | Index | Options |

@@ -1822,9 +1822,10 @@ python tests/test_2v2_simultaneous_40turn.py
 | Authority | Host-authoritative (runs all logic, AI, battles) |
 | Player count | 2-4 flexible (host + up to 3 clients) |
 | AI slots | Configurable per-slot (Easy/Medium/Hard) |
-| Disconnect | AI takes over immediately, player can reconnect |
-| Reconnection | Name + password authentication (5-min window) |
+| Disconnect | Seat handed to the AI; the server announces `PLAYER_DISCONNECT` to the host and every client |
+| Reconnection | **Off for launch** (`RECONNECT_ENABLED = False` in `network_config.py`): no rejoining a running game, no reconnect entries, no `DISCONNECT_ELIMINATION`. The server/client reconnect code is kept for later |
 | Host disconnect | Game ends for all clients |
+| Sockets | Blocking sends with `SEND_TIMEOUT` (never non-blocking `sendall()`); reads only after `select()` |
 | Allied vision | Allies see each other's movement arrows |
 | Internet play | UPnP auto port-forward + public IP detection (graceful LAN fallback) |
 
@@ -1857,9 +1858,34 @@ broadcast_message(msg, exclude=None)  # Send to all clients
 send_to_player(idx, msg)              # Send to specific player
 kick_player(idx, reason)              # Kick player from lobby
 reserve_slot(idx)                     # Reserve slot for AI
-set_game_started(started)             # Enable reconnection mode
+set_game_started(started)             # Lobby is over: drops become in-game disconnects
 _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ player)
 ```
+
+**Connection lifecycle (multiplayer audit, Phase 2) - keep these rules:**
+- **Anti-replay sequence numbers are per connection** (`ClientConnection.last_seq`), not
+  per slot index - a new player taking a vacated slot starts fresh. `PONG` and
+  `DISCONNECT` are exempt and never advance the counter (`_SEQ_EXEMPT_TYPES`): the
+  client's network thread answers a PING the instant it arrives, so its PONG can carry a
+  newer number than game messages still in the client's send queue, which the old check
+  then dropped as replays (lost END TURN / READY -> hung games).
+- **Sockets block on send, with a time limit** (`settimeout(SEND_TIMEOUT)` on accepted
+  sockets and on the client). Never go back to `setblocking(False)` + `sendall()`: it
+  fails mid-frame once the kernel buffer is full (Windows: as soon as an earlier large
+  send is still pending), and the player was dropped. Reads stay non-blocking in effect
+  because `recv()` only runs after `select()`.
+- **Every client removal goes through `_disconnect_client()`** - including clients whose
+  send failed (`_cleanup_disconnected()` routes through it). In the lobby it sends
+  `LOBBY_LEAVE`, after `set_game_started(True)` it sends `PLAYER_DISCONNECT`; both go to
+  the other clients **and** the host's queue, once per removal.
+- **`set_game_started(True)`** is called by `TerritorySelector._launch_game()` just before
+  `LOBBY_LAUNCH`. After it, new connections are refused ("The game has already started")
+  while reconnecting is off - otherwise a stranger got a free slot whose messages were
+  relayed to everyone.
+- **Turning a connection away** goes through `_reject_connection()`: send the reject,
+  half-close, read what the peer already sent, then close. Closing with the peer's
+  request unread makes Windows reset the connection, which discards the reject before
+  the client reads it (the player never saw "Lobby is full").
 
 **Message Relay (3+ player support):** The server relays gameplay messages from one client to all other clients via `_RELAY_MESSAGE_TYPES` set. This enables real-time sync in 3+ player games (orders, battles, chat, hero abilities, turn ends). Raw bytes are relayed for zero overhead; the sender is excluded to prevent echoes.
 
@@ -1913,9 +1939,10 @@ reset would incorrectly change newly trained units to 'ready'.
   - `HEARTBEAT_INTERVAL = 5.0` seconds
 
 ✅ **Change disconnect behavior:**
-- `_disconnect_client()` handles client disconnect
-- `game_started` flag determines reconnection vs removal
-- AI takeover triggered via `PLAYER_DISCONNECT` message
+- `_disconnect_client()` handles every client disconnect (see "Connection lifecycle")
+- `game_started` decides `LOBBY_LEAVE` (lobby) vs `PLAYER_DISCONNECT` (in game)
+- Reconnect entries / `DISCONNECT_ELIMINATION` only exist when `RECONNECT_ENABLED` is True
+- AI takeover triggered via `PLAYER_DISCONNECT` message (`main.py` handler)
 
 ### network/client.py (~558 lines)
 
@@ -1941,8 +1968,16 @@ is_connected()                        # Check connection status
 - Update `reconnect()` for new authentication
 
 ✅ **Change disconnect detection:**
-- `disconnected` flag set on host disconnect
-- `disconnect_reason` provides user-facing message
+- Every unasked-for end of the connection goes through `_connection_failed(reason)`:
+  sets `disconnected` + `disconnect_reason` (**the first reason wins** - after a
+  `CONNECT_REJECT` the host closes its end too, and the follow-up read error used to
+  overwrite "Lobby is full") and closes the socket. Send errors and rejects used to stop
+  the client silently.
+- `connect()` returns False as soon as a reject arrives, keeping `disconnect_reason`
+  (it used to wait out its 5 s timeout and lose the reason); the join screens show it.
+- `disconnect()` (leaving on purpose) clears `disconnected` but keeps `disconnect_reason`.
+- `_receive_from_server()` reads everything waiting (up to `_MAX_READS_PER_LOOP` chunks of
+  `MESSAGE_BUFFER_SIZE`, 64 KB) per loop iteration, each read guarded by `select()`.
 
 ### network/protocol.py
 
@@ -1978,6 +2013,15 @@ SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
 - `LobbySlot` - Per-slot state (human/AI/empty, color, team, territory)
 - `LobbyState` - Full lobby state with serialization
 
+**Launch rules:** `launch_blocker()` returns why the lobby cannot launch yet - `'players'`
+(fewer than 2, or no human), `'gap'` (an empty slot between occupied ones), `'teams'`
+(everyone on one team) or `'territories'` - and `can_launch()` is `launch_blocker() is
+None`. The game numbers players 0..n-1 and `_build_config_from_lobby()` keys territories /
+teams / names by slot index while compacting `player_is_ai`, so **a gap must never
+launch** (it left a player without a territory and crashed ally checks). The greyed
+Launch button shows `config/setup_tooltips.py` `'launch_<reason>'` to the host; a new
+reason needs a tooltip entry (a test enforces it).
+
 ### network/territory_selector.py (~2,053 lines)
 
 **What it does:** Multiplayer lobby UI with territory selection
@@ -1991,6 +2035,35 @@ SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
 - Additional Options (shared window, read-only for clients), label tooltips, framed
   selectors and the bronze player-block frame: see
   [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby)
+
+**Slot identity = the server's player index.** The host seats a `LOBBY_JOIN` in exactly
+`data['player_index']` (the index the server put in the client's `CONNECT_ACCEPT` and
+stamps on everything it relays) - if the host had just made that slot an AI, the player
+keeps it and the slot is unreserved. Clients keep `local_player_index` for the whole
+lobby; **never look a player up by display name** (two players named "Human" ended up on
+one slot). `LOBBY_LEAVE` reaches the host too; it frees the slot and rebroadcasts
+`LOBBY_STATE`.
+
+**Launch (`_launch_game()`):** refused unless `can_launch()`; rolls the shared
+`game_seed` (Neutral Armies placement) into the `LOBBY_LAUNCH` settings, next to
+`map_id` / `bonus_mapping`; calls `set_game_started(True)` on the server **before**
+broadcasting. Clients read `game_seed` / `map_id` from `LOBBY_LAUNCH`.
+
+### Lobby -> loading -> game (multiplayer_setup.py + main.py)
+
+One path for every way into a multiplayer game - the Steam-invite join used to be a
+hand-made copy that had lost `map_id`:
+- `build_multiplayer_config(selector)` builds the game config from the launched
+  `TerritorySelector` (incl. `map_id` and `game_seed`). Host, Join Game and Steam invites
+  all use it; `_build_config_from_lobby()` (new optional `map_id`, `game_seed`) stays as
+  the low-level builder.
+- `run_client_lobby(screen, client)` runs the lobby for a connected client and returns
+  `('client', client, config)`, `'quit'`, `('kicked', reason)`, `('lost', reason)` or
+  `None` (left). Used by `_run_join_setup()` and by the Steam path in `main.py`.
+- `main.py` `_play_multiplayer_game(screen, mode, connection, config)` (in the
+  `__main__` block) runs the loading screen, the game and the recap, attaches the
+  loggers, and closes the connection. A loading screen that ends without `'start'`
+  (Escape, lost host) returns to the menu without starting the game.
 
 ### main.py Network Integration
 
@@ -2042,8 +2115,16 @@ if self.local_player_index != 0:
 
 ### Testing Network Changes
 
+**Multiplayer test harness:** `tests/mp_harness.py` runs 2-4 real `Game`s in one process,
+joined through the real `NetworkServer` / `NetworkClient` logic over in-memory sockets
+(`Session`, `Peer.step()`, input helpers that drive the real click / key handlers). The
+`tests/test_mp_*.py` files hold one test per audit finding; findings not fixed yet are
+`xfail(strict=True)` and the fixing change removes the marker (an unexpected pass fails
+the run). Real-socket tests (`TestRealSockets`) cover large frames and refusal reasons.
+
 ```bash
 # Run network tests
+py -m pytest tests/test_mp_transport.py tests/test_mp_lobby.py tests/test_mp_sequential.py tests/test_mp_simultaneous.py tests/test_mp_progression.py
 pytest tests/test_network_server.py
 pytest tests/test_network_protocol.py
 
@@ -3505,13 +3586,23 @@ using filename stem as key (only for games with a `campaign_map`, which tales ha
 **Sound Split:** `global_sound.py` provides `initialize_menu_sounds()` (3 files, called at startup) and `get_game_sound_tasks()` (136 files, deferred to loading screen).
 
 **Multiplayer Sync:** Uses `GAME_READY` message type (`network_config.py`). Host collects GAME_READY from all clients, then broadcasts confirmation. Both sides wait for "click to start" after all ready.
+- The host waits for `expected_remote_players` (human clients). A `PLAYER_DISCONNECT`
+  while loading takes that player off the list - the host used to wait forever.
+- **Escape** while waiting leaves (`run()` returns `'cancelled'`); a client that loses the
+  host shows "Lost connection to the host (...)" and returns `'disconnected'` on a key
+  (or after 10 s). `run()` returns `'start'` otherwise; `main.py` only starts the game on
+  `'start'`.
+- **Never drop messages here.** Anything that is not `GAME_READY` is kept in
+  `_deferred_messages` and put back at the front of the queue, in order, when loading
+  ends (`NetworkMessageQueue.requeue_front()`); reading stops at the confirming
+  `GAME_READY`, because what follows may already be the host's first game messages.
 
 ### When to Modify
 
 - **Add new deferred sound category**: Add entry in `get_game_sound_tasks()` in `global_sound.py`
 - **Change loading screen visuals**: Modify `_draw()` in `loading_screen.py`
 - **Add new loading task**: Append to `_build_task_list()` in `loading_screen.py`
-- **Change multiplayer sync logic**: Modify `_send_game_ready()` / `_poll_network_ready()` in `loading_screen.py`
+- **Change multiplayer sync logic**: Modify `_send_game_ready()` / `_poll_network_ready()` / `_update_wait_state()` / `_handle_wait_event()` in `loading_screen.py`
 
 ## Player Level System
 

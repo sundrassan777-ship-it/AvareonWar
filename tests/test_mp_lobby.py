@@ -69,28 +69,23 @@ def ready_to_launch(host_selector):
 
 
 def config_for(sel):
-    """The game config the real flow builds from a finished lobby.
+    """The game config the real flow builds from a finished lobby (host, Join Game and
+    Steam-invite joins all use multiplayer_setup.build_multiplayer_config)."""
+    from network.multiplayer_setup import build_multiplayer_config
+    return build_multiplayer_config(sel)
 
-    Uses the shared builder once the fix introduces it; until then this is what the
-    Steam-invite join path does today (multiplayer_setup._build_config_from_lobby with
-    no map_id) - the regular join path differs only by adding map_id afterwards.
-    """
-    from network import multiplayer_setup
-    builder = getattr(multiplayer_setup, 'build_multiplayer_config', None)
-    if builder is not None:
-        return builder(sel)
-    setup = multiplayer_setup.MultiplayerSetup.__new__(multiplayer_setup.MultiplayerSetup)
-    setup.victory_options = ["Domination (45+)", "Capital Assault", "Total Conquest"]
-    setup.turn_mode_options = ["Sequential", "Simultaneous"]
-    return setup._build_config_from_lobby(
-        sel.lobby_state, sel.victory_condition, sel.taxation_level, sel.turn_mode,
-        sel.neutral_armies, sel.randomize_bonuses, sel.bonus_mapping, sel.gold_transfer)
+
+def stub_connection(**extra):
+    """Just enough of NetworkServer / NetworkClient for a selector or loading screen."""
+    sent = []
+    connection = SimpleNamespace(protocol=NetworkProtocol(), message_queue=NetworkMessageQueue(),
+                                 send_message=sent.append, broadcast_message=sent.append,
+                                 sent=sent, **extra)
+    return connection
 
 
 class TestLobbyMembership:
 
-    @pytest.mark.xfail(strict=True, reason="C7: when a client leaves the lobby the server tells "
-                       "only the other clients; the host keeps a ghost player")
     def test_host_lobby_frees_the_slot_when_a_client_leaves(self, display):
         net = h.Network()
         host_sel = selector(display, net.server, True, 0)
@@ -101,8 +96,6 @@ class TestLobbyMembership:
         host_sel._process_network_messages()
         assert host_sel.lobby_state.get_slot(1).state == SLOT_EMPTY
 
-    @pytest.mark.xfail(strict=True, reason="H8: clients identify their slot by display name, so "
-                       "two players named 'Human' end up driving the same slot")
     def test_client_keeps_its_own_slot_when_names_collide(self, display, monkeypatch):
         from settings_manager import settings
         monkeypatch.setattr(settings, 'get_player_name', lambda: 'Human')
@@ -119,11 +112,102 @@ class TestLobbyMembership:
         client_sel._process_network_messages()
         assert client_sel.local_player_index == 2
 
+    def test_joining_player_gets_the_slot_the_server_gave_them(self, display):
+        """The host made slot 2 an AI in the same moment the server handed slot 2 to a
+        joining player: the player keeps it (the server already told them it is theirs)."""
+        net = h.Network()
+        host_sel = selector(display, net.server, True, 0)
+        host_sel._apply_slot_dropdown_selection(1, 'type', ("AI (Medium)", SLOT_AI, 1))
+        assert 1 in net.server.reserved_slots
+        join(net, host_sel, 1, "P2")
+        slot = host_sel.lobby_state.get_slot(1)
+        assert (slot.state, slot.player_name) == (SLOT_HUMAN, "P2")
+        assert host_sel.lobby_state.get_slot(2).state == SLOT_EMPTY
+        assert 1 not in net.server.reserved_slots
+
+    def test_other_clients_see_the_freed_slot(self, display):
+        net = h.Network()
+        host_sel = selector(display, net.server, True, 0)
+        join(net, host_sel, 1, "P2")
+        second = join(net, host_sel, 2, "P3")
+        second_sel = selector(display, second, False, 2)
+        second_sel._process_network_messages()
+        assert second_sel.lobby_state.get_slot(1).state == SLOT_HUMAN
+
+        net.server._disconnect_client(1, "left")
+        host_sel._process_network_messages()
+        second_sel._process_network_messages()
+        assert host_sel.lobby_state.get_slot(1).state == SLOT_EMPTY
+        assert second_sel.lobby_state.get_slot(1).state == SLOT_EMPTY
+        assert second_sel.lobby_state.get_slot(2).state == SLOT_HUMAN
+
+    def test_client_learns_why_the_lobby_ended(self, display):
+        """Host closed the lobby / connection died: the join flow gets the reason."""
+        from network.multiplayer_setup import run_client_lobby
+        connection = stub_connection(player_index=1, disconnected=True,
+                                     disconnect_reason="Host disconnected")
+        assert run_client_lobby(display, connection) == ('lost', "Host disconnected")
+
 
 class TestLaunchRules:
 
-    @pytest.mark.xfail(strict=True, reason="C8: a lobby with a gap (slot 3 empty, slot 4 used) "
-                       "launches and breaks player indices in game")
+    def _lobby(self, *states):
+        """Slot 0 is the host; `states` fill slots 1.. ; everyone gets a territory."""
+        lobby = LobbyState(host_name="Host")
+        for index, state in enumerate(states, start=1):
+            lobby.slots[index].state = state
+        for slot, territory in zip(lobby.get_active_players(), h.spread_territories(4)):
+            lobby.claim_territory(slot.index, territory)
+        return lobby
+
+    def test_launch_blocker_reasons(self):
+        assert LobbyState(host_name="Host").launch_blocker() == 'players'
+        assert self._lobby(SLOT_AI).launch_blocker() is None
+        assert self._lobby(SLOT_EMPTY, SLOT_AI).launch_blocker() == 'gap'
+        same_team = self._lobby(SLOT_AI)
+        same_team.slots[1].team = same_team.slots[0].team
+        assert same_team.launch_blocker() == 'teams'
+        no_land = self._lobby(SLOT_AI, SLOT_AI)
+        no_land.slots[2].territory = ""
+        assert no_land.launch_blocker() == 'territories'
+
+    def test_every_launch_blocker_has_tooltip_text(self):
+        from config.setup_tooltips import SETUP_TOOLTIPS
+        for reason in ('players', 'gap', 'teams', 'territories'):
+            assert SETUP_TOOLTIPS[f'launch_{reason}']['entries']
+
+    def test_greyed_launch_button_explains_why(self, display, monkeypatch):
+        host_sel = selector(display, stub_connection(), True, 0)
+        monkeypatch.setattr(pygame.mouse, 'get_pos', lambda: host_sel.launch_button_rect.center)
+        host_sel._draw_buttons()
+        assert host_sel._launch_tooltip_key == 'launch_players'
+        host_sel.lobby_state.set_slot_ai(1)
+        host_sel._draw_buttons()
+        assert host_sel._launch_tooltip_key == 'launch_territories'
+        ready_to_launch(host_sel)
+        host_sel._draw_buttons()
+        assert host_sel._launch_tooltip_key is None
+
+    def test_launch_is_refused_until_the_lobby_is_ready(self, display):
+        net = h.Network()
+        host_sel = selector(display, net.server, True, 0)
+        client = join(net, host_sel, 1, "P2")
+        drain(client.message_queue)
+        host_sel._launch_game()                   # nobody has a territory yet
+        assert not host_sel.ready_to_start
+        assert not net.server.game_started
+        assert drain(client.message_queue) == []
+
+    def test_launch_shares_the_seed_and_starts_the_game_on_the_server(self, display):
+        net = h.Network()
+        host_sel = selector(display, net.server, True, 0)
+        client = join(net, host_sel, 1, "P2")
+        ready_to_launch(host_sel)
+        host_sel._launch_game()
+        assert host_sel.ready_to_start and net.server.game_started
+        launch = [m for m in drain(client.message_queue) if m['type'] == MessageType.LOBBY_LAUNCH]
+        assert launch[-1]['data']['settings']['game_seed'] == host_sel.game_seed
+
     def test_lobby_with_a_gap_cannot_launch(self):
         lobby = LobbyState(host_name="Host")
         territories = h.spread_territories(2)
@@ -132,8 +216,6 @@ class TestLaunchRules:
         lobby.slots[2].territory = territories[1]
         assert not lobby.can_launch()
 
-    @pytest.mark.xfail(strict=True, reason="L6: a lobby with everyone on one team launches and "
-                       "the game ends on the first victory check")
     def test_lobby_needs_two_teams(self):
         lobby = LobbyState(host_name="Host")
         territories = h.spread_territories(2)
@@ -143,8 +225,6 @@ class TestLaunchRules:
         lobby.slots[1].team = lobby.slots[0].team
         assert not lobby.can_launch()
 
-    @pytest.mark.xfail(strict=True, reason="C3: set_game_started() is never called, so an "
-                       "in-game disconnect is handled as a lobby leave")
     def test_launch_makes_disconnects_reach_the_host_game(self, display):
         net = h.Network()
         host_sel = selector(display, net.server, True, 0)
@@ -175,8 +255,6 @@ class TestSharedGameConfig:
         assert client_sel.ready_to_start
         return host_sel, client_sel
 
-    @pytest.mark.xfail(strict=True, reason="M1: every PC rolls its own game_seed, so Neutral "
-                       "Armies differ between host and clients")
     def test_host_and_client_share_the_game_seed(self, display):
         host_sel, client_sel = self._launched_pair(display, neutral_armies=True)
         host_config = config_for(host_sel)
@@ -184,8 +262,6 @@ class TestSharedGameConfig:
         client_config = config_for(client_sel)
         assert host_config['game_seed'] == client_config['game_seed']
 
-    @pytest.mark.xfail(strict=True, reason="H9: the Steam-invite join builds its config without "
-                       "the host's map_id, so the invited client loads Avareon")
     def test_joined_client_config_uses_the_host_map(self, display):
         try:
             host_sel, client_sel = self._launched_pair(
@@ -194,18 +270,37 @@ class TestSharedGameConfig:
         finally:
             map_data.load_map('avareon')
 
+    def test_host_and_client_build_the_same_game(self, display):
+        host_sel, client_sel = self._launched_pair(
+            display, neutral_armies=True, turn_mode=1, taxation_level=2, starting_gold=450,
+            gold_transfer=2)
+        host_config, client_config = config_for(host_sel), config_for(client_sel)
+        for key in ('num_players', 'player_is_ai', 'player_ai_difficulty', 'player_territories',
+                    'player_colors', 'player_teams', 'player_names', 'win_condition',
+                    'taxation_level', 'game_mode', 'neutral_armies', 'randomize_bonuses',
+                    'gold_transfer', 'starting_gold', 'map_id', 'game_seed'):
+            assert host_config[key] == client_config[key], key
+        assert client_config['game_mode'] == 'simultaneous'
+
 
 class TestLoadingScreen:
 
-    @pytest.mark.xfail(strict=True, reason="M7: the loading screen discards every message that "
-                       "is not GAME_READY, including ones queued behind it")
-    def test_loading_screen_keeps_other_messages(self, display):
+    def _screen(self, display, local_index, num_players=2, **connection_extra):
         from loading_screen import LoadingScreen
-        connection = SimpleNamespace(protocol=NetworkProtocol(), message_queue=NetworkMessageQueue(),
-                                     send_message=lambda m: None, broadcast_message=lambda m: None)
-        game = SimpleNamespace(local_player_index=1, campaign_map=None)
-        screen = LoadingScreen(display, game, {'num_players': 2, 'player_is_ai': [False, False]},
+        connection = stub_connection(**connection_extra)
+        game = SimpleNamespace(local_player_index=local_index, campaign_map=None)
+        screen = LoadingScreen(display, game, {'num_players': num_players,
+                                               'player_is_ai': [False] * num_players},
                                network_connection=connection)
+        screen.loading_complete = True
+        return screen, connection
+
+    @staticmethod
+    def _key(key):
+        return pygame.event.Event(pygame.KEYDOWN, key=key, unicode='', mod=0)
+
+    def test_loading_screen_keeps_other_messages(self, display):
+        screen, connection = self._screen(display, local_index=1)
         connection.message_queue.receive_message({'type': MessageType.GAME_READY,
                                                   'data': {'player_index': 0}})
         connection.message_queue.receive_message({'type': MessageType.SIM_TIMER_UPDATE,
@@ -213,6 +308,137 @@ class TestLoadingScreen:
         screen._poll_network_ready()
         assert screen.all_players_ready
         assert [m['type'] for m in drain(connection.message_queue)] == [MessageType.SIM_TIMER_UPDATE]
+
+    def test_messages_before_game_ready_reach_the_game_in_order(self, display):
+        screen, connection = self._screen(display, local_index=1)
+        queue = connection.message_queue
+        queue.receive_message({'type': MessageType.CHAT_MESSAGE, 'data': {'message': 'hi'}})
+        screen._poll_network_ready()              # chat is kept back while waiting
+        queue.receive_message({'type': MessageType.GAME_READY, 'data': {'player_index': 0}})
+        queue.receive_message({'type': MessageType.SIM_TIMER_UPDATE, 'data': {'timers': {}}})
+        screen._poll_network_ready()
+        screen._hand_over_deferred_messages()
+        assert [m['type'] for m in drain(queue)] == [MessageType.CHAT_MESSAGE,
+                                                     MessageType.SIM_TIMER_UPDATE]
+
+    def test_host_stops_waiting_for_a_client_that_left(self, display):
+        screen, connection = self._screen(display, local_index=0, num_players=3)
+        assert screen.expected_remote_players == {1, 2}
+        screen._handle_wait_event(self._key(pygame.K_SPACE))      # host is ready
+        queue = connection.message_queue
+        queue.receive_message({'type': MessageType.GAME_READY, 'data': {'player_index': 1}})
+        queue.receive_message({'type': MessageType.PLAYER_DISCONNECT,
+                               'data': {'player_index': 2, 'ai_takeover': True}})
+        screen._update_wait_state()
+        assert screen.result == 'start'
+        assert NetworkProtocol().decode_message(connection.sent[-1])['type'] == MessageType.GAME_READY
+        screen._hand_over_deferred_messages()     # the game still hands the seat to the AI
+        assert [m['type'] for m in drain(queue)] == [MessageType.PLAYER_DISCONNECT]
+
+    def test_escape_leaves_the_game(self, display):
+        screen, connection = self._screen(display, local_index=1)
+        screen._handle_wait_event(self._key(pygame.K_ESCAPE))
+        assert screen.result == 'cancelled'
+        assert connection.sent == []              # never told anyone it was ready
+
+    def test_client_is_told_when_the_host_is_gone(self, display):
+        screen, connection = self._screen(display, local_index=1, disconnected=False,
+                                          disconnect_reason="")
+        screen._handle_wait_event(self._key(pygame.K_SPACE))      # ready, waiting
+        connection.disconnected = True
+        connection.disconnect_reason = "Host disconnected"
+        screen._update_wait_state()
+        assert screen.result is None and "Host disconnected" in screen.failure_message
+        screen._draw()                            # the message is shown
+        screen._handle_wait_event(self._key(pygame.K_SPACE))
+        assert screen.result == 'disconnected'
+
+
+class TestRealLobby:
+    """The whole Phase 2 path over real localhost sockets and network threads: connect,
+    seat, claim territories, launch (shared seed / map / config), loading handshake."""
+
+    @staticmethod
+    def _until(condition, tick=lambda: None, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            tick()
+            if condition():
+                return
+            time.sleep(0.01)
+        raise AssertionError("condition never became true")
+
+    def _launched(self, display):
+        from network.client import NetworkClient
+        from network.server import NetworkServer
+        server = NetworkServer(port=0)
+        assert server.start()
+        client = NetworkClient()
+        try:
+            host_sel = selector(display, server, True, 0)
+            assert client.connect('127.0.0.1', server.socket.getsockname()[1], player_name="Guest")
+            assert client.player_index == 1
+            self._until(lambda: host_sel.lobby_state.get_slot(1).state == SLOT_HUMAN,
+                        host_sel._process_network_messages)
+            client_sel = selector(display, client, False, client.player_index)
+            self._until(lambda: client_sel.lobby_synced
+                        and client_sel.lobby_state.get_slot(1).state == SLOT_HUMAN,
+                        client_sel._process_network_messages)
+
+            host_land, client_land = h.spread_territories(2)
+            host_sel.select_territory(host_land)
+            client_sel.select_territory(client_land)
+            self._until(host_sel._can_launch, host_sel._process_network_messages)
+            host_sel._launch_game()
+            self._until(lambda: client_sel.ready_to_start, client_sel._process_network_messages)
+            return server, client, host_sel, client_sel
+        except Exception:
+            client.disconnect()
+            server.stop()
+            raise
+
+    @staticmethod
+    def _loading(display, connection, local_index, config):
+        from loading_screen import LoadingScreen
+        game = SimpleNamespace(local_player_index=local_index, campaign_map=None)
+        screen = LoadingScreen(display, game, config, network_connection=connection)
+        screen.loading_complete = True
+        return screen
+
+    def test_two_players_launch_and_start_together(self, display):
+        server, client, host_sel, client_sel = self._launched(display)
+        try:
+            host_config, client_config = config_for(host_sel), config_for(client_sel)
+            for key in ('num_players', 'player_territories', 'player_teams', 'map_id', 'game_seed'):
+                assert host_config[key] == client_config[key], key
+            assert server.game_started
+
+            host_ls = self._loading(display, server, 0, host_config)
+            client_ls = self._loading(display, client, 1, client_config)
+            space = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE, unicode=' ', mod=0)
+            client_ls._handle_wait_event(space)
+            host_ls._handle_wait_event(space)
+            self._until(lambda: host_ls.result == 'start', host_ls._update_wait_state)
+            self._until(lambda: client_ls.result == 'start', client_ls._update_wait_state)
+        finally:
+            client.disconnect()
+            server.stop()
+
+    def test_host_starts_without_a_client_who_quit_while_loading(self, display):
+        server, client, host_sel, _ = self._launched(display)
+        try:
+            host_ls = self._loading(display, server, 0, config_for(host_sel))
+            host_ls._handle_wait_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE,
+                                                          unicode=' ', mod=0))
+            client.disconnect()                   # e.g. Escape on the client's loading screen
+            self._until(lambda: host_ls.result == 'start', host_ls._update_wait_state)
+            host_ls._hand_over_deferred_messages()
+            # The game still learns about it (its seat goes to the AI)
+            self._until(lambda: any(m['type'] == MessageType.PLAYER_DISCONNECT
+                                    for m in drain(server.message_queue)))
+        finally:
+            client.disconnect()
+            server.stop()
 
 
 class TestColours:

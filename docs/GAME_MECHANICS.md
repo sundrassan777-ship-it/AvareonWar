@@ -444,7 +444,9 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
 - Only enemies can trigger Capital Assault eliminations
 - First team member with active territories represents winning team
 
-**Multiplayer Disconnect Elimination:**
+**Multiplayer Disconnect Elimination** (inactive for launch - rejoining a game in progress
+is switched off, `RECONNECT_ENABLED = False`, so a disconnected player's empire is played
+by the AI for the rest of the game instead):
 - When a player disconnects, AI takes over for 60 seconds (reconnection window)
 - If the player does not reconnect, they are eliminated:
   - Territories distributed round-robin to living allies (alphabetical order)
@@ -696,7 +698,8 @@ Persistent player level that tracks progression across all game modes. XP is ear
 
 ## 🌐 Multiplayer System
 
-Full 2-4 player multiplayer with AI slots, teams, and reconnection support.
+Full 2-4 player multiplayer with AI slots and teams. (Rejoining a game in progress is
+switched off for launch - see Disconnect Handling.)
 
 ### Getting Started
 
@@ -730,6 +733,18 @@ Full 2-4 player multiplayer with AI slots, teams, and reconnection support.
 - First-come-first-served (timestamp tiebreaker)
 - Host can reassign territories
 - All players must select before launch
+
+**Launch requirements** (`LobbyState.launch_blocker()`; hovering the greyed Launch Game
+button tells the host which one is missing):
+- At least 2 players, including the host
+- No empty slot between players (slots fill from the top - set the gap to an AI, wait
+  for a player, or empty the slots below it)
+- At least 2 different teams
+- Every player has a starting territory
+
+**Shared game setup:** the host's map, settings, randomized bonuses and the random seed
+(Neutral Armies placement) are sent in `LOBBY_LAUNCH`, so every player starts the
+identical game. A player joins the slot the host's server assigned and keeps it.
 
 ### Teams & Alliances
 
@@ -765,21 +780,26 @@ The host (Player 0) is authoritative:
 ### Disconnect Handling
 
 **Client Disconnects:**
-1. AI immediately takes over (Medium difficulty)
-2. Player can reconnect within 5 minutes
-3. Password shown on initial join (save it!)
-4. Game continues without interruption
+1. The host and every other player are told (`PLAYER_DISCONNECT`)
+2. The AI takes over the empire (Medium difficulty) for the rest of the game
+3. Rejoining a game in progress is not possible at launch; new connections to a running
+   game are refused ("The game has already started")
+
+**While loading:** Escape leaves the game. If a player leaves while the others are
+loading, the host stops waiting for them; if the host leaves, the others are told and
+return to the menu.
 
 **Host Disconnects:**
 - Game ends for all players
 - Disconnect dialog shown to clients
 - Players return to main menu
 
-**Reconnection:**
-1. Join same host IP
-2. Enter your name + password
-3. Resume control from AI
-4. Full state synchronized
+**Joining fails:** the player sees the host's reason - lobby full, game already started,
+different game version, or no game at that address.
+
+**Reconnection (switched off for launch):** the name + password reconnect code still
+exists (`network/server.py` RECONNECT_*, `NetworkClient.reconnect()`) but the game cannot
+hand a seat back yet; `RECONNECT_ENABLED` in `network_config.py` keeps it off.
 
 ### Network Messages
 

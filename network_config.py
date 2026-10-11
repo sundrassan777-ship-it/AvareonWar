@@ -14,17 +14,31 @@ import enum
 # History: 1.2.0 = disconnect elimination (DISCONNECT_ELIMINATION message, universal last-team-standing)
 # History: 1.3.0 = sync logger (STATE_DETAIL_REQUEST/RESPONSE/DESYNC_DIFF for desync diagnosis)
 # History: 1.4.0 = multi-map support (map_id in SETUP_CONFIG)
-NETWORK_VERSION = "1.4.0"
+# History: 2.0.0 = pre-launch multiplayer sync overhaul (shared game_seed + map_id in
+#                  LOBBY_LAUNCH, in-game disconnects reported as PLAYER_DISCONNECT, lobby
+#                  slots = server indices). Older builds cannot play with 2.x.
+NETWORK_VERSION = "2.0.0"
 
 # Connection Settings
 DEFAULT_PORT = 7777
 MAX_CLIENTS = 3  # Support up to 4 players (host + 3 clients)
 CONNECTION_TIMEOUT = 15.0  # seconds - no response triggers disconnect
 RECONNECTION_TIMEOUT = 60.0  # seconds - window to reconnect after disconnect
+# Reconnecting to a running game is not finished (no in-game handling, state resend or UI),
+# so it is switched off for launch: an in-game disconnect is final and the slot is handed
+# to the AI. While False the server keeps no reconnect entries (so it never sends
+# DISCONNECT_ELIMINATION) and refuses RECONNECT_REQUEST.
+RECONNECT_ENABLED = False
+# Longest one frame may take to send before the receiver is treated as gone. Sockets
+# used to be non-blocking, where sendall() fails as soon as the kernel buffer is full -
+# a large message (state snapshot, ~80 KB) then cut the connection mid-frame.
+SEND_TIMEOUT = 10.0  # seconds
 
 # Message Settings
 MAX_MESSAGE_SIZE = 1_000_000  # 1 MB (for full state sync)
-MESSAGE_BUFFER_SIZE = 4096  # bytes per socket recv() call
+# Bytes per socket recv() call. 64 KB so a state snapshot arrives in a couple of reads
+# (at 4 KB the client needed ~20 network-loop iterations, ~200 ms, per 80 KB message).
+MESSAGE_BUFFER_SIZE = 65536
 MESSAGE_HEADER_SIZE = 4  # bytes for length prefix (uint32)
 
 # Heartbeat Settings

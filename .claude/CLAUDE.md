@@ -170,6 +170,10 @@ AvareonWar/
 - [tests/test_bottom_panel.py](tests/test_bottom_panel.py) - Bottom panel overhaul at 720p/900p/1080p/1440p: kit geometry, End Turn section + state rules, Territory view (plots fill, Forces grid, Select Army, hero portrait, hover labels), empty plot buttons, Army view (T divider, 15-unit grid), Hero view (fixed portrait, Keep pan), building views (finished / under-construction plot incl. Confiscate label + XP bar, Barracks queue + hotkeys, Keep grid / hero card / castle states / training progress / Hero Limit), full-width button tooltips, orphaned tooltips dropped when the view switches
 - [tests/test_cutscene_volume.py](tests/test_cutscene_volume.py) - Cutscene voice/music follow the master volume (muted game = silent cutscenes)
 - [tests/test_setup_options.py](tests/test_setup_options.py) - Setup screens: Additional Options window (inside the frame at 720p-1440p, confirm/cancel/Escape, read-only client view, map hover blocked), Starting Gold (typing, clamp, Custom + lobby + network + `initialize_game`), label tooltips, wood/bronze frames and lobby row layout
+- [tests/mp_harness.py](tests/mp_harness.py) - Multiplayer test harness: 2-4 real `Game`s in one process over the real server/client logic with in-memory sockets (`Session`, `make_session` fixture, input helpers). Open audit findings are `xfail(strict=True)` in the `test_mp_*` files; the fix removes the marker
+- [tests/test_mp_transport.py](tests/test_mp_transport.py) - Sequence numbers (PONG/DISCONNECT exempt, per connection), disconnect notices (lobby + in game, send failures, once), refused rejoin, requeue order, real sockets (large frames to a slow reader, refusal reasons)
+- [tests/test_mp_lobby.py](tests/test_mp_lobby.py) - Lobby leave/join by server index, launch rules + tooltip, shared seed/map/config, loading screen (keeps messages, Escape, host skips leavers, lost host), real-socket connect -> lobby -> launch -> loading handshake
+- [tests/test_mp_sequential.py](tests/test_mp_sequential.py) / [tests/test_mp_simultaneous.py](tests/test_mp_simultaneous.py) / [tests/test_mp_progression.py](tests/test_mp_progression.py) - Sequential / simultaneous sync and achievements/XP for the local player (multiplayer audit findings)
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -473,7 +477,11 @@ After making code changes, ask yourself:
 - Modify Battle Report show/hide rules → `main.py` `_viewer_in_planning()` (clearing) vs `_battle_reports_visible()` (drawing) — these are deliberately separate
 - Modify "Close All Battle Reports" button → `rendering/ui_renderer.py` `_draw_close_all_battle_reports_button()` + `main.py` `close_all_battle_reports()`
 - Modify Battle Report detail screen → `ui/effects/battle_interface.py` `report_snapshot` ctor path + `main.py` `open_battle_report_detail()`
-- Modify disconnect elimination → `network/server.py` (_cleanup_expired_reconnects), `main.py` (DISCONNECT_ELIMINATION handler)
+- Modify disconnect elimination → `network/server.py` (_cleanup_expired_reconnects), `main.py` (DISCONNECT_ELIMINATION handler) — inactive while `RECONNECT_ENABLED` is False (`network_config.py`)
+- Change how clients drop / get refused → `network/server.py` `_disconnect_client()` (every removal; LOBBY_LEAVE vs PLAYER_DISCONNECT to host + clients) / `_reject_connection()` + `network/client.py` `_connection_failed()` (first reason wins). See "Connection lifecycle" in CODE_GUIDE.md
+- Change how a multiplayer game starts (Host / Join / Steam invite) → `network/multiplayer_setup.py` `build_multiplayer_config()` / `run_client_lobby()` + `main.py` `_play_multiplayer_game()` — one path for all three, never a per-path copy
+- Change lobby launch rules → `network/lobby.py` `launch_blocker()` + `config/setup_tooltips.py` `launch_<reason>`
+- Write a multiplayer sync test → `tests/mp_harness.py` (`Session`, `click_end_turn`, `fight`, ...)
 - Modify anti-win-farming XP → `player_level.py` (_is_disconnect_farming, DISCONNECT_FARMING_XP_THRESHOLD)
 - Add new achievement → `achievement_manager.py` ACHIEVEMENTS list
 - Add achievement reward icon → `achievement_manager.py` ALL_REWARD_ICON_PATHS
@@ -504,7 +512,7 @@ After making code changes, ask yourself:
 - Change Steam invite UI → `network/territory_selector.py` (friend picker modal)
 - Change Steam invite auto-connect → `main.py` (`steam_invite_join` action, `+connect` launch param)
 - Change Steam player name behavior → `main_menu.py` `_open_profile()` + `_draw_profile_panel()`
-- Multiplayer lobby → `network/lobby.py`
+- Multiplayer lobby → `network/lobby.py`; lobby UI / slot seating / launch → `network/territory_selector.py` (slot = the server's player index, never look players up by name)
 - Modify player level/XP → `player_level.py`
 - Change level formula/XP amounts → `player_level.py` constants
 - Player level profile UI → `main_menu.py` `_draw_profile_panel()`

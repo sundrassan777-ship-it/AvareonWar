@@ -81,4 +81,36 @@ SETUP_TOOLTIPS = {
             (None, "The gold every player begins the game with. The standard game uses 100."),
         ],
     },
+
+    # Multiplayer lobby: hovering the greyed "Launch Game" button (host only).
+    # One entry per reason in network/lobby.py LobbyState.launch_blocker().
+    'launch_players': {
+        'title': "Not Ready to Launch",
+        'entries': [
+            (None, "A game needs at least two players. Wait for a friend to join, or set "
+                   "an empty slot to an AI."),
+        ],
+    },
+    'launch_gap': {
+        'title': "Not Ready to Launch",
+        'entries': [
+            (None, "Players must fill the slots from the top, with no empty slot between "
+                   "them. Set the empty slot to an AI, wait for a player to join it, or "
+                   "empty the slots below it."),
+        ],
+    },
+    'launch_teams': {
+        'title': "Not Ready to Launch",
+        'entries': [
+            (None, "Everyone is on the same team, so there would be nobody to fight. Put "
+                   "at least one player on another team."),
+        ],
+    },
+    'launch_territories': {
+        'title': "Not Ready to Launch",
+        'entries': [
+            (None, "Every player needs a starting territory. For an AI, click its row and "
+                   "then a territory on the map."),
+        ],
+    },
 }

@@ -8,6 +8,7 @@ Expanded for 2-4 player multiplayer with Type/Color/Team configuration.
 
 import pygame
 from typing import Optional, Tuple, Dict, List, Any
+import random
 import time
 import map_data
 from settings_manager import settings
@@ -209,6 +210,12 @@ class TerritorySelector:
         self.gold_transfer_options = ["Disabled", "Enabled (25%)", "Enabled (50%)", "Enabled (75%)", "Enabled (100%)"]
         self.starting_gold = STARTING_GOLD_DEFAULT  # Applies to every player; host decides
         self.bonus_mapping = None  # Host-generated randomized bonus mapping for multiplayer sync
+        # Shared random seed (Neutral Armies placement, ...). The host rolls it at launch
+        # and sends it in LOBBY_LAUNCH; every PC used to roll its own from the clock, so
+        # the neutral garrisons differed between players from turn 1.
+        self.game_seed = None
+        # Tooltip key for the greyed Launch button ('launch_<reason>'), set while drawing
+        self._launch_tooltip_key = None
 
         # Additional Options window (shared with the Custom Game setup). The host edits a
         # copy and Confirm applies + syncs it; clients open it read-only to see the
@@ -1050,7 +1057,7 @@ class TerritorySelector:
 
     def _launch_game(self):
         """Host launches the game."""
-        if not self.is_host:
+        if not self.is_host or not self._can_launch():
             return
 
         # Update lobby_state settings
@@ -1075,6 +1082,18 @@ class TerritorySelector:
             self.bonus_mapping = map_data.randomize_territory_bonuses()
             map_data.load_territory_bonuses()  # Restore defaults; initialize_game() re-applies
             settings['bonus_mapping'] = self.bonus_mapping
+
+        # One random seed for everyone (Neutral Armies placement). Clients used to
+        # roll their own from their clock, so neutral garrisons differed per PC.
+        self.game_seed = random.SystemRandom().randrange(2 ** 31)
+        settings['game_seed'] = self.game_seed
+
+        # From here on a client that drops has left a running game: the server reports
+        # PLAYER_DISCONNECT (seat handed to the AI) instead of a lobby leave. Set before
+        # LOBBY_LAUNCH goes out so no drop falls between the two. This was never
+        # called, so in-game disconnects went unnoticed.
+        if hasattr(self.network_connection, 'set_game_started'):
+            self.network_connection.set_game_started(True)
 
         message = self.protocol.create_lobby_launch(final_slots, settings)
         self.network_connection.broadcast_message(message)
@@ -1260,9 +1279,6 @@ class TerritorySelector:
             elif msg_type == MessageType.LOBBY_STATE:
                 # Full lobby state sync (client receives from host)
                 if not self.is_host:
-                    # Store old player name before update to find our new slot
-                    my_name = settings.get_player_name()
-
                     self.lobby_state.update_from_network(data)
 
                     # Update settings from lobby state
@@ -1274,24 +1290,11 @@ class TerritorySelector:
                     self.gold_transfer = self.lobby_state.gold_transfer
                     self.starting_gold = self.lobby_state.starting_gold
 
-                    # Find our slot by name (host may have reassigned us)
-                    # Skip slot 0 (host) - client is never the host
-                    # Also handle case where host and client have the same name
-                    found_slot = False
-                    for slot in self.lobby_state.slots:
-                        # Skip host slot - client can never be index 0
-                        if slot.index == 0:
-                            continue
-                        if slot.state == SLOT_HUMAN and slot.player_name == my_name:
-                            if slot.index != self.local_player_index:
-                                logger.info(f"Reassigned from slot {self.local_player_index + 1} to slot {slot.index + 1}")
-                                self.local_player_index = slot.index
-                                self.selected_slot_for_territory = slot.index
-                            found_slot = True
-                            break
-
-                    if not found_slot:
-                        logger.warning(f"Could not find our slot by name '{my_name}', keeping index {self.local_player_index + 1}")
+                    # Our slot is the index the server assigned on connect (CONNECT_ACCEPT),
+                    # and the host now seats every joiner in exactly that slot. Clients
+                    # used to look themselves up by display name instead - two players
+                    # with the same name (the default is "Human") ended up driving the
+                    # same slot, and the server's index no longer matched the game's.
 
                     self._sync_from_lobby_state()
                     self.lobby_synced = True  # Client is now synced with host
@@ -1327,25 +1330,31 @@ class TerritorySelector:
                 player_name = data.get('player_name', f"Player {server_assigned_index + 1}")
 
                 if self.is_host:
-                    # HOST: Find the first EMPTY slot for the new player
-                    # Don't overwrite AI slots - find an empty one
-                    target_slot_index = None
-                    for i in range(self.num_players):
-                        slot = self.lobby_state.get_slot(i)
-                        if slot and slot.state == SLOT_EMPTY:
-                            target_slot_index = i
-                            break
-
-                    if target_slot_index is None:
-                        logger.warning(f"No empty slots for {player_name}!")
-                        # TODO: Could kick the player here
+                    # HOST: seat the player in the slot the SERVER assigned. That index is
+                    # what the client was told (CONNECT_ACCEPT) and what the server stamps
+                    # on everything the client sends; picking "the first empty slot"
+                    # instead could seat them elsewhere.
+                    slot = (self.lobby_state.get_slot(server_assigned_index)
+                            if isinstance(server_assigned_index, int) and server_assigned_index > 0
+                            else None)
+                    if slot is None:
+                        logger.warning(f"LOBBY_JOIN for invalid slot {server_assigned_index} ({player_name})")
                     else:
-                        slot = self.lobby_state.get_slot(target_slot_index)
-                        if slot:
-                            slot.state = SLOT_HUMAN
-                            slot.player_name = player_name
+                        if slot.state == SLOT_AI:
+                            # The host made this slot an AI in the same moment the server
+                            # gave it to a joining player: the player keeps it
+                            logger.info(f"Slot {server_assigned_index + 1} was set to AI as "
+                                        f"{player_name} joined - the player takes it")
+                            if hasattr(self.network_connection, 'unreserve_slot'):
+                                self.network_connection.unreserve_slot(server_assigned_index)
+                        if slot.territory:
+                            # Nothing may carry over from a previous occupant
+                            self.lobby_state._release_territory(slot.territory)
+                            slot.territory = ""
+                        slot.state = SLOT_HUMAN
+                        slot.player_name = player_name
                         self._sync_from_lobby_state()
-                        logger.info(f"Player {player_name} joined slot {target_slot_index + 1}")
+                        logger.info(f"Player {player_name} joined slot {server_assigned_index + 1}")
 
                         # Send full lobby state to the new client so they see everything
                         self._broadcast_lobby_state()
@@ -1360,12 +1369,18 @@ class TerritorySelector:
                         logger.info(f"Player {player_name} joined slot {server_assigned_index + 1}")
 
             elif msg_type == MessageType.LOBBY_LEAVE:
-                # Player left (host broadcasts this)
+                # Player left. The server tells the other clients AND the host's lobby
+                # (the host used to never hear it and kept a ghost player).
                 player_index = data.get('player_index')
-                if 0 <= player_index < self.num_players:
-                    self.lobby_state.remove_player(player_index)
+                if isinstance(player_index, int) and 0 < player_index < self.num_players:
+                    if self.lobby_state.remove_player(player_index):
+                        logger.info(f"Player left slot {player_index + 1}")
+                    if self.selected_slot_for_territory == player_index and self.is_host:
+                        self.selected_slot_for_territory = self.local_player_index
                     self._sync_from_lobby_state()
-                    logger.info(f"Player left slot {player_index + 1}")
+                    if self.is_host:
+                        # Everyone gets the authoritative state (freed territory included)
+                        self._broadcast_lobby_state()
 
             elif msg_type == MessageType.LOBBY_KICK:
                 # Client received kick notification
@@ -1410,6 +1425,9 @@ class TerritorySelector:
                     # Extract host-generated bonus mapping for randomized bonuses
                     if 'bonus_mapping' in data['settings']:
                         self.bonus_mapping = data['settings']['bonus_mapping']
+                    # The host's random seed - every PC must place neutral armies alike
+                    if isinstance(data['settings'].get('game_seed'), int):
+                        self.game_seed = data['settings']['game_seed']
                     # Extract map_id for multi-map support
                     if 'map_id' in data['settings']:
                         new_map_id = data['settings']['map_id']
@@ -1535,6 +1553,9 @@ class TerritorySelector:
         # Label tooltip (drawn after the panel so it can extend over the map)
         if self.hovered_tooltip and not self.overlay_open and not self._show_friend_picker:
             self.setup_tooltips.draw(self.screen, self.hovered_tooltip, pygame.mouse.get_pos())
+        elif self._launch_tooltip_key:
+            # Why Launch is greyed out (set by _draw_buttons this frame)
+            self.setup_tooltips.draw(self.screen, self._launch_tooltip_key, pygame.mouse.get_pos())
 
         # Draw Additional Options overlay on top of everything (if open)
         if self.overlay_open and self.options_overlay.read_only:
@@ -2703,6 +2724,16 @@ class TerritorySelector:
             hovered=self.launch_button_rect.collidepoint(mouse_pos) and can_launch and self.is_host,
             is_launch_button=True
         )
+        # Greyed Launch button: hovering it tells the host what is missing (wording in
+        # config/setup_tooltips.py 'launch_<reason>'). Worked out every frame, so it
+        # updates as players join or pick territories under a still cursor.
+        self._launch_tooltip_key = None
+        if (self.is_host and not can_launch and not self.overlay_open
+                and not self._show_friend_picker
+                and self.launch_button_rect.collidepoint(mouse_pos)):
+            blocker = self.lobby_state.launch_blocker()
+            if blocker:
+                self._launch_tooltip_key = f"launch_{blocker}"
 
         # Return to Main Menu button (white text, regular font)
         self._draw_button(

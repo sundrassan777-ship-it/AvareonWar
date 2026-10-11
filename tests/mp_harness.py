@@ -205,14 +205,9 @@ def build_config(num_players=2, ai_slots=(), turn_mode='sequential', teams=None,
     lobby.neutral_armies = neutral_armies
 
     setup = MultiplayerSetup.__new__(MultiplayerSetup)
-    setup.victory_options = ["Domination (45+)", "Capital Assault", "Total Conquest"]
-    setup.turn_mode_options = ["Sequential", "Simultaneous"]
-    config = setup._build_config_from_lobby(
-        lobby, 0, 0, 1 if turn_mode == 'simultaneous' else 0, neutral_armies)
-    config['map_id'] = 'avareon'
-    if game_seed is not None:
-        config['game_seed'] = game_seed
-    return config
+    return setup._build_config_from_lobby(
+        lobby, 0, 0, 1 if turn_mode == 'simultaneous' else 0, neutral_armies,
+        map_id='avareon', game_seed=game_seed)
 
 
 # ---------------------------------------------------------------------------

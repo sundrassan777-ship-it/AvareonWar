@@ -2,6 +2,72 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-11 - Multiplayer audit, Phases 1-2: sync test harness; connection, lobby and launch
+
+Branch `fix/multiplayer-sync` (pre-launch multiplayer audit; finding IDs C/H/M/L as in the
+audit). Developer guide: "Connection lifecycle", "Lobby -> loading -> game" and
+"Multiplayer test harness" in CODE_GUIDE.md.
+
+**Phase 1 - repro harness (tests only):** `tests/mp_harness.py` runs 2-4 real `Game`s in
+one process, joined through the real `NetworkServer` / `NetworkClient` logic over
+in-memory sockets, and drives the real input handlers. `tests/test_mp_transport.py`,
+`test_mp_lobby.py`, `test_mp_sequential.py`, `test_mp_simultaneous.py` and
+`test_mp_progression.py` hold one strict-xfail test per confirmed finding (42); each fix
+removes its marker. New finding **M17**: when the simultaneous host readies last, its own
+`SIM_PLAYER_READY` goes out after `SIM_ROUND_COMPLETE`, so clients list the host as ready
+in the next round (fixed in Phase 4).
+
+**Phase 2 - transport, lobby and launch** (`NETWORK_VERSION` 2.0.0):
+- **C4** Client messages were randomly dropped as "replays": the client's network thread
+  answers a PING at once, so its PONG overtook game messages still queued with lower
+  sequence numbers (lost END TURN / READY / battle results -> hung games). The check is
+  now per connection (`ClientConnection.last_seq`) with PONG / DISCONNECT exempt, and the
+  sequence counter is atomic (`NetworkProtocol._sequence_lock`).
+- **H7** A new player could never take a slot someone had left (the per-index counter
+  rejected all their messages).
+- **C3** In-game disconnects were invisible: `set_game_started()` was never called, so
+  drops were treated as lobby leaves. `_launch_game()` now sets it before `LOBBY_LAUNCH`;
+  a drop becomes `PLAYER_DISCONNECT` for the host and every client. Rejoining is switched
+  off for launch (`RECONNECT_ENABLED = False`): no reconnect entries, no
+  `DISCONNECT_ELIMINATION`, `RECONNECT_REQUEST` refused.
+- **C7** The host's lobby never heard that a client left (ghost player -> launch -> host
+  stuck on the loading screen). `LOBBY_LEAVE` now reaches the host, which frees the slot
+  and rebroadcasts. Clients dropped by a failed send are announced like any other
+  disconnect (`_cleanup_disconnected()` removed them silently).
+- **H8** Lobby slots were matched by display name (two "Human"s drove one slot); the slot
+  is now the server's player index, and the host seats a joining player in exactly that
+  slot (it used to pick "the first empty one").
+- **C8 / L6** A lobby with an empty slot between players, or everyone on one team, could
+  launch. `LobbyState.launch_blocker()` now blocks both (plus too few players / missing
+  territories), and the greyed Launch button shows the reason (`config/setup_tooltips.py`
+  `launch_*`).
+- **M1 / H9** Every PC rolled its own `game_seed` (Neutral Armies differed), and
+  Steam-invite joins never got `map_id`. The host sends `game_seed` in `LOBBY_LAUNCH`;
+  one `build_multiplayer_config(selector)` and `run_client_lobby()`
+  (`network/multiplayer_setup.py`) serve Host, Join Game and Steam invites, and
+  `main.py` `_play_multiplayer_game()` replaces the two copied post-lobby flows.
+- **M7** The loading screen discarded every message that was not `GAME_READY`; they are
+  now handed to the game in order (`NetworkMessageQueue.requeue_front()`). Escape leaves,
+  the host stops waiting for players who disconnect while loading, and a client that
+  loses the host is told so. `LoadingScreen.run()` returns `'start'` / `'cancelled'` /
+  `'disconnected'`.
+- **M8** Client send errors and connection refusals stopped the client silently; they now
+  set `disconnected` + `disconnect_reason` (`_connection_failed()`, first reason wins),
+  `connect()` returns at once on a refusal instead of after 5 s, and the join screens
+  (incl. Steam invites) show the reason. `_show_error()` wraps long messages.
+- **L4** Sockets were non-blocking, so `sendall()` failed mid-frame once the kernel buffer
+  filled and the player was dropped (reproduced on Windows: back-to-back large frames to a
+  slow reader). Sends now block with `SEND_TIMEOUT` (reads still only after `select()`),
+  and the client reads up to 16 x 64 KB per loop instead of 4 KB per 10 ms.
+- **Found and fixed on the way:** strangers could connect to a running game and have their
+  messages relayed (now refused); the server's refusal message was lost to a connection
+  reset on Windows (`_reject_connection()` drains before closing); a follow-up socket
+  error overwrote the refusal reason on the client.
+- Tests: 75 in `tests/test_mp_*.py` (30 open findings still xfail for Phases 3-8), incl.
+  real localhost sockets for large frames, refusal reasons and a full connect -> lobby ->
+  launch -> loading handshake (also with a client quitting while loading). Docs: CODE_GUIDE,
+  GAME_MECHANICS (launch requirements, disconnect handling), QUICK_REFERENCE, CLAUDE.md.
+
 ## 2026-10-10 - Setup screens: Additional Options, Starting Gold, tooltips, framed art
 
 Branch `feature/setup-options-polish`. Custom Game (`integrated_setup.py`) and the

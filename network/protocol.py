@@ -6,6 +6,7 @@ Handles message serialization, deserialization, and length-prefix framing.
 
 import json
 import struct
+import threading
 from typing import Dict, Any, List, Optional
 
 import sys
@@ -30,6 +31,9 @@ class NetworkProtocol:
     def __init__(self) -> None:
         # Counter for outgoing message sequence numbers (out-of-order/duplicate detection)
         self._sequence_number: int = 0
+        # The game loop and the network thread (PONG replies) both encode through the
+        # same protocol; `+= 1` is not atomic, so two messages could get the same number
+        self._sequence_lock = threading.Lock()
 
     def encode_message(self, message_type: str, data: Optional[Dict[str, Any]] = None) -> bytes:
         """
@@ -45,15 +49,17 @@ class NetworkProtocol:
         Raises:
             ValueError: If message is too large
         """
+        # Take the next sequence number atomically (see _sequence_lock)
+        with self._sequence_lock:
+            seq = self._sequence_number
+            self._sequence_number += 1
+
         # Build message structure with sequence number for out-of-order/duplicate detection
         message = {
             "type": message_type,
-            "seq": self._sequence_number,
+            "seq": seq,
             "data": data or {}
         }
-
-        # Increment sequence number after embedding it in the message
-        self._sequence_number += 1
 
         # Serialize to JSON
         json_data = json.dumps(message).encode('utf-8')
