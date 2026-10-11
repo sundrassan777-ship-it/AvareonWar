@@ -367,7 +367,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
         # Eliminated players tracking (universal — players with 0 territories)
         # Updated by check_victory() and eliminate_player_disconnect()
-        # Synced via FULL_STATE_SYNC and SIM_ROUND_COMPLETE
+        # Synced via the multiplayer state snapshots (network/state_snapshot.py)
         self.eliminated_players = set()
 
         # Players eliminated specifically via multiplayer disconnect timeout
@@ -591,9 +591,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Battle Reports: transient per-defender summaries of battles they did not watch.
         # Purpose: a defender gets no feedback today beyond the map changing colour, so we
         # snapshot the outcome at resolution time and surface it on their next turn.
-        # Both lists are deliberately EXCLUDED from save_manager, calculate_state_checksum()
-        # and _send_full_state_sync(): this is per-viewer UI state that legitimately differs
-        # between host and client, and including it would cause false desyncs.
+        # Both lists are deliberately EXCLUDED from save_manager (and so from the multiplayer
+        # state snapshots) and calculate_state_checksum(): this is per-viewer UI state that
+        # legitimately differs between host and client, and including it would cause false
+        # desyncs.
         # last_battle_reports - reset at the top of every resolve_battle(); holds only that
         #   battle's snapshots so the network send sites can attach them to BATTLE_RESOLVE.
         # battle_report_inbox - append-only; main.py drains it every frame. This is what
@@ -612,6 +613,14 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Turn announcement effect system
         self.turn_announcement_active = False  # Blocks input during turn announcement
         self.deferred_turn_start_actions = False  # Flag to execute turn start effects after announcement
+
+        # Sequential multiplayer hooks (set by main.py; None = single-player behaviour).
+        # on_turn_advanced(previous_player): a turn ended on this PC - the turn owner sends
+        # the result (TURN_END with a state snapshot) to the other PCs.
+        # turn_advance_gate(): False on a PC that only replays another player's turn - it
+        # must not advance on its own, the owner's TURN_END does it (may_advance_turn()).
+        self.on_turn_advanced = None
+        self.turn_advance_gate = None
 
         # Phase B: Exclusive tab system state
         self.active_sidebar_tab = 'action_queue'  # Default active tab
@@ -809,6 +818,9 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             logger.info("Turn advancement blocked - tutorial game_frozen")
             return
 
+        # Whose turn is ending (the multiplayer hook below needs it)
+        previous_player = self.current_player
+
         # Clear building limit tracking for new turn
         self.buildings_started_this_turn.clear()
 
@@ -869,15 +881,39 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
                and attempts < self.num_players):
             self.current_player = (self.current_player + 1) % self.num_players
             attempts += 1
+
+        # Increment turn_number when a full round completes (all players acted once)
+        if self.current_player == 0 and self.phase == 'playing':
+            self.turn_number += 1
+
+        self._after_turn_advance()
+
+        # Multiplayer: the PC whose turn just ended sends the result to the others
+        on_turn_advanced = getattr(self, 'on_turn_advanced', None)
+        if on_turn_advanced is not None:
+            on_turn_advanced(previous_player)
+
+    def _after_turn_advance(self):
+        """
+        Everything a turn advance does besides changing the game state: clear the map
+        selection, log / record the new turn, and start the turn announcement (the
+        turn-start effects run when it finishes, _complete_turn_announcement).
+
+        Shared with sequential multiplayer receivers: they take the new state from the
+        turn owner's TURN_END snapshot instead of advancing themselves, then call this.
+        """
         self.selected_territory = None
         self.selected_army = None  # Clear army selection
 
-        # Increment turn_number when a full round completes (all players acted once)
-        # and record a game log snapshot for the completed round
-        if self.current_player == 0 and self.phase == 'playing':
-            self.turn_number += 1
-            if self.game_logger:
-                self.game_logger.record_round_snapshot(self.turn_number)
+        # The new turn's planning clock starts when its announcement finishes
+        # (_complete_turn_announcement). A multiplayer PC that takes the new state from a
+        # TURN_END never ran next_player(), which clears it - the previous turn's start
+        # time made the new owner's timer "expire" at once.
+        self.planning_phase_start_time = None
+
+        # Record a game log snapshot when a full round has completed
+        if self.current_player == 0 and self.phase == 'playing' and self.game_logger:
+            self.game_logger.record_round_snapshot(self.turn_number)
 
         # Replay recorder: snapshot after every player turn for rich replay granularity
         if self.phase == 'playing' and self.replay_recorder:
@@ -890,6 +926,15 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             self.deferred_turn_start_actions = True
         # During setup phase, no announcement needed - just a message
         # (turn start effects like building completion are handled in _complete_turn_announcement)
+
+    def may_advance_turn(self):
+        """
+        Whether this PC may advance the turn on its own (e.g. once the moves have arrived
+        without battles). False on a sequential multiplayer PC that only replays another
+        player's turn: that player's TURN_END brings the result (Game sets the gate).
+        """
+        gate = getattr(self, 'turn_advance_gate', None)
+        return gate() if gate is not None else True
 
     def _complete_turn_announcement(self):
         """Called when turn announcement animation completes - executes turn start effects"""
@@ -906,9 +951,11 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             # Decrement hero ability cooldowns and silence status for current player
             self._decrement_hero_cooldowns_and_silence()
 
-            # Finish any buildings that complete at the START of this player's turn
-            self.last_completed_buildings = self.finish_constructions()  # Store for network sync
-            self.last_completed_units = self.finish_training()  # Store for network sync
+            # Finish any buildings that complete at the START of this player's turn.
+            # Multiplayer: every PC runs these turn-start effects itself, from the same
+            # state (the turn owner's TURN_END snapshot) - nothing here is sent.
+            self.last_completed_buildings = self.finish_constructions()  # The XP ticks below skip these
+            self.last_completed_units = self.finish_training()
             # Sound priority order: Research > Castle > Hero
             self.finish_research()  # Finish research FIRST (highest priority sound)
             self.finish_castle_upgrades()  # Then castle upgrades (medium priority sound)
@@ -1189,29 +1236,35 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         remaining = time_limit - elapsed
         return max(0.0, remaining)
 
-    def check_planning_timer_expired(self):
-        """Check if planning timer has expired and auto-execute if so."""
+    def planning_time_expired(self):
+        """
+        Whether the current player's planning time has run out (no side effects).
+        Sequential multiplayer checks this on the turn owner's PC only, which then ends
+        the turn through Game._end_local_turn() so the other PCs get its moves.
+        """
         if self.turn_phase != 'planning':
             return False
-        # DEBUG: Log when timer actually fires
-        remaining = self.get_remaining_planning_time()
-        if remaining is not None and remaining <= 0:
-            logger.info(f"[TURN_DEBUG] Planning timer expired! player={self.current_player}, turn_phase={self.turn_phase}, "
-                        f"pending_battles={len(self.pending_battles)}, ready_to_advance={self.ready_to_advance_turn}")
-
+        # The turn has not started yet (its clock starts when the announcement ends)
+        if self.turn_announcement_active:
+            return False
         # Check if mission allows timer expiry (tutorial disables, Mission 2 enables)
         if self.tutorial_mission:
             # If mission has allow_timer_expiry attribute, use it; otherwise disable
             if not getattr(self.tutorial_mission, 'allow_timer_expiry', False):
                 return False
-
         remaining = self.get_remaining_planning_time()
-        if remaining is not None and remaining <= 0:
-            # Timer expired - auto execute turn
-            self.add_message(f"Planning time expired! Executing turn...")
-            self.next_player()
-            return True
-        return False
+        return remaining is not None and remaining <= 0
+
+    def check_planning_timer_expired(self):
+        """Check if planning timer has expired and auto-execute if so."""
+        if not self.planning_time_expired():
+            return False
+        logger.info(f"[TURN_DEBUG] Planning timer expired! player={self.current_player}, turn_phase={self.turn_phase}, "
+                    f"pending_battles={len(self.pending_battles)}, ready_to_advance={self.ready_to_advance_turn}")
+        # Timer expired - auto execute turn
+        self.add_message(f"Planning time expired! Executing turn...")
+        self.next_player()
+        return True
 
     def next_player(self):
         """Move to the next player's turn (or execute orders/battles first)"""

@@ -3297,9 +3297,12 @@ class MilitaryMixin:
             self.add_message(f"{len(self.pending_battles)} battles detected! Resolve them to continue.")
             logger.info(f"[TURN_DEBUG] _process_arrivals: {len(self.pending_battles)} battles → turn_phase='battles'")
         else:
-            # No battles - animations complete, advance to next player immediately
+            # No battles - animations complete, advance to next player immediately.
+            # Sequential multiplayer: only the turn owner's PC advances; a PC replaying
+            # another player's moves waits for their TURN_END (it used to advance on its
+            # own, sometimes twice for one turn)
             logger.info(f"[TURN_DEBUG] _process_arrivals: no battles, turn_phase={self.turn_phase}")
-            if self.turn_phase == 'execution':
+            if self.turn_phase == 'execution' and self.may_advance_turn():
                 self._advance_to_next_player()
 
     # R3: Removed legacy can_move_army() and move_army() — 0 external callers.

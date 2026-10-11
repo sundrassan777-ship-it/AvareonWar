@@ -81,14 +81,20 @@ setup_logging()  # console=INFO, file=DEBUG, rotation=5MB x 3
 
 **Records:**
 - All gameplay actions (orders, battles, turn ends) with timestamps and source (local/remote)
-- Comprehensive state snapshots at every turn boundary
-- Checksum comparisons between host and clients
-- Field-level desync diffs (computed by host, sent to client via DESYNC_DIFF message)
+- Comprehensive state snapshots at every turn boundary (every PC, at each TURN_END /
+  round end)
+- Field-level desync diffs: a sequential-mode receiver compares its own state with the turn
+  owner's EXECUTE_ORDERS snapshot before applying it (`main.py`
+  `_report_snapshot_divergence()`); the snapshot corrects any difference
+
+The STATE_CHECKSUM / STATE_DETAIL_REQUEST / STATE_DETAIL_RESPONSE / DESYNC_DIFF exchange was
+removed in Phase 5 of the multiplayer audit (snapshots correct the state every turn), so
+`checksum_log` stays empty.
 
 **When to modify:**
 - **Add new action type to log:** Add to `LOGGED_ACTION_TYPES` frozenset in `sync_logger.py`
 - **Add new state field to snapshots:** Update `build_state_detail()` in `sync_logger.py` AND `calculate_state_checksum()` in `game_state/__init__.py`
-- **Change desync detection flow:** `main.py` STATE_CHECKSUM handler → STATE_DETAIL_REQUEST/RESPONSE/DESYNC_DIFF handlers
+- **Change desync detection:** `main.py` `_report_snapshot_divergence()` (uses `SyncLogger.compute_state_diff()`)
 - **Change log output format:** `finalize_and_save()` in `sync_logger.py`
 
 ---
@@ -1445,7 +1451,7 @@ change hands, add it here and decide which column it belongs in.
 | `campaign_mission_6.py:1356` | no | scripted faction handover, keeps armies and buildings |
 | `tale_lack_of_funds.py _revolt_territory()` | no | Popularity revolt (scripted handover); announced by the T1Revolt transmission |
 | `tale_final_breaths.py _rebel_territory()` | no | Rebellion (scripted handover); announced by a toast + the T2R1 / T2R+ transmission |
-| `SIM_ROUND_COMPLETE` / `FULL_STATE_SYNC` bulk sync | no | desync correction, not a fresh loss |
+| Multiplayer state snapshots (`SIM_ALL_READY`, `SIM_ROUND_COMPLETE`, `EXECUTE_ORDERS`, `TURN_END`) | no | correction of the state, not a fresh loss |
 | `keyboard_handler.py`, setup phase | no | debug cheats and game setup |
 
 **Multiplayer is covered without extra work for uncontested captures**, because arrivals
@@ -1576,9 +1582,10 @@ twice.
 
 #### Deliberately NOT wired in
 
-`save_manager.py`, `replay_recorder.py`, `calculate_state_checksum()` and
-`_send_full_state_sync()`. Reports are per-viewer UI state that legitimately differs
-between host and client — putting them in the checksum would cause **false desyncs**.
+`save_manager.py` (and so the multiplayer state snapshots built on it),
+`replay_recorder.py` and `calculate_state_checksum()`. Reports are per-viewer UI state that
+legitimately differs between host and client — putting them in the checksum would cause
+**false desyncs**.
 
 ---
 
@@ -1923,9 +1930,11 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
 Every action that modifies game state must send a network message. Pattern:
 1. After `game_state.action()` succeeds, call `_send_action_to_remote(MessageType.XXX, {...})`
 2. For sim mode: queue order via `sim_state.add_order()` instead (sent via SIM_PLAYER_READY)
-3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish)
-4. `FULL_STATE_SYNC` sent by host at every turn boundary as safety net (sequential mode)
-5. `SIM_ROUND_COMPLETE` sent by host at every round end as safety net (simultaneous mode)
+3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish/construction)
+4. Sequential mode: the turn owner's `EXECUTE_ORDERS` / `TURN_END` carry its state snapshot
+   and correct anything the per-action messages missed (see "Sequential multiplayer: the
+   turn owner is the truth")
+5. `SIM_ALL_READY` / `SIM_ROUND_COMPLETE` carry the host's snapshot (simultaneous mode)
 6. All randomness must be resolved on sender side; include results in message (e.g., Royal Charisma
    `stolen_units`, Decisive Strike / Valorous Charge `picked_units` → `pre_selected_units`).
    Battles send a seed instead (see "Battle sync")
@@ -1934,11 +1943,43 @@ Every action that modifies game state must send a network message. Pattern:
 ✅ **Adding state to sync safety nets:**
 When adding new game state fields that could diverge between host and client:
 1. **Add it to `save_manager.serialize_game_state()` / `deserialize_game_state()`** - the
-   whole-game snapshots (`network/state_snapshot.py`) are built on them, so simultaneous
-   mode (`SIM_ALL_READY`, `SIM_ROUND_COMPLETE`) carries it automatically
-2. Sequential mode still uses the hand list in `_send_full_state_sync()` + the
-   `FULL_STATE_SYNC` handler (until Phase 5 of the multiplayer audit moves it to snapshots)
-3. Consider adding to `calculate_state_checksum()` in `game_state/__init__.py` for desync detection
+   whole-game snapshots (`network/state_snapshot.py`) are built on them, so every "true
+   state" message carries it automatically (`SIM_ALL_READY`, `SIM_ROUND_COMPLETE`,
+   `EXECUTE_ORDERS`, `TURN_END`)
+2. Consider adding to `calculate_state_checksum()` in `game_state/__init__.py` (sync logger
+   turn snapshots)
+
+✅ **Sequential multiplayer: the turn owner is the truth** (multiplayer audit, Phase 5;
+tests `tests/test_mp_sequential.py`, `tests/test_mp_seq_flow.py`). The PC whose human player
+takes the turn plays it; every other PC replays it:
+- `EXECUTE_ORDERS{snapshot}` - sent by `Game._end_local_turn()` (the End Turn button AND the
+  owner's planning timer) when there are planned moves: the owner's state with the moves.
+  Receivers (`_handle_remote_execute_orders()`) diff it against their own state
+  (`_report_snapshot_divergence()`), apply it and run `execute_all_orders()`.
+- `BATTLE_RESOLVE` - each battle, replayed from the resolver's seed (see "Battle sync").
+- `TURN_END{snapshot}` - sent by the GameState hook `on_turn_advanced` →
+  `Game._on_turn_advanced()` from `_advance_to_next_player()`, i.e. only once the turn has
+  really ended (moves arrived, last battle report closed). Receivers
+  (`_handle_remote_turn_end()`) apply it and call `GameState._after_turn_advance()` (the
+  non-state part of an advance: selection, logs, replay snapshot, the announcement). The
+  turn-start effects then run on every PC from that same state - which is why
+  UNIT_COMPLETE / BUILDING_COMPLETE (duplicate units, H1) are gone.
+- **Receivers never advance on their own**: `GameState.may_advance_turn()` consults
+  `turn_advance_gate` = `Game._owns_current_turn()`; `_process_arrivals()` only advances on
+  the owner's PC. Any new code that advances a turn must do it on the owner's PC only.
+- **Holds** (`_hold_network_message`, in arrival order): TURN_END waits while this PC still
+  replays the moves (`_battles_may_still_appear()`); in sequential mode EVERY message waits
+  while this PC's own turn announcement still has to run the turn-start effects
+  (`_turn_start_pending()`) - the owner's snapshot already contains them.
+- **Timer:** only the owner checks it (`_update_sequential_turn()`, called by `Game.run()`
+  and the test harness); `planning_time_expired()` has no side effects; the clock is cleared
+  by every turn advance (`_after_turn_advance`) and never fires during an announcement.
+- **AFK** (`_seq_afk_watchdog()`): the owner's battles resolve after
+  `SEQ_AFK_RESOLVE_SECONDS` untouched, a report left open that long closes, everything is
+  settled after `SEQ_BATTLE_FALLBACK_SECONDS`. `_resolve_all_pending_battles()` does not
+  advance under an open report (its Close advances, after sending the result).
+- **Game end:** `_send_final_state_if_owner()` sends one last `TURN_END{snapshot, final}`.
+- AI turns still run on every PC (host-only AI turns: Phase 6 of the audit).
 
 ✅ **Client SIM_ROUND_COMPLETE handler (`_sim_apply_round_complete()`):** the client runs its
 own `collect_income()`, `finish_constructions()`, `finish_research()`,
@@ -2023,7 +2064,7 @@ PLAYER_DISCONNECT, AI_TAKEOVER
 
 # Gameplay
 MOVEMENT_ORDER, BUILDING_ORDER, TRAINING_ORDER
-EXECUTE_ORDERS, BATTLE_RESOLVE, TURN_END
+EXECUTE_ORDERS, BATTLE_RESOLVE, TURN_END   # sequential: EXECUTE_ORDERS / TURN_END carry a snapshot
 
 # Simultaneous Mode
 SIM_PLAYER_READY, SIM_ALL_READY, SIM_TIMER_UPDATE
@@ -2160,9 +2201,9 @@ team chat used to arrive as 'all' chat on every PC.
 ### State snapshots (network/state_snapshot.py)
 
 `build_snapshot(gs)` / `apply_snapshot(gs, data)`: the whole GameState in one JSON-safe
-dict, for every "this is the true state now" message (used from Phases 4-5 of the
-multiplayer audit: simultaneous `SIM_ALL_READY`, sequential `EXECUTE_ORDERS` /
-`TURN_END`). Built on `save_manager.serialize_game_state()` / `deserialize_game_state()`:
+dict, for every "this is the true state now" message: simultaneous `SIM_ALL_READY` /
+`SIM_ROUND_COMPLETE`, sequential `EXECUTE_ORDERS` / `TURN_END` (and the final state when a
+game ends in the owner's turn). Built on `save_manager.serialize_game_state()` / `deserialize_game_state()`:
 **a new GameState field goes into save_manager, and snapshots carry it too.** Left out:
 `chat_messages`, `messages` (kept per PC). Added: `player_is_ai`. Applying clears
 animations, arrivals, pending battles and `ready_to_advance_turn`, rebuilds the legacy army

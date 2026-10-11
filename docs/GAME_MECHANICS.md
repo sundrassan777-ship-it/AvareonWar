@@ -764,10 +764,11 @@ identical game. A player joins the slot the host's server assigned and keeps it.
 
 ### Host Authority
 
-The host (Player 0) is authoritative:
-- Runs all game logic and AI
-- Broadcasts state changes to clients
-- Controls game flow and timing
+The host (Player 0) runs the server and the game setup:
+- Simultaneous turns: the host is authoritative for every round (orders, AI, round end)
+- Sequential turns: the PC of the player whose turn it is is authoritative for that turn
+  (see Multiplayer Rules (sequential))
+- Relays every player's actions to the others
 
 **Battles:** fought by the player whose turn it is (sequential) or by the battle's
 designated resolver (simultaneous). Every other PC replays the same battle from its
@@ -784,6 +785,22 @@ affected.
 - Change game settings
 - Launch game
 - End/pause game
+
+### Multiplayer Rules (sequential)
+
+- **The player whose turn it is decides.** When they end their turn, their moves go to
+  every player together with their whole game state; everyone watches the same armies
+  march and the same battles, and the next turn starts from that same state on every PC.
+  Nobody else's game moves on until that player's turn has really ended.
+- **Planning timer:** only the clock of the player whose turn it is counts. When it runs
+  out, their planned moves are carried out exactly as if they had pressed **End Turn**.
+- **End Turn** does nothing while it is greyed out (armies still moving, battles open).
+- **AFK battles:** battles the player leaves untouched for **90 seconds** are fought for
+  them, a battle report left open for 90 seconds closes, and after **3 minutes** every
+  battle still open is settled - the other players never wait forever.
+- **Cancelling a construction** refunds it on every player's screen.
+- **Game end:** the final state is shared, so every player's recap shows the same numbers.
+- Computer players' turns still play out on every PC (until host-run AI turns arrive).
 
 ### Disconnect Handling
 
@@ -822,8 +839,9 @@ hand a seat back yet; `RECONNECT_ENABLED` in `network_config.py` keeps it off.
 - `MOVEMENT_ORDER` - Army movement queued
 - `BUILDING_ORDER` - Building construction started
 - `TRAINING_ORDER` - Unit training queued
-- `BATTLE_RESOLVE` - Battle outcome
-- `TURN_END` - Turn completed
+- `EXECUTE_ORDERS` - The turn's moves begin (with the game state)
+- `BATTLE_RESOLVE` - Battle outcome (replayed from its random seed)
+- `TURN_END` - Turn completed (with the game state after it)
 
 **Simultaneous Mode Messages:**
 - `SIM_PLAYER_READY` - Player finished planning
@@ -854,10 +872,12 @@ hand a seat back yet; `RECONNECT_ENABLED` in `network_config.py` keeps it off.
 - Timeout after 15 seconds no response
 
 **Synchronization:**
-- Host-authoritative model
-- All game logic runs on host
-- Clients receive state updates
-- Checksum validation (optional)
+- Simultaneous turns: the host is authoritative - it checks every order and sends its
+  game state when a round's moves begin and when the round ends
+- Sequential turns: the PC of the player whose turn it is is authoritative for that turn -
+  it sends its game state when its moves begin and when its turn ends
+- Battles are replayed everywhere from the resolver's random seed
+- Every PC applies those game-state snapshots, so a difference never outlives a turn
 
 ---
 

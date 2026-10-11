@@ -2,6 +2,50 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-11 - Multiplayer audit, Phase 5: sequential mode - the turn owner is the truth
+
+Branch `fix/multiplayer-sync`. Developer guide: "Sequential multiplayer: the turn owner is the
+truth" (Network System) in CODE_GUIDE.md.
+- **C5 / M5** The host's FULL_STATE_SYNC is gone - it was sent before the host's own moves
+  ran and applied whenever it arrived (a client could play its turn on a reverted map), and
+  its hand-written field list missed fields. Now the turn owner's PC sends its state
+  snapshot twice per turn: `EXECUTE_ORDERS{snapshot}` when its planned moves set off
+  (receivers apply it and replay the same moves, `_handle_remote_execute_orders()`) and
+  `TURN_END{snapshot}` once the turn has really ended (`_handle_remote_turn_end()`).
+  TURN_END comes from a new GameState hook in `_advance_to_next_player()`
+  (`on_turn_advanced` -> `Game._on_turn_advanced()`), so every path that ends a turn sends
+  it exactly once and after the last battle result. The rest of an advance is shared as
+  `GameState._after_turn_advance()`.
+- Receivers never advance a turn on their own: `GameState.may_advance_turn()` (gate =
+  `Game._owns_current_turn()`) stops `_process_arrivals()` from advancing a replay.
+- **H1** UNIT_COMPLETE / BUILDING_COMPLETE are no longer sent: every PC runs the turn-start
+  effects itself from the same state (the host duplicated the client's trained units).
+  Messages that arrive while this PC's own turn announcement still has to run those effects
+  wait for it (`_turn_start_pending()`), and TURN_END waits while this PC still replays the
+  moves - both through the Phase 3 hold.
+- **C2** The planning timer is checked on the turn owner's PC only and ends the turn through
+  the End Turn path, `_end_local_turn()` (every PC used to end the turn on its own clock).
+  `GameState.planning_time_expired()` has no side effects; the clock is cleared by every turn
+  advance and never fires during an announcement - found while testing: a PC that took the
+  new turn from a TURN_END kept the previous turn's start time, so its own new turn would
+  have "expired" at once.
+- **M4** End Turn is refused while it is greyed out in multiplayer (it sent the turn's
+  messages again).
+- **H4** Cancelling a construction is sent (`ORDER_REMOVE` `cancel_type: 'construction'`).
+- **AFK** (owner decision, as in simultaneous mode): the turn owner's battles resolve after
+  `SEQ_AFK_RESOLVE_SECONDS` (90 s) untouched, a battle report left open that long closes,
+  and everything is settled after `SEQ_BATTLE_FALLBACK_SECONDS` (180 s)
+  (`_seq_afk_watchdog()`). `_resolve_all_pending_battles()` no longer advances under an open
+  battle report (its Close advances, after sending the result).
+- **Final state:** a game that ends in the owner's turn sends one last `TURN_END{snapshot,
+  final}` (`_send_final_state_if_owner()`), so every recap uses the same numbers.
+- STATE_CHECKSUM and the STATE_DETAIL_REQUEST / RESPONSE / DESYNC_DIFF exchange are gone; a
+  receiver now diffs its own state against the owner's EXECUTE_ORDERS snapshot
+  (`_report_snapshot_divergence()`, recorded by the sync logger).
+- Main-loop sequential work moved into `Game._update_sequential_turn()` (planning timer, AFK
+  rules, final state), which the test harness now calls too.
+- Tests: `tests/test_mp_seq_flow.py` (14); strict xfails removed for H1 C5 H4 M4.
+
 ## 2026-10-11 - Multiplayer audit, Phase 4: simultaneous mode - the host is the truth
 
 Branch `fix/multiplayer-sync`. Developer guide: "Multiplayer model (the host is the

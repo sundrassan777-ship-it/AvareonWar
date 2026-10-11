@@ -9,18 +9,19 @@ Output: Logs/sync/{game_id}_P{player_index}_{host|client}_{date}.json
 
 Architecture:
     - Actions appended to in-memory list (O(1) per action, no per-action I/O)
-    - State snapshots captured at turn boundaries (same frequency as FULL_STATE_SYNC)
-    - Checksum comparisons logged on both host and client
-    - Desync diffs computed by host, sent back to client via DESYNC_DIFF message
+    - State snapshots captured at turn boundaries (every PC, at each TURN_END)
+    - Desync diffs computed locally: a sequential-mode receiver compares its own state
+      with the turn owner's EXECUTE_ORDERS snapshot before applying it
+      (main.py _report_snapshot_divergence)
     - Single file write at game end (same pattern as game_logger.py)
+    (The STATE_CHECKSUM / STATE_DETAIL / DESYNC_DIFF exchange is gone since the
+    multiplayer audit, Phase 5: snapshots correct every turn; checksum_log stays empty.)
 
 Hook points:
     - main.py _send_action_to_remote(): outgoing action logging
     - main.py _handle_network_message(): incoming action logging
-    - main.py _send_full_state_sync() sites: turn boundary snapshots (host)
-    - main.py STATE_CHECKSUM send sites: turn boundary snapshots (client)
-    - main.py STATE_CHECKSUM handler: checksum comparison + desync detection (host)
-    - main.py STATE_DETAIL_REQUEST/RESPONSE/DESYNC_DIFF: desync diff exchange
+    - main.py _on_turn_advanced() / _handle_remote_turn_end(): turn boundary snapshots
+    - main.py _report_snapshot_divergence(): desync diffs (sequential receivers)
     - simultaneous/sim_state.py _advance_round(): sim mode turn snapshots
     - main.py show_recap_if_ended(): finalize and save
 """
@@ -123,7 +124,8 @@ class SyncLogger:
         """
         Record comprehensive state snapshot at a turn boundary.
 
-        Called at the same points as FULL_STATE_SYNC (host) or STATE_CHECKSUM (client).
+        Called on every PC at each sequential turn end (the owner when it sends TURN_END,
+        the others when they apply it) and at each simultaneous round end.
         """
         # Sync logger turn snapshot for multiplayer state verification
         snapshot = self.build_state_detail()
@@ -176,9 +178,9 @@ class SyncLogger:
         """
         Build a JSON-serializable dict of ALL critical game state.
 
-        Used for desync diff computation. Covers all fields from FULL_STATE_SYNC
-        plus fields the checksum covers. Matches the serialization patterns
-        from _send_full_state_sync() in main.py.
+        Recorded in the turn snapshots for post-game comparison of the participants'
+        logs. Covers the critical fields of the multiplayer state snapshots
+        (network/state_snapshot.py) plus the fields the checksum covers.
 
         Returns:
             dict: Complete critical state snapshot

@@ -50,8 +50,11 @@ logger = get_logger(__name__)
 # Enables 3+ player multiplayer where clients need to see each other's actions.
 # Host still receives these via message_queue as before.
 # NOT relayed: connection/lobby/reconnect, host-originated broadcasts
-# (FULL_STATE_SYNC, SIM_ALL_READY, SIM_ROUND_COMPLETE, SIM_TIMER_UPDATE),
-# STATE_CHECKSUM, SIM_PLAYER_READY (host manages ready state).
+# (SIM_ALL_READY, SIM_ROUND_COMPLETE, SIM_READY_STATE, SIM_TIMER_UPDATE),
+# SIM_PLAYER_READY (host manages ready state).
+# Sequential mode: the turn owner's EXECUTE_ORDERS / TURN_END carry its state snapshot,
+# so a client's turn reaches every other PC through this relay. (UNIT_COMPLETE /
+# BUILDING_COMPLETE, FULL_STATE_SYNC and STATE_CHECKSUM are no longer sent.)
 _RELAY_MESSAGE_TYPES = frozenset({
     # Sequential mode gameplay
     MessageType.MOVEMENT_ORDER,
@@ -63,8 +66,6 @@ _RELAY_MESSAGE_TYPES = frozenset({
     MessageType.EXECUTE_ORDERS,
     MessageType.BATTLE_RESOLVE,
     MessageType.TURN_END,
-    MessageType.UNIT_COMPLETE,
-    MessageType.BUILDING_COMPLETE,
     # Both modes
     MessageType.CHAT_MESSAGE,
     MessageType.SIM_HERO_ABILITY,

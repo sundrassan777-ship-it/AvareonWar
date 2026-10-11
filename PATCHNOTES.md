@@ -50,6 +50,25 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 - Computer players now use all of their Heroes' targeted abilities, and wait for the
   cooldown like everyone else.
 
+### Taking turns
+
+- Every turn now plays out the same for every player: when a player ends their turn, the
+  others watch the same armies march and the same battles, and the next turn starts from
+  exactly the same game. Before, a client could find the host's moves undone, or a turn
+  could be skipped.
+- Fixed: units trained by another player could appear twice.
+- Fixed: when the planning timer ran out, the turn could end differently on each player's
+  screen, and planned moves were lost. Now the timer of the player whose turn it is
+  decides, and their planned moves are carried out as if they had pressed **End Turn**.
+- Fixed: cancelling a construction was not passed on - the other players still saw the
+  building, and the gold stayed spent.
+- Fixed: pressing the greyed-out **End Turn** button while armies were still moving could
+  confuse the other players' games.
+- Away from the keyboard? Battles left untouched for 90 seconds are fought for you, a
+  battle report left open for 90 seconds closes by itself, and after 3 minutes every open
+  battle is settled, so the other players never wait forever.
+- When the game ends, every player's summary shows the same final numbers.
+
 ### Battles and heroes
 
 - Battles now play out the same way for every player. Fixed: when another player won a

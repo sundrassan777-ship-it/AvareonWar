@@ -449,6 +449,25 @@ server.send_to_player(player_idx, msg)
 
 ---
 
+## 🔁 Sequential Multiplayer Quick Reference
+
+**The turn owner (the PC of the player whose turn it is) is the truth:**
+| Message | Sent by | Carries | Receivers |
+|---------|---------|---------|-----------|
+| `EXECUTE_ORDERS` | owner, End Turn / its timer, with planned moves | state snapshot (moves included) | apply it, replay the moves |
+| `BATTLE_RESOLVE` | owner, per battle (on Close) | seed + outcome | replay the battle |
+| `TURN_END` | owner, once the turn has really ended (`on_turn_advanced` hook) | state snapshot after the advance | apply it, play the announcement |
+| `TURN_END` + `final` | owner, game ended in its turn | final state | apply it |
+
+**Multiplayer (main.py `Game` constants):**
+| Setting | Value | Meaning |
+|---------|-------|---------|
+| `SEQ_AFK_RESOLVE_SECONDS` | 90 s | The owner's untouched battles resolve; a battle report left open this long closes |
+| `SEQ_BATTLE_FALLBACK_SECONDS` | 180 s | After this long in the battles phase everything still open is resolved |
+| Planning timer | 60 s base | Checked on the owner's PC only |
+
+---
+
 ## 📁 File Locations
 
 **Main code:**

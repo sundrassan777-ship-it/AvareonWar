@@ -44,8 +44,6 @@ class TestHarnessSanity:
 
 class TestTurnStartCompletions:
 
-    @pytest.mark.xfail(strict=True, reason="H1: units are spawned on every PC at turn start AND "
-                       "re-added by UNIT_COMPLETE, so the host duplicates the client's units")
     def test_trained_unit_appears_once_on_every_peer(self, make_session):
         session = make_session(num_players=2)
         capital = h.spread_territories(2)[1]          # the client's starting territory
@@ -64,9 +62,6 @@ class TestTurnStartCompletions:
 
 class TestStateSyncTiming:
 
-    @pytest.mark.xfail(strict=True, reason="C5: the host sends FULL_STATE_SYNC before running its "
-                       "own moves; the client applies that stale snapshot afterwards and plays its "
-                       "turn on a reverted map")
     def test_host_move_is_not_reverted_on_the_client(self, make_session):
         session = make_session(num_players=2)
         a, b, _ = h.adjacent_triple()
@@ -144,8 +139,6 @@ class TestClientAttackOnTheHost:
 
 class TestCancellations:
 
-    @pytest.mark.xfail(strict=True, reason="H4: cancelling a construction is never sent; the host "
-                       "keeps the building and the charge, and its sync undoes the client's cancel")
     def test_cancelled_construction_is_cancelled_everywhere(self, make_session):
         session = make_session(num_players=2)
         capital = h.spread_territories(2)[1]
@@ -164,8 +157,6 @@ class TestCancellations:
 
 class TestEndTurnButton:
 
-    @pytest.mark.xfail(strict=True, reason="M4: End Turn still sends a message while it is greyed "
-                       "out (armies moving)")
     def test_greyed_end_turn_sends_nothing(self, make_session):
         session = make_session(num_players=2)
         a, b, _ = h.adjacent_triple()
