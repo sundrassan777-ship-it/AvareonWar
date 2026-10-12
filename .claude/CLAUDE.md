@@ -150,6 +150,7 @@ AvareonWar/
 - [tests/test_battle_interface_integration.py](tests/test_battle_interface_integration.py) - EnhancedBattleInterface wiring (state machine, derived duration, retarget, skip)
 - [tests/test_campaign_outro_cutscene.py](tests/test_campaign_outro_cutscene.py) - Campaign mission exit sentinels: outro cutscene plays on victory only
 - [tests/test_battle_reports.py](tests/test_battle_reports.py) - Battle Report capture rules (tie path, Keep-only defence, Champion of the People, hero-ability guard)
+- [tests/test_keep_battles.py](tests/test_keep_battles.py) - Several attackers at one Keep fight each other first (weaker attacker fights, winner takes the Keep, report names the assaulting attacker, XP / kill credit, seeded dice tie), team games (defending team's leader is not an attacker, allied attackers are one side)
 - [tests/test_battle_report_popup.py](tests/test_battle_report_popup.py) - Popup text/geometry and the report-only battle interface
 - [tests/test_battle_report_integration.py](tests/test_battle_report_integration.py) - Battle Report wiring against a real `Game`
 - [tests/test_battle_report_network.py](tests/test_battle_report_network.py) - Battle Reports reaching a defending multiplayer client
@@ -456,7 +457,7 @@ After making code changes, ask yourself:
 - Add new unit type → `game_state/__init__.py` UNIT_TYPES class attribute
 - Add new building → `game_state/data_definitions.py` BUILDING_TYPES dict
 - Change balance/costs → `game_state/economy.py` or `economic_data.json`
-- Modify combat → `game_state/military.py` resolve_battle() method — any randomness must use its `rng` parameter (multiplayer replays battles from the resolver's seed)
+- Modify combat → `game_state/military.py` resolve_battle() method — any randomness must use its `rng` parameter (multiplayer replays battles from the resolver's seed). Several attackers at one Keep → `_fight_for_the_keep()` (they fight each other first); the Keep's side is `battle.keep_bonus_player` (simultaneous battles are keyed by TEAM LEADER, not always the owner). See "Several attackers at one Keep" + "Known gap - team battles" in CODE_GUIDE.md
 - Resolve a battle from a new place → `main.py` `_resolve_battle_locally()` + `_battle_resolve_payload()` (never call `resolve_battle()` directly in multiplayer code); receiving side `_handle_remote_battle_resolve()`. See "Battle sync" in CODE_GUIDE.md
 - A hero ability that picks units at random → ship the picks (`picked_units` / Royal Charisma `stolen_units`), receivers pass `pre_selected_units`
 - Whole-game "true state" message → `network/state_snapshot.py` (new GameState fields go into `save_manager.serialize/deserialize_game_state`)

@@ -2,6 +2,27 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-12 - Several attackers at one Keep fight each other first
+
+Owner's decision after the first multiplayer test game, where two attackers reached the
+same Keep in one round and only the stronger fought (the other's units vanished, logged as
+"Keep battle in Liadnon: Expected 1 attacker but found 2").
+- `_resolve_keep_battle()` → new `_fight_for_the_keep()`: the attacking sides fight each
+  other with the open-field rules (strength with counters and veterancy, strength-scaled
+  losses, min 1 survivor, seeded dice on a tie, a dice tie destroys them all); the winner
+  then fights the two-phase Keep battle with its survivors. Allied attackers stay one side.
+- The defending side is `battle.keep_bonus_player` (its key in `battle.armies`):
+  simultaneous mode keys a battle by team leader, so when the owner's ally had the lower
+  player index the defending team's leader was counted as an attacker and "took" its own
+  team's Keep (the territory went to the ally).
+- XP and `units_killed` go to whoever fought whom (`battle.keep_prefight_*`); the Battle
+  Report names the attacker that assaulted the Keep.
+- Found while doing it (documented, not fixed - owner to decide): simultaneous team
+  battles in general hand the territory to the winning team's leader and keep only the
+  leader's units ("Known gap - team battles" in CODE_GUIDE.md).
+- Tests: `tests/test_keep_battles.py` (7), `TestKeepBattles` in `tests/test_mp_sim_flow.py`
+  (replayed identically on every PC).
+
 ## 2026-10-12 - Fixes from the first multiplayer test game
 
 Branch `fix/multiplayer-sync`. The owner hosted a simultaneous Domination game against 3

@@ -153,6 +153,16 @@ A Keep (or Fortress) defending an empty territory fights alone with a flat stren
 (no unit counters apply to it). The battle screen shows the defender as "No units" plus the
 Keep line; before 2026-09-25 it wrongly listed 2 Swordsmen and an inflated strength.
 
+**Several attackers at one Keep** (simultaneous turns: enemies of the owner - and of each
+other - reach the same Keep in one round): the attackers **fight each other first**, by the
+normal battle rules (strength with counters and veterancy, strength-scaled losses, the
+winner always keeps at least 1 unit; equal strength is rolled with dice - one die per army
+- and a tie in the dice destroys every attacker). Only the winner then assaults the Keep
+(garrison, then the Keep itself) with its survivors. Allies attacking together are one
+side and never fight each other. The Keep's defender earns XP and "units killed" only for
+the attackers it actually fought. (Before 2026-10-12 only the strongest attacker fought
+the Keep and the others' units vanished without fighting.)
+
 **Casualties (Strength-Scaled):**
 - Winner casualties = `loser_count * (loser_strength / winner_strength)`
 - Dominant forces lose far fewer units (counters matter)

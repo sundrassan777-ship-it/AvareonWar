@@ -280,6 +280,32 @@ def resolve_battle(self, battle):
 - Formula: `casualties = loser_count * (loser_strength / winner_strength)`, min 1
 - Same formula applied in `_resolve_keep_battle()` Phase 1 (`game_state/military.py`, line ~1424)
 - Keep Phase 2 uses fixed numerical comparison (unchanged)
+- Same formula in `_fight_for_the_keep()` too (see below) - keep the three in step
+
+**Several attackers at one Keep** (`_resolve_keep_battle()` → `_fight_for_the_keep()`,
+2026-10-12; tests `tests/test_keep_battles.py`, `TestKeepBattles` in `tests/test_mp_sim_flow.py`):
+- The defending side is `battle.keep_bonus_player` - the key the Keep's side has in
+  `battle.armies`. Simultaneous mode keys battles by TEAM LEADER, which is not
+  `original_owner` when an ally with a lower index defends with the owner (the owner then
+  has no entry). Use `original_owner` only for the player-specific parts (bonuses, levels,
+  buildings, the winner returned for a defensive win).
+- More than one attacking key → they fight each other first with the open-field rules
+  (strength, scaled losses, min 1 survivor, `rng` dice on a tie, a dice tie destroys
+  them all). Losers' units are removed (`_remove_battle_side()`), the winner's losses come
+  off its units lowest level first (`_keep_side_survivors()`), and
+  `player_compositions[winner]` becomes its survivors before Phase 1.
+- `battle.keep_prefight_winner / losers / survivors / losses` let
+  `_update_battle_results()` credit XP and `units_killed` to whoever actually fought whom,
+  and `_capture_battle_reports()` name the attacker that assaulted the Keep.
+- Any randomness here must use `rng` (multiplayer replays the battle from its seed).
+
+⚠️ **Known gap - team battles in simultaneous mode** (found 2026-10-12, not fixed yet):
+`_update_battle_results()` treats the winning key (a team leader) as one player - it hands
+it the territory, keeps survivors from the leader's own garrison only and clears all
+others. A joint defence where the owner's ally has the lower player index therefore gives
+the territory to the ally (the owner's buildings are destroyed and units lost), and a
+winning team's other members lose their units. `apply_multi_garrison_casualties()` also
+walks every garrison in the territory, attackers' included.
 
 #### ✅ Modify Veterancy/Experience System
 

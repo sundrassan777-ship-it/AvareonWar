@@ -87,6 +87,11 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ### Battles and heroes
 
+- **Two attackers, one Keep:** when enemies reach the same Keep in the same round, they
+  now fight each other first, and only the winner storms the Keep with what it has left.
+  Before, only the stronger attacker fought and the other one's army simply vanished.
+- Fixed (simultaneous turns): when an ally helped defend a Keep, the battle could treat
+  your own ally as the attacker and hand the Keep to them.
 - Battles now play out the same way for every player. Fixed: when another player won a
   battle, your screen could still show the defeated side's buildings and Heroes, and the
   winning units lost their veteran experience.

@@ -524,3 +524,48 @@ class TestClientRoundRecords:
             assert gs.turn_number == 2
             assert list(gs.game_logger.turn_data) == [1]
             assert len(gs.replay_recorder.snapshots) == 2          # start + round 1
+
+
+class TestKeepBattles:
+
+    def test_attackers_fighting_over_a_keep_replay_identically(self, make_session):
+        """Two attackers at one Keep fight each other first (_fight_for_the_keep); every
+        PC replays that from the resolver's seed - no PC needs the resolver's result
+        forced on it (_apply_battle_outcome)."""
+        from game_state import Battle
+        session = make_session(num_players=3, turn_mode='simultaneous')
+        _, b, _ = h.adjacent_triple()
+
+        def arrange(gs):
+            h.place(gs, b, 2, h.units('Swordsman'), buildings={0: 'Keep'})
+            gs.territory_garrisons[b][0] = {
+                'unmoved': 0, 'moved': 4, 'units': h.units(*['Cavalry'] * 4, status='moved')}
+            gs.territory_garrisons[b][1] = {
+                'unmoved': 0, 'moved': 4, 'units': h.units(*['Cavalry'] * 4, status='moved')}
+            battle = Battle(b)
+            battle.original_owner = 2
+            battle.add_army(2, 1, {'Swordsman': 1})
+            battle.add_army(0, 4, {'Cavalry': 4})
+            battle.add_army(1, 4, {'Cavalry': 4})            # a tie: the seed's dice decide
+            battle.keep_bonus, battle.keep_bonus_player, battle.original_garrison = 2, 2, 1
+            battle.team_members_map = {0: [0], 1: [1], 2: [2]}
+            battle.attackers, battle.resolver, battle.is_multi_way = [0, 1], 0, True
+            gs.pending_battles = [battle]
+        session.on_all(arrange)
+        enter_resolving(session)
+        corrections = []
+        for index in (1, 2):
+            game = session.game(index)
+            real = game._apply_battle_outcome
+            game._apply_battle_outcome = (lambda territory, data, real=real:
+                                          corrections.append(territory) or real(territory, data))
+        host = session.game(0)
+        h.open_battle(host, b)
+        h.fight(host)
+        h.close_battle(host)
+        session.run_until_quiet()
+        assert "fight each other first" in "\n".join(host.game_state.messages)
+        assert corrections == []
+        assert session.gs(1).territory_owners[b] == session.gs(2).territory_owners[b] \
+            == host.game_state.territory_owners[b]
+        assert comparable(session.gs(1)) == comparable(host.game_state) == comparable(session.gs(2))
