@@ -53,6 +53,10 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   carries on - even finishing the current round for them.
 - Computer players now use all of their Heroes' targeted abilities, and wait for the
   cooldown like everyone else.
+- Computer players now plan only what they can afford, most important first - so they
+  actually recruit the Heroes and research they aim for. Before, those usually failed
+  for lack of gold and computer players got their Heroes very late. (Also in
+  single-player games with simultaneous turns.)
 - Fixed: when a player was knocked out of the game (no territories left) but stayed to
   watch, every following round waited for their timer to run out. The game now carries
   on without them - also when you are the one knocked out and watch your allies play on.
@@ -87,6 +91,8 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ### Battles and heroes
 
+- Fixed: the territory bonus **Hero Training Cost** (-3% per territory) never lowered the
+  price of a Hero. It does now, and the Keep shows the price you will pay.
 - **Two attackers, one Keep:** when enemies reach the same Keep in the same round, they
   now fight each other first, and only the winner storms the Keep with what it has left.
   Before, only the stronger attacker fought and the other one's army simply vanished.

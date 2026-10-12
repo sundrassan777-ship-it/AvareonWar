@@ -327,6 +327,8 @@ Each of the 57 territories on the map grants one permanent bonus to its owner. B
    - Reduces cost of hero recruitment
    - Separate from unit costs for balance
    - Example: Own 3 hero territories → -9% hero costs
+   - Stacks with Royal Decree; the Keep shows the price you pay. (Before 2026-10-12 this
+     bonus was listed but never applied.)
 
 5. **Pikeman Strength** (+10% per territory)
    - Increases Pikeman effective strength in combat
@@ -950,6 +952,11 @@ Select "Turn Mode: Simultaneous" in the game setup screen. Available in both sin
                   ▼
             Next Round
 ```
+
+**Computer players' spending:** a computer player plans only purchases it can pay for, in
+its own order of priority (Heroes first), as it does in sequential turns. (Before
+2026-10-12 it planned every purchase against its full gold; the round pays buildings and
+units first, so its Heroes and research usually failed and it got Heroes very late.)
 
 ### Timer System
 

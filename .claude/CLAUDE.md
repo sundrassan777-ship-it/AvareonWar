@@ -150,6 +150,7 @@ AvareonWar/
 - [tests/test_battle_interface_integration.py](tests/test_battle_interface_integration.py) - EnhancedBattleInterface wiring (state machine, derived duration, retarget, skip)
 - [tests/test_campaign_outro_cutscene.py](tests/test_campaign_outro_cutscene.py) - Campaign mission exit sentinels: outro cutscene plays on victory only
 - [tests/test_battle_reports.py](tests/test_battle_reports.py) - Battle Report capture rules (tie path, Keep-only defence, Champion of the People, hero-ability guard)
+- [tests/test_sim_ai_budget.py](tests/test_sim_ai_budget.py) - Simultaneous AI keeps only the purchases it can pay for, in its priority order (the Hero it wanted is trained that round), a Hero and a Castle upgrade of one Keep kept apart, the "Hero Training Cost" territory bonus lowers the Hero price
 - [tests/test_keep_battles.py](tests/test_keep_battles.py) - Several attackers at one Keep fight each other first (weaker attacker fights, winner takes the Keep, report names the assaulting attacker, XP / kill credit, seeded dice tie), team games (defending team's leader is not an attacker, allied attackers are one side)
 - [tests/test_battle_report_popup.py](tests/test_battle_report_popup.py) - Popup text/geometry and the report-only battle interface
 - [tests/test_battle_report_integration.py](tests/test_battle_report_integration.py) - Battle Report wiring against a real `Game`
@@ -463,6 +464,7 @@ After making code changes, ask yourself:
 - Whole-game "true state" message → `network/state_snapshot.py` (new GameState fields go into `save_manager.serialize/deserialize_game_state`)
 - Modify battle bar volley animation → `ui/effects/battle_interface.py` (`BattleBarVolleyEffect`)
 - Modify "Resolve Remaining Battles" button → `rendering/ui_renderer.py` `_draw_resolve_all_battles_button()`, `main.py` `_resolve_all_pending_battles()`
+- Simultaneous-mode AI spending → `simultaneous/sim_ai.py` `_fit_actions_to_gold()` / `_gold_cost()` (a new purchase type needs a cost there). Price of a Hero → always `gs.get_hero_cost(hero, player)`
 - Change AI behavior → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py` (AI code resolves battles with `game_state.resolve_battle_shared()`, never `resolve_battle()` - multiplayer replays them)
 - Add UI element → `main.py` or `rendering/ui_renderer.py`
 - Add visual effect → `ui/effects/` directory

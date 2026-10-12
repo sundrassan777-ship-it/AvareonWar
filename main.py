@@ -7649,11 +7649,8 @@ class Game:
             hero_type = button_key
             hero_info = self.game_state.HERO_TYPES[hero_type]
 
-            # Get hero cost with Royal Decree discount applied
-            hero_cost = hero_info['cost']
-            discount_percent = self.game_state.player_royal_decree_discount[self.game_state.current_player]
-            if discount_percent > 0:
-                hero_cost = int(hero_cost * (100 - discount_percent) / 100)
+            # What training this Hero costs (Royal Decree + territory bonuses)
+            hero_cost = self.game_state.get_hero_cost(hero_type, self.game_state.current_player)
 
             # Get hero description from HERO_TYPES
             description_lines = hero_info.get('description', [''])
@@ -10555,15 +10552,12 @@ class Game:
 
         # All hero buttons use purple color (fallback letter buttons)
         hero_color_purple = (150, 100, 200)
-        discount_percent = gs.player_royal_decree_discount[current_player]
         for idx, hero_type in enumerate(hero_types_list):
             if _hide_hero_training:
                 break  # Skip all hero training button drawing
             hero_info = gs.HERO_TYPES[hero_type]
-            hero_cost = hero_info['cost']
-            # Apply Royal Decree discount for display
-            if discount_percent > 0:
-                hero_cost = int(hero_cost * (100 - discount_percent) / 100)
+            # What training this Hero costs (Royal Decree + territory bonuses)
+            hero_cost = gs.get_hero_cost(hero_type, current_player)
             can_afford = current_gold >= hero_cost
             already_owned = hero_type in gs.hero_ownership[current_player]
             is_disabled = (is_training or already_owned or keep_has_hero or hero_limit_reached

@@ -2,6 +2,23 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-12 - Simultaneous AI spends within its gold; the Hero cost bonus works
+
+Owner's decision after the first multiplayer test game (an AI queued a Hero for 7 rounds
+running and failed every time).
+- `SimultaneousAI._fit_actions_to_gold()`: the planner (written for sequential turns, where
+  a purchase is paid at once and later ones fail when gold runs out) planned every purchase
+  against the full gold; the round pays builds and training first, so Heroes and research
+  (paid last) failed. Purchases are now kept in the AI's planned (priority) order while it
+  can pay, at the exact price the executing method charges (`_gold_cost()`), and a Hero and
+  a Castle upgrade of one Keep are kept apart (the upgrade blocks Hero training - the test
+  game's AI queued both).
+- `GameState.CASTLE_UPGRADE_COST` (150) replaces two local copies.
+- **Found on the way:** the territory bonus "Hero Training Cost" (-3% per territory) never
+  applied - `start_hero_training()`, the Keep view, its tooltip and the AI each applied
+  Royal Decree by hand. All now use `get_hero_cost()`.
+- Tests: `tests/test_sim_ai_budget.py` (6).
+
 ## 2026-10-12 - Several attackers at one Keep fight each other first
 
 Owner's decision after the first multiplayer test game, where two attackers reached the

@@ -869,7 +869,7 @@ class BuildingMixin:
         - Cannot upgrade while hero is training
         - 100% refund on cancellation
         """
-        UPGRADE_COST = 150
+        UPGRADE_COST = self.CASTLE_UPGRADE_COST
         UPGRADE_TIME = 2
 
         # Reset the failure code first so a stale code is never reported for this attempt
@@ -924,7 +924,7 @@ class BuildingMixin:
 
     def cancel_castle_upgrade(self, territory, keep_plot_index):
         """Cancel Castle upgrade with 100% refund (150 gold)"""
-        UPGRADE_COST = 150
+        UPGRADE_COST = self.CASTLE_UPGRADE_COST
 
         # 1. Validate upgrade exists
         if (territory not in self.castle_upgrades_in_progress or

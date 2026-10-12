@@ -575,7 +575,10 @@ BONUS_TYPES = {
 - **Income:** `calculate_player_income()` (`game_state/economy.py`) - Applied after all territory income summed
 - **Building costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'building_cost' bonus
 - **Unit costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'unit_cost' bonus
-- **Hero costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'hero_cost' bonus
+- **Hero costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'hero_cost' bonus.
+  **`get_hero_cost(hero, player)` is THE price of a Hero** - charged by
+  `start_hero_training()`, shown and checked by the Keep view and its tooltip, used by the AI.
+  Until 2026-10-12 those sites applied Royal Decree by hand, so this bonus did nothing.
 - **Tech costs:** `get_effective_tech_cost()` (`game_state/economy.py`) - Separate method for research
 - **Unit strength:** `calculate_army_effective_strength()` (`game_state/military.py`) - Per-unit-type bonuses
 
@@ -2488,6 +2491,16 @@ toast. Don't add a fourth copy.
 - Modify `SimultaneousAI._make_ai_decisions()` for decision logic
 - AI uses `_selected_unit_ids` dict to track units across multiple movement orders
 - Reset at start of each planning session to prevent selecting same unit twice
+- **Gold budget** (`_fit_actions_to_gold()`, 2026-10-12): the planner
+  (`AIPlayer._plan_turn_actions()`) was written for sequential turns, where a purchase is
+  paid at once and a later one fails when the gold runs out. In a round nothing is paid
+  while planning, and `SimPhaseManager._execute_orders()` pays builds and training before
+  research and Heroes - so the AI's Heroes failed round after round. The budget keeps its
+  purchases in planned (priority) order while it can pay, charging what the executing
+  method charges (`_gold_cost()`: `get_building_cost`, `get_effective_cost`,
+  `get_effective_tech_cost`, `CASTLE_UPGRADE_COST`, `get_hero_cost`), and keeps a Hero and a
+  Castle upgrade of one Keep apart (the upgrade blocks Hero training). A new purchase type
+  needs a `_gold_cost()` branch. Tests: `tests/test_sim_ai_budget.py`.
 
 ✅ **Change unit spawn behavior:**
 - `finish_training()` in `game_state/buildings.py` spawns units with 'moved' status

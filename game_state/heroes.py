@@ -95,13 +95,9 @@ class HeroMixin:
             self.last_action_error = "hero_limit"
             return False
 
-        # 7. Check gold
-        hero_cost = self.HERO_TYPES[hero_type]['cost']
-
-        # Apply Royal Decree discount for Heroes
-        discount_percent = self.player_royal_decree_discount[self.current_player]
-        if discount_percent > 0:
-            hero_cost = int(hero_cost * (100 - discount_percent) / 100)
+        # 7. Check gold - get_hero_cost(): Royal Decree AND the territory bonus "Hero
+        # Training Cost" (only Royal Decree was applied, so that bonus did nothing)
+        hero_cost = self.get_hero_cost(hero_type, self.current_player)
 
         if self.player_gold[self.current_player] < hero_cost:
             self.add_player_message(self.current_player, f"Not enough gold! (Need {hero_cost})")

@@ -192,6 +192,7 @@ class Battle:
 class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryMixin, VictoryMixin):
     # Constants
     MAX_ARMIES_PER_TERRITORY = 15  # Army limit to prevent spam
+    CASTLE_UPGRADE_COST = 150      # Keep -> Castle (start_castle_upgrade; the AI budgets it too)
 
     # Sender of the chat lines the game writes itself ("<name> has disconnected. AI
     # taking over."). These used to be sent as player 0, so every PC showed them as

@@ -265,6 +265,9 @@ class SimultaneousAI:
 
             sim_log.ai(player_id, f"Validated {len(validated_actions)} actions")
 
+            # Only the purchases it can afford, in its own priority order
+            validated_actions = self._fit_actions_to_gold(player_id, validated_actions)
+
             # Convert validated actions to orders and queue them
             for action_type, action_data in validated_actions:
                 self._queue_action_as_order(player_id, action_type, action_data)
@@ -273,6 +276,73 @@ class SimultaneousAI:
             # Log AI decision-making error with full traceback
             sim_log.error(f"Error planning for AI player {player_id}: {e}")
             logger.error(f"Error planning for AI player {player_id}: {e}", exc_info=True)
+
+    def _fit_actions_to_gold(self, player_id: int, actions: list) -> list:
+        """
+        Keep the purchases the AI can pay for, in the order it planned them - its
+        priorities, Heroes first - and drop the rest.
+
+        The planner (AIPlayer._plan_turn_actions) was written for sequential turns, where
+        each purchase is paid the moment it is made and a later one simply fails when the
+        gold runs out. Here nothing is paid while planning, so it planned every purchase
+        against its full gold, and the round then pays builds and training first
+        (SimPhaseManager._execute_orders): Hero training and research, paid last, failed
+        round after round (the first test game: one AI tried a Hero for 7 rounds running).
+
+        Also drops Hero training at a Keep that is being upgraded to a Castle, or that this
+        plan upgrades first - the upgrade blocks it - and an upgrade of a Keep this plan
+        trains a Hero in (whichever was planned later goes).
+        """
+        gold = self.gs.player_gold[player_id]
+        hero_keeps = set()        # Keeps this plan trains a Hero in
+        upgraded_keeps = set()    # Keeps this plan upgrades to a Castle
+        kept = []
+        for action_type, action_data in actions:
+            if action_type == 'train_hero':
+                keep = (action_data.get('territory'), action_data.get('keep_plot'))
+                if keep in upgraded_keeps or self.gs.is_upgrading_to_castle(*keep):
+                    sim_log.ai(player_id, f"SKIPPING Hero training in {keep[0]}: its Keep is "
+                                          f"being upgraded to a Castle")
+                    continue
+            elif action_type == 'upgrade_castle':
+                keep = (action_data.get('territory'), action_data.get('plot'))
+                if keep in hero_keeps:
+                    sim_log.ai(player_id, f"SKIPPING Castle upgrade in {keep[0]}: a Hero "
+                                          f"trains there this round")
+                    continue
+            cost = self._gold_cost(player_id, action_type, action_data)
+            if cost > gold:
+                sim_log.ai(player_id, f"SKIPPING {action_type}: costs {cost} gold, "
+                                      f"{gold} left this round")
+                continue
+            gold -= cost
+            if action_type == 'train_hero':
+                hero_keeps.add((action_data.get('territory'), action_data.get('keep_plot')))
+            elif action_type == 'upgrade_castle':
+                upgraded_keeps.add((action_data.get('territory'), action_data.get('plot')))
+            kept.append((action_type, action_data))
+        return kept
+
+    def _gold_cost(self, player_id: int, action_type: str, action_data: dict) -> int:
+        """What an AI action will be charged - the same cost the executing game_state
+        method charges (0 for actions that cost nothing)."""
+        gs = self.gs
+        try:
+            if action_type == 'build':
+                return gs.get_building_cost(action_data['building'], player_id)
+            if action_type == 'train':
+                unit_type = action_data['unit_type']
+                return gs.get_effective_cost(unit_type, gs.UNIT_TYPES[unit_type]['cost'], player_id)
+            if action_type == 'research':
+                tech = next((t for t in gs.technologies if t['id'] == action_data['tech_id']), None)
+                return gs.get_effective_tech_cost(tech.get('cost', 0), player_id) if tech else 0
+            if action_type == 'upgrade_castle':
+                return gs.CASTLE_UPGRADE_COST
+            if action_type == 'train_hero':
+                return gs.get_hero_cost(action_data['hero_type'], player_id)
+        except (KeyError, TypeError) as e:
+            sim_log.error(f"AI P{player_id}: no cost for {action_type} {action_data}: {e}")
+        return 0
 
     def _queue_action_as_order(self, player_id: int, action_type: str, action_data: dict):
         """
