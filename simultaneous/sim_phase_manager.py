@@ -1489,9 +1489,17 @@ class SimPhaseManager:
                         battle.allied_defenders.append(member)
                         sim_log.detail(f"Player {member} fighting as ally of team leader {team_leader}")
 
-            # Check for Keep bonus (defender bonus)
+            # The defending team: the owner and its allies here (its key can be an ally
+            # with a lower player index - the owner need not even have units here)
+            defenders = []
             if battle.original_owner >= 0:
-                owner_team_leader = player_to_team_leader.get(battle.original_owner, battle.original_owner)
+                owner_team = self.gs.player_teams[battle.original_owner]
+                defenders = [p for p in players
+                             if p != -1 and self.gs.player_teams[p] == owner_team]
+
+            # Check for Keep bonus (defender bonus)
+            if defenders:
+                owner_team_leader = player_to_team_leader[defenders[0]]
                 if owner_team_leader in team_armies:
                     buildings = self.gs.buildings.get(territory, {})
                     for building in buildings.values():
@@ -1500,10 +1508,12 @@ class SimPhaseManager:
                             battle.keep_bonus_player = owner_team_leader
                             break
 
-            # Store original garrison size for Keep battles
+            # Store original garrison size for Keep battles: the whole defending team's
+            # units (the owner's alone cut a team defence's strength at the Keep to them)
             if battle.original_owner >= 0:
-                owner_garrison = garrison.get(battle.original_owner, {})
-                battle.original_garrison = owner_garrison.get('unmoved', 0) + owner_garrison.get('moved', 0)
+                battle.original_garrison = sum(
+                    garrison.get(p, {}).get('unmoved', 0) + garrison.get(p, {}).get('moved', 0)
+                    for p in defenders)
 
             # Store team members map for post-battle alliance handling
             battle.team_members_map = team_members_map

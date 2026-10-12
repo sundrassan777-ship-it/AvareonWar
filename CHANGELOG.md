@@ -2,6 +2,31 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-12 - Team battles: every ally keeps their own result
+
+Owner's decision (found while changing Keep battles). Both turn modes key a battle by team
+leader (the lowest player index of each team present) with the allies merged in, and the
+result treated that key as one player. Developer guide: "Team battles - sides and keys".
+- `_update_battle_results()`: a defending team that holds keeps the territory with its
+  owner (a lower-index ally used to get it - the owner's buildings destroyed, units lost);
+  `battle.winner` is who holds the territory afterwards.
+- `_side_survivors()`: every winning player keeps their own survivors - a defending team
+  loses its allies' units first and the owner's last, allies attacking together share the
+  losses by army size (`_split_count()`); only the key's own units used to survive.
+- `apply_multi_garrison_casualties(players=)`: defending losses only on the defending side
+  (they could be booked on the attackers' units, which are in the territory during a battle).
+- New helpers `_battle_sides()` / `_battle_key()` / `_battle_side()`; losing allies' abilities
+  (Scavenge the Fallen, Safe Haven) are checked for every member; `units_killed` is split
+  by each member's units (`_credit_side()`, `battle._units_before`).
+- Keeps: simultaneous `original_garrison` counts the whole defending team (a team's strength
+  at a Keep was cut to the owner's units) and the Keep counts for the owner's team even when
+  only an ally is there; sequential mode makes it a Keep battle whenever the owner is on the
+  defending key's team.
+- Battle Report: the attacker is the first side that is not the owner's (the owner's ally
+  was taken for the attacker - no report); the owner's units come from the start-of-battle
+  snapshot. The battle window counts a winning team's survivors.
+- Tests: `tests/test_team_battles.py` (9), `TestTeamBattles` in `tests/test_mp_sim_flow.py`.
+
 ## 2026-10-12 - Simultaneous AI spends within its gold; the Hero cost bonus works
 
 Owner's decision after the first multiplayer test game (an AI queued a Hero for 7 rounds

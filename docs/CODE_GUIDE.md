@@ -299,13 +299,38 @@ def resolve_battle(self, battle):
   and `_capture_battle_reports()` name the attacker that assaulted the Keep.
 - Any randomness here must use `rng` (multiplayer replays the battle from its seed).
 
-⚠️ **Known gap - team battles in simultaneous mode** (found 2026-10-12, not fixed yet):
-`_update_battle_results()` treats the winning key (a team leader) as one player - it hands
-it the territory, keeps survivors from the leader's own garrison only and clears all
-others. A joint defence where the owner's ally has the lower player index therefore gives
-the territory to the ally (the owner's buildings are destroyed and units lost), and a
-winning team's other members lose their units. `apply_multi_garrison_casualties()` also
-walks every garrison in the territory, attackers' included.
+**Team battles - sides and keys** (fixed 2026-10-12; tests `tests/test_team_battles.py`,
+`TestTeamBattles` in `tests/test_mp_sim_flow.py`):
+- Both turn modes key a battle by TEAM LEADER - the lowest player index of each team
+  present - and merge the allies' armies / compositions into that key (`battle.armies`,
+  `battle.army_compositions`). Never treat a key as one player. Use
+  `_battle_sides(battle)` ({key: [players]}: simultaneous `team_members_map`, else the key
+  plus its allies with units in the territory), `_battle_key(battle, player)` and
+  `_battle_side(battle, player)`.
+- `_update_battle_results(winner)`: `winner` is a key (or the owner, from a Keep the
+  defenders held). A defending team that holds keeps the territory with its OWNER - no
+  buildings destroyed, no conquest; otherwise the winning key takes it (simultaneous
+  teams then choose the owner through the alliance marker). `battle.winner` is afterwards
+  who holds the territory.
+- Survivors: `_side_survivors()` - every winning player keeps their own units. A
+  defending team loses its allies' units first, the owner's last (the
+  `apply_multi_garrison_casualties()` rule); allies attacking together share the losses by
+  army size (`_split_count()`, largest remainder, deterministic); within one player's units
+  the lowest levels fall first (a lone winner keeps its highest-level units, as before).
+- `apply_multi_garrison_casualties(..., players=side)`: only the defending side's
+  garrisons - during a battle the attackers' units are in the territory too.
+  `battle.allied_defenders` is NOT a defenders list in simultaneous mode (it holds every
+  non-leader member, attackers included) - use `len(_battle_side(...)) > 1`.
+- Credit: losing players' abilities (Scavenge the Fallen, Safe Haven) are checked for every
+  member of a losing side; `units_killed` goes to a side's members by their own units at
+  the start (`_credit_side()`, from `battle._units_before`, snapshotted at the start of
+  `resolve_battle()`).
+- Keeps: simultaneous `original_garrison` is the whole defending team's units, and the Keep
+  belongs to the owner's team even when only an ally has units there; sequential mode makes
+  it a Keep battle whenever the owner is on the defending key's team.
+- Battle Report: the attacker is the first side that is not the owner's; the owner's
+  units come from the start-of-battle snapshot. The battle window counts a winning team's
+  survivors (`main.py`, by `_battle_side`).
 
 #### ✅ Modify Veterancy/Experience System
 

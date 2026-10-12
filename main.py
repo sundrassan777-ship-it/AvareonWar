@@ -13109,11 +13109,20 @@ class Game:
                 actual_winner = battle.winner if battle.resolved else -1
                 actual_survivors = getattr(battle, 'surviving_armies', 0)
 
-                # Determine attacker/defender survivors based on winner
-                if actual_winner == self.enhanced_battle_ui.attacker_player:
+                # Determine attacker/defender survivors based on the winning SIDE: a team
+                # battle is keyed by the team's lowest player index, which need not be the
+                # player the window shows for it (a winning team used to show 0 survivors)
+                ui = self.enhanced_battle_ui
+                winner_side = (set(self.game_state._battle_side(battle, actual_winner))
+                               if actual_winner is not None and actual_winner >= 0 else set())
+                shown_winner = actual_winner
+                if ui.attacker_player in winner_side:
+                    shown_winner = ui.attacker_player
                     attacker_survivors = actual_survivors
                     defender_survivors = 0
-                elif actual_winner in self.enhanced_battle_ui.defender_players:
+                elif winner_side & set(ui.defender_players):
+                    if actual_winner not in ui.defender_players:
+                        shown_winner = min(winner_side & set(ui.defender_players))
                     attacker_survivors = 0
                     defender_survivors = actual_survivors
                 else:
@@ -13121,16 +13130,17 @@ class Game:
                     attacker_survivors = 0
                     defender_survivors = 0
 
-                # Get surviving units from garrison for accurate unit breakdown
+                # Get surviving units from garrison for accurate unit breakdown - every
+                # winning player keeps their own (team battles)
                 surviving_units = None
-                if actual_winner is not None and actual_winner >= 0:
+                if winner_side:
                     garrison = self.game_state.territory_garrisons.get(territory, {})
-                    winner_garrison = garrison.get(actual_winner, {})
-                    surviving_units = winner_garrison.get('units', [])
+                    surviving_units = [unit for player in sorted(winner_side)
+                                       for unit in garrison.get(player, {}).get('units', [])]
 
                 # Pass actual result to battle interface for accurate report display
                 self.enhanced_battle_ui.set_actual_battle_result(
-                    winner=actual_winner,
+                    winner=shown_winner,
                     attacker_survivors=attacker_survivors,
                     defender_survivors=defender_survivors,
                     surviving_units=surviving_units

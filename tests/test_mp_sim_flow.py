@@ -569,3 +569,42 @@ class TestKeepBattles:
         assert session.gs(1).territory_owners[b] == session.gs(2).territory_owners[b] \
             == host.game_state.territory_owners[b]
         assert comparable(session.gs(1)) == comparable(host.game_state) == comparable(session.gs(2))
+
+
+class TestTeamBattles:
+
+    def test_a_team_battle_replays_identically_and_shows_its_survivors(self, make_session):
+        """2 v 2: allies 1 and 3 take 2's territory; 1 (a client) fights it. Every PC
+        replays it the same way, each ally keeps their own survivors, and the battle
+        window counts the team's survivors."""
+        session = make_session(num_players=4, turn_mode='simultaneous', teams=[0, 1, 0, 1])
+        _, b, _ = h.adjacent_triple()
+        for peer in session.peers.values():
+            gs = peer.game.game_state
+            h.place(gs, b, 2, h.units('Swordsman', 'Swordsman'))
+            gs.territory_garrisons[b][1] = {
+                'unmoved': 0, 'moved': 4, 'units': h.units(*['Swordsman'] * 4, status='moved')}
+            gs.territory_garrisons[b][3] = {
+                'unmoved': 0, 'moved': 2, 'units': h.units('Swordsman', 'Swordsman', status='moved')}
+            pm = peer.game.sim_state.phase_manager
+            pm.pending_battles = [pm._create_battle_conflict(b, [2, 1, 3])]
+            pm._setup_battles_for_ui()
+        enter_resolving(session)
+        corrections = []
+        for index in (0, 2, 3):
+            game = session.game(index)
+            real = game._apply_battle_outcome
+            game._apply_battle_outcome = (lambda territory, data, real=real:
+                                          corrections.append(territory) or real(territory, data))
+        client = session.game(1)
+        h.open_battle(client, b)
+        h.fight(client)
+        assert client.enhanced_battle_ui.attacker_survivors == 5
+        h.close_battle(client)
+        session.run_until_quiet()
+        assert corrections == []
+        for index in range(4):
+            gs = session.gs(index)
+            assert gs.territory_owners[b] == 1
+            assert len(gs.territory_garrisons[b][1]['units']) == 3
+            assert len(gs.territory_garrisons[b][3]['units']) == 2

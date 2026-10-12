@@ -775,6 +775,20 @@ identical game. A player joins the slot the host's server assigned and keeps it.
 - Allied captures trigger ownership choice popup
 - Allied defense combines all armies
 
+**Allies fighting together** (one army in the battle; since 2026-10-12 the result is shared
+fairly):
+- Every ally keeps their **own** surviving units afterwards.
+- Defending together: the allies' units fall first, the territory owner's last; if the
+  defence holds, the territory stays with its owner (buildings untouched). A Keep defends
+  for the whole team, even if only an ally has units there.
+- Attacking together: the losses are shared in proportion to each ally's army; the allies
+  then choose who owns the captured territory.
+- Each ally earns "units killed" by the size of their share of the army, and a losing ally's
+  Hero abilities (Scavenge the Fallen, Safe Haven) work as for the team's leader.
+- (Before 2026-10-12, when the owner's ally had the lower player number, a successful joint
+  defence handed the territory to the ally, destroyed the owner's buildings and lost the
+  owner's units; a winning team's other members lost all their units.)
+
 **Alliance Mechanics:**
 - Same team = allies
 - Different team = enemies

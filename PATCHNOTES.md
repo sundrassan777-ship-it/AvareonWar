@@ -91,6 +91,14 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ### Battles and heroes
 
+- **Fighting alongside an ally works properly now.** Fixed: when your ally helped defend
+  your territory and won, the territory could go to your ally - your buildings were
+  destroyed and your units disappeared. Now the territory stays yours, and every ally
+  keeps their own surviving units: when defending, your allies' units fall before yours;
+  when attacking together, the losses are shared by the size of each army. Before, only
+  one ally's units survived a shared victory.
+- Fixed: a Keep did not always defend when an ally helped defend it, and its owner did not
+  get a battle report.
 - Fixed: the territory bonus **Hero Training Cost** (-3% per territory) never lowered the
   price of a Hero. It does now, and the Keep shows the price you will pay.
 - **Two attackers, one Keep:** when enemies reach the same Keep in the same round, they
