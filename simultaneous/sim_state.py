@@ -207,6 +207,12 @@ class SimultaneousGameState:
         # Reset all unit statuses from 'moved' to 'unmoved' for the new round
         self._reset_unit_movement_status()
 
+        # Everyone game_state counts as out is out of this round too (auto-readied
+        # below) - whatever path knocked them out (see sync_eliminations)
+        for player_id in sorted(getattr(self.gs, 'eliminated_players', ()) or ()):
+            if player_id not in self.eliminated_players:
+                self.eliminated_players.append(player_id)
+
         # Check for auto-ready (players with no valid moves)
         self._check_auto_ready()
 
@@ -601,17 +607,8 @@ class SimultaneousGameState:
         set_round(self.round_number)  # Update debug context
         sim_log.phase(f"Round complete. Starting round {self.round_number}")
 
-        # Game logger: record round snapshot for the completed round
-        if self.gs.game_logger:
-            self.gs.game_logger.record_round_snapshot(self.round_number)
-
-        # Sync logger: record turn snapshot at sim round boundary
-        if self.gs.sync_logger:
-            self.gs.sync_logger.record_turn_snapshot(self.round_number)
-
-        # Replay recorder: snapshot at end of each simultaneous round
-        if self.gs.replay_recorder:
-            self.gs.replay_recorder.record_snapshot()
+        # (The game log / sync log / replay records of the round are written at the end,
+        # record_round_boundary())
 
         # Start new planning phase (resets all 'moved' units to 'ready')
         self.start_planning_phase()
@@ -632,9 +629,26 @@ class SimultaneousGameState:
         finally:
             self.gs.current_player = original_player
 
+        self.record_round_boundary()
+
         # Callback for multiplayer host to broadcast round completion
         if self.is_multiplayer_host and self.on_round_complete_callback:
             self.on_round_complete_callback(self.round_number)
+
+    def record_round_boundary(self):
+        """
+        The records of a finished round: game log round, sync log turn snapshot, replay
+        snapshot. Written once the round is fully done - the state the multiplayer host
+        sends in SIM_ROUND_COMPLETE - because a client writes them from that message:
+        only the host runs complete_round(), so a client's logs and saved replay of a
+        simultaneous game had no rounds at all.
+        """
+        if self.gs.game_logger:
+            self.gs.game_logger.record_round_snapshot(self.round_number)
+        if self.gs.sync_logger:
+            self.gs.sync_logger.record_turn_snapshot(self.round_number)
+        if self.gs.replay_recorder:
+            self.gs.replay_recorder.record_snapshot()
 
     def _process_overflow_territories(self):
         """Disband excess armies in overflow territories that expired."""
@@ -855,6 +869,25 @@ class SimultaneousGameState:
         if player_id not in self.eliminated_players:
             self.eliminated_players.append(player_id)
             self.players_ready[player_id] = True  # No longer participates
+
+    def sync_eliminations(self) -> List[int]:
+        """
+        Take over every player game_state counts as eliminated: check_victory() marks
+        anyone left without territories (every victory condition), eliminate_player()
+        a Capital Assault loser. This list used to hear only of Capital Assault
+        eliminations, so in Domination / Total Conquest a knocked-out human was never
+        auto-readied and every later round waited for their planning timer.
+
+        During planning the newly eliminated are readied through mark_ready(), so a
+        round that only waited for them goes on. Returns the players added.
+        """
+        added = [player_id for player_id in sorted(getattr(self.gs, 'eliminated_players', ()) or ())
+                 if player_id not in self.eliminated_players]
+        for player_id in added:
+            if self.sim_phase == 'planning' and not self.players_ready.get(player_id, False):
+                self.mark_ready(player_id)
+            self.eliminate_player(player_id)
+        return added
 
     # Delegate common GameState methods
     def __getattr__(self, name):

@@ -53,6 +53,10 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   carries on - even finishing the current round for them.
 - Computer players now use all of their Heroes' targeted abilities, and wait for the
   cooldown like everyone else.
+- Fixed: when a player was knocked out of the game (no territories left) but stayed to
+  watch, every following round waited for their timer to run out. The game now carries
+  on without them - also when you are the one knocked out and watch your allies play on.
+- Fixed: a replay saved by a player who joined a simultaneous game had no rounds in it.
 
 ### Taking turns
 
@@ -79,6 +83,7 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   finishes that turn for them and plays on - the game used to wait for them forever.
 - Beating an empire whose player left right at the start no longer gives player-level XP,
   even though an AI took it over.
+- Fixed: the turn number stopped counting up once the first player was knocked out.
 
 ### Battles and heroes
 

@@ -901,8 +901,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             self.current_player = (self.current_player + 1) % self.num_players
             attempts += 1
 
-        # Increment turn_number when a full round completes (all players acted once)
-        if self.current_player == 0 and self.phase == 'playing':
+        # Increment turn_number when a full round completes (all players acted once): the
+        # turn order wrapped around. "current_player == 0" never held again once player 0
+        # was knocked out, so the turn shown on screen (and the game log) froze for good.
+        if self.current_player <= previous_player and self.phase == 'playing':
             self.turn_number += 1
 
         self._after_turn_advance()
@@ -930,9 +932,13 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # time made the new owner's timer "expire" at once.
         self.planning_phase_start_time = None
 
-        # Record a game log snapshot when a full round has completed
-        if self.current_player == 0 and self.phase == 'playing' and self.game_logger:
-            self.game_logger.record_round_snapshot(self.turn_number)
+        # Record a game log snapshot when a full round has completed - i.e. turn_number
+        # moved on (a multiplayer receiver gets it from the turn owner's TURN_END snapshot;
+        # waiting for player 0's turn missed every round once player 0 was knocked out)
+        if self.phase == 'playing' and self.game_logger:
+            if self.turn_number != getattr(self, '_game_log_turn', 0):
+                self._game_log_turn = self.turn_number
+                self.game_logger.record_round_snapshot(self.turn_number)
 
         # Replay recorder: snapshot after every player turn for rich replay granularity
         if self.phase == 'playing' and self.replay_recorder:

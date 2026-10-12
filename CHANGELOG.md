@@ -2,6 +2,39 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-12 - Fixes from the first multiplayer test game
+
+Branch `fix/multiplayer-sync`. The owner hosted a simultaneous Domination game against 3
+Medium AIs (33 rounds, 85 battles): no errors, no refused or skipped messages, every round
+and battle in order. Its logs still showed these, all fixed with tests:
+- **Knocked-out players held up rounds (simultaneous, Domination / Total Conquest):**
+  `sim_state.eliminated_players` only heard of Capital Assault eliminations, so a player who
+  lost their last territory was never auto-readied - a human who stayed connected made every
+  later round wait for their planning timer (the test game's AI, knocked out in round 22,
+  still "planned" every round). It now follows `game_state.eliminated_players`:
+  `start_planning_phase()` adopts it, `sim_state.sync_eliminations()` runs after every battle
+  and every frame on the host (readying a player knocked out mid-round). See "Knocked-out
+  players" in CODE_GUIDE.md.
+- **Simultaneous clients recorded no rounds** (Phase 4 regression): the game log, sync log
+  and replay records were written inside `complete_round()`, which only the host runs, so a
+  client's saved replay had no rounds. Both now call `record_round_boundary()` (the host at
+  the end of `complete_round()`, clients after SIM_ROUND_COMPLETE).
+- **Game log (`Logs/*.json`):** per-round battle / building lists were always empty (events
+  were matched by turn number, and the snapshot came with the next round's number);
+  simultaneous rounds were filed one late; the deciding last round was missing. The logger
+  now numbers rounds itself and writes the unfinished round at the end.
+- **Sequential turn counter froze once player 0 was knocked out** (it counted a round when
+  the turn came back to player 0): it now counts when the turn order wraps around.
+- **UPnP:** miniupnpc 2.3 raises "Success" from `discover()` when no router answers; the log
+  said "UPnP setup failed: Success". Now logged as no router found (the lobby already showed
+  "LAN only").
+- Reported, not changed (owner's call): in a Keep battle with two attackers only the stronger
+  one fights and the weaker one's units are removed unfought; the simultaneous AI over-plans
+  its gold, so its hero training and research (executed last) often fail, and it queued a
+  hero and a castle upgrade for the same Keep.
+- Tests: `tests/test_game_logger.py` (7), `tests/test_upnp.py` (2), `TestKnockedOutPlayers`
+  (3) and `TestClientRoundRecords` (1) in `tests/test_mp_sim_flow.py`.
+
 ## 2026-10-12 - Multiplayer audit, Phase 8: progression, robustness, docs
 
 Branch `fix/multiplayer-sync`; the last phase of the audit - every audit test now passes

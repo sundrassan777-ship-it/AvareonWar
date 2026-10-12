@@ -12,7 +12,15 @@ Architecture:
     - Snapshot-based: At each round boundary, compute deltas of cumulative player_stats
       for units built/lost. Snapshot territory_owners for regions controlled.
     - Event-based: Hero completion, tech completion, building completion, battle resolution
-      are recorded as events with turn numbers.
+      are recorded as events with their round.
+
+    Rounds are numbered by the logger itself (1, 2, 3, ...: the round being played), the
+    same in both turn modes. The callers' turn numbers did not agree with each other
+    (sequential: completed rounds from 0; simultaneous: 0 in round 1, then the round),
+    and the snapshot was taken with the NEXT round's number - so per_turn was filed one
+    round late in simultaneous mode and its battles / buildings lists, matched by turn
+    number, were always empty. The round still in progress when the game ends (where
+    the deciding battles happen) is written by finalize_and_save().
 
 Hook points:
     - game_state/__init__.py _advance_to_next_player(): round snapshot on full round
@@ -62,8 +70,11 @@ class GameLogger:
         self.game_id = f"{random.randint(10000000, 99999999)}"
         self.start_time = datetime.now()
 
-        # Per-turn aggregated data: {turn_number: {player_index: {...}}}
+        # Per-turn aggregated data: {round: {player_index: {...}}}
         self.turn_data = {}
+
+        # The round being played (1-based; see the module docstring)
+        self._round = 1
 
         # Event buffers (accumulated between round snapshots, flushed each snapshot)
         self._hero_events = []       # (player, hero_type, turn)
@@ -77,6 +88,8 @@ class GameLogger:
 
         # Previous snapshot of player_stats for delta computation
         self._prev_stats = self._snapshot_stats()
+        # Territory counts at the previous snapshot (did the unfinished round change any?)
+        self._prev_territories = self._count_territories()
 
         logger.info(f"GameLogger initialized: game_id={self.game_id}")
 
@@ -101,14 +114,19 @@ class GameLogger:
 
     # ========== Event Recording Methods ==========
 
-    def record_round_snapshot(self, turn_number):
+    def record_round_snapshot(self, turn_number=None):
         """
         Record a snapshot at the end of a full round (all players acted once).
 
         Computes stat deltas, territory counts, and merges buffered events
-        for the completed turn. Called from _advance_to_next_player() when
-        current_player wraps to 0, or from sim_state._advance_round().
+        for the completed round. Called from _after_turn_advance() when a sequential
+        round completes, or from sim_state.complete_round().
+
+        Args:
+            turn_number: the caller's turn number - only logged; the record is filed
+                under the logger's own round (see the module docstring)
         """
+        round_number = self._round
         # Compute deltas from previous snapshot
         current_stats = self._snapshot_stats()
         territory_counts = self._count_territories()
@@ -137,19 +155,20 @@ class GameLogger:
                         unit_name = 'Cavalry'
                     units_built[unit_name] = delta
 
-            # Buildings built this turn (from buffered events)
+            # Buildings built this round: the buffers hold exactly the events since
+            # the last snapshot (cleared below)
             buildings_built = {}
-            for bp, btype, _terr, bturn in self._building_events:
-                if bp == p and bturn == turn_number:
+            for bp, btype, _terr, _bturn in self._building_events:
+                if bp == p:
                     buildings_built[btype] = buildings_built.get(btype, 0) + 1
 
             # Units lost this turn (delta)
             units_lost = curr.get(_LOSS_STAT_KEY, 0) - prev.get(_LOSS_STAT_KEY, 0)
 
-            # Battles this turn (from buffered events)
+            # Battles this round (from buffered events)
             battles = []
-            for b_terr, b_participants, b_winner, b_turn in self._battle_events:
-                if b_turn == turn_number and p in b_participants:
+            for b_terr, b_participants, b_winner, _b_turn in self._battle_events:
+                if p in b_participants:
                     # Find opponent(s)
                     opponents = [op for op in b_participants if op != p]
                     battles.append({
@@ -166,34 +185,42 @@ class GameLogger:
                 'battles': battles
             }
 
-        self.turn_data[turn_number] = turn_record
+        self.turn_data[round_number] = turn_record
 
         # Update previous snapshot for next delta
         self._prev_stats = current_stats
+        self._prev_territories = territory_counts
 
         # Clear per-turn event buffers (keep all-time lists)
         self._building_events.clear()
         self._battle_events.clear()
+        self._round += 1
 
-        logger.debug(f"GameLogger: recorded round snapshot for turn {turn_number}")
+        logger.debug(f"GameLogger: recorded round {round_number} (caller's turn number: {turn_number})")
+
+    def _round_in_progress_changed(self):
+        """Whether anything was logged or changed since the last round snapshot."""
+        return bool(self._building_events or self._battle_events
+                    or self._snapshot_stats() != self._prev_stats
+                    or self._count_territories() != self._prev_territories)
 
     def record_hero_trained(self, player_index, hero_type, turn_number):
-        """Record a hero training completion event."""
-        self._hero_events.append((player_index, hero_type, turn_number))
-        self._all_hero_events.append((player_index, hero_type, turn_number))
+        """Record a hero training completion event (filed under the logger's round)."""
+        self._hero_events.append((player_index, hero_type, self._round))
+        self._all_hero_events.append((player_index, hero_type, self._round))
         logger.debug(f"GameLogger: hero trained - Player {player_index + 1} "
                      f"trained {hero_type} on turn {turn_number}")
 
     def record_tech_researched(self, player_index, tech_id, turn_number):
-        """Record a technology research completion event."""
-        self._tech_events.append((player_index, tech_id, turn_number))
-        self._all_tech_events.append((player_index, tech_id, turn_number))
+        """Record a technology research completion event (filed under the logger's round)."""
+        self._tech_events.append((player_index, tech_id, self._round))
+        self._all_tech_events.append((player_index, tech_id, self._round))
         logger.debug(f"GameLogger: tech researched - Player {player_index + 1} "
                      f"researched {tech_id} on turn {turn_number}")
 
     def record_building_completed(self, player_index, building_type, territory, turn_number):
         """Record a building construction completion event (individual type: Farm, Mine, etc.)."""
-        self._building_events.append((player_index, building_type, territory, turn_number))
+        self._building_events.append((player_index, building_type, territory, self._round))
         logger.debug(f"GameLogger: building completed - Player {player_index + 1} "
                      f"built {building_type} in {territory} on turn {turn_number}")
 
@@ -210,7 +237,7 @@ class GameLogger:
         # Normalize participants to a dict if it's a list
         if isinstance(participants, (list, set)):
             participants = {p: 0 for p in participants}
-        self._battle_events.append((territory, participants, winner, turn_number))
+        self._battle_events.append((territory, participants, winner, self._round))
         logger.debug(f"GameLogger: battle resolved - {territory}, "
                      f"winner=Player {winner + 1}, turn {turn_number}")
 
@@ -228,12 +255,15 @@ class GameLogger:
                 (datetime.now() - self.start_time).total_seconds() / 60, 1
             )
 
+            # The round the game ended in (its deciding battles) was never written: the
+            # game ends before that round completes
+            if self._round_in_progress_changed():
+                self.record_round_snapshot(self.gs.turn_number)
+
             # Determine turn count from game state
             # In sequential mode: turn_number. In sim mode: sim_state.round_number.
-            total_turns = self.gs.turn_number
-            if total_turns == 0 and self.turn_data:
-                # Fallback: use highest recorded turn number
-                total_turns = max(self.turn_data.keys())
+            # At least the rounds written above (sequential counts completed rounds only)
+            total_turns = max([self.gs.turn_number] + list(self.turn_data.keys()))
 
             # Get winner name
             winner_name = None

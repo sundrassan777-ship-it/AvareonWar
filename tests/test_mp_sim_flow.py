@@ -438,3 +438,89 @@ class TestOrderValidation:
         sim.sim_phase = 'resolving'
         pm.resolve_alliance_marker(second, 1)
         assert [m['territory'] for m in pm.pending_alliance_markers] == [first]
+
+
+class TestKnockedOutPlayers:
+    """A player who loses their last territory is out (check_victory). Simultaneous mode
+    keeps its own eliminated list (auto-readied every round, sent at round end), and only
+    Capital Assault eliminations reached it: in Domination / Total Conquest a human who
+    was knocked out but stayed connected held up every later round until their own
+    planning timer ran out (seen in the first test game: an AI knocked out in round 22
+    never reached the list)."""
+
+    def _knock_out_client_2(self, session):
+        """Domination game: the host takes client 2's last territory in a battle."""
+        homes = h.spread_territories(3)
+        _, b, _ = h.adjacent_triple()
+
+        def arrange(gs):
+            h.place(gs, homes[2], 0)                         # their capital is already gone
+            sim_battle(gs, b, owner=2, attacker=0, resolver=0)
+        session.on_all(arrange)
+        enter_resolving(session)
+        host = session.game(0)
+        h.open_battle(host, b)
+        h.fight(host)
+        h.close_battle(host)
+        session.run_until_quiet()
+        assert host.sim_state.round_number == 2
+        assert 2 in host.game_state.eliminated_players
+        return host
+
+    def test_the_next_round_does_not_wait_for_them(self, make_session):
+        session = make_session(num_players=3, turn_mode='simultaneous')
+        host = self._knock_out_client_2(session)
+        h.click_end_turn(session.game(1))
+        session.step_all()
+        h.click_end_turn(host)
+        session.run_until_quiet()
+        assert host.sim_state.round_number == 3              # nobody waited for P3
+        assert session.game(1).sim_state.round_number == 3
+
+    def test_every_pc_knows_they_are_out(self, make_session):
+        session = make_session(num_players=3, turn_mode='simultaneous')
+        self._knock_out_client_2(session)
+        for index in (0, 1, 2):
+            assert 2 in session.game(index).sim_state.eliminated_players
+
+    def test_a_player_knocked_out_while_the_others_plan_does_not_hold_up_the_round(
+            self, make_session):
+        """E.g. Aggressive Diplomacy takes their last territory during planning: the host
+        readies them at once instead of waiting for their timer."""
+        session = make_session(num_players=3, turn_mode='simultaneous')
+        host = session.game(0)
+        h.click_end_turn(session.game(1))
+        session.step_all()
+        h.click_end_turn(host)
+        session.run_until_quiet()
+        assert host.sim_state.round_number == 1              # waiting for P3
+        home = h.spread_territories(3)[2]
+
+        def knock_out(gs):
+            h.place(gs, home, 0)
+            gs.check_victory()
+        session.on_all(knock_out)
+        session.run_until_quiet()
+        assert host.sim_state.round_number == session.game(1).sim_state.round_number == 2
+
+
+class TestClientRoundRecords:
+
+    def test_a_client_records_every_round(self, make_session):
+        """complete_round() writes a round's game log / sync log / replay records, and only
+        the host runs it (Phase 4): a client's per-game log and saved replay of a
+        simultaneous game had no rounds at all."""
+        from game_logger import GameLogger
+        from replay_recorder import ReplayRecorder
+        session = make_session(num_players=2, turn_mode='simultaneous')
+        for index in (0, 1):
+            gs = session.gs(index)
+            gs.game_logger = GameLogger(gs)
+            gs.replay_recorder = ReplayRecorder(gs)
+        end_turn_all(session)
+        session.run_until_quiet()
+        for index in (0, 1):
+            gs = session.gs(index)
+            assert gs.turn_number == 2
+            assert list(gs.game_logger.turn_data) == [1]
+            assert len(gs.replay_recorder.snapshots) == 2          # start + round 1

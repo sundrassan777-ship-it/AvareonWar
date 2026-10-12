@@ -74,6 +74,27 @@ setup_logging()  # console=INFO, file=DEBUG, rotation=5MB x 3
 - **Change default levels:** Edit `DEFAULT_CONSOLE_LEVEL` / `DEFAULT_FILE_LEVEL` in `utils/logger.py`
 - **Suppress noisy library:** Add `logging.getLogger('library').setLevel(logging.WARNING)` in `setup_logging()`
 
+### Game Logger (`game_logger.py`)
+
+**What it does:** One JSON file per Custom / multiplayer game in `Logs/{game_id}_{date}.json`:
+game facts plus, per player, heroes, techs and a `per_turn` record per round (units built /
+lost, buildings finished, territories held, battles).
+
+**Rounds are numbered by the logger itself** (`GameLogger._round`, 1, 2, 3, ... in both turn
+modes) and every event is filed under the round being played; the callers' turn numbers are
+only logged. They disagreed by mode (sequential counts completed rounds from 0;
+simultaneous was 0 in round 1, then the round) and the snapshot came with the NEXT round's
+number - so until 2026-10-12 simultaneous rounds were filed one late and every round's
+battles / buildings lists were empty. Rules:
+- A round record takes every buffered event since the previous record (the buffers are
+  cleared per record) - never match events by turn number.
+- One record per round: sequential `GameState._after_turn_advance()` records when
+  `turn_number` moved on (also on multiplayer receivers, from the owner's TURN_END);
+  simultaneous `SimultaneousGameState.record_round_boundary()` (host: end of
+  `complete_round()`; clients: after applying SIM_ROUND_COMPLETE).
+- `finalize_and_save()` writes the round still in progress if anything happened in it (the
+  game is decided before its last round completes).
+
 ### Sync Logger (`sync_logger.py`)
 
 **What it does:** Multiplayer-only per-participant logging for state sync verification and desync diagnosis.
@@ -1900,6 +1921,11 @@ when its moves start or when its turn ends. Reconnecting is deferred (`RECONNECT
 - Change UI status messages → `get_status_text()` in `UPnPManager`
 - Change port mapping protocol (e.g. UDP) → `_setup_worker()` addportmapping call
 
+**miniupnpc 2.3 quirk:** `discover()` raises an exception whose text is "Success" when no
+router answers (older versions return 0 devices). `_setup_worker()` treats both as "No UPnP
+router found"; the log used to say "UPnP setup failed: Success". The lobby shows "LAN only
+(forward port 7777 for internet)" either way.
+
 **Integration points:** `server.setup_upnp()` starts it, `server.stop()` cleans up, `territory_selector._draw_host_ip()` polls status
 
 ### network/server.py (~1,000 lines)
@@ -2532,6 +2558,22 @@ Single-player never auto-resolves.
 slot AI (Medium); the host gives it an AIPlayer (`SimultaneousAI.ensure_player()`) and lets it
 plan the current round if the player had not readied. Their battles / choices then go through
 the AI auto-resolve.
+
+**Knocked-out players** (found in the first test game, 2026-10-12): `sim_state.eliminated_players`
+(auto-readied every round, sent in SIM_ROUND_COMPLETE) must follow
+`game_state.eliminated_players`, the one source of truth (check_victory: no territories left,
+every victory condition; eliminate_player: Capital Assault). It used to hear only of Capital
+Assault eliminations, so in Domination / Total Conquest a knocked-out human who stayed
+connected held up every later round until their planning timer ran out. Now:
+`start_planning_phase()` adopts game_state's list before `_check_auto_ready()` (every PC,
+every round); `Game._sync_battle_eliminations_to_sim()` → `sim_state.sync_eliminations()`
+after every battle; the host / single player also calls `sync_eliminations()` every frame
+(`_update_simultaneous()`) - during planning it readies a newly knocked-out player through
+`mark_ready()`, so a round that only waited for them goes on.
+
+**Round records** (game log, sync log, replay): `SimultaneousGameState.record_round_boundary()`,
+at the end of `complete_round()` on the host and after SIM_ROUND_COMPLETE on clients (they
+never run `complete_round()` - since Phase 4 their logs and saved replays had no rounds).
 
 **Orders:** `_merge_orders()` drops only EXACT duplicates (same units, same route) - an army
 split into two orders along one route keeps both halves. `_claim_movement_units()` rejects

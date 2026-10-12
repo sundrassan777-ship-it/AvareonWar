@@ -1015,7 +1015,9 @@ Units spawning from Barracks in simultaneous mode:
   to every player together with the moves to play out. Battles are fought by their
   resolver and replayed on every other PC.
 - **You are ready only when you say so** - End Turn, or your timer running out. In
-  multiplayer nobody is marked ready automatically, even with nothing to do.
+  multiplayer nobody is marked ready automatically, even with nothing to do - except a
+  player who has been **knocked out** (no territories left): they are out of every
+  following round and nobody waits for them (also when it happens mid-round).
 - **AFK battles:** if you leave your battles (or an alliance choice) untouched for **90
   seconds**, your game resolves them for you, and a battle report left open for 90 seconds
   closes by itself; after **180 seconds** of battles the host settles whatever is still

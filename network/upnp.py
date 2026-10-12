@@ -104,10 +104,17 @@ class UPnPManager:
 
             upnp = miniupnpc.UPnP()
             upnp.discoverdelay = UPNP_DISCOVERY_TIMEOUT
-            devices_found = upnp.discover()
+            try:
+                devices_found = upnp.discover()
+            except Exception as e:
+                # miniupnpc 2.3 raises instead of returning 0 when no router answers -
+                # with its text for "no error", so the log read "UPnP setup failed: Success"
+                logger.warning(f"UPnP: no router answered the discovery (miniupnpc: {e})")
+                devices_found = None
 
-            if devices_found == 0:
-                logger.warning("UPnP: No IGD devices found")
+            if not devices_found:
+                if devices_found == 0:
+                    logger.warning("UPnP: No IGD devices found")
                 self.status = UPNP_STATUS_FAILED
                 self.error_message = "No UPnP router found"
                 self._detect_public_ip()

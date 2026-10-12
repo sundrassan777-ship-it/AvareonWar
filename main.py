@@ -2917,6 +2917,9 @@ class Game:
         for player_id in self.sim_state.eliminated_players:
             self.sim_state.players_ready[player_id] = True  # no longer participates
         self.sim_state.overflow_territories = dict(data.get('overflow_territories') or {})
+        # The round's game log / sync log / replay records - complete_round() writes them
+        # on the host, and this PC never runs it
+        self.sim_state.record_round_boundary()
         logger.info(f"[NETWORK] Client round complete processing done")
 
     def _sim_apply_all_ready(self, data):
@@ -3023,6 +3026,11 @@ class Game:
         sim = self.sim_state
         if sim is None:
             return
+        # A player knocked out mid-round (e.g. Aggressive Diplomacy took their last
+        # territory) is out of this round too: the host / single player readies them, so
+        # the round never waits for their timer (clients take the host's word for it)
+        if not sim.is_multiplayer_client and self.game_state.phase == 'playing':
+            sim.sync_eliminations()
         # Execution deferred by mark_ready() (AI planning thread, or the multiplayer host,
         # which always starts it here) - before the timer checks so it starts promptly
         sim.check_deferred_execution()
@@ -13355,17 +13363,16 @@ class Game:
 
     def _sync_battle_eliminations_to_sim(self, context):
         """
-        Capital Assault: game_state.eliminate_player() runs inside resolve_battle(), but
-        sim_state keeps its own eliminated list that path never updates - mirror any
-        player left without territories.
+        Battles eliminate players in game_state only - eliminate_player() (Capital
+        Assault) and check_victory()'s "no territories left" (every victory condition) -
+        while sim_state keeps its own list (auto-readied every round, sent at round end).
+        Only Capital Assault used to be mirrored here: in Domination / Total Conquest a
+        knocked-out human held up every later round until their timer ran out.
         """
-        if self.sim_state is None or self.game_state.victory_condition != "Capital Assault":
+        if self.sim_state is None:
             return
-        for pid in range(self.game_state.num_players):
-            if (pid not in self.sim_state.eliminated_players and
-                    all(owner != pid for owner in self.game_state.territory_owners.values())):
-                self.sim_state.eliminate_player(pid)
-                logger.info(f"[SIM] Synced elimination of Player {pid + 1} to sim_state {context}")
+        for pid in self.sim_state.sync_eliminations():
+            logger.info(f"[SIM] Synced elimination of Player {pid + 1} to sim_state {context}")
 
     def _selected_battle_current_index(self):
         """
