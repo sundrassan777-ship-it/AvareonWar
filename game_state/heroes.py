@@ -95,13 +95,9 @@ class HeroMixin:
             self.last_action_error = "hero_limit"
             return False
 
-        # 7. Check gold
-        hero_cost = self.HERO_TYPES[hero_type]['cost']
-
-        # Apply Royal Decree discount for Heroes
-        discount_percent = self.player_royal_decree_discount[self.current_player]
-        if discount_percent > 0:
-            hero_cost = int(hero_cost * (100 - discount_percent) / 100)
+        # 7. Check gold - get_hero_cost(): Royal Decree AND the territory bonus "Hero
+        # Training Cost" (only Royal Decree was applied, so that bonus did nothing)
+        hero_cost = self.get_hero_cost(hero_type, self.current_player)
 
         if self.player_gold[self.current_player] < hero_cost:
             self.add_player_message(self.current_player, f"Not enough gold! (Need {hero_cost})")
@@ -959,13 +955,59 @@ class HeroMixin:
 
         return (True, None)
 
-    def execute_decisive_strike(self, target_territory, owner):
+    def _match_pre_selected_units(self, candidates, picks, count):
+        """
+        The (garrison_owner, unit) pairs a caster picked at random, found again on a
+        multiplayer receiver - so every PC removes / moves exactly the same units.
+
+        Args:
+            candidates: [(garrison_owner, unit_dict), ...] the ability may pick from
+            picks: the caster's [(garrison_owner, unit_id, unit_type), ...] (JSON lists ok)
+            count: how many units the ability takes here
+
+        A pick that cannot be found (the states already differ) is replaced by an
+        unpicked unit of the same owner and type where possible, so at least the count
+        and the mix agree; the next authoritative state sync corrects the rest.
+        """
+        chosen = []
+        remaining = list(candidates)
+        missing = []
+        for pick in picks:
+            sel_owner, sel_id = pick[0], pick[1]
+            sel_type = pick[2] if len(pick) > 2 else None
+            match = next((c for c in remaining
+                          if c[0] == sel_owner and c[1].get('id') == sel_id), None)
+            if match is None:
+                missing.append((sel_owner, sel_type))
+                continue
+            chosen.append(match)
+            remaining.remove(match)
+        for sel_owner, sel_type in missing:
+            match = next((c for c in remaining
+                          if c[0] == sel_owner and c[1].get('type') == sel_type), None)
+            if match is None and remaining:
+                match = remaining[0]
+            if match is None:
+                break
+            chosen.append(match)
+            remaining.remove(match)
+        if missing:
+            logger.warning(f"[ABILITY] {len(missing)} picked unit(s) not found on this PC "
+                           f"- states differ; used stand-ins")
+        return chosen[:count]
+
+    def execute_decisive_strike(self, target_territory, owner, pre_selected_units=None):
         """
         Execute Decisive Strike ability - remove half of the armies in target enemy territory.
 
         Args:
             target_territory: Territory name to target
             owner: Player index who owns Neil Hevilneu
+            pre_selected_units: Multiplayer receivers pass the caster's picks
+                ([(garrison_owner, unit_id, unit_type), ...]) instead of rolling their
+                own - each PC used to remove different units (random.sample per PC).
+                On success the picks are left in self._last_decisive_strike_removed for
+                the caster to send.
 
         Returns:
             tuple: (success: bool, error_message: str or None)
@@ -1017,8 +1059,18 @@ class HeroMixin:
         if len(all_units) < armies_to_remove:
             return self._ability_refusal('strike_not_enough')
 
-        # Randomly select units to remove from all garrisons combined
-        units_to_remove = random.sample(all_units, armies_to_remove)
+        if pre_selected_units is not None:
+            # Network receiver: remove exactly what the caster removed
+            units_to_remove = self._match_pre_selected_units(all_units, pre_selected_units,
+                                                             armies_to_remove)
+        else:
+            # Randomly select units to remove from all garrisons combined
+            units_to_remove = random.sample(all_units, armies_to_remove)
+
+        # The picks, for the caster's network message (JSON-safe lists)
+        self._last_decisive_strike_removed = [
+            [garrison_owner, unit['id'], unit['type']] for garrison_owner, unit in units_to_remove
+        ]
 
         # Remove the selected units from their respective garrisons
         for garrison_owner, unit in units_to_remove:
@@ -1042,13 +1094,17 @@ class HeroMixin:
 
         return (True, None)
 
-    def execute_valorous_charge(self, target_territory, owner):
+    def execute_valorous_charge(self, target_territory, owner, pre_selected_units=None):
         """
         Execute Valorous Charge ability - move up to 15 units from Hevilneu's Keep to target allied territory.
 
         Args:
             target_territory: Territory name to move units to
             owner: Player index who owns Neil Hevilneu
+            pre_selected_units: Multiplayer receivers pass the caster's picks
+                ([(owner, unit_id, unit_type), ...]) so every PC moves the same units
+                (only matters when fewer than all of them fit). On success the picks
+                are left in self._last_valorous_charge_moved for the caster to send.
 
         Returns:
             tuple: (success: bool, error_message: str or None)
@@ -1112,8 +1168,18 @@ class HeroMixin:
         haste_affected_territories = self.get_haste_affected_territories(owner)
         has_haste = target_territory in haste_affected_territories
 
-        # Randomly select units to move from owner's garrison only
-        units_to_transfer = random.sample(origin_units, units_to_move)
+        if pre_selected_units is not None:
+            # Network receiver: move exactly the units the caster moved
+            units_to_transfer = [unit for _owner, unit in self._match_pre_selected_units(
+                [(owner, unit) for unit in origin_units], pre_selected_units, units_to_move)]
+        else:
+            # Randomly select units to move from owner's garrison only
+            units_to_transfer = random.sample(origin_units, units_to_move)
+
+        # The picks, for the caster's network message (JSON-safe lists)
+        self._last_valorous_charge_moved = [
+            [owner, unit['id'], unit['type']] for unit in units_to_transfer
+        ]
 
         # Get or create owner's garrison in target territory
         if target_territory not in self.territory_garrisons:

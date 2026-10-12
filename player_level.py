@@ -176,6 +176,26 @@ def get_progress_for_xp(total_xp):
     }
 
 
+def local_human_index(game):
+    """
+    The player whose progress this PC records (achievements, player-level XP): in
+    multiplayer this PC's own seat (local_player_index); otherwise the first human player.
+    Shared by both systems - achievements used to credit the first human, i.e. the host,
+    on every PC (H6).
+    """
+    gs = game.game_state
+    local_idx = getattr(gs, 'local_player_index', None)
+    if local_idx is None:
+        local_idx = getattr(game, 'local_player_index', None)
+    if isinstance(local_idx, int) and 0 <= local_idx < gs.num_players:
+        return local_idx
+    # Single-player: find first human
+    for i in range(gs.num_players):
+        if not gs.player_is_ai[i]:
+            return i
+    return None
+
+
 class PlayerLevelManager:
     """
     Singleton player level manager. Tracks persistent XP and level,
@@ -319,52 +339,48 @@ class PlayerLevelManager:
         """
         Find the local human player index.
         In multiplayer, uses local_player_index. Otherwise, finds first non-AI player.
+        (local_human_index(), shared with the achievement manager.)
         """
-        gs = game.game_state
-        # Multiplayer: use local_player_index if available
-        local_idx = getattr(gs, 'local_player_index', None)
-        if local_idx is not None and not gs.player_is_ai[local_idx]:
-            return local_idx
-
-        # Single-player: find first human
-        for i in range(gs.num_players):
-            if not gs.player_is_ai[i]:
-                return i
-        return None
+        return local_human_index(game)
 
     def _is_disconnect_farming(self, gs, human_index):
         """
         Check if victory was caused by disconnect elimination of low-XP enemies.
 
-        Returns True (game "doesn't count") only if ALL enemies were eliminated
-        via disconnect AND all had < DISCONNECT_FARMING_XP_THRESHOLD XP from actions.
+        Returns True (game "doesn't count") only if ALL enemies left the game - were
+        eliminated via disconnect, or disconnected and had their empire taken over by the AI
+        - AND all had < DISCONNECT_FARMING_XP_THRESHOLD XP from actions while they played.
         If any enemy was defeated normally or had meaningful gameplay, returns False.
+
+        AI takeovers count like disconnect eliminations: a disconnect now hands the empire
+        to the AI, so a player leaving at once and the winner beating the AI would
+        otherwise be full-XP farming. Their XP is the amount they had earned when they
+        left (gs.ai_takeover_xp) - not what the AI earned for the empire afterwards.
         """
         disconnect_elims = getattr(gs, 'disconnect_eliminations', set())
-        if not disconnect_elims:
-            return False  # No disconnect eliminations occurred
+        takeover_xp = getattr(gs, 'ai_takeover_xp', None) or {}
+        if not disconnect_elims and not takeover_xp:
+            return False  # Nobody left the game
 
         my_team = gs.player_teams[human_index]
-        # Check if all enemy players were disconnect-eliminated
+        # Every enemy must have left; check what each had earned while playing
         for p in range(gs.num_players):
             if p == human_index:
                 continue
             if gs.player_teams[p] == my_team:
                 continue  # Ally, skip
-            # This is an enemy — was it eliminated by disconnect?
-            if p not in disconnect_elims:
-                return False  # At least one enemy was NOT disconnect-eliminated
-
-        # All enemies were disconnect-eliminated. Check if any had meaningful gameplay
-        for p in disconnect_elims:
-            if gs.player_teams[p] == my_team:
-                continue  # Skip allied disconnects
-            xp = gs.player_stats.get(p, {}).get('xp_earned', 0)
+            # This is an enemy — did it leave the game?
+            if p in disconnect_elims:
+                xp = gs.player_stats.get(p, {}).get('xp_earned', 0)
+            elif p in takeover_xp:
+                xp = takeover_xp[p]
+            else:
+                return False  # At least one enemy did not leave
             if xp >= DISCONNECT_FARMING_XP_THRESHOLD:
                 return False  # Enemy had meaningful gameplay
 
-        # All disconnected enemies had < threshold XP — this is farming
-        logger.info(f"Disconnect farming detected: all enemies disconnect-eliminated with <{DISCONNECT_FARMING_XP_THRESHOLD} XP")
+        # Every enemy left with < threshold XP — this is farming
+        logger.info(f"Disconnect farming detected: all enemies left the game with <{DISCONNECT_FARMING_XP_THRESHOLD} XP")
         return True
 
     def _has_enemy_player(self, gs, human_index):
@@ -407,7 +423,9 @@ class PlayerLevelManager:
     def _calculate_end_bonus(self, game, gs, human_index, is_campaign,
                              is_multiplayer, mission):
         """Calculate end-of-game bonus XP"""
-        human_won = gs.winner == human_index
+        # The winner or a teammate: a team victory names one representative as gs.winner,
+        # and its allies used to get the defeat bonus (M6)
+        human_won = gs.is_winner(human_index)
 
         if is_campaign:
             # Campaign: 100 XP for first-time win, 0 otherwise

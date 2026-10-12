@@ -1432,11 +1432,13 @@ class EnhancedBattleInterface:
 
         Stores result for animation display without applying to game state yet.
         """
-        battle = self.game_state.pending_battles[self.battle_index]
-
         # Generate deterministic seed for animation (for multiplayer sync)
-        # Use battle territory name and turn number for reproducibility
-        seed_str = f"{battle.territory}_{self.game_state.turn_number}"
+        # Use battle territory name and turn number for reproducibility. The territory
+        # cached when the window opened - NOT pending_battles[self.battle_index]: in
+        # multiplayer another player's battle can be resolved while this window is open,
+        # which shifts the list (that index then pointed at another battle, or past the
+        # end of the list and crashed the FIGHT click).
+        seed_str = f"{self.territory}_{self.game_state.turn_number}"
         self.animation_seed = hash(seed_str) % (2**31)
 
         # Calculate animation duration deterministically

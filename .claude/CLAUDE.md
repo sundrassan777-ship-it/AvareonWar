@@ -150,6 +150,9 @@ AvareonWar/
 - [tests/test_battle_interface_integration.py](tests/test_battle_interface_integration.py) - EnhancedBattleInterface wiring (state machine, derived duration, retarget, skip)
 - [tests/test_campaign_outro_cutscene.py](tests/test_campaign_outro_cutscene.py) - Campaign mission exit sentinels: outro cutscene plays on victory only
 - [tests/test_battle_reports.py](tests/test_battle_reports.py) - Battle Report capture rules (tie path, Keep-only defence, Champion of the People, hero-ability guard)
+- [tests/test_sim_ai_budget.py](tests/test_sim_ai_budget.py) - Simultaneous AI keeps only the purchases it can pay for, in its priority order (the Hero it wanted is trained that round), a Hero and a Castle upgrade of one Keep kept apart, the "Hero Training Cost" territory bonus lowers the Hero price
+- [tests/test_team_battles.py](tests/test_team_battles.py) - Allies fighting together (both turn modes): a joint defence keeps the territory with its owner, each ally keeps their own survivors (defending allies fall first, attacking allies share by army size), defending losses never on the attackers, a team's full strength at a Keep, the owner's Battle Report, kill credit per ally, a losing ally's Scavenge the Fallen
+- [tests/test_keep_battles.py](tests/test_keep_battles.py) - Several attackers at one Keep fight each other first (weaker attacker fights, winner takes the Keep, report names the assaulting attacker, XP / kill credit, seeded dice tie), team games (defending team's leader is not an attacker, allied attackers are one side)
 - [tests/test_battle_report_popup.py](tests/test_battle_report_popup.py) - Popup text/geometry and the report-only battle interface
 - [tests/test_battle_report_integration.py](tests/test_battle_report_integration.py) - Battle Report wiring against a real `Game`
 - [tests/test_battle_report_network.py](tests/test_battle_report_network.py) - Battle Reports reaching a defending multiplayer client
@@ -170,6 +173,18 @@ AvareonWar/
 - [tests/test_bottom_panel.py](tests/test_bottom_panel.py) - Bottom panel overhaul at 720p/900p/1080p/1440p: kit geometry, End Turn section + state rules, Territory view (plots fill, Forces grid, Select Army, hero portrait, hover labels), empty plot buttons, Army view (T divider, 15-unit grid), Hero view (fixed portrait, Keep pan), building views (finished / under-construction plot incl. Confiscate label + XP bar, Barracks queue + hotkeys, Keep grid / hero card / castle states / training progress / Hero Limit), full-width button tooltips, orphaned tooltips dropped when the view switches
 - [tests/test_cutscene_volume.py](tests/test_cutscene_volume.py) - Cutscene voice/music follow the master volume (muted game = silent cutscenes)
 - [tests/test_setup_options.py](tests/test_setup_options.py) - Setup screens: Additional Options window (inside the frame at 720p-1440p, confirm/cancel/Escape, read-only client view, map hover blocked), Starting Gold (typing, clamp, Custom + lobby + network + `initialize_game`), label tooltips, wood/bronze frames and lobby row layout
+- [tests/test_game_logger.py](tests/test_game_logger.py) - Per-game JSON log: round records list their battles / buildings, rounds numbered from 1 in both modes, the unfinished last round written, sequential rounds still counted once player 0 is out
+- [tests/test_upnp.py](tests/test_upnp.py) - UPnP setup without a network (miniupnpc 2.3 raising "Success" = no router found)
+- [tests/mp_harness.py](tests/mp_harness.py) - Multiplayer test harness: 2-4 real `Game`s in one process over the real server/client logic with in-memory sockets (`Session`, `make_session` fixture, input helpers). Fails a test when a received message raised (`Game.network_message_errors`, checked by `Peer.step()` and the fixture teardown). Every audit finding is fixed: no `xfail` markers are left in the `test_mp_*` files
+- [tests/test_mp_transport.py](tests/test_mp_transport.py) - Sequence numbers (PONG/DISCONNECT exempt, per connection), disconnect notices (lobby + in game, send failures, once), refused rejoin, requeue order, real sockets (large frames to a slow reader, refusal reasons)
+- [tests/test_mp_lobby.py](tests/test_mp_lobby.py) - Lobby leave/join by server index, launch rules + tooltip, shared seed/map/config, loading screen (keeps messages, Escape, host skips leavers, lost host), real-socket connect -> lobby -> launch -> loading handshake, chosen colours + army flags in game, client slot updates (own colour/team only), territory claims (host's clock orders them, only map territories, broken timestamps, name not applied)
+- [tests/test_mp_sequential.py](tests/test_mp_sequential.py) / [tests/test_mp_simultaneous.py](tests/test_mp_simultaneous.py) / [tests/test_mp_progression.py](tests/test_mp_progression.py) - Sequential / simultaneous sync and achievements/XP for the local player and for every member of a winning team (multiplayer audit findings)
+- [tests/test_mp_battles.py](tests/test_mp_battles.py) - Seeded battle replay on receivers (seed + full survivors, hero/Keep/report once, early result held, disagreeing replay corrected, seedless fallback with allies, FIGHT on a vanished battle, dice ties reproduce)
+- [tests/test_mp_foundations.py](tests/test_mp_foundations.py) - State snapshot round trip / per-PC chat / AI flags / cleared work in progress / income, Decisive Strike + Valorous Charge picks, integer default unit ids
+- [tests/test_mp_seq_flow.py](tests/test_mp_seq_flow.py) - Sequential multiplayer (the turn owner is the truth): a 3-player turn identical everywhere, a 4-player full round, only the owner sends TURN_END, receivers never advance on their own, TURN_END waits for the replay, messages wait for our turn-start effects, a stale clock never cuts a turn short, only the owner's timer ends the turn (C2), desync reported + corrected at EXECUTE_ORDERS, a 3-player battle, AFK (untouched battles, report left open, abandoned window), final state at game end
+- [tests/test_mp_validation.py](tests/test_mp_validation.py) - Who may send what: relayed messages carry their sender, missing player fields filled in, host-only types and claims for other slots dropped (L5), sequential actions / TURN_END only from the turn owner, battle results only for a real battle and from its resolver, the simultaneous host keeps its own replay, alliance choices only from the chooser and for an ally, Hero abilities only with your own Hero, gold transfer rules (allies, once per turn, capped, only when on), a message that raises is skipped and the game goes on
+- [tests/test_mp_seq_ai.py](tests/test_mp_seq_ai.py) - Sequential multiplayer computer players + takeover: only the host runs the AI (C1), the AI's moves / battles reach every PC (queued from its worker thread, kept in order), a player leaving while planning / after their moves / during their battles has the turn finished by the AI on the host, anti-farming with AI takeovers, snapshots summarised in logs, the disconnect chat notice comes from "System" (not the host)
+- [tests/test_mp_sim_flow.py](tests/test_mp_sim_flow.py) - Simultaneous multiplayer: host state wins at execution start, 3- and 4-player rounds end identical (incl. per-PC current_player), round end clears leftovers, host-only AI battles / choices / round ends, SIM_READY_STATE waiting list, client timers ready only themselves, AFK (90 s own / 180 s host, report left open, host's own window), round end waits for the host's open battle report + keeps its alliance marker in its round, late alliance choice / stale popup never end the next round, AI takeover while planning / resolving, order validation (units used twice, count from unit list), alliance marker removal by territory, knocked-out players never hold up a round (after a battle or mid-round), clients record every round (game log + replay)
 
 **Configuration:**
 - [network_config.py](network_config.py) - Network constants
@@ -199,6 +214,7 @@ AvareonWar/
 - [network/protocol.py](network/protocol.py) - Message serialization
 - [network/message_queue.py](network/message_queue.py) - Thread-safe queue
 - [network/upnp.py](network/upnp.py) - UPnP port forwarding and public IP detection for internet play
+- [network/state_snapshot.py](network/state_snapshot.py) - Whole-game snapshots (`build_snapshot` / `apply_snapshot`) on top of the save serializer, for "this is the true state" messages
 - [network/lobby.py](network/lobby.py) - Multiplayer lobby management
 - [network/multiplayer_setup.py](network/multiplayer_setup.py) - Multiplayer configuration UI
 - [network/territory_selector.py](network/territory_selector.py) - Multiplayer territory selection UI
@@ -443,10 +459,14 @@ After making code changes, ask yourself:
 - Add new unit type → `game_state/__init__.py` UNIT_TYPES class attribute
 - Add new building → `game_state/data_definitions.py` BUILDING_TYPES dict
 - Change balance/costs → `game_state/economy.py` or `economic_data.json`
-- Modify combat → `game_state/military.py` resolve_battle() method
+- Modify combat → `game_state/military.py` resolve_battle() method — any randomness must use its `rng` parameter (multiplayer replays battles from the resolver's seed). Several attackers at one Keep → `_fight_for_the_keep()` (they fight each other first); the Keep's side is `battle.keep_bonus_player` (simultaneous battles are keyed by TEAM LEADER, not always the owner). See "Several attackers at one Keep" + "Team battles - sides and keys" in CODE_GUIDE.md. **A battle key is a TEAM (lowest player index), never assume one player** - use `_battle_sides()` / `_battle_side()`; survivors per player via `_side_survivors()`
+- Resolve a battle from a new place → `main.py` `_resolve_battle_locally()` + `_battle_resolve_payload()` (never call `resolve_battle()` directly in multiplayer code); receiving side `_handle_remote_battle_resolve()`. See "Battle sync" in CODE_GUIDE.md
+- A hero ability that picks units at random → ship the picks (`picked_units` / Royal Charisma `stolen_units`), receivers pass `pre_selected_units`
+- Whole-game "true state" message → `network/state_snapshot.py` (new GameState fields go into `save_manager.serialize/deserialize_game_state`)
 - Modify battle bar volley animation → `ui/effects/battle_interface.py` (`BattleBarVolleyEffect`)
 - Modify "Resolve Remaining Battles" button → `rendering/ui_renderer.py` `_draw_resolve_all_battles_button()`, `main.py` `_resolve_all_pending_battles()`
-- Change AI behavior → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py`
+- Simultaneous-mode AI spending → `simultaneous/sim_ai.py` `_fit_actions_to_gold()` / `_gold_cost()` (a new purchase type needs a cost there). Price of a Hero → always `gs.get_hero_cost(hero, player)`
+- Change AI behavior → `ai_strategy.py`, `ai_military.py`, or `ai_economy.py` (AI code resolves battles with `game_state.resolve_battle_shared()`, never `resolve_battle()` - multiplayer replays them)
 - Add UI element → `main.py` or `rendering/ui_renderer.py`
 - Add visual effect → `ui/effects/` directory
 - Change floating chat notifications → `ui/effects/chat_notification_effect.py`
@@ -464,17 +484,31 @@ After making code changes, ask yourself:
 - Add/modify map → `maps/manifest.json` (registry), `maps/<map_id>/` (data files), `map_data.py` (loader)
 - Fortress territories → `maps/<map_id>/fortress_territories.json`, `map_data.is_fortress_territory()`, `game_state/military.py` (defense), `game_state/buildings.py` (Keep restriction)
 - Change network → `network/protocol.py`
-- Change multiplayer sync logging/desync diagnosis → `sync_logger.py`, `network_config.py` (message types), `main.py` (hooks)
+- Add a message clients send / decide who may send it → `network/server.py` `_CLIENT_MESSAGE_TYPES` (else dropped from clients) + `_SENDER_FIELDS` (acting-player field, must be the sender); receivers: `main.py` `_message_sender()` (stamp; None = host, trusted) / `_refusal_for()` (`_TURN_OWNER_MESSAGES`) + checks in the handler. See "Who may send what" in CODE_GUIDE.md
+- Change multiplayer sync logging/desync diagnosis → `sync_logger.py`, `main.py` `_report_snapshot_divergence()` (receiver diffs its state against the owner's snapshot) + the turn-snapshot hooks
 - Change internet play / UPnP → `network/upnp.py` and `network_config.py`
 - Modify simultaneous mode → `simultaneous/sim_state.py`, `sim_conflict_resolver.py`
+- Simultaneous multiplayer flow → host: `main.py` `_sim_start_execution_phase()` (validate + apply non-movement + `SIM_ALL_READY{snapshot, movement_orders}`) / `_sim_broadcast_round_complete()` (snapshot); client: `_sim_apply_all_ready()` / `_sim_apply_round_complete()` (restore `current_player` = local after a snapshot). Per-frame work: `_update_simultaneous()` (timers, `SIM_READY_STATE`, host-only AI resolvers / choosers, `_sim_afk_watchdog()`, new-round AI). **Any new "end the round now?" check must use `Game._sim_round_may_end()`** (it waits for an open battle report of ours). See "Multiplayer model (the host is the truth)" in CODE_GUIDE.md
+- Sequential multiplayer flow → owner (`Game._is_turn_owner_of()`: the human's PC, the HOST for computer players): `main.py` `_end_local_turn()` (End Turn + timer), GameState hooks `on_orders_executing` → `_on_orders_executing()` (`EXECUTE_ORDERS{snapshot}`), `shared_battle_resolver` → `_resolve_and_share_battle()` (the AI's battles), `on_turn_advanced` → `_on_turn_advanced()` (`TURN_END{snapshot}`); sends from the AI's worker thread are queued for the main loop (`_send_action_to_remote()` / `_flush_thread_messages()`); receivers: `_handle_remote_execute_orders()` / `_handle_remote_turn_end()` (+ `GameState._after_turn_advance()`). Per-frame: `_update_sequential_turn()` (`_update_ai_turn_start()` - host-only AI, owner-only timer, `_seq_afk_watchdog()`, final state). **Only the turn owner's PC may advance a turn** (`GameState.may_advance_turn()` / `Game._owns_current_turn()`). See "Sequential multiplayer: the turn owner is the truth" in CODE_GUIDE.md
+- AI takeover of a disconnected player → `main.py` `_take_over_disconnected_player()` + `SimultaneousAI.ensure_player()` (simultaneous) / `_continue_turn_as_ai()` + `handle_ai_turn()` (sequential: finishes their current turn on the host)
+- Knocked-out players in simultaneous mode → `sim_state.eliminated_players` follows `game_state.eliminated_players` (`start_planning_phase()` adopts it, `sim_state.sync_eliminations()` after battles + per frame on the host). Round records (game log / sync log / replay) → `sim_state.record_round_boundary()` (host: end of `complete_round()`; clients: after SIM_ROUND_COMPLETE)
+- Simultaneous AFK timings → `Game.SIM_AFK_RESOLVE_SECONDS` / `SIM_HOST_FALLBACK_SECONDS` / `SIM_AI_ACTION_DELAY` in `main.py`
+- Sequential AFK timings → `Game.SEQ_AFK_RESOLVE_SECONDS` / `SEQ_BATTLE_FALLBACK_SECONDS` in `main.py` (`_seq_afk_watchdog()`)
 - Modify victory/elimination → `game_state/victory.py` (check_victory, eliminate_player, eliminate_player_disconnect)
 - Modify Battle Reports (capture) → `game_state/military.py` `_capture_battle_reports()` / `_capture_uncontested_report()` — hook lives in `resolve_battle()`, NOT `_update_battle_results()` (the tie path destroys buildings first and early-returns)
 - Modify Battle Report popup visuals → `ui/battle_report_popup.py`
 - Modify Battle Report show/hide rules → `main.py` `_viewer_in_planning()` (clearing) vs `_battle_reports_visible()` (drawing) — these are deliberately separate
 - Modify "Close All Battle Reports" button → `rendering/ui_renderer.py` `_draw_close_all_battle_reports_button()` + `main.py` `close_all_battle_reports()`
 - Modify Battle Report detail screen → `ui/effects/battle_interface.py` `report_snapshot` ctor path + `main.py` `open_battle_report_detail()`
-- Modify disconnect elimination → `network/server.py` (_cleanup_expired_reconnects), `main.py` (DISCONNECT_ELIMINATION handler)
-- Modify anti-win-farming XP → `player_level.py` (_is_disconnect_farming, DISCONNECT_FARMING_XP_THRESHOLD)
+- Modify disconnect elimination → `network/server.py` (_cleanup_expired_reconnects), `main.py` (DISCONNECT_ELIMINATION handler) — inactive while `RECONNECT_ENABLED` is False (`network_config.py`)
+- Change how clients drop / get refused → `network/server.py` `_disconnect_client()` (every removal; LOBBY_LEAVE vs PLAYER_DISCONNECT to host + clients) / `_reject_connection()` + `network/client.py` `_connection_failed()` (first reason wins). See "Connection lifecycle" in CODE_GUIDE.md
+- Change how a multiplayer game starts (Host / Join / Steam invite) → `network/multiplayer_setup.py` `build_multiplayer_config()` / `run_client_lobby()` + `main.py` `_play_multiplayer_game()` — one path for all three, never a per-path copy
+- Change lobby launch rules → `network/lobby.py` `launch_blocker()` + `config/setup_tooltips.py` `launch_<reason>`
+- Write a multiplayer sync test → `tests/mp_harness.py` (`Session`, `click_end_turn`, `fight`, ...)
+- Add a network message handler in `main.py` → `_apply_network_message()` (called through the `_handle_network_message()` guard, which logs + skips a message that raises)
+- Chat line written by the game (not a player) → `gs.add_system_chat_message(text)`; show a chat sender via `gs.chat_sender_name()` / `chat_sender_color()` (never `add_chat_message(0, ...)` - it reads as the host)
+- Who won, for one player (achievements, XP, victory screen) → `gs.is_winner(player)` (the winner or a teammate), never `gs.winner == player`; this PC's player → `player_level.local_human_index(game)`
+- Modify anti-win-farming XP → `player_level.py` (_is_disconnect_farming, DISCONNECT_FARMING_XP_THRESHOLD; AI takeovers count via `gs.ai_takeover_xp`)
 - Add new achievement → `achievement_manager.py` ACHIEVEMENTS list
 - Add achievement reward icon → `achievement_manager.py` ALL_REWARD_ICON_PATHS
 - Change achievement panel UI → `achievement_panel.py`
@@ -504,7 +538,7 @@ After making code changes, ask yourself:
 - Change Steam invite UI → `network/territory_selector.py` (friend picker modal)
 - Change Steam invite auto-connect → `main.py` (`steam_invite_join` action, `+connect` launch param)
 - Change Steam player name behavior → `main_menu.py` `_open_profile()` + `_draw_profile_panel()`
-- Multiplayer lobby → `network/lobby.py`
+- Multiplayer lobby → `network/lobby.py`; lobby UI / slot seating / launch → `network/territory_selector.py` (slot = the server's player index, never look players up by name; a client's slot update changes only its own colour / team)
 - Modify player level/XP → `player_level.py`
 - Change level formula/XP amounts → `player_level.py` constants
 - Player level profile UI → `main_menu.py` `_draw_profile_panel()`

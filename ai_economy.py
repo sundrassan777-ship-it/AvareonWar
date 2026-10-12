@@ -284,13 +284,15 @@ class BuildingPlanner:
             list: Available plot indices
         """
         plots = map_data.TERRITORY_PLOTS.get(territory, [])
-        if territory not in game_state.buildings:
-            game_state.buildings[territory] = {}
+        # Read only: this runs on the simultaneous-mode AI planning thread, and adding an
+        # empty buildings entry here changed a dict the main loop may be iterating
+        # (and made the AI's game state differ from what other PCs receive)
+        built = game_state.buildings.get(territory, {})
 
         available = []
         for i in range(len(plots)):
             # Check if plot is empty (not built and not under construction)
-            is_built = i in game_state.buildings[territory]
+            is_built = i in built
             is_under_construction = (
                 territory in game_state.under_construction and
                 i in game_state.under_construction[territory]

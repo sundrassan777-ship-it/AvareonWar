@@ -4,6 +4,158 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Multiplayer: Smoother Connections
+
+*12 October 2026*
+
+### Joining and the lobby
+
+- When you can't join a game, you now see why: the lobby is full, the game has already
+  started, you are on a different version of the game, or nobody is hosting at that address.
+- Leaving a lobby now frees your seat for everyone, including the host. The host used to
+  keep a "ghost" player who stopped the game from starting.
+- Two players with the same name no longer end up controlling the same seat.
+- The host can launch only when the game is ready: at least two players, no empty seat
+  between players, at least two teams, and a starting territory for everyone. Hover over
+  the greyed-out **Launch Game** button to see what is missing.
+- Players who join through a **Steam invite** now play on the map the host picked.
+- With **Neutral Armies** on, every player now sees the same neutral garrisons.
+- The colour you pick is now the colour you play: your territories and your army flags
+  (in **Custom Game** too). The choice used to be ignored.
+- Fixed: a player whose computer clock was behind could take a starting territory someone
+  else had already picked. Now whoever clicks first gets it.
+
+### Loading
+
+- Press **Esc** on the loading screen to leave instead of waiting.
+- If a player leaves while the others are loading, the game no longer waits for them forever.
+- If the host leaves, everyone else is told and returns to the menu.
+
+### Simultaneous turns
+
+- Every round now plays out identically for every player: the host checks all orders,
+  carries out everyone's buildings, training and research, and every player watches the
+  same armies march into the same battles. Before, players could end up seeing different
+  moves and battles.
+- Fixed: splitting an army into two groups heading for the same territory moved only one
+  of them.
+- The "Waiting for..." list now always shows who is really still planning.
+- In multiplayer you are marked ready only when you press **End Turn** (or your timer runs
+  out) - never automatically.
+- Away from the keyboard? Battles you leave untouched for 90 seconds are fought for you,
+  a battle report left open for 90 seconds closes by itself, and after 3 minutes the host
+  settles any battle still open, so a round can never get stuck.
+- Fixed: when the host was still reading a battle report as the last battle ended, an
+  allied territory choice could be lost and turn up again in the next round.
+- Fixed: an alliance choice made at the very end of a round could cut the next round's
+  planning short.
+- If a player leaves the game, an AI takes over their empire (Medium difficulty) and
+  carries on - even finishing the current round for them.
+- Computer players now use all of their Heroes' targeted abilities, and wait for the
+  cooldown like everyone else.
+- Computer players now plan only what they can afford, most important first - so they
+  actually recruit the Heroes and research they aim for. Before, those usually failed
+  for lack of gold and computer players got their Heroes very late. (Also in
+  single-player games with simultaneous turns.)
+- Fixed: when a player was knocked out of the game (no territories left) but stayed to
+  watch, every following round waited for their timer to run out. The game now carries
+  on without them - also when you are the one knocked out and watch your allies play on.
+- Fixed: a replay saved by a player who joined a simultaneous game had no rounds in it.
+
+### Taking turns
+
+- Every turn now plays out the same for every player: when a player ends their turn, the
+  others watch the same armies march and the same battles, and the next turn starts from
+  exactly the same game. Before, a client could find the host's moves undone, or a turn
+  could be skipped.
+- Fixed: units trained by another player could appear twice.
+- Fixed: when the planning timer ran out, the turn could end differently on each player's
+  screen, and planned moves were lost. Now the timer of the player whose turn it is
+  decides, and their planned moves are carried out as if they had pressed **End Turn**.
+- Fixed: cancelling a construction was not passed on - the other players still saw the
+  building, and the gold stayed spent.
+- Fixed: pressing the greyed-out **End Turn** button while armies were still moving could
+  confuse the other players' games.
+- Away from the keyboard? Battles left untouched for 90 seconds are fought for you, a
+  battle report left open for 90 seconds closes by itself, and after 3 minutes every open
+  battle is settled, so the other players never wait forever.
+- When the game ends, every player's summary shows the same final numbers.
+- Computer players now play the same turn for everyone: the host plays them, and every
+  player watches the same moves and battles. Before, each player's game ran its own
+  computer players, which could make completely different moves on each screen.
+- If a player leaves the game during their own turn, an AI (Medium difficulty) now
+  finishes that turn for them and plays on - the game used to wait for them forever.
+- Beating an empire whose player left right at the start no longer gives player-level XP,
+  even though an AI took it over.
+- Fixed: the turn number stopped counting up once the first player was knocked out.
+
+### Battles and heroes
+
+- **Fighting alongside an ally works properly now.** Fixed: when your ally helped defend
+  your territory and won, the territory could go to your ally - your buildings were
+  destroyed and your units disappeared. Now the territory stays yours, and every ally
+  keeps their own surviving units: when defending, your allies' units fall before yours;
+  when attacking together, the losses are shared by the size of each army. Before, only
+  one ally's units survived a shared victory.
+- Fixed: a Keep did not always defend when an ally helped defend it, and its owner did not
+  get a battle report.
+- Fixed: the territory bonus **Hero Training Cost** (-3% per territory) never lowered the
+  price of a Hero. It does now, and the Keep shows the price you will pay.
+- **Two attackers, one Keep:** when enemies reach the same Keep in the same round, they
+  now fight each other first, and only the winner storms the Keep with what it has left.
+  Before, only the stronger attacker fought and the other one's army simply vanished.
+- Fixed (simultaneous turns): when an ally helped defend a Keep, the battle could treat
+  your own ally as the attacker and hand the Keep to them.
+- Battles now play out the same way for every player. Fixed: when another player won a
+  battle, your screen could still show the defeated side's buildings and Heroes, and the
+  winning units lost their veteran experience.
+- Fixed: a game could crash when sending reinforcements into a territory that was just
+  captured by another player.
+- Fixed: **Decisive Strike** and **Valorous Charge** could hit or move different units on
+  different players' screens.
+- Fixed (simultaneous turns): pressing **Fight** right after another player finished their
+  battle could fight the wrong battle, or crash.
+- Fixed (simultaneous turns): a player being knocked out of the game could crash the game
+  for the others.
+
+### Your progress
+
+- Winning a multiplayer game now counts for you: achievements used to be credited to the
+  host's profile on every player's PC.
+- When your team wins, every player on the team gets the win for achievements and
+  player-level XP (in **Custom Game** too). Before, only one player of the team did.
+
+### Fair play
+
+- Every game now checks who really sent each move, and refuses what that player may not
+  do: acting for another player, acting outside their own turn, deciding a battle or an
+  allied territory they are not fighting over, using another player's Hero, or sending
+  gold to an enemy, more than once a turn, more than they have, or in a game without gold
+  transfer. A modified game could do all of these before.
+- In the lobby, a player can only change their own colour and team. A modified game could
+  change other players' seats, kick them, or start the game.
+- A modified game can no longer pick a starting territory that is not on the map, change
+  its player's name to anything it likes, or crash the host's lobby.
+
+### Chat
+
+- **Team chat** is now seen by your allies only. Before, enemies could read it too.
+- Cheat codes no longer work in multiplayer.
+- When a player leaves, the chat message about it now comes from **System**. It used to
+  look as if the host had written it.
+
+### Connection
+
+- Fixed: actions such as **End Turn** could occasionally get lost on their way to the host,
+  leaving the game stuck.
+- Fixed: players on slower connections could be dropped when the game sent a large update.
+- When a player leaves a game in progress, everyone is told. Rejoining a game in progress is
+  not possible yet.
+- Fixed: an unexpected message from the network could close the game for a player. It is
+  now skipped (and written to the log) and the game carries on.
+
+---
+
 ## A Better Game Setup
 
 *10 October 2026*

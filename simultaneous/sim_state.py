@@ -207,6 +207,12 @@ class SimultaneousGameState:
         # Reset all unit statuses from 'moved' to 'unmoved' for the new round
         self._reset_unit_movement_status()
 
+        # Everyone game_state counts as out is out of this round too (auto-readied
+        # below) - whatever path knocked them out (see sync_eliminations)
+        for player_id in sorted(getattr(self.gs, 'eliminated_players', ()) or ()):
+            if player_id not in self.eliminated_players:
+                self.eliminated_players.append(player_id)
+
         # Check for auto-ready (players with no valid moves)
         self._check_auto_ready()
 
@@ -239,12 +245,23 @@ class SimultaneousGameState:
         # Legacy arrays are auto-synced via sync_legacy_garrison_data() in reset_garrison_moved_status()
         sim_log.detail("Reset all units to unmoved status for new round")
 
+    def is_multiplayer(self) -> bool:
+        """True in a network game (host or client)."""
+        return self.is_multiplayer_host or self.is_multiplayer_client
+
     def _check_auto_ready(self):
         """Auto-mark players as ready if they have no valid moves."""
         for player_id in range(self.gs.num_players):
             if player_id in self.eliminated_players:
                 self.players_ready[player_id] = True
                 sim_log.state(f"Player {player_id} auto-ready (eliminated)")
+                continue
+
+            if self.is_multiplayer():
+                # Multiplayer: a player is ready only once their SIM_PLAYER_READY (with
+                # their orders) reached the host - humans click End Turn or their timer
+                # runs out, AIs ready themselves after planning. Auto-readying here
+                # marked a human ready on one PC while the host still waited for them.
                 continue
 
             # Check if player has any valid actions
@@ -371,9 +388,13 @@ class SimultaneousGameState:
             if self.is_multiplayer_client:
                 sim_log.sync("All players ready (client) - waiting for SIM_ALL_READY from host")
             elif self.is_multiplayer_host and self.on_all_ready_callback:
-                # Multiplayer HOST: use callback to send SIM_ALL_READY and execute
-                sim_log.sync("All players ready (host) - triggering broadcast callback")
-                self.on_all_ready_callback()
+                # Multiplayer HOST: ALWAYS run the broadcast + execution from the main
+                # loop (check_deferred_execution). The last mark_ready can come from an AI
+                # planning thread - running it there mutated the game while the main loop
+                # drew it - and when the host's own End Turn completed the set, the round
+                # used to finish before that click's SIM_PLAYER_READY was even sent.
+                sim_log.sync("All players ready (host) - execution deferred to the main loop")
+                self._execution_pending = True
             else:
                 # Single-player or local game: check if we're on the main thread
                 # If called from AI background thread, defer execution to main thread
@@ -433,10 +454,8 @@ class SimultaneousGameState:
                         f"force-marking {len(waiting)} unresponsive players as ready: {waiting}"
                     )
                     for pid in waiting:
-                        # Skip remote human players — they send their own SIM_PLAYER_READY via network
-                        # Force-marking them here would mark them ready with empty orders
-                        if self.is_multiplayer_host and pid != 0 and not self.gs.player_is_ai[pid]:
-                            sim_log.state(f"Safety timeout: skipping remote human player {pid}")
+                        if not self._may_auto_ready(pid):
+                            sim_log.state(f"Safety timeout: skipping remote player {pid}")
                             continue
                         self.player_timers[pid] = 0
                         self.mark_ready(pid)
@@ -451,12 +470,25 @@ class SimultaneousGameState:
             # Check for timer expiration
             if self.player_timers[player_id] <= 0:
                 self.player_timers[player_id] = 0
-                # Don't auto-ready remote human players — they send SIM_PLAYER_READY via network
-                # Auto-readying them here would mark them ready with empty orders
-                if self.is_multiplayer_host and player_id != 0 and not self.gs.player_is_ai[player_id]:
+                if not self._may_auto_ready(player_id):
                     sim_log.state(f"Timer expired for remote player {player_id} - awaiting network ready")
                     continue
                 self.mark_ready(player_id)  # Auto-ready when timer expires
+
+    def _may_auto_ready(self, player_id: int) -> bool:
+        """
+        Whether this PC may mark `player_id` ready on a timeout.
+
+        Single-player: anyone. Multiplayer host: itself and AI players - a remote human
+        is ready only when their SIM_PLAYER_READY (with their orders) arrives. Client:
+        only the local player (it then sends SIM_PLAYER_READY); readying remote players
+        here showed them as ready while the host still waited for them.
+        """
+        if self.is_multiplayer_client:
+            return player_id == self.local_player_index
+        if self.is_multiplayer_host:
+            return player_id == self.local_player_index or bool(self.gs.player_is_ai[player_id])
+        return True
 
     def get_remaining_time(self, player_id: int) -> float:
         """
@@ -478,8 +510,14 @@ class SimultaneousGameState:
         """
         if self._execution_pending:
             self._execution_pending = False
+            if self.sim_phase != 'planning':
+                return  # already started (stale flag)
             sim_log.phase("Processing deferred execution on main thread")
-            self._begin_execution()
+            if self.is_multiplayer_host and self.on_all_ready_callback:
+                # Multiplayer host: broadcast SIM_ALL_READY and execute (see mark_ready)
+                self.on_all_ready_callback()
+            else:
+                self._begin_execution()
 
     def _begin_execution(self):
         """Begin the execution phase - merge and execute all orders."""
@@ -501,6 +539,13 @@ class SimultaneousGameState:
         """
         # Don't advance to next round if game has ended (victory/defeat detected)
         if self.gs.phase == 'ended':
+            return
+
+        # Multiplayer: only the host ends a round - it then broadcasts the new round's
+        # state (SIM_ROUND_COMPLETE). Several client paths used to call this too and
+        # ran the round end with their own numbers.
+        if self.is_multiplayer_client:
+            sim_log.sync("complete_round() ignored on a client - waiting for SIM_ROUND_COMPLETE")
             return
 
         # Apply income and finish constructions/research for all players
@@ -562,17 +607,8 @@ class SimultaneousGameState:
         set_round(self.round_number)  # Update debug context
         sim_log.phase(f"Round complete. Starting round {self.round_number}")
 
-        # Game logger: record round snapshot for the completed round
-        if self.gs.game_logger:
-            self.gs.game_logger.record_round_snapshot(self.round_number)
-
-        # Sync logger: record turn snapshot at sim round boundary
-        if self.gs.sync_logger:
-            self.gs.sync_logger.record_turn_snapshot(self.round_number)
-
-        # Replay recorder: snapshot at end of each simultaneous round
-        if self.gs.replay_recorder:
-            self.gs.replay_recorder.record_snapshot()
+        # (The game log / sync log / replay records of the round are written at the end,
+        # record_round_boundary())
 
         # Start new planning phase (resets all 'moved' units to 'ready')
         self.start_planning_phase()
@@ -593,9 +629,26 @@ class SimultaneousGameState:
         finally:
             self.gs.current_player = original_player
 
+        self.record_round_boundary()
+
         # Callback for multiplayer host to broadcast round completion
         if self.is_multiplayer_host and self.on_round_complete_callback:
             self.on_round_complete_callback(self.round_number)
+
+    def record_round_boundary(self):
+        """
+        The records of a finished round: game log round, sync log turn snapshot, replay
+        snapshot. Written once the round is fully done - the state the multiplayer host
+        sends in SIM_ROUND_COMPLETE - because a client writes them from that message:
+        only the host runs complete_round(), so a client's logs and saved replay of a
+        simultaneous game had no rounds at all.
+        """
+        if self.gs.game_logger:
+            self.gs.game_logger.record_round_snapshot(self.round_number)
+        if self.gs.sync_logger:
+            self.gs.sync_logger.record_turn_snapshot(self.round_number)
+        if self.gs.replay_recorder:
+            self.gs.replay_recorder.record_snapshot()
 
     def _process_overflow_territories(self):
         """Disband excess armies in overflow territories that expired."""
@@ -816,6 +869,25 @@ class SimultaneousGameState:
         if player_id not in self.eliminated_players:
             self.eliminated_players.append(player_id)
             self.players_ready[player_id] = True  # No longer participates
+
+    def sync_eliminations(self) -> List[int]:
+        """
+        Take over every player game_state counts as eliminated: check_victory() marks
+        anyone left without territories (every victory condition), eliminate_player()
+        a Capital Assault loser. This list used to hear only of Capital Assault
+        eliminations, so in Domination / Total Conquest a knocked-out human was never
+        auto-readied and every later round waited for their planning timer.
+
+        During planning the newly eliminated are readied through mark_ready(), so a
+        round that only waited for them goes on. Returns the players added.
+        """
+        added = [player_id for player_id in sorted(getattr(self.gs, 'eliminated_players', ()) or ())
+                 if player_id not in self.eliminated_players]
+        for player_id in added:
+            if self.sim_phase == 'planning' and not self.players_ready.get(player_id, False):
+                self.mark_ready(player_id)
+            self.eliminate_player(player_id)
+        return added
 
     # Delegate common GameState methods
     def __getattr__(self, name):

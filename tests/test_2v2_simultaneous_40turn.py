@@ -636,6 +636,9 @@ def run_2v2_simultaneous_test(num_rounds=40, verbose=True):
         'game_ended': game_ended,
         'winner': winner,
         'final_territories': final_terr,
+        # A perfect battle tie (equal strength AND equal dice) makes the territory neutral -
+        # a real game rule. Counting only players' territories made this test 'flaky'.
+        'neutral_territories': sum(1 for owner in base_game.territory_owners.values() if owner == -1),
         'final_teams': final_teams,
         'final_armies': final_armies,
         'final_gold': list(base_game.player_gold),
@@ -655,7 +658,7 @@ def test_2v2_simultaneous_40turn():
     assert results is not None, "Test runner returned None"
     assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
     assert results['rounds_completed'] > 0, "No rounds were completed"
-    assert sum(results['final_territories']) == 57, f"Territory sum != 57: {results['final_territories']}"
+    assert sum(results['final_territories']) + results['neutral_territories'] == 57, f"Territory sum != 57: {results['final_territories']} + {results['neutral_territories']} neutral"
 
 
 if __name__ == '__main__':

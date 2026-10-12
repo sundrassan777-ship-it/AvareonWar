@@ -466,6 +466,9 @@ def run_sequential_test(num_turns=40, verbose=True):
         'game_ended': game_ended,
         'winner': winner,
         'final_territories': final_terr,
+        # A perfect battle tie (equal strength AND equal dice) makes the territory neutral -
+        # a real game rule. Counting only players' territories made this test 'flaky'.
+        'neutral_territories': sum(1 for owner in game.territory_owners.values() if owner == -1),
         'final_armies': final_armies,
         'final_gold': list(game.player_gold),
         'total_errors': len(all_errors),
@@ -484,7 +487,7 @@ def test_ffa_sequential_40turn():
     assert results is not None, "Test runner returned None"
     assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
     assert results['turns_completed'] > 0, "No turns were completed"
-    assert sum(results['final_territories']) == 57, f"Territory sum != 57: {results['final_territories']}"
+    assert sum(results['final_territories']) + results['neutral_territories'] == 57, f"Territory sum != 57: {results['final_territories']} + {results['neutral_territories']} neutral"
 
 
 if __name__ == '__main__':

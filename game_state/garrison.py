@@ -695,10 +695,14 @@ class GarrisonMixin:
             list: List of unit dicts
         """
         # Phase 2E: Now delegates to _make_unit() factory for consistent unit dict creation
+        # Integer ids 0..n-1 like every other garrison: these used to be strings
+        # ('unit_<id>_<i>_<n>'), and the next arrival in the territory then crashed on
+        # max(ids) + 1 (str + int) - reachable in multiplayer when a battle result arrived
+        # without its survivor list.
         units = []
         for i in range(total_count):
             status = 'ready' if i < unmoved_count else 'moved'
-            unit = self._make_unit('Swordsman', f'unit_{id(self)}_{i}_{total_count}', status)
+            unit = self._make_unit('Swordsman', i, status)
             units.append(unit)
         return units
 

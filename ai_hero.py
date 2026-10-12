@@ -82,8 +82,8 @@ class HeroSelector:
             if hero_type in owned_heroes or hero_type in training_hero_types:
                 continue
 
-            # Check affordability
-            cost = game_state.HERO_TYPES[hero_type]['cost']
+            # Check affordability (the price actually charged, discounts included)
+            cost = game_state.get_hero_cost(hero_type, player_index)
             if game_state.player_gold[player_index] < cost:
                 continue
 

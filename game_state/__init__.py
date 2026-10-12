@@ -192,6 +192,15 @@ class Battle:
 class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryMixin, VictoryMixin):
     # Constants
     MAX_ARMIES_PER_TERRITORY = 15  # Army limit to prevent spam
+    CASTLE_UPGRADE_COST = 150      # Keep -> Castle (start_castle_upgrade; the AI budgets it too)
+
+    # Sender of the chat lines the game writes itself ("<name> has disconnected. AI
+    # taking over."). These used to be sent as player 0, so every PC showed them as
+    # written by the host. Deliberately not an int: a negative index would quietly pick
+    # a player from the end of the per-player lists instead of failing.
+    CHAT_SYSTEM_SENDER = 'system'
+    CHAT_SYSTEM_NAME = "System"
+    CHAT_SYSTEM_COLOR = (230, 196, 120)
 
     # Veterancy/Experience system constants
     LEVEL_XP_PER_LEVEL = [30, 45, 50, 55, 60]      # XP needed at each level (per-level increments)
@@ -367,7 +376,7 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
         # Eliminated players tracking (universal — players with 0 territories)
         # Updated by check_victory() and eliminate_player_disconnect()
-        # Synced via FULL_STATE_SYNC and SIM_ROUND_COMPLETE
+        # Synced via the multiplayer state snapshots (network/state_snapshot.py)
         self.eliminated_players = set()
 
         # Players eliminated specifically via multiplayer disconnect timeout
@@ -591,9 +600,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Battle Reports: transient per-defender summaries of battles they did not watch.
         # Purpose: a defender gets no feedback today beyond the map changing colour, so we
         # snapshot the outcome at resolution time and surface it on their next turn.
-        # Both lists are deliberately EXCLUDED from save_manager, calculate_state_checksum()
-        # and _send_full_state_sync(): this is per-viewer UI state that legitimately differs
-        # between host and client, and including it would cause false desyncs.
+        # Both lists are deliberately EXCLUDED from save_manager (and so from the multiplayer
+        # state snapshots) and calculate_state_checksum(): this is per-viewer UI state that
+        # legitimately differs between host and client, and including it would cause false
+        # desyncs.
         # last_battle_reports - reset at the top of every resolve_battle(); holds only that
         #   battle's snapshots so the network send sites can attach them to BATTLE_RESOLVE.
         # battle_report_inbox - append-only; main.py drains it every frame. This is what
@@ -612,6 +622,25 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Turn announcement effect system
         self.turn_announcement_active = False  # Blocks input during turn announcement
         self.deferred_turn_start_actions = False  # Flag to execute turn start effects after announcement
+
+        # Sequential multiplayer hooks (set by main.py; None = single-player behaviour).
+        # on_turn_advanced(previous_player): a turn ended on this PC - the turn owner sends
+        # the result (TURN_END with a state snapshot) to the other PCs.
+        # turn_advance_gate(): False on a PC that only replays another player's turn - it
+        # must not advance on its own, the owner's TURN_END does it (may_advance_turn()).
+        # on_orders_executing(): a turn's moves are about to start (execute_all_orders) -
+        # the owner sends its state with them (EXECUTE_ORDERS).
+        # shared_battle_resolver(index): how the turn owner resolves a battle in
+        # multiplayer - seeded and sent to the other PCs (resolve_battle_shared(), the AI).
+        self.on_turn_advanced = None
+        self.turn_advance_gate = None
+        self.on_orders_executing = None
+        self.shared_battle_resolver = None
+
+        # Multiplayer: {player: their action XP when the AI took over their empire (they
+        # disconnected)}. A win against an empire whose player left at once does not count
+        # for XP (anti win-farming, player_level._is_disconnect_farming).
+        self.ai_takeover_xp = {}
 
         # Phase B: Exclusive tab system state
         self.active_sidebar_tab = 'action_queue'  # Default active tab
@@ -809,6 +838,9 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             logger.info("Turn advancement blocked - tutorial game_frozen")
             return
 
+        # Whose turn is ending (the multiplayer hook below needs it)
+        previous_player = self.current_player
+
         # Clear building limit tracking for new turn
         self.buildings_started_this_turn.clear()
 
@@ -869,14 +901,44 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
                and attempts < self.num_players):
             self.current_player = (self.current_player + 1) % self.num_players
             attempts += 1
+
+        # Increment turn_number when a full round completes (all players acted once): the
+        # turn order wrapped around. "current_player == 0" never held again once player 0
+        # was knocked out, so the turn shown on screen (and the game log) froze for good.
+        if self.current_player <= previous_player and self.phase == 'playing':
+            self.turn_number += 1
+
+        self._after_turn_advance()
+
+        # Multiplayer: the PC whose turn just ended sends the result to the others
+        on_turn_advanced = getattr(self, 'on_turn_advanced', None)
+        if on_turn_advanced is not None:
+            on_turn_advanced(previous_player)
+
+    def _after_turn_advance(self):
+        """
+        Everything a turn advance does besides changing the game state: clear the map
+        selection, log / record the new turn, and start the turn announcement (the
+        turn-start effects run when it finishes, _complete_turn_announcement).
+
+        Shared with sequential multiplayer receivers: they take the new state from the
+        turn owner's TURN_END snapshot instead of advancing themselves, then call this.
+        """
         self.selected_territory = None
         self.selected_army = None  # Clear army selection
 
-        # Increment turn_number when a full round completes (all players acted once)
-        # and record a game log snapshot for the completed round
-        if self.current_player == 0 and self.phase == 'playing':
-            self.turn_number += 1
-            if self.game_logger:
+        # The new turn's planning clock starts when its announcement finishes
+        # (_complete_turn_announcement). A multiplayer PC that takes the new state from a
+        # TURN_END never ran next_player(), which clears it - the previous turn's start
+        # time made the new owner's timer "expire" at once.
+        self.planning_phase_start_time = None
+
+        # Record a game log snapshot when a full round has completed - i.e. turn_number
+        # moved on (a multiplayer receiver gets it from the turn owner's TURN_END snapshot;
+        # waiting for player 0's turn missed every round once player 0 was knocked out)
+        if self.phase == 'playing' and self.game_logger:
+            if self.turn_number != getattr(self, '_game_log_turn', 0):
+                self._game_log_turn = self.turn_number
                 self.game_logger.record_round_snapshot(self.turn_number)
 
         # Replay recorder: snapshot after every player turn for rich replay granularity
@@ -890,6 +952,15 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             self.deferred_turn_start_actions = True
         # During setup phase, no announcement needed - just a message
         # (turn start effects like building completion are handled in _complete_turn_announcement)
+
+    def may_advance_turn(self):
+        """
+        Whether this PC may advance the turn on its own (e.g. once the moves have arrived
+        without battles). False on a sequential multiplayer PC that only replays another
+        player's turn: that player's TURN_END brings the result (Game sets the gate).
+        """
+        gate = getattr(self, 'turn_advance_gate', None)
+        return gate() if gate is not None else True
 
     def _complete_turn_announcement(self):
         """Called when turn announcement animation completes - executes turn start effects"""
@@ -906,9 +977,11 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
             # Decrement hero ability cooldowns and silence status for current player
             self._decrement_hero_cooldowns_and_silence()
 
-            # Finish any buildings that complete at the START of this player's turn
-            self.last_completed_buildings = self.finish_constructions()  # Store for network sync
-            self.last_completed_units = self.finish_training()  # Store for network sync
+            # Finish any buildings that complete at the START of this player's turn.
+            # Multiplayer: every PC runs these turn-start effects itself, from the same
+            # state (the turn owner's TURN_END snapshot) - nothing here is sent.
+            self.last_completed_buildings = self.finish_constructions()  # The XP ticks below skip these
+            self.last_completed_units = self.finish_training()
             # Sound priority order: Research > Castle > Hero
             self.finish_research()  # Finish research FIRST (highest priority sound)
             self.finish_castle_upgrades()  # Then castle upgrades (medium priority sound)
@@ -983,10 +1056,14 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Store as (timestamp, player_id, message, channel) - 4-tuple
         self.chat_messages.append((timestamp, player_id, message, channel))
         channel_tag = "[TEAM]" if channel == "team" else "[ALL]"
-        logger.info(f"[CHAT] {channel_tag} [{timestamp}] Player {player_id + 1}: {message}")
+        # player_id is CHAT_SYSTEM_SENDER for the game's own lines (not a player)
+        from_player = type(player_id) is int and player_id >= 0
+        sender = f"Player {player_id + 1}" if from_player else self.CHAT_SYSTEM_NAME
+        logger.info(f"[CHAT] {channel_tag} [{timestamp}] {sender}: {message}")
 
-        # Check for cheat code
-        if message.strip().lower() == "jurvikisrichboi":
+        # Check for cheat code - single-player only. In multiplayer every PC runs this
+        # for every chat line it receives, so the cheat worked online (for anyone).
+        if from_player and not self.network_mode and message.strip().lower() == "jurvikisrichboi":
             self.player_gold[player_id] += 3000
             self.add_message(f"Player {player_id + 1} used cheat code: +3000 Gold!")
             logger.info(f"[CHEAT] Player {player_id + 1} gained 3000 gold!")
@@ -1008,8 +1085,8 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
         timestamp, sender_id, message, channel = chat_msg
 
-        # All-chat is visible to everyone
-        if channel == "all":
+        # All-chat and the game's own lines (disconnect notices) are visible to everyone
+        if channel == "all" or sender_id == self.CHAT_SYSTEM_SENDER:
             return True
 
         # Team chat is visible to sender and their allies
@@ -1041,6 +1118,22 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         """
         return [msg for msg in self.chat_messages
                 if self.is_chat_visible_to_player(msg, viewer_player_id)]
+
+    def add_system_chat_message(self, message):
+        """A chat line written by the game itself (e.g. a disconnect notice), for everyone."""
+        self.add_chat_message(self.CHAT_SYSTEM_SENDER, message)
+
+    def chat_sender_name(self, sender_id, include_title=True):
+        """Name shown before a chat line: the player's name, or "System" for the game."""
+        if sender_id == self.CHAT_SYSTEM_SENDER:
+            return self.CHAT_SYSTEM_NAME
+        return self.get_player_name(sender_id, include_title=include_title)
+
+    def chat_sender_color(self, sender_id):
+        """Colour of that name: the player's colour, or a neutral gold for the game."""
+        if sender_id == self.CHAT_SYSTEM_SENDER:
+            return self.CHAT_SYSTEM_COLOR
+        return self.get_player_color(sender_id)
 
     def calculate_state_checksum(self):
         """
@@ -1188,29 +1281,35 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         remaining = time_limit - elapsed
         return max(0.0, remaining)
 
-    def check_planning_timer_expired(self):
-        """Check if planning timer has expired and auto-execute if so."""
+    def planning_time_expired(self):
+        """
+        Whether the current player's planning time has run out (no side effects).
+        Sequential multiplayer checks this on the turn owner's PC only, which then ends
+        the turn through Game._end_local_turn() so the other PCs get its moves.
+        """
         if self.turn_phase != 'planning':
             return False
-        # DEBUG: Log when timer actually fires
-        remaining = self.get_remaining_planning_time()
-        if remaining is not None and remaining <= 0:
-            logger.info(f"[TURN_DEBUG] Planning timer expired! player={self.current_player}, turn_phase={self.turn_phase}, "
-                        f"pending_battles={len(self.pending_battles)}, ready_to_advance={self.ready_to_advance_turn}")
-
+        # The turn has not started yet (its clock starts when the announcement ends)
+        if self.turn_announcement_active:
+            return False
         # Check if mission allows timer expiry (tutorial disables, Mission 2 enables)
         if self.tutorial_mission:
             # If mission has allow_timer_expiry attribute, use it; otherwise disable
             if not getattr(self.tutorial_mission, 'allow_timer_expiry', False):
                 return False
-
         remaining = self.get_remaining_planning_time()
-        if remaining is not None and remaining <= 0:
-            # Timer expired - auto execute turn
-            self.add_message(f"Planning time expired! Executing turn...")
-            self.next_player()
-            return True
-        return False
+        return remaining is not None and remaining <= 0
+
+    def check_planning_timer_expired(self):
+        """Check if planning timer has expired and auto-execute if so."""
+        if not self.planning_time_expired():
+            return False
+        logger.info(f"[TURN_DEBUG] Planning timer expired! player={self.current_player}, turn_phase={self.turn_phase}, "
+                    f"pending_battles={len(self.pending_battles)}, ready_to_advance={self.ready_to_advance_turn}")
+        # Timer expired - auto execute turn
+        self.add_message(f"Planning time expired! Executing turn...")
+        self.next_player()
+        return True
 
     def next_player(self):
         """Move to the next player's turn (or execute orders/battles first)"""

@@ -105,6 +105,29 @@ class NetworkMessageQueue:
         except queue.Empty:
             return None
 
+    def requeue_front(self, messages):
+        """
+        Put incoming messages that were already taken back at the FRONT of the queue,
+        in their original order.
+
+        For screens that poll the queue for one message type - the loading screen waits
+        for GAME_READY - so everything else they took still reaches the game loop, and
+        ahead of anything that arrived after it. (The loading screen used to drop them.)
+
+        Args:
+            messages: Decoded message dicts, oldest first
+        """
+        messages = list(messages)
+        if not messages:
+            return
+        q = self.recv_queue
+        with q.mutex:
+            # Same bookkeeping as Queue.put(); deliberately ignores maxsize - these
+            # messages were in the queue a moment ago
+            q.queue.extendleft(reversed(messages))
+            q.unfinished_tasks += len(messages)
+            q.not_empty.notify(len(messages))
+
     def set_connected(self, connected: bool):
         """Set connection state (thread-safe)"""
         with self.lock:

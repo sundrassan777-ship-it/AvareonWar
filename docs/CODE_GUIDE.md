@@ -74,6 +74,27 @@ setup_logging()  # console=INFO, file=DEBUG, rotation=5MB x 3
 - **Change default levels:** Edit `DEFAULT_CONSOLE_LEVEL` / `DEFAULT_FILE_LEVEL` in `utils/logger.py`
 - **Suppress noisy library:** Add `logging.getLogger('library').setLevel(logging.WARNING)` in `setup_logging()`
 
+### Game Logger (`game_logger.py`)
+
+**What it does:** One JSON file per Custom / multiplayer game in `Logs/{game_id}_{date}.json`:
+game facts plus, per player, heroes, techs and a `per_turn` record per round (units built /
+lost, buildings finished, territories held, battles).
+
+**Rounds are numbered by the logger itself** (`GameLogger._round`, 1, 2, 3, ... in both turn
+modes) and every event is filed under the round being played; the callers' turn numbers are
+only logged. They disagreed by mode (sequential counts completed rounds from 0;
+simultaneous was 0 in round 1, then the round) and the snapshot came with the NEXT round's
+number - so until 2026-10-12 simultaneous rounds were filed one late and every round's
+battles / buildings lists were empty. Rules:
+- A round record takes every buffered event since the previous record (the buffers are
+  cleared per record) - never match events by turn number.
+- One record per round: sequential `GameState._after_turn_advance()` records when
+  `turn_number` moved on (also on multiplayer receivers, from the owner's TURN_END);
+  simultaneous `SimultaneousGameState.record_round_boundary()` (host: end of
+  `complete_round()`; clients: after applying SIM_ROUND_COMPLETE).
+- `finalize_and_save()` writes the round still in progress if anything happened in it (the
+  game is decided before its last round completes).
+
 ### Sync Logger (`sync_logger.py`)
 
 **What it does:** Multiplayer-only per-participant logging for state sync verification and desync diagnosis.
@@ -81,14 +102,20 @@ setup_logging()  # console=INFO, file=DEBUG, rotation=5MB x 3
 
 **Records:**
 - All gameplay actions (orders, battles, turn ends) with timestamps and source (local/remote)
-- Comprehensive state snapshots at every turn boundary
-- Checksum comparisons between host and clients
-- Field-level desync diffs (computed by host, sent to client via DESYNC_DIFF message)
+- Comprehensive state snapshots at every turn boundary (every PC, at each TURN_END /
+  round end)
+- Field-level desync diffs: a sequential-mode receiver compares its own state with the turn
+  owner's EXECUTE_ORDERS snapshot before applying it (`main.py`
+  `_report_snapshot_divergence()`); the snapshot corrects any difference
+
+The STATE_CHECKSUM / STATE_DETAIL_REQUEST / STATE_DETAIL_RESPONSE / DESYNC_DIFF exchange was
+removed in Phase 5 of the multiplayer audit (snapshots correct the state every turn), so
+`checksum_log` stays empty.
 
 **When to modify:**
 - **Add new action type to log:** Add to `LOGGED_ACTION_TYPES` frozenset in `sync_logger.py`
 - **Add new state field to snapshots:** Update `build_state_detail()` in `sync_logger.py` AND `calculate_state_checksum()` in `game_state/__init__.py`
-- **Change desync detection flow:** `main.py` STATE_CHECKSUM handler → STATE_DETAIL_REQUEST/RESPONSE/DESYNC_DIFF handlers
+- **Change desync detection:** `main.py` `_report_snapshot_divergence()` (uses `SyncLogger.compute_state_diff()`)
 - **Change log output format:** `finalize_and_save()` in `sync_logger.py`
 
 ---
@@ -253,6 +280,57 @@ def resolve_battle(self, battle):
 - Formula: `casualties = loser_count * (loser_strength / winner_strength)`, min 1
 - Same formula applied in `_resolve_keep_battle()` Phase 1 (`game_state/military.py`, line ~1424)
 - Keep Phase 2 uses fixed numerical comparison (unchanged)
+- Same formula in `_fight_for_the_keep()` too (see below) - keep the three in step
+
+**Several attackers at one Keep** (`_resolve_keep_battle()` → `_fight_for_the_keep()`,
+2026-10-12; tests `tests/test_keep_battles.py`, `TestKeepBattles` in `tests/test_mp_sim_flow.py`):
+- The defending side is `battle.keep_bonus_player` - the key the Keep's side has in
+  `battle.armies`. Simultaneous mode keys battles by TEAM LEADER, which is not
+  `original_owner` when an ally with a lower index defends with the owner (the owner then
+  has no entry). Use `original_owner` only for the player-specific parts (bonuses, levels,
+  buildings, the winner returned for a defensive win).
+- More than one attacking key → they fight each other first with the open-field rules
+  (strength, scaled losses, min 1 survivor, `rng` dice on a tie, a dice tie destroys
+  them all). Losers' units are removed (`_remove_battle_side()`), the winner's losses come
+  off its units lowest level first (`_keep_side_survivors()`), and
+  `player_compositions[winner]` becomes its survivors before Phase 1.
+- `battle.keep_prefight_winner / losers / survivors / losses` let
+  `_update_battle_results()` credit XP and `units_killed` to whoever actually fought whom,
+  and `_capture_battle_reports()` name the attacker that assaulted the Keep.
+- Any randomness here must use `rng` (multiplayer replays the battle from its seed).
+
+**Team battles - sides and keys** (fixed 2026-10-12; tests `tests/test_team_battles.py`,
+`TestTeamBattles` in `tests/test_mp_sim_flow.py`):
+- Both turn modes key a battle by TEAM LEADER - the lowest player index of each team
+  present - and merge the allies' armies / compositions into that key (`battle.armies`,
+  `battle.army_compositions`). Never treat a key as one player. Use
+  `_battle_sides(battle)` ({key: [players]}: simultaneous `team_members_map`, else the key
+  plus its allies with units in the territory), `_battle_key(battle, player)` and
+  `_battle_side(battle, player)`.
+- `_update_battle_results(winner)`: `winner` is a key (or the owner, from a Keep the
+  defenders held). A defending team that holds keeps the territory with its OWNER - no
+  buildings destroyed, no conquest; otherwise the winning key takes it (simultaneous
+  teams then choose the owner through the alliance marker). `battle.winner` is afterwards
+  who holds the territory.
+- Survivors: `_side_survivors()` - every winning player keeps their own units. A
+  defending team loses its allies' units first, the owner's last (the
+  `apply_multi_garrison_casualties()` rule); allies attacking together share the losses by
+  army size (`_split_count()`, largest remainder, deterministic); within one player's units
+  the lowest levels fall first (a lone winner keeps its highest-level units, as before).
+- `apply_multi_garrison_casualties(..., players=side)`: only the defending side's
+  garrisons - during a battle the attackers' units are in the territory too.
+  `battle.allied_defenders` is NOT a defenders list in simultaneous mode (it holds every
+  non-leader member, attackers included) - use `len(_battle_side(...)) > 1`.
+- Credit: losing players' abilities (Scavenge the Fallen, Safe Haven) are checked for every
+  member of a losing side; `units_killed` goes to a side's members by their own units at
+  the start (`_credit_side()`, from `battle._units_before`, snapshotted at the start of
+  `resolve_battle()`).
+- Keeps: simultaneous `original_garrison` is the whole defending team's units, and the Keep
+  belongs to the owner's team even when only an ally has units there; sequential mode makes
+  it a Keep battle whenever the owner is on the defending key's team.
+- Battle Report: the attacker is the first side that is not the owner's; the owner's
+  units come from the start-of-battle snapshot. The battle window counts a winning team's
+  survivors (`main.py`, by `_battle_side`).
 
 #### ✅ Modify Veterancy/Experience System
 
@@ -522,7 +600,10 @@ BONUS_TYPES = {
 - **Income:** `calculate_player_income()` (`game_state/economy.py`) - Applied after all territory income summed
 - **Building costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'building_cost' bonus
 - **Unit costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'unit_cost' bonus
-- **Hero costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'hero_cost' bonus
+- **Hero costs:** `get_effective_cost()` (`game_state/economy.py`, line ~23) - Checked for 'hero_cost' bonus.
+  **`get_hero_cost(hero, player)` is THE price of a Hero** - charged by
+  `start_hero_training()`, shown and checked by the Keep view and its tooltip, used by the AI.
+  Until 2026-10-12 those sites applied Royal Decree by hand, so this bonus did nothing.
 - **Tech costs:** `get_effective_tech_cost()` (`game_state/economy.py`) - Separate method for research
 - **Unit strength:** `calculate_army_effective_strength()` (`game_state/military.py`) - Per-unit-type bonuses
 
@@ -630,10 +711,25 @@ tab's "No active quests". Tests: `tests/test_font_italic.py`.
 
 **Battle resolution flow:**
 1. Player clicks territory with battle marker → `EnhancedBattleInterface` opens
-2. Player clicks FIGHT → `game_state.resolve_battle()` called immediately
+   (`selected_battle_territory` remembers which battle)
+2. Player clicks FIGHT → the battle is looked up **by territory**
+   (`_selected_battle_current_index()`; gone = resolved elsewhere → `_close_battle_window()`)
+   and resolved via `_resolve_battle_locally()` (multiplayer: seeded, see "Battle sync")
 3. Actual survivors passed to UI via `set_actual_battle_result()`
-4. Battle info stored in `_resolved_battle_info` for deferred cleanup
-5. Player clicks CLOSE → cleanup applied using stored info
+4. Battle info stored in `_resolved_battle_info` for deferred cleanup - in multiplayer
+   including the `BATTLE_RESOLVE` payload, **built on FIGHT** from the battle's outcome
+5. Player clicks CLOSE → alliance marker queued, payload sent, cleanup applied
+
+Never index `pending_battles` with an index saved earlier: another player's result can
+pop an earlier battle while the window is open (the old FIGHT resolved the wrong battle
+or crashed with IndexError). That includes `EnhancedBattleInterface` itself: it reads its
+battle only while opening (`_extract_battle_data()`); later code uses the cached fields
+(`self.territory` etc.). Tests that stub `handle_click` (`mp_harness.fight()`) skip the
+window's own FIGHT code - `test_the_windows_own_fight_button_survives_the_shift` clicks
+the real button.
+
+The simultaneous round waits for steps 4-5: `Game._sim_round_may_end()` is False while
+`_resolved_battle_info` is set (see "When the round may end").
 
 **Key method in battle_interface.py:**
 ```python
@@ -675,7 +771,9 @@ Modelled on BFME2's War of the Ring auto-resolve. **Visual layer only** — it n
 - **Use the private RNG.** The schedule draws from `random.Random(seed)`, never the global
   `random`. `_pre_calculate_battle_result()` still calls `random.seed()` on the global RNG
   immediately before `resolve_battle()` rolls its tie dice — leave that alone, removing it
-  changes tie outcomes. `TestDeterminism.test_does_not_disturb_the_global_rng` guards this.
+  changes single-player tie outcomes. `TestDeterminism.test_does_not_disturb_the_global_rng`
+  guards this. (Multiplayer battles roll from their own `rng` - see "Battle sync" - so the
+  global seeding does not reach them; `set_actual_battle_result()` re-aims the bars.)
 - **Nothing is allocated per frame.** Fills, burn chunks and bar backgrounds are drawn
   straight to the screen; lances, impact bursts and the frame flare are pre-rendered in
   `__init__`. The old version cleared and blitted a full-screen SRCALPHA surface every
@@ -1355,9 +1453,10 @@ Tests: `test_battle_reports.py`, `test_battle_report_popup.py`,
 #### When to modify
 
 **`heroes_slain`** — names of the defender's heroes killed in that battle (their Keep fell),
-taken from `_battle_hero_deaths` (reset per `resolve_battle()`). A defending multiplayer client
-never runs the battle, so the `BATTLE_RESOLVE` receiver turns these into
-`hero_death_events` for the "Our Hero, X, has been slain in Y!" toast.
+taken from `_battle_hero_deaths` (reset per `resolve_battle()`). Multiplayer receivers
+normally **replay** the battle and record the deaths themselves; only the fallback path
+(seedless message / battle missing) turns these into `hero_death_events` for the "Our
+Hero, X, has been slain in Y!" toast.
 
 **Adding a field to a report** — add it in `_make_battle_report()` and keep it
 JSON-safe. The snapshot crosses the network, so **no tuples** (JSON turns them into
@@ -1427,7 +1526,7 @@ change hands, add it here and decide which column it belongs in.
 | `campaign_mission_6.py:1356` | no | scripted faction handover, keeps armies and buildings |
 | `tale_lack_of_funds.py _revolt_territory()` | no | Popularity revolt (scripted handover); announced by the T1Revolt transmission |
 | `tale_final_breaths.py _rebel_territory()` | no | Rebellion (scripted handover); announced by a toast + the T2R1 / T2R+ transmission |
-| `SIM_ROUND_COMPLETE` / `FULL_STATE_SYNC` bulk sync | no | desync correction, not a fresh loss |
+| Multiplayer state snapshots (`SIM_ALL_READY`, `SIM_ROUND_COMPLETE`, `EXECUTE_ORDERS`, `TURN_END`) | no | correction of the state, not a fresh loss |
 | `keyboard_handler.py`, setup phase | no | debug cheats and game setup |
 
 **Multiplayer is covered without extra work for uncontested captures**, because arrivals
@@ -1535,30 +1634,33 @@ Use `close_battle_report_detail()`.
 
 #### Multiplayer
 
-**A client never runs `resolve_battle()`** — the `BATTLE_RESOLVE` handler applies the
-winner, garrison and ownership directly. The capture hook therefore never fires on the
-defending client, the one player who needs the report, so reports ride along on that
-message as a `battle_reports` key.
+**Receivers replay the battle** (since the multiplayer audit, Phase 3 - see "Battle sync"
+under Network System): `resolve_battle()` runs on every PC from the resolver's seed, so the
+capture hook fires on the defending client too and its report reaches
+`battle_report_inbox` like any local battle. The `battle_reports` key still rides along on
+`BATTLE_RESOLVE`, but it is **only read on the fallback path** (seedless message from an
+older sender, or the battle missing here) - reading it on a replay would show every report
+twice.
 
 - It is a key on the **existing** payload, not a new message type:
   `validate_message_data()` has no `BATTLE_RESOLVE` branch, the server relays the original
-  bytes, and the receiver reads via `.get()`, so older builds ignore it.
-- **Do not bump `NETWORK_VERSION`** for an additive key. `server.py` compares versions by
-  exact string (despite the "MAJOR only" comment in `network_config.py`), so any bump locks
-  out every peer on the old build.
-- There are **four** send sites. Three read `game_state.last_battle_reports` live;
-  `_finalize_enhanced_battle()` must use the copy stashed in `_resolved_battle_info`,
-  because it broadcasts on the CLOSE click, arbitrary frames after `resolve_battle()` ran
-  on the FIGHT click, by which time another battle could have overwritten the live list.
+  bytes, and the receiver reads via `.get()`.
+- `server.py` compares `NETWORK_VERSION` by exact string, so any bump locks out every peer
+  on an older build - bump only for real protocol breaks (2.0.0 was one).
+- Every send site builds its payload with `_battle_resolve_payload()`.
+  `_finalize_enhanced_battle()` sends the payload built on the FIGHT click (stashed in
+  `_resolved_battle_info`): it broadcasts on the CLOSE click, arbitrary frames later, when
+  the live `last_battle_reports` and the territory could already hold something else.
 - `queue_battle_report()` keeps only the local slot in multiplayer. The resolver also
   captures reports for remote defenders (it ran the battle); they reach their owner over
   the wire, and keeping them would build queues this client can never display.
 
 #### Deliberately NOT wired in
 
-`save_manager.py`, `replay_recorder.py`, `calculate_state_checksum()` and
-`_send_full_state_sync()`. Reports are per-viewer UI state that legitimately differs
-between host and client — putting them in the checksum would cause **false desyncs**.
+`save_manager.py` (and so the multiplayer state snapshots built on it),
+`replay_recorder.py` and `calculate_state_checksum()`. Reports are per-viewer UI state that
+legitimately differs between host and client — putting them in the checksum would cause
+**false desyncs**.
 
 ---
 
@@ -1582,6 +1684,14 @@ between host and client — putting them in the checksum would cause **false des
 - Uses `threading.Event` (`_animation_done`) instead of `time.sleep()` polling
 - External code can call `notify_animation_complete()` to wake the AI thread immediately
 - Falls back to 100ms timeout if event not signaled (backward-compatible)
+
+**Multiplayer (sequential):** only the host runs AI turns (`Game._update_ai_turn_start()`),
+and the AI's work reaches the other PCs through GameState hooks: moves via
+`execute_all_orders()` (EXECUTE_ORDERS), battles via **`game_state.resolve_battle_shared()`**
+(seeded BATTLE_RESOLVE - never call `resolve_battle()` from AI code), the turn end via
+`_advance_to_next_player()` (TURN_END). Those run on the AI's worker thread; the network
+sends are queued for the main loop (see "Sequential multiplayer: the turn owner is the
+truth"). An empire taken over mid-game gets its `AIPlayer` from `Game.handle_ai_turn()`.
 
 #### When to Modify
 
@@ -1792,7 +1902,7 @@ python tests/test_2v2_simultaneous_40turn.py
 
 **Modules:** `network/server.py`, `network/client.py`, `network/protocol.py`, `network/message_queue.py`, `network/lobby.py`, `network/territory_selector.py`, `network/multiplayer_setup.py`, `network/upnp.py`
 **Total:** ~4,900+ lines
-**Status:** Full 2-4 player multiplayer with AI slots, reconnection support, UPnP internet play
+**Status:** Full 2-4 player multiplayer with host-run AI slots, AI takeover when a player leaves, UPnP internet play (reconnecting is off for launch)
 
 ### Architecture Overview
 
@@ -1822,11 +1932,36 @@ python tests/test_2v2_simultaneous_40turn.py
 | Authority | Host-authoritative (runs all logic, AI, battles) |
 | Player count | 2-4 flexible (host + up to 3 clients) |
 | AI slots | Configurable per-slot (Easy/Medium/Hard) |
-| Disconnect | AI takes over immediately, player can reconnect |
-| Reconnection | Name + password authentication (5-min window) |
+| Disconnect | Seat handed to the AI; the server announces `PLAYER_DISCONNECT` to the host and every client |
+| Reconnection | **Off for launch** (`RECONNECT_ENABLED = False` in `network_config.py`): no rejoining a running game, no reconnect entries, no `DISCONNECT_ELIMINATION`. The server/client reconnect code is kept for later |
 | Host disconnect | Game ends for all clients |
+| Sockets | Blocking sends with `SEND_TIMEOUT` (never non-blocking `sendall()`); reads only after `select()` |
 | Allied vision | Allies see each other's movement arrows |
 | Internet play | UPnP auto port-forward + public IP detection (graceful LAN fallback) |
+
+### Multiplayer sync model (overview)
+
+The pre-launch multiplayer audit (2026-10, Phases 1-8, tests `tests/test_mp_*.py`) settled
+one rule per question. The sections below hold the details.
+
+| Question | Rule | Details |
+|----------|------|---------|
+| Whose state is true? | **Simultaneous:** the host's - a whole-game snapshot when execution starts (`SIM_ALL_READY`) and when the round ends (`SIM_ROUND_COMPLETE`). **Sequential:** the turn owner's (a human's own PC; the host for computer players) - snapshot with the moves (`EXECUTE_ORDERS`) and at turn end (`TURN_END`). Receivers never advance a turn on their own. | "Multiplayer model (the host is the truth)", "Sequential multiplayer: the turn owner is the truth", "State snapshots" |
+| How do battles stay identical? | The resolver sends a seed; every PC replays `resolve_battle()` with it; a different outcome is corrected to the resolver's. | "Battle sync" |
+| Other random picks? | Shipped as results (Royal Charisma, Decisive Strike, Valorous Charge). | "Battle sync" |
+| Who runs the AI? | The host only - lobby AI slots and taken-over empires. | "AI System", "Sequential multiplayer: ..." |
+| A player leaves mid-game? | `PLAYER_DISCONNECT` → the AI (Medium) plays their empire; a **System** chat line tells everyone. Reconnecting is off for launch. | "Connection lifecycle", "AI takeover" |
+| Who may send what? | The server stamps each client message with its sender and drops claims to act for another player; each PC checks the rest. | "Who may send what" |
+| A received message raises? | Logged and skipped; the next snapshot heals what it left half-applied. | "main.py Network Integration" |
+| Achievements / XP / recap? | Each PC records its own player; the winner's allies win too (`GameState.is_winner()`); stats travel in the snapshots. | "Achievement System", "Player Level System" |
+
+**Accepted limits (launch):** the host leaving ends the game (no host migration); the
+sequential turn owner is trusted for its own turn (its snapshot is the truth by design);
+rare same-round cross-battle effects (a Capital Assault elimination or a Safe Haven retreat
+touching another pending battle) can differ between PCs until the next snapshot - no stall,
+it heals; a client's battle report left open past the 180 s host fallback can show a
+different result than the host settled; other players see an AI turn's builds and training
+when its moves start or when its turn ends. Reconnecting is deferred (`RECONNECT_ENABLED`).
 
 ### network/upnp.py (~150 lines)
 
@@ -1839,6 +1974,11 @@ python tests/test_2v2_simultaneous_40turn.py
 - Change public IP detection APIs → `PUBLIC_IP_APIS` list in `network/upnp.py`
 - Change UI status messages → `get_status_text()` in `UPnPManager`
 - Change port mapping protocol (e.g. UDP) → `_setup_worker()` addportmapping call
+
+**miniupnpc 2.3 quirk:** `discover()` raises an exception whose text is "Success" when no
+router answers (older versions return 0 devices). `_setup_worker()` treats both as "No UPnP
+router found"; the log used to say "UPnP setup failed: Success". The lobby shows "LAN only
+(forward port 7777 for internet)" either way.
 
 **Integration points:** `server.setup_upnp()` starts it, `server.stop()` cleans up, `territory_selector._draw_host_ip()` polls status
 
@@ -1857,11 +1997,66 @@ broadcast_message(msg, exclude=None)  # Send to all clients
 send_to_player(idx, msg)              # Send to specific player
 kick_player(idx, reason)              # Kick player from lobby
 reserve_slot(idx)                     # Reserve slot for AI
-set_game_started(started)             # Enable reconnection mode
+set_game_started(started)             # Lobby is over: drops become in-game disconnects
 _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ player)
 ```
 
-**Message Relay (3+ player support):** The server relays gameplay messages from one client to all other clients via `_RELAY_MESSAGE_TYPES` set. This enables real-time sync in 3+ player games (orders, battles, chat, hero abilities, turn ends). Raw bytes are relayed for zero overhead; the sender is excluded to prevent echoes.
+**Connection lifecycle (multiplayer audit, Phase 2) - keep these rules:**
+- **Anti-replay sequence numbers are per connection** (`ClientConnection.last_seq`), not
+  per slot index - a new player taking a vacated slot starts fresh. `PONG` and
+  `DISCONNECT` are exempt and never advance the counter (`_SEQ_EXEMPT_TYPES`): the
+  client's network thread answers a PING the instant it arrives, so its PONG can carry a
+  newer number than game messages still in the client's send queue, which the old check
+  then dropped as replays (lost END TURN / READY -> hung games).
+- **Sockets block on send, with a time limit** (`settimeout(SEND_TIMEOUT)` on accepted
+  sockets and on the client). Never go back to `setblocking(False)` + `sendall()`: it
+  fails mid-frame once the kernel buffer is full (Windows: as soon as an earlier large
+  send is still pending), and the player was dropped. Reads stay non-blocking in effect
+  because `recv()` only runs after `select()`.
+- **Every client removal goes through `_disconnect_client()`** - including clients whose
+  send failed (`_cleanup_disconnected()` routes through it). In the lobby it sends
+  `LOBBY_LEAVE`, after `set_game_started(True)` it sends `PLAYER_DISCONNECT`; both go to
+  the other clients **and** the host's queue, once per removal.
+- **`set_game_started(True)`** is called by `TerritorySelector._launch_game()` just before
+  `LOBBY_LAUNCH`. After it, new connections are refused ("The game has already started")
+  while reconnecting is off - otherwise a stranger got a free slot whose messages were
+  relayed to everyone.
+- **Turning a connection away** goes through `_reject_connection()`: send the reject,
+  half-close, read what the peer already sent, then close. Closing with the peer's
+  request unread makes Windows reset the connection, which discards the reject before
+  the client reads it (the player never saw "Lobby is full").
+
+**Message Relay (3+ player support):** The server relays gameplay messages from one client to all other clients via `_RELAY_MESSAGE_TYPES` set. This enables real-time sync in 3+ player games (orders, battles, chat, hero abilities, turn ends). The relayed copy is re-framed with the sender's index (`NetworkProtocol.encode_relayed()`, `from_player_index` next to type/seq/data); the sender is excluded to prevent echoes.
+
+**Who may send what** (multiplayer audit, Phase 7; tests `tests/test_mp_validation.py`,
+`TestLobbyValidation` in `tests/test_mp_lobby.py`):
+- **Server** (`_handle_received_message()`): a client may send only `_CLIENT_MESSAGE_TYPES`
+  (everything else is the host's - e.g. a client's PLAYER_DISCONNECT used to hand another
+  player's empire to the AI); `_check_sender()` drops a message whose `player_index` /
+  `player_id` is not the sender (L5) and fills in the type's acting-player field
+  (`_SENDER_FIELDS`) when missing; every message to the host and every relayed copy carries
+  `from_player_index`.
+- **Each PC** (`main.py`): `Game._message_sender(message)` = that stamp, None for the host
+  (whose messages carry none - the host is the authority and is never refused).
+  `_refusal_for()`: sequential mode, only the turn owner sends `_TURN_OWNER_MESSAGES`. The
+  handlers check the rest: BATTLE_RESOLVE only for a battle that exists here and (simultaneous)
+  from its resolver - a result for a territory without a battle used to be applied; the
+  simultaneous HOST keeps its own seeded replay when a client claims another outcome
+  (`_enforce_remote_battle_outcome(apply=False)`); SIM_ALLIANCE_CHOICE only from the
+  marker's chooser, for one of its allies; SIM_HERO_ABILITY only with the sender's own Hero
+  and that Hero's ability; GOLD_TRANSFER only with gold transfer on, to a live ally, once
+  per pair, capped at the sender's gold.
+- **Lobby** (`territory_selector._process_network_messages()`): a client's
+  LOBBY_SLOT_UPDATE changes only its own slot's colour and team (`set_player_color` /
+  `set_player_team`); every field of any slot used to be applied. TERRITORY_SELECT only for
+  the sender's slot and only a territory of the current map (`map_data.TERRITORY_POLYGONS`).
+  **The host's clock orders claims** (`time.time()` when the host handles it): the claim's
+  own `timestamp` is the client PC's clock, which can be minutes off - a claim "earlier"
+  than the holder's took their territory (`claim_territory()` swaps), and a non-number
+  crashed the host's lobby. The claim's `player_name` is not applied (the slot keeps the
+  name the server sanitised at join).
+- Not checked: what the turn owner does in its own sequential turn (its snapshot is the
+  truth by design), cooldowns / silence (timing differs per PC).
 
 #### When to Modify
 
@@ -1869,31 +2064,94 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
 1. Define in `network_config.py` MessageType class
 2. Add handler in `_handle_received_message()` if server needs to process it
 3. Update `NetworkClient` to send/receive
-4. Add handler in `main.py _handle_network_message()`
+4. Add handler in `main.py _apply_network_message()` (called through the
+   `_handle_network_message()` guard)
 5. If the message is a gameplay event other clients need to see, add it to `_RELAY_MESSAGE_TYPES` in `server.py`
-6. Test with host and multiple clients
+6. **If clients send it:** add it to `_CLIENT_MESSAGE_TYPES` (otherwise the server drops it
+   from clients), to `_SENDER_FIELDS` if its data names the acting player, and decide what
+   the sender may do (`_TURN_OWNER_MESSAGES` / a check in its handler, using
+   `_message_sender()`)
+7. Test with host and multiple clients
 
 ✅ **Sync a new game action in sequential multiplayer:**
 Every action that modifies game state must send a network message. Pattern:
 1. After `game_state.action()` succeeds, call `_send_action_to_remote(MessageType.XXX, {...})`
 2. For sim mode: queue order via `sim_state.add_order()` instead (sent via SIM_PLAYER_READY)
-3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish)
-4. `FULL_STATE_SYNC` sent by host at every turn boundary as safety net (sequential mode)
-5. `SIM_ROUND_COMPLETE` sent by host at every round end as safety net (simultaneous mode)
-6. All randomness must be resolved on sender side; include results in message (e.g., Royal Charisma stolen_units)
+3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish/construction)
+4. Sequential mode: the turn owner's `EXECUTE_ORDERS` / `TURN_END` carry its state snapshot
+   and correct anything the per-action messages missed (see "Sequential multiplayer: the
+   turn owner is the truth")
+5. `SIM_ALL_READY` / `SIM_ROUND_COMPLETE` carry the host's snapshot (simultaneous mode)
+6. All randomness must be resolved on sender side; include results in message (e.g., Royal Charisma
+   `stolen_units`, Decisive Strike / Valorous Charge `picked_units` → `pre_selected_units`).
+   Battles send a seed instead (see "Battle sync")
 7. Send messages in **both modes** — don't guard with `self.sim_state is None` unless sequential-only logic
 
 ✅ **Adding state to sync safety nets:**
 When adding new game state fields that could diverge between host and client:
-1. Add to `_send_full_state_sync()` state_data dict (sequential mode safety net)
-2. Add to `_sim_broadcast_round_complete()` authoritative_data dict (sim mode safety net)
-3. Add apply logic in both `FULL_STATE_SYNC` and `SIM_ROUND_COMPLETE` handlers
-4. Consider adding to `calculate_state_checksum()` in `game_state/__init__.py` for desync detection
+1. **Add it to `save_manager.serialize_game_state()` / `deserialize_game_state()`** - the
+   whole-game snapshots (`network/state_snapshot.py`) are built on them, so every "true
+   state" message carries it automatically (`SIM_ALL_READY`, `SIM_ROUND_COMPLETE`,
+   `EXECUTE_ORDERS`, `TURN_END`)
+2. Consider adding to `calculate_state_checksum()` in `game_state/__init__.py` (sync logger
+   turn snapshots)
 
-✅ **Client SIM_ROUND_COMPLETE handler must mirror host's `complete_round()`:**
-When adding new per-round logic in `sim_state.complete_round()`, ensure the client handler in
-`main.py _handle_network_message(SIM_ROUND_COMPLETE)` calls the same methods. Currently both call:
-`collect_income()`, `finish_constructions()`, `finish_research()`, `finish_castle_upgrades()`, `_tick_building_xp()`
+✅ **Sequential multiplayer: the turn owner is the truth** (multiplayer audit, Phases 5-6;
+tests `tests/test_mp_sequential.py`, `tests/test_mp_seq_flow.py`, `tests/test_mp_seq_ai.py`).
+The turn owner plays the turn; every other PC replays it. Owner
+(`Game._is_turn_owner_of()`): a human player's own PC; **the host for computer players**
+(lobby AI slots and taken-over empires) - only the host runs the AI (`_update_ai_turn_start()`
+→ `handle_ai_turn()`); every PC used to run its own copy with its own dice (C1).
+- `EXECUTE_ORDERS{snapshot}` - sent by the GameState hook `on_orders_executing` →
+  `Game._on_orders_executing()` at the start of `execute_all_orders()` (End Turn, the planning
+  timer, the AI - one place): the owner's state with the moves. Receivers
+  (`_handle_remote_execute_orders()`) diff it against their own state
+  (`_report_snapshot_divergence()`), apply it and run `execute_all_orders()`.
+- The AI resolves battles with `GameState.resolve_battle_shared()` → hook
+  `shared_battle_resolver` → `Game._resolve_and_share_battle()` (seeded + `BATTLE_RESOLVE`).
+  **AI code must never call `resolve_battle()` directly** - nobody else would see the result.
+- **Threads:** the sequential AI plays on a worker thread, so these hooks run there. They
+  build their snapshot at once; `_send_action_to_remote()` queues a send from a non-main
+  thread (`_outgoing_from_threads`) and the main loop sends it (`_flush_thread_messages()`,
+  also run before every main-thread send - the order of events is kept). Message encoding
+  is not thread-safe: never call `_send_now()` off the main thread.
+- **Takeover** (`_take_over_disconnected_player()`): when the player who left is the current
+  player, the host finishes their turn (`_continue_turn_as_ai()`): planning → their planned
+  moves are dropped and the AI plays; moves under way → the host ends the turn once its
+  replay is done; battles → `_resolve_all_pending_battles()`. AIs are created per player as
+  needed (`handle_ai_turn()`, M13). `gs.ai_takeover_xp` keeps their XP for anti-farming.
+- `BATTLE_RESOLVE` - each battle, replayed from the resolver's seed (see "Battle sync").
+- `TURN_END{snapshot}` - sent by the GameState hook `on_turn_advanced` →
+  `Game._on_turn_advanced()` from `_advance_to_next_player()`, i.e. only once the turn has
+  really ended (moves arrived, last battle report closed). Receivers
+  (`_handle_remote_turn_end()`) apply it and call `GameState._after_turn_advance()` (the
+  non-state part of an advance: selection, logs, replay snapshot, the announcement). The
+  turn-start effects then run on every PC from that same state - which is why
+  UNIT_COMPLETE / BUILDING_COMPLETE (duplicate units, H1) are gone.
+- **Receivers never advance on their own**: `GameState.may_advance_turn()` consults
+  `turn_advance_gate` = `Game._owns_current_turn()`; `_process_arrivals()` only advances on
+  the owner's PC. Any new code that advances a turn must do it on the owner's PC only.
+- **Holds** (`_hold_network_message`, in arrival order): TURN_END waits while this PC still
+  replays the moves (`_battles_may_still_appear()`); in sequential mode EVERY message waits
+  while this PC's own turn announcement still has to run the turn-start effects
+  (`_turn_start_pending()`) - the owner's snapshot already contains them.
+- **Timer:** only the owner checks it (`_update_sequential_turn()`, called by `Game.run()`
+  and the test harness); `planning_time_expired()` has no side effects; the clock is cleared
+  by every turn advance (`_after_turn_advance`) and never fires during an announcement.
+- **AFK** (`_seq_afk_watchdog()`): the owner's battles resolve after
+  `SEQ_AFK_RESOLVE_SECONDS` untouched, a report left open that long closes, everything is
+  settled after `SEQ_BATTLE_FALLBACK_SECONDS`. `_resolve_all_pending_battles()` does not
+  advance under an open report (its Close advances, after sending the result).
+- **Game end:** `_send_final_state_if_owner()` sends one last `TURN_END{snapshot, final}`
+  (for an AI turn, once the AI has stopped).
+- **Logs:** network log lines summarise snapshots (`Game._payload_for_log()`,
+  `sync_logger._sanitize_data()`) - logging them whole wrote ~80 KB twice per turn.
+
+✅ **Client SIM_ROUND_COMPLETE handler (`_sim_apply_round_complete()`):** the client runs its
+own `collect_income()`, `finish_constructions()`, `finish_research()`,
+`finish_castle_upgrades()`, `_tick_building_xp()` ONLY for its Action Log lines; the host's
+snapshot then replaces every value. New per-round logic in `sim_state.complete_round()` needs
+nothing here unless it should write Action Log lines on clients too.
 
 ⚠️ **Do NOT call `finish_training()` or `finish_hero_training()` in the client handler.**
 The host already runs these in `complete_round()` and sends the results (garrisons with trained units,
@@ -1913,9 +2171,10 @@ reset would incorrectly change newly trained units to 'ready'.
   - `HEARTBEAT_INTERVAL = 5.0` seconds
 
 ✅ **Change disconnect behavior:**
-- `_disconnect_client()` handles client disconnect
-- `game_started` flag determines reconnection vs removal
-- AI takeover triggered via `PLAYER_DISCONNECT` message
+- `_disconnect_client()` handles every client disconnect (see "Connection lifecycle")
+- `game_started` decides `LOBBY_LEAVE` (lobby) vs `PLAYER_DISCONNECT` (in game)
+- Reconnect entries / `DISCONNECT_ELIMINATION` only exist when `RECONNECT_ENABLED` is True
+- AI takeover triggered via `PLAYER_DISCONNECT` message (`main.py` handler)
 
 ### network/client.py (~558 lines)
 
@@ -1941,8 +2200,16 @@ is_connected()                        # Check connection status
 - Update `reconnect()` for new authentication
 
 ✅ **Change disconnect detection:**
-- `disconnected` flag set on host disconnect
-- `disconnect_reason` provides user-facing message
+- Every unasked-for end of the connection goes through `_connection_failed(reason)`:
+  sets `disconnected` + `disconnect_reason` (**the first reason wins** - after a
+  `CONNECT_REJECT` the host closes its end too, and the follow-up read error used to
+  overwrite "Lobby is full") and closes the socket. Send errors and rejects used to stop
+  the client silently.
+- `connect()` returns False as soon as a reject arrives, keeping `disconnect_reason`
+  (it used to wait out its 5 s timeout and lose the reason); the join screens show it.
+- `disconnect()` (leaving on purpose) clears `disconnected` but keeps `disconnect_reason`.
+- `_receive_from_server()` reads everything waiting (up to `_MAX_READS_PER_LOOP` chunks of
+  `MESSAGE_BUFFER_SIZE`, 64 KB) per loop iteration, each read guarded by `select()`.
 
 ### network/protocol.py
 
@@ -1963,7 +2230,7 @@ PLAYER_DISCONNECT, AI_TAKEOVER
 
 # Gameplay
 MOVEMENT_ORDER, BUILDING_ORDER, TRAINING_ORDER
-EXECUTE_ORDERS, BATTLE_RESOLVE, TURN_END
+EXECUTE_ORDERS, BATTLE_RESOLVE, TURN_END   # sequential: EXECUTE_ORDERS / TURN_END carry a snapshot
 
 # Simultaneous Mode
 SIM_PLAYER_READY, SIM_ALL_READY, SIM_TIMER_UPDATE
@@ -1977,6 +2244,15 @@ SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
 **Key Classes:**
 - `LobbySlot` - Per-slot state (human/AI/empty, color, team, territory)
 - `LobbyState` - Full lobby state with serialization
+
+**Launch rules:** `launch_blocker()` returns why the lobby cannot launch yet - `'players'`
+(fewer than 2, or no human), `'gap'` (an empty slot between occupied ones), `'teams'`
+(everyone on one team) or `'territories'` - and `can_launch()` is `launch_blocker() is
+None`. The game numbers players 0..n-1 and `_build_config_from_lobby()` keys territories /
+teams / names by slot index while compacting `player_is_ai`, so **a gap must never
+launch** (it left a player without a territory and crashed ally checks). The greyed
+Launch button shows `config/setup_tooltips.py` `'launch_<reason>'` to the host; a new
+reason needs a tooltip entry (a test enforces it).
 
 ### network/territory_selector.py (~2,053 lines)
 
@@ -1992,6 +2268,35 @@ SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
   selectors and the bronze player-block frame: see
   [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby)
 
+**Slot identity = the server's player index.** The host seats a `LOBBY_JOIN` in exactly
+`data['player_index']` (the index the server put in the client's `CONNECT_ACCEPT` and
+stamps on everything it relays) - if the host had just made that slot an AI, the player
+keeps it and the slot is unreserved. Clients keep `local_player_index` for the whole
+lobby; **never look a player up by display name** (two players named "Human" ended up on
+one slot). `LOBBY_LEAVE` reaches the host too; it frees the slot and rebroadcasts
+`LOBBY_STATE`.
+
+**Launch (`_launch_game()`):** refused unless `can_launch()`; rolls the shared
+`game_seed` (Neutral Armies placement) into the `LOBBY_LAUNCH` settings, next to
+`map_id` / `bonus_mapping`; calls `set_game_started(True)` on the server **before**
+broadcasting. Clients read `game_seed` / `map_id` from `LOBBY_LAUNCH`.
+
+### Lobby -> loading -> game (multiplayer_setup.py + main.py)
+
+One path for every way into a multiplayer game - the Steam-invite join used to be a
+hand-made copy that had lost `map_id`:
+- `build_multiplayer_config(selector)` builds the game config from the launched
+  `TerritorySelector` (incl. `map_id` and `game_seed`). Host, Join Game and Steam invites
+  all use it; `_build_config_from_lobby()` (new optional `map_id`, `game_seed`) stays as
+  the low-level builder.
+- `run_client_lobby(screen, client)` runs the lobby for a connected client and returns
+  `('client', client, config)`, `'quit'`, `('kicked', reason)`, `('lost', reason)` or
+  `None` (left). Used by `_run_join_setup()` and by the Steam path in `main.py`.
+- `main.py` `_play_multiplayer_game(screen, mode, connection, config)` (in the
+  `__main__` block) runs the loading screen, the game and the recap, attaches the
+  loggers, and closes the connection. A loading screen that ends without `'start'`
+  (Escape, lost host) returns to the menu without starting the game.
+
 ### main.py Network Integration
 
 **Key Attributes:**
@@ -2003,19 +2308,89 @@ self.local_player_index      # 0 for host, 1-3 for clients
 
 **Key Methods:**
 ```python
-_process_network_messages()   # Process incoming messages
-_handle_network_message(msg)  # Route message to handler
+_process_network_messages()   # Process incoming messages (held ones first, in order)
+_handle_network_message(msg)  # Guard: applies one message; logs + skips it if it raises
+_apply_network_message(msg)   # Route message to handler
 _send_action_to_remote(type, data)  # Send action to network
 ```
 
 **Adding new message handler in main.py:**
 ```python
-# In _handle_network_message():
+# In _apply_network_message():
 elif msg_type == MessageType.YOUR_NEW_MESSAGE:
     data = message.get('data', {})
     # Handle the message
     self.game_state.do_something(data)
 ```
+
+**A message that raises is skipped, not fatal** (multiplayer audit, Phase 8):
+`_handle_network_message()` wraps `_apply_network_message()`; an exception is logged
+(`logger.exception`, "Failed to apply X - message skipped") and its type recorded in
+`Game.network_message_errors`. It used to escape the frame and close the game for that
+player. The test harness fails a test on any recorded error (`Peer.step()` and the
+`make_session` teardown), so handler bugs stay loud in tests - a test that provokes one on
+purpose clears the list.
+
+**System chat lines:** lines the game writes itself (disconnect notices) go through
+`gs.add_system_chat_message(text)`. Their sender is `GameState.CHAT_SYSTEM_SENDER`
+(`'system'`, deliberately not an int - a negative index silently picks a player from the end
+of the per-player lists); the chat tab and the floating notices show them as "System" via
+`chat_sender_name()` / `chat_sender_color()`. They were added as player 0 and read as written
+by the host. Anything that shows a chat line's sender must use those helpers.
+
+### Battle sync (seeded replay) and held messages
+
+**Every battle resolution goes through `Game._resolve_battle_locally(index)`** (FIGHT,
+Resolve Remaining Battles, AI auto-resolve, the old popup). In multiplayer it draws a seed
+and calls `game_state.resolve_battle(index, rng=random.Random(seed))`; single-player passes
+no rng (unchanged). The message comes from `_battle_resolve_payload()`: `battle_seed`,
+`garrisons` (the territory's garrisons after the battle, full unit dicts incl. xp/level),
+`surviving_units`, `alliance_marker`, `battle_reports`.
+
+**Receivers replay it** (`_handle_remote_battle_resolve()`): find the battle by territory,
+`resolve_battle(index, rng=Random(battle_seed))` - so destroyed buildings, slain heroes,
+Pillage / Scavenge gold, Safe Haven, stats, the local Battle Report and hero-death toast
+all happen on every PC (the old receiver only copied owner + survivors). Then
+`_enforce_remote_battle_outcome()` compares owner + garrisons with the resolver's; if the
+states had drifted, the resolver's outcome wins (`_apply_battle_outcome()`, which is also
+the fallback for seedless messages and missing battles).
+
+Rules:
+- **Randomness inside battle code must use the `rng` parameter** (`_handle_battle_tie_with_dice`,
+  `_update_battle_results` Safe Haven). A bare `random.*` call there makes replays diverge.
+- **Hero abilities that pick units at random ship the picks**, not a seed: unit order can
+  differ between PCs. Royal Charisma `stolen_units`; Decisive Strike / Valorous Charge
+  `picked_units` (`_last_decisive_strike_removed` / `_last_valorous_charge_moved` →
+  `pre_selected_units`, matched by `HeroMixin._match_pre_selected_units()`, which uses a
+  same-owner same-type stand-in when a picked unit is missing).
+
+**Held messages:** a result can arrive while this PC's own copy of the move is still
+animating, so the battle does not exist here yet. `_handle_remote_battle_resolve()` then
+calls `_hold_network_message()`; that message **and every later one** wait in
+`_held_network_messages` (order kept) until `_battles_may_still_appear()` is False
+(no animations / pending arrivals / sim execution), then `_release_held_network_messages()`
+replays them; after `_NETWORK_HOLD_LIMIT` (15 s) they are applied anyway
+(`allow_hold=False`). The test harness counts held messages as "busy".
+
+**Cheats are single-player only:** `KeyboardHandler._handle_cheat_code()` checks
+`game_instance.multiplayer_mode` / `network_connection` and `game_state.network_mode`;
+`GameState.add_chat_message()` skips the gold cheat when `network_mode` (it ran on every PC
+for every received chat line).
+
+**Chat channel:** the `CHAT_MESSAGE` receiver passes `channel` to `add_chat_message()` -
+team chat used to arrive as 'all' chat on every PC.
+
+### State snapshots (network/state_snapshot.py)
+
+`build_snapshot(gs)` / `apply_snapshot(gs, data)`: the whole GameState in one JSON-safe
+dict, for every "this is the true state now" message: simultaneous `SIM_ALL_READY` /
+`SIM_ROUND_COMPLETE`, sequential `EXECUTE_ORDERS` / `TURN_END` (and the final state when a
+game ends in the owner's turn). Built on `save_manager.serialize_game_state()` / `deserialize_game_state()`:
+**a new GameState field goes into save_manager, and snapshots carry it too.** Left out:
+`chat_messages`, `messages` (kept per PC). Added: `player_is_ai`. Applying clears
+animations, arrivals, pending battles and `ready_to_advance_turn`, rebuilds the legacy army
+counters and invalidates the income / army / bonus caches. `sim_state` round data travels
+separately. Tests: `tests/test_mp_foundations.py`.
 
 ### Multiplayer Mode Checks
 
@@ -2042,29 +2417,23 @@ if self.local_player_index != 0:
 
 ### Testing Network Changes
 
+**Multiplayer test harness:** `tests/mp_harness.py` runs 2-4 real `Game`s in one process,
+joined through the real `NetworkServer` / `NetworkClient` logic over in-memory sockets
+(`Session`, `Peer.step()`, input helpers that drive the real click / key handlers). The
+`tests/test_mp_*.py` files hold one test per audit finding; findings not fixed yet are
+`xfail(strict=True)` and the fixing change removes the marker (an unexpected pass fails
+the run). Real-socket tests (`TestRealSockets`) cover large frames and refusal reasons.
+
 ```bash
-# Run network tests
-pytest tests/test_network_server.py
-pytest tests/test_network_protocol.py
-
-# Manual testing (2-4 players)
-# Terminal 1 (Host):
-python main.py --multiplayer --host
-
-# Terminal 2-4 (Clients):
-python main.py --multiplayer --join <host_ip>
-
-# Test checklist:
-# [ ] Host creates lobby, clients join
-# [ ] AI slot configuration works
-# [ ] Territory selection syncs
-# [ ] Game launches for all players
-# [ ] Orders sync correctly
-# [ ] Battles resolve for all
-# [ ] Client disconnect → AI takeover
-# [ ] Host disconnect → game ends
-# [ ] Reconnection with password works
+# Run network tests (all audit findings are fixed: no xfail markers are left)
+py -m pytest tests/test_mp_transport.py tests/test_mp_lobby.py tests/test_mp_validation.py tests/test_mp_foundations.py tests/test_mp_battles.py tests/test_mp_sequential.py tests/test_mp_seq_flow.py tests/test_mp_seq_ai.py tests/test_mp_simultaneous.py tests/test_mp_sim_flow.py tests/test_mp_progression.py
+py -m pytest tests/test_network_server.py tests/test_network_protocol.py
 ```
+
+**Manual testing on real PCs:** `docs/TESTING_PLAN_MULTIPLAYER_FIXES.md` - the pre-launch LAN
+test plan (lobby, both turn modes, players leaving, progression), which logs to collect and
+which log lines mean "report this". Start the game normally on each PC and use Main Menu →
+Multiplayer → Host Game / Join Game.
 
 ---
 
@@ -2119,9 +2488,10 @@ The local human's build / train / research / castle / hero-training clicks are *
 immediately** (visual feedback) **and** queued with `sim_state.add_order()` (sync). The
 executor must skip that player's queued copies: `SimPhaseManager._executed_at_click()` checks
 `sim_state.click_executed_player`, which `main.py` sets to the local human in single-player
-**and** multiplayer. Don't use `local_player_index` for this — it is multiplayer-only (and
-also switches off garrison validation for other players' orders); using it applied every
-map-icon training twice in single-player (two units, double gold).
+**and** multiplayer. Don't use `local_player_index` for this — it is multiplayer-only; using
+it applied every map-icon training twice in single-player (two units, double gold). (In
+multiplayer only the host executes queued orders; clients take the result from its
+snapshot.)
 
 All three build/train inputs (map quick-icons, bottom panel, keyboard shortcuts) go through
 `Game._try_start_construction()` / `_try_start_training()`: local execute + sim order *or*
@@ -2146,6 +2516,16 @@ toast. Don't add a fourth copy.
 - Modify `SimultaneousAI._make_ai_decisions()` for decision logic
 - AI uses `_selected_unit_ids` dict to track units across multiple movement orders
 - Reset at start of each planning session to prevent selecting same unit twice
+- **Gold budget** (`_fit_actions_to_gold()`, 2026-10-12): the planner
+  (`AIPlayer._plan_turn_actions()`) was written for sequential turns, where a purchase is
+  paid at once and a later one fails when the gold runs out. In a round nothing is paid
+  while planning, and `SimPhaseManager._execute_orders()` pays builds and training before
+  research and Heroes - so the AI's Heroes failed round after round. The budget keeps its
+  purchases in planned (priority) order while it can pay, charging what the executing
+  method charges (`_gold_cost()`: `get_building_cost`, `get_effective_cost`,
+  `get_effective_tech_cost`, `CASTLE_UPGRADE_COST`, `get_hero_cost`), and keeps a Hero and a
+  Castle upgrade of one Keep apart (the upgrade blocks Hero training). A new purchase type
+  needs a `_gold_cost()` branch. Tests: `tests/test_sim_ai_budget.py`.
 
 ✅ **Change unit spawn behavior:**
 - `finish_training()` in `game_state/buildings.py` spawns units with 'moved' status
@@ -2170,49 +2550,101 @@ Turn Mode dropdown added to:
 ### Network Messages
 
 Simultaneous-specific messages in `network_config.py`:
-- `SIM_PLAYER_READY` - Player finished planning
-- `SIM_ALL_READY` - All ready, merged orders attached
+- `SIM_PLAYER_READY` - Client finished planning; carries its orders (client -> host only)
+- `SIM_READY_STATE` - Host -> clients: `{round, ready}` - who is ready (the "Waiting for" list)
+- `SIM_ALL_READY` - Host -> clients: state snapshot + the validated movement orders + forced defenders
 - `SIM_TIMER_UPDATE` - Timer sync between host/client
-- `SIM_BATTLE_RESULT` - Battle outcome from resolver
-- `SIM_ALLIANCE_CHOICE` - Territory owner selection
-- `SIM_ROUND_COMPLETE` - Round finished, carries authoritative state
+- `SIM_ALLIANCE_CHOICE` - Territory owner selection (from the chooser; relayed)
+- `SIM_ROUND_COMPLETE` - Round finished: the new round's state snapshot + sim round data
+- `BATTLE_RESOLVE` - battle results in both modes (seeded replay, see Network System)
+- `SIM_BATTLE_RESULT` - legacy, no longer sent
 
-### State Synchronization (Multiplayer Sim Mode)
+`SIM_ALL_READY`, `SIM_ROUND_COMPLETE`, `SIM_READY_STATE` and `SIM_TIMER_UPDATE` are
+host-only: the server drops them from clients (`_HOST_ONLY_TYPES`).
 
-The host is authoritative. At round end, `SIM_ROUND_COMPLETE` broadcasts state to prevent desync.
+### Multiplayer model (the host is the truth)
 
-**Synced in SIM_ROUND_COMPLETE (main.py `_sim_broadcast_round_complete()`):**
+**Execution start (`_sim_start_execution_phase()`, host):** crossing conflicts →
+`SimPhaseManager.begin_authoritative_execution()` validates every order (incl. remote ones:
+adjacency, garrison, exact units via `_claim_movement_units()`) and applies all NON-movement
+orders → `SIM_ALL_READY{snapshot, movement_orders, forced_defenders}` → the host starts the
+movement. Clients (`_sim_apply_all_ready()`) apply the snapshot and run exactly those
+movements, so every PC detects the same arrivals and battles. Clients never execute orders
+themselves any more (they used to run the raw merged list, incl. orders the host rejected).
 
-| Data | Purpose | Location |
-|------|---------|----------|
-| `player_gold` | Prevents income calculation drift | Line ~1920 |
-| `territory_owners` | Battle results synchronized | Line ~1922 |
-| `eliminated_players` | Skip income/construction for eliminated | Line ~1924 |
-| `heroes` | Hero passive abilities (Haste, Defiance) | Line ~1926 |
-| `hero_training_queue` | In-progress training with timers | Line ~1928 |
-| `hero_ability_cooldowns` | Ability availability | Line ~1933 |
-| `hero_silence_status` | Vow of Silence effect | Line ~1938 |
-| `player_tech_researched` | Completed technologies | Line ~1944 |
-| `research_in_progress` | Current research timers | Line ~1948 |
-| `player_tech_available` | Unlocked tech tree nodes | Line ~1952 |
-| `tech_effects` | 10 derived bonus arrays | Line ~1956 |
+**Round end:** only the host runs `complete_round()` (guarded in `sim_state`; clients that
+call it are ignored). Its callback sends `SIM_ROUND_COMPLETE` with the new round's snapshot;
+`_sim_apply_round_complete()` closes any open battle window, drops leftover battles /
+markers, runs the client's Action-Log bookkeeping, `start_planning_phase()`, then applies the
+snapshot.
 
-**Tech Effect Arrays (inside `tech_effects`):**
-- `royal_decree_discount` - Royal Decree: 15% off Heroes/Keeps
-- `training_cost_discount` - Improved Training: 20% off Swordsmen/Pikemen
-- `cavalry_cost_discount` - Animal Handling: 25% off Cavalry
-- `archer_keep_strength_bonus` - Battlement Archery: +50% Archer strength at Keeps
-- `farm_destruction_gold_bonus` - Raze the Countryside: +30g on enemy Farm destruction
-- `cavalry_strength_bonus` - Cavalry Tactics: +33% Cavalry strength
-- `divide_conquer_bonus` - Divide and Conquer: +20% Pikemen/Swordsmen strength
-- `barracks_cost_discount` - Makeshift Barracks: 25% off Barracks
-- `barracks_full_refund` - Makeshift Barracks: 100% demolish refund
-- `hero_keep_defense_bonus` - Last Resort: +100% Keep/Castle defense with heroes
+**When the round may end:** every host-side "anything left?" check goes through
+`Game._sim_round_may_end()` - resolving phase, no battle, no alliance marker, **and no battle
+report of ours still open**. A battle's result is sent (and its alliance marker queued) only
+when its report window closes (`_finalize_enhanced_battle()`, which then ends the round
+itself); ending the round under the host's open report lost that alliance choice and leaked
+the marker into the next round. The resolving-phase check stops a late `SIM_ALLIANCE_CHOICE`
+from ending the NEXT round (`resolve_alliance_marker()` has the same guard, and the choice
+popup ignores a click once its marker is gone). New completion sites must use the helper.
 
-✅ **Add new synced state:**
-1. Add to `authoritative_data` dict in `_sim_broadcast_round_complete()` (main.py ~1917)
-2. Add handler in `SIM_ROUND_COMPLETE` receiver (main.py ~1643)
-3. Test with 2-player multiplayer sim mode
+**current_player is per PC in simultaneous mode** (always the local player - the UI acts for
+it). After applying a host snapshot, restore it with `get_local_player()`; snapshots carry the
+host's value.
+
+**Host only:** AI planning (clients have no `sim_ai`), AI battle auto-resolve
+(`_auto_resolve_ai_battle()`, first battle with an AI resolver), AI alliance choices
+(`_auto_choose_alliance_owner()`), round ends. Clients get the results over the network.
+
+**Readiness:** the multiplayer host always starts execution from the main loop
+(`mark_ready()` sets `_execution_pending`; `check_deferred_execution()` calls the callback) -
+never on an AI planning thread. Humans are never auto-readied in multiplayer
+(`_check_auto_ready()`), and a timer may only ready players this PC speaks for
+(`sim_state._may_auto_ready()`: a client only itself; the host itself + AIs). Clients send
+`SIM_PLAYER_READY` (`_sim_send_local_ready()`); the host sends `SIM_READY_STATE` whenever its
+ready set changes (`_sim_broadcast_ready_state()`, compared every frame); clients set only
+OTHER players' flags from it and ignore other rounds.
+
+**Per-frame work** lives in `Game._update_simultaneous()` (deferred execution, timers, ready
+broadcast, AI resolvers / choosers, AFK rules, new-round AI planning) - `Game.run()` and the
+test harness call the same method.
+
+**AFK rules (multiplayer, `_sim_afk_watchdog()`):** `SIM_AFK_RESOLVE_SECONDS` (90 s) without
+touching battles → that PC resolves its own battles / alliance choices (an open battle window
+or choice popup counts as busy); a battle report left open that long after FIGHT is closed
+(`_resolved_battle_info['fought_at']`), since it holds the round; `SIM_HOST_FALLBACK_SECONDS`
+(180 s) of resolving → the host settles every battle and choice still open, its own included
+(`_resolve_all_pending_battles(any_resolver=True)`, `_auto_choose_alliance_owner()`). A battle
+window whose battle was settled meanwhile closes (`_close_stale_battle_window()`); a choice
+popup closes when its choice is made elsewhere (`_close_alliance_choice_popup()`).
+Single-player never auto-resolves.
+
+**AI takeover:** `PLAYER_DISCONNECT` → `_take_over_disconnected_player()`: every PC marks the
+slot AI (Medium); the host gives it an AIPlayer (`SimultaneousAI.ensure_player()`) and lets it
+plan the current round if the player had not readied. Their battles / choices then go through
+the AI auto-resolve.
+
+**Knocked-out players** (found in the first test game, 2026-10-12): `sim_state.eliminated_players`
+(auto-readied every round, sent in SIM_ROUND_COMPLETE) must follow
+`game_state.eliminated_players`, the one source of truth (check_victory: no territories left,
+every victory condition; eliminate_player: Capital Assault). It used to hear only of Capital
+Assault eliminations, so in Domination / Total Conquest a knocked-out human who stayed
+connected held up every later round until their planning timer ran out. Now:
+`start_planning_phase()` adopts game_state's list before `_check_auto_ready()` (every PC,
+every round); `Game._sync_battle_eliminations_to_sim()` → `sim_state.sync_eliminations()`
+after every battle; the host / single player also calls `sync_eliminations()` every frame
+(`_update_simultaneous()`) - during planning it readies a newly knocked-out player through
+`mark_ready()`, so a round that only waited for them goes on.
+
+**Round records** (game log, sync log, replay): `SimultaneousGameState.record_round_boundary()`,
+at the end of `complete_round()` on the host and after SIM_ROUND_COMPLETE on clients (they
+never run `complete_round()` - since Phase 4 their logs and saved replays had no rounds).
+
+**Orders:** `_merge_orders()` drops only EXACT duplicates (same units, same route) - an army
+split into two orders along one route keeps both halves. `_claim_movement_units()` rejects
+orders whose units are missing / not ready / already used by an earlier order, and sets
+`army_count` to the unit list's length (excess units used to appear as default Swordsmen).
+
+Tests: `tests/test_mp_simultaneous.py`, `tests/test_mp_sim_flow.py`.
 
 ✅ **Fix cancel action not syncing:**
 - Cancel handlers must remove queued orders from `sim_state.player_orders[local_player]`
@@ -3460,6 +3892,15 @@ using filename stem as key (only for games with a `campaign_map`, which tales ha
 
 **Data flow:** Game ends → `show_recap_if_ended()` → `achievement_manager.record_game_result(game)` → detects mode, increments stats, checks thresholds → returns newly earned list → `RecapScreen` shows preview popups → user returns to main menu → achievement panel shows all achievements. Campaign missions set `gs.winner = 0` and `gs.phase = 'ended'` in their `_start_victory` method to trigger this flow.
 
+**Whose game is recorded (multiplayer audit, Phase 8):** the player at THIS PC -
+`player_level.local_human_index(game)` (`gs.local_player_index`, else
+`game.local_player_index`, else the first human for single-player). It used to be the first
+non-AI player, i.e. the host, on every PC: a client's win credited nobody. **A win counts
+for the winner's allies too** - always ask `gs.is_winner(player)` (victory.py: the winner or
+a player on the winner's team), never compare with `gs.winner` directly. The player-level
+XP uses the same two helpers; the victory/defeat cinematic
+(`Game._is_victory_for_local_player()`) asks `is_winner()` too.
+
 **Achievement definitions:** Hardcoded in `ACHIEVEMENTS` list in `achievement_manager.py`. Each has id, name, description, category, icon path, reward_type (None/title/icon), reward_id, stat_key, stat_threshold. Dual-reward achievements use optional `reward_type_2`/`reward_id_2` fields.
 
 **Categories:** general, campaign, training, conquest. Defined in `CATEGORIES` list.
@@ -3505,13 +3946,23 @@ using filename stem as key (only for games with a `campaign_map`, which tales ha
 **Sound Split:** `global_sound.py` provides `initialize_menu_sounds()` (3 files, called at startup) and `get_game_sound_tasks()` (136 files, deferred to loading screen).
 
 **Multiplayer Sync:** Uses `GAME_READY` message type (`network_config.py`). Host collects GAME_READY from all clients, then broadcasts confirmation. Both sides wait for "click to start" after all ready.
+- The host waits for `expected_remote_players` (human clients). A `PLAYER_DISCONNECT`
+  while loading takes that player off the list - the host used to wait forever.
+- **Escape** while waiting leaves (`run()` returns `'cancelled'`); a client that loses the
+  host shows "Lost connection to the host (...)" and returns `'disconnected'` on a key
+  (or after 10 s). `run()` returns `'start'` otherwise; `main.py` only starts the game on
+  `'start'`.
+- **Never drop messages here.** Anything that is not `GAME_READY` is kept in
+  `_deferred_messages` and put back at the front of the queue, in order, when loading
+  ends (`NetworkMessageQueue.requeue_front()`); reading stops at the confirming
+  `GAME_READY`, because what follows may already be the host's first game messages.
 
 ### When to Modify
 
 - **Add new deferred sound category**: Add entry in `get_game_sound_tasks()` in `global_sound.py`
 - **Change loading screen visuals**: Modify `_draw()` in `loading_screen.py`
 - **Add new loading task**: Append to `_build_task_list()` in `loading_screen.py`
-- **Change multiplayer sync logic**: Modify `_send_game_ready()` / `_poll_network_ready()` in `loading_screen.py`
+- **Change multiplayer sync logic**: Modify `_send_game_ready()` / `_poll_network_ready()` / `_update_wait_state()` / `_handle_wait_event()` in `loading_screen.py`
 
 ## Player Level System
 
@@ -3521,7 +3972,7 @@ The player level system tracks persistent XP across games. XP is accumulated dur
 
 **Architecture:**
 - `player_level.py`: Singleton `PlayerLevelManager`, tiered XP formula (`XP_TIERS`), `xp_for_level()`/`level_from_xp()` conversion, `record_game_xp()` end-of-game calculation
-- `game_state/`: 10 hook sites use `_track_stat(player, 'xp_earned', amount)` — stats tracked for all players, only human player's read at game end
+- `game_state/`: 10 hook sites use `_track_stat(player, 'xp_earned', amount)` — stats tracked for all players, only the local human's read at game end (`local_human_index(game)`; multiplayer: this PC's player). The victory bonus goes to every member of the winning team (`gs.is_winner()`), not only the team's representative `gs.winner`
 - `main_menu.py`: Gold-filled level bar in profile panel (to the right of name input)
 - `recap_screen.py`: Animated XP bar after achievement popups with level-up particle burst
 
@@ -4009,6 +4460,17 @@ Path to the game:
 - `Game.initialize_game()` applies it only when the key is present, so campaigns and tales
   (which set their own gold) are unaffected. Saves and replays already store
   `starting_gold`.
+
+### Player colours
+
+Both screens put the chosen colours in the game config as `player_colors` (Custom Game: a
+list by player; lobby: `{slot: colour index}`, from `_build_config_from_lobby()`).
+`Game.initialize_game()` applies them - `game_state.player_colors[p] = PLAYER_COLORS[index]`
+- and keeps the indices in `Game.player_color_indices`, which picks each player's army flag
+images (`assets/mapicons/<Red|Blue|Green|Yellow>Flag<tier>.png`). Invalid entries keep the
+default.
+The choice used to be ignored (only loading a save applied colours), so everyone played in
+the default colours. Campaigns and tales pass no `player_colors` and are unaffected.
 
 ### Label tooltips
 

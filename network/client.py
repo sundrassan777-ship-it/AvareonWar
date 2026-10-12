@@ -4,6 +4,7 @@ Network client implementation for multiplayer client.
 Client player uses this to connect to a host server.
 """
 
+import select
 import socket
 import threading
 import time
@@ -15,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from network_config import (
     DEFAULT_PORT, MESSAGE_BUFFER_SIZE, HEARTBEAT_INTERVAL,
-    CONNECTION_TIMEOUT, MessageType
+    CONNECTION_TIMEOUT, SEND_TIMEOUT, MessageType
 )
 from network.protocol import NetworkProtocol, MessageBuffer
 from network.message_queue import NetworkMessageQueue
@@ -29,6 +30,13 @@ _KNOWN_MESSAGE_TYPES = {
     v for k, v in vars(MessageType).items()
     if not k.startswith('_') and isinstance(v, str)
 }
+
+# recv() calls per network-loop iteration while data keeps arriving (the loop sleeps
+# 10 ms between iterations; one read per iteration made big messages crawl in)
+_MAX_READS_PER_LOOP = 16
+
+# Time allowed for the farewell DISCONNECT when we leave on purpose
+_FAREWELL_SEND_TIMEOUT = 1.0  # seconds
 
 
 class NetworkClient:
@@ -96,6 +104,11 @@ class NetworkClient:
         Returns:
             True if connection successful, False otherwise
         """
+        # A fresh attempt: forget why the previous connection ended
+        with self._state_lock:
+            self.disconnected = False
+        self.disconnect_reason = ""
+
         try:
             # Create socket
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -105,8 +118,11 @@ class NetworkClient:
             logger.info(f"Connecting to {host}:{port}...")
             self.socket.connect((host, port))
 
-            # Set non-blocking after connection established
-            self.socket.setblocking(False)
+            # Blocking sends with a time limit (SEND_TIMEOUT). A non-blocking sendall()
+            # fails mid-frame when the kernel buffer fills (large messages); reads stay
+            # non-blocking in effect because recv() only runs after select() (see
+            # _receive_from_server).
+            self.socket.settimeout(SEND_TIMEOUT)
 
             self.server_address = (host, port)
             self.last_server_address = (host, port)
@@ -131,8 +147,16 @@ class NetworkClient:
             # C6: Use monotonic clock -- immune to NTP sync / daylight saving shifts
             start_time = time.monotonic()
             while self.player_index is None:
+                if self.disconnected:
+                    # The host refused us (CONNECT_REJECT: lobby full, version mismatch,
+                    # ...) or the link died. Stop waiting at once; disconnect_reason
+                    # survives disconnect() so the join screen can show it.
+                    logger.warning(f"Connection refused: {self.disconnect_reason}")
+                    self.disconnect()
+                    return False
                 if time.monotonic() - start_time > timeout:
                     logger.warning("Connection timeout - no response from server")
+                    self.disconnect_reason = "The host did not answer"
                     self.disconnect()
                     return False
                 time.sleep(0.1)
@@ -145,14 +169,17 @@ class NetworkClient:
 
         except socket.timeout:
             logger.warning("Connection timeout")
+            self.disconnect_reason = "Connection timed out - check the address and the host's firewall"
             self.disconnect()
             return False
         except ConnectionRefusedError:
             logger.warning("Connection refused - server not available")
+            self.disconnect_reason = "No game is being hosted at that address"
             self.disconnect()
             return False
         except OSError as e:
             logger.error(f"Connection error: {e}")
+            self.disconnect_reason = f"Connection error: {e}"
             self.disconnect()
             return False
 
@@ -169,6 +196,7 @@ class NetworkClient:
         if is_connected and sock:
             try:
                 disconnect_msg = self.protocol.create_disconnect("Client disconnecting")
+                sock.settimeout(_FAREWELL_SEND_TIMEOUT)  # never hang on leaving
                 sock.sendall(disconnect_msg)
             except (OSError, BrokenPipeError):
                 pass  # C3 fix: Socket may already be closed
@@ -216,11 +244,7 @@ class NetworkClient:
 
             except Exception as e:
                 logger.error(f"Network error: {e}")
-                # H7: Lock around shared state writes from network thread
-                with self._state_lock:
-                    self.disconnected = True
-                    self.disconnect_reason = f"Network error: {e}"
-                self._disconnect()
+                self._connection_failed(f"Network error: {e}")
                 break
 
             # Small sleep to avoid busy-waiting
@@ -235,54 +259,52 @@ class NetworkClient:
             return
 
         try:
-            # Receive data (non-blocking)
-            data = sock.recv(MESSAGE_BUFFER_SIZE)
-
-            if not data:
-                # Connection closed - host disconnected
-                logger.warning("Server disconnected")
+            # Read everything that is waiting (up to _MAX_READS_PER_LOOP chunks). The
+            # socket blocks on sends (with a timeout), so only recv() once select()
+            # reports data - otherwise recv() would stall the loop.
+            for _ in range(_MAX_READS_PER_LOOP):
+                # A handler may have closed the connection (CONNECT_REJECT, DISCONNECT)
                 with self._state_lock:
-                    self.disconnected = True
-                    self.disconnect_reason = "Host disconnected"
-                self._disconnect()
-                return
+                    if not self.connected:
+                        return
+                readable, _, _ = select.select([sock], [], [], 0)
+                if not readable:
+                    return
 
-            # H13 fix: check buffer overflow and disconnect on overflow
-            if not self.recv_buffer.add_data(data):
-                logger.warning("Buffer overflow from server, disconnecting")
-                # H10 fix: acquire lock for thread-safe state update
-                with self._state_lock:
-                    self.disconnected = True
-                    self.disconnect_reason = "Buffer overflow"
-                self._disconnect()
-                return
+                data = sock.recv(MESSAGE_BUFFER_SIZE)
 
-            # Extract and process complete messages
-            while True:
-                message_bytes = self.recv_buffer.extract_message()
-                if not message_bytes:
-                    break
+                if not data:
+                    # Connection closed - host disconnected
+                    logger.warning("Server disconnected")
+                    self._connection_failed("Host disconnected")
+                    return
 
-                # Decode and validate message (mirror server-side validation)
-                message = self.protocol.decode_message(message_bytes)
-                if message and self.protocol.validate_message(message):
-                    self._handle_received_message(message)
+                # H13 fix: check buffer overflow and disconnect on overflow
+                if not self.recv_buffer.add_data(data):
+                    logger.warning("Buffer overflow from server, disconnecting")
+                    self._connection_failed("Buffer overflow")
+                    return
 
-        except BlockingIOError:
-            # No data available (non-blocking socket)
+                # Extract and process complete messages
+                while True:
+                    message_bytes = self.recv_buffer.extract_message()
+                    if not message_bytes:
+                        break
+
+                    # Decode and validate message (mirror server-side validation)
+                    message = self.protocol.decode_message(message_bytes)
+                    if message and self.protocol.validate_message(message):
+                        self._handle_received_message(message)
+
+        except (BlockingIOError, socket.timeout):
+            # No data available after all
             pass
         except ConnectionResetError:
             logger.warning("Connection reset by server")
-            with self._state_lock:
-                self.disconnected = True
-                self.disconnect_reason = "Host disconnected"
-            self._disconnect()
+            self._connection_failed("Host disconnected")
         except Exception as e:
             logger.error(f"Receive error: {e}")
-            with self._state_lock:
-                self.disconnected = True
-                self.disconnect_reason = f"Connection error: {e}"
-            self._disconnect()
+            self._connection_failed(f"Connection error: {e}")
 
     def _send_to_server(self):
         """Send queued messages to server"""
@@ -302,7 +324,10 @@ class NetworkClient:
                 sock.sendall(message)
             except Exception as e:
                 logger.error(f"Send error: {e}")
-                self._disconnect()
+                # Report it: the game shows "Connection Lost" from these flags. A send
+                # error used to stop the network loop silently - the client then sat
+                # in a game that no longer heard anything.
+                self._connection_failed(f"Connection lost: {e}")
                 break
 
     def _handle_received_message(self, message: dict):
@@ -368,16 +393,15 @@ class NetworkClient:
         data = message.get('data', {})
         reason = data.get('reason', 'Unknown reason')
         logger.warning(f"Connection rejected: {reason}")
-        self._disconnect()
+        # Keep the host's reason ("Lobby is full", "Version mismatch: ...") for the join
+        # screen; connect() stops waiting as soon as it sees `disconnected`
+        self._connection_failed(reason)
 
     def _handle_disconnect_message(self, message: dict):
         """Handle DISCONNECT message from server (M11: extracted from if-elif chain)"""
         logger.warning("Server disconnected")
         # Host disconnected - set disconnected flag so game loop can detect it
-        with self._state_lock:
-            self.disconnected = True
-            self.disconnect_reason = "Host disconnected"
-        self._disconnect()
+        self._connection_failed("Host disconnected")
 
     def _handle_reconnect_accept(self, message: dict):
         """Handle reconnection acceptance from server"""
@@ -409,11 +433,22 @@ class NetworkClient:
         # Check if we've received PING recently
         if self.last_pong_time > 0 and current_time - self.last_pong_time > CONNECTION_TIMEOUT:
             logger.warning(f"Connection timeout (no ping for {CONNECTION_TIMEOUT}s)")
-            # H7: Lock around shared state writes from network thread
-            with self._state_lock:
-                self.disconnect_reason = "Connection timeout"
+            self._connection_failed("Connection timeout")
+
+    def _connection_failed(self, reason: str):
+        """
+        The connection ended without us asking: flag it for the game loop / lobby (they
+        show "Connection Lost" with the reason) and close the socket.
+
+        The FIRST reason wins. After a CONNECT_REJECT the host also closes its end, and
+        the follow-up read error used to overwrite "Lobby is full" with a socket error.
+        """
+        # H7: Lock around shared state writes -- called from network thread
+        with self._state_lock:
+            if not self.disconnected:
                 self.disconnected = True
-            self._disconnect()
+                self.disconnect_reason = reason
+        self._disconnect()
 
     def _disconnect(self):
         """Internal disconnect (from network thread)"""
@@ -499,8 +534,8 @@ class NetworkClient:
             logger.info(f"Reconnecting to {host}:{port}...")
             self.socket.connect((host, port))
 
-            # Set non-blocking after connection established
-            self.socket.setblocking(False)
+            # Blocking sends with a time limit, reads after select() (as in connect())
+            self.socket.settimeout(SEND_TIMEOUT)
 
             self.server_address = (host, port)
             # H7: Lock around shared state writes (main thread, read by network thread)

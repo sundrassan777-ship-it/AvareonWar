@@ -413,7 +413,8 @@ class MilitaryMixin:
 
         return casualties_applied
 
-    def apply_multi_garrison_casualties(self, territory, casualties, enemy_composition, owner_player):
+    def apply_multi_garrison_casualties(self, territory, casualties, enemy_composition, owner_player,
+                                        players=None):
         """
         Apply casualties to multi-garrison defenders in a territory.
 
@@ -429,6 +430,9 @@ class MilitaryMixin:
             casualties: Total casualties to apply
             enemy_composition: Enemy unit composition for priority calculation
             owner_player: The territory owner (whose garrison is last to take casualties)
+            players: The defending side's players (MilitaryMixin._battle_side). Every
+                garrison in the territory counts if None - during a battle that includes
+                the attackers', and defending losses were booked on attacker units.
 
         Returns:
             dict: {player_index: {unit_type: count}} - casualties by player and unit type
@@ -439,8 +443,10 @@ class MilitaryMixin:
         total_casualties_applied = {}
         remaining_casualties = casualties
 
-        # Get all players with garrisons in this territory
+        # Get all players with garrisons in this territory (the defending side's only)
         garrison_players = list(self.territory_garrisons[territory].keys())
+        if players is not None:
+            garrison_players = [p for p in garrison_players if p in players]
 
         # Sort: Allies first (by player index), owner last
         garrison_players.sort(key=lambda p: (p == owner_player, p))
@@ -1146,7 +1152,14 @@ class MilitaryMixin:
         if not self.movement_orders:
             self.add_message("No orders to execute")
             return
-        
+
+        # Sequential multiplayer: the turn owner's PC tells the other PCs, BEFORE anything
+        # changes - its state with these orders, which they replay (EXECUTE_ORDERS). One
+        # hook for every way a turn's moves start: End Turn, the planning timer, the AI.
+        on_orders_executing = getattr(self, 'on_orders_executing', None)
+        if on_orders_executing is not None:
+            on_orders_executing()
+
         # Clear army selection
         self.selected_army = None
 
@@ -1600,38 +1613,55 @@ class MilitaryMixin:
             # Tie - will need dice roll
             return None, players_with_max
 
-    def _resolve_keep_battle(self, battle, player_armies, player_compositions, territory, defender, original_garrison):
+    def _resolve_keep_battle(self, battle, player_armies, player_compositions, territory, defender,
+                             original_garrison, rng=None):
         """
         Resolve two-phase Keep battle: Phase 1 (garrison with counters) + Phase 2 (Keep type-neutral).
-        
+
         This is the proper Keep battle system where:
         - Phase 1: Attackers vs Garrison uses unit type counters
         - Phase 2: Remaining attackers vs Keep is pure numerical
-        
+
+        Several attacking sides (simultaneous mode: they reached the Keep in the same round)
+        fight each other first - _fight_for_the_keep() - and only the winner assaults the
+        Keep. The strongest one used to assault it alone, and the others' units vanished
+        without fighting.
+
+        Args:
+            rng: Random source for the attackers' tie dice (see resolve_battle)
+
         Returns: tuple (winner_player_index, surviving_armies)
         """
         import math
 
-        # Identify attacker(s) - validate that exactly 1 non-defender exists
-        non_defenders = [p for p in battle.armies.keys() if p != defender]
-        if len(non_defenders) == 0:
+        # The side holding the Keep, as battle.armies keys it. Simultaneous mode keys a
+        # battle by team leader - not the owner when an ally with a lower player index
+        # defends with them: the owner then had no entry, and the defending team's leader
+        # was counted as an attacker.
+        keep_side = getattr(battle, 'keep_bonus_player', None)
+        defender_key = keep_side if keep_side in battle.armies else defender
+
+        attackers = [p for p in battle.armies.keys() if p != defender_key]
+        if len(attackers) == 0:
             # No attackers found - should not happen, log and return defender wins
             logger.warning(f"Keep battle in {territory}: No attackers found among "
                            f"battle participants {list(battle.armies.keys())} with defender={defender}. "
                            f"Defaulting to defender victory.")
             return defender, original_garrison
-        elif len(non_defenders) > 1:
-            # Multiple attackers in a Keep battle - not expected by the two-phase system.
-            # Use the one with the most armies and log the anomaly.
-            logger.warning(f"Keep battle in {territory}: Expected 1 attacker but found "
-                           f"{len(non_defenders)} non-defenders: {non_defenders}. "
-                           f"Using strongest attacker for Keep battle resolution.")
-            attacker = max(non_defenders, key=lambda p: battle.armies.get(p, 0))
+        elif len(attackers) > 1:
+            attacker = self._fight_for_the_keep(battle, attackers, player_compositions, territory,
+                                                rng=rng)
+            if attacker is None:
+                # They destroyed each other: nobody is left to assault the Keep
+                self.add_message(f"  The Keep holds - no attacker is left to assault it.")
+                return defender, original_garrison
         else:
-            attacker = non_defenders[0]
+            attacker = attackers[0]
 
         attacker_comp = player_compositions.get(attacker, {})
-        garrison_comp = player_compositions.get(defender, {})
+        garrison_comp = player_compositions.get(defender_key, {})
+        # The players holding the Keep (the owner and allies defending with it)
+        defending_side = self._battle_side(battle, defender_key)
         
         self.add_message(f"  Territory has Keep - Two-Phase Combat:")
         self.add_message(f"    Phase 1: Attackers vs Garrison (unit counters apply)")
@@ -1685,13 +1715,12 @@ class MilitaryMixin:
                 remaining_garrison = 0
 
                 # Apply casualties to defending garrison(s) - allies die first
-                has_allied_defenders = (hasattr(battle, 'allied_defenders') and
-                                       len(battle.allied_defenders) > 0)
+                has_allied_defenders = len(defending_side) > 1
 
                 if has_allied_defenders:
                     # Multi-garrison defense - apply casualties using priority system
                     casualties_by_player = self.apply_multi_garrison_casualties(
-                        territory, garrison_count, attacker_comp, defender
+                        territory, garrison_count, attacker_comp, defender, players=defending_side
                     )
 
                     # Log casualties by player
@@ -1724,14 +1753,13 @@ class MilitaryMixin:
                 remaining_garrison = max(0, garrison_count - garrison_casualties)
 
                 # Apply casualties to defending garrison(s)
-                has_allied_defenders = (hasattr(battle, 'allied_defenders') and
-                                       len(battle.allied_defenders) > 0)
+                has_allied_defenders = len(defending_side) > 1
                 casualties = garrison_count - remaining_garrison
 
                 if has_allied_defenders and casualties > 0:
                     # Multi-garrison defense - apply casualties using priority system
                     casualties_by_player = self.apply_multi_garrison_casualties(
-                        territory, casualties, attacker_comp, defender
+                        territory, casualties, attacker_comp, defender, players=defending_side
                     )
 
                     # Log casualties by player
@@ -1757,12 +1785,11 @@ class MilitaryMixin:
                 remaining_garrison = 0
 
                 # All garrison units eliminated - apply casualties
-                has_allied_defenders = (hasattr(battle, 'allied_defenders') and
-                                       len(battle.allied_defenders) > 0)
+                has_allied_defenders = len(defending_side) > 1
 
                 if has_allied_defenders:
                     casualties_by_player = self.apply_multi_garrison_casualties(
-                        territory, garrison_count, attacker_comp, defender
+                        territory, garrison_count, attacker_comp, defender, players=defending_side
                     )
 
                     for player_index, player_casualties in casualties_by_player.items():
@@ -1841,6 +1868,235 @@ class MilitaryMixin:
         
         return winner, surviving_armies
 
+    def _fight_for_the_keep(self, battle, attackers, player_compositions, territory, rng=None):
+        """
+        Several sides attack the same Keep at once (simultaneous mode): they fight each
+        other first, and only the winner assaults the Keep (_resolve_keep_battle).
+
+        The rules of an open-field battle between them: the highest effective strength
+        wins (unit counters, veterancy), the winner's losses scale with the strength ratio
+        and it always keeps at least one unit; a tie is rolled with dice (one die per army
+        - rng, so a multiplayer replay from the battle's seed rolls the same), and a tie in
+        the dice destroys them all.
+
+        The losers' units are removed from the territory, the winner's losses come off its
+        units (lowest level first - the order surviving attackers are kept in after any
+        battle), and player_compositions[winner] becomes its survivors. Allied attackers
+        are one side (battle.team_members_map: simultaneous mode merges them under their
+        team leader). Records battle.keep_prefight_winner / keep_prefight_losers, so the
+        Keep's defender is not credited with units it never fought.
+
+        Returns: the attacker left to assault the Keep, or None if they destroyed each other.
+        """
+        rng = rng or random
+        attackers = sorted(attackers)            # same order on every PC (dice)
+        team_members = getattr(battle, 'team_members_map', None) or {}
+
+        def label(player):
+            return "Neutral" if player == -1 else f"Player {player + 1}"
+
+        self.add_message(f"  {len(attackers)} attackers reach the Keep at once - they fight "
+                         f"each other first:")
+        strengths = {}
+        for player in attackers:
+            enemy_composition = {}
+            for other in attackers:
+                if other != player:
+                    for unit_type, count in player_compositions.get(other, {}).items():
+                        enemy_composition[unit_type] = enemy_composition.get(unit_type, 0) + count
+            strengths[player] = self.calculate_army_effective_strength(
+                player_compositions.get(player, {}), enemy_composition, player=player,
+                territory=territory, unit_avg_levels=self.get_unit_avg_levels(territory, player))
+            self.add_message(f"    {label(player)}: "
+                             f"{self._format_unit_composition(player_compositions.get(player, {}))} "
+                             f"(Effective Strength: {strengths[player]:.1f})")
+
+        best = max(strengths.values())
+        strongest = [p for p in attackers if abs(strengths[p] - best) < 0.01]
+        if len(strongest) == 1:
+            winner = strongest[0]
+            winner_count = battle.armies.get(winner, 0)
+            loser_count = sum(battle.armies.get(p, 0) for p in attackers if p != winner)
+            loser_strength = sum(s for p, s in strengths.items() if p != winner)
+            if best >= OVERWHELMING_ADVANTAGE_RATIO * loser_strength:
+                losses = 0
+            else:
+                losses = max(1, round(loser_count * loser_strength / best)) if best > 0 else loser_count
+            survivors = max(1, winner_count - losses)
+        else:
+            # Tie: roll the dice, one die per army
+            rolls = {}
+            for player in strongest:
+                rolls[player] = sum(rng.randint(1, 6) for _ in range(battle.armies.get(player, 0)))
+                self.add_message(f"    {label(player)} ({battle.armies.get(player, 0)} armies) "
+                                 f"rolls: {rolls[player]}")
+            top = max(rolls.values())
+            winners = [p for p in strongest if rolls[p] == top]
+            if len(winners) > 1:
+                self.add_message(f"    The attackers destroy each other.")
+                for player in attackers:
+                    self._remove_battle_side(territory, team_members.get(player, [player]))
+                battle.keep_prefight_winner = None
+                battle.keep_prefight_losers = list(attackers)
+                return None
+            winner = winners[0]
+            survivors = 1
+
+        losers = [p for p in attackers if p != winner]
+        for player in losers:
+            self._remove_battle_side(territory, team_members.get(player, [player]))
+        survivor_units = self._keep_side_survivors(territory, team_members.get(winner, [winner]),
+                                                   survivors)
+        if survivor_units:
+            composition = {}
+            for unit in survivor_units:
+                unit_type = unit.get('type', 'Swordsman')
+                composition[unit_type] = composition.get(unit_type, 0) + 1
+            player_compositions[winner] = composition
+        else:
+            # No unit list (should not happen): shrink the recorded composition
+            composition, left = {}, survivors
+            for unit_type, count in sorted(player_compositions.get(winner, {}).items()):
+                if left <= 0:
+                    break
+                composition[unit_type] = min(count, left)
+                left -= composition[unit_type]
+            player_compositions[winner] = composition or {'Swordsman': survivors}
+
+        battle.keep_prefight_winner = winner
+        battle.keep_prefight_losers = losers
+        battle.keep_prefight_survivors = survivors
+        battle.keep_prefight_losses = max(0, battle.armies.get(winner, 0) - survivors)
+        self.add_message(f"    {label(winner)} wins and assaults the Keep with "
+                         f"{sum(player_compositions[winner].values())} armies.")
+        return winner
+
+    # ------------------------------------------------------------------
+    # Battle sides (team battles)
+    # ------------------------------------------------------------------
+    # Both turn modes key a battle by TEAM LEADER - the lowest player index of each team
+    # present - with the allies' armies merged into that key (battle.armies). The result
+    # must still go to the players behind each key: each keeps their own units, and a
+    # defending team that holds keeps the territory with its owner (the key used to get
+    # the territory, and only the key's own units survived).
+
+    def _battle_sides(self, battle):
+        """
+        {battle.armies key: [players fighting under it]}. Simultaneous mode records them
+        (team_members_map); otherwise they are the key and its allies with units in the
+        territory (sequential mode merges the owner's allied garrisons into the defence).
+        """
+        members_map = getattr(battle, 'team_members_map', None) or {}
+        garrisons = self.territory_garrisons.get(battle.territory, {})
+        sides = {}
+        for key in battle.armies:
+            members = set(members_map.get(key) or ())
+            members.add(key)
+            if key is not None and key >= 0 and not members_map.get(key):
+                for player in garrisons:
+                    if player is not None and player >= 0 and player != key and self.are_allies(player, key):
+                        members.add(player)
+            sides[key] = sorted(members)
+        return sides
+
+    def _battle_key(self, battle, player):
+        """The battle.armies key of the side `player` fights on (itself if not found)."""
+        if player in battle.armies:
+            return player
+        for key, members in self._battle_sides(battle).items():
+            if player in members:
+                return key
+        return player
+
+    def _battle_side(self, battle, player):
+        """The players fighting on `player`'s side of the battle."""
+        return self._battle_sides(battle).get(self._battle_key(battle, player), [player])
+
+    @staticmethod
+    def _split_count(total, weights, cap=True):
+        """
+        Split `total` in proportion to `weights` ({player: weight}) into whole numbers:
+        largest remainders first (ties: lower player index); with cap, never more than a
+        player's weight (losses: nobody loses more units than they have). Same result on
+        every PC (multiplayer replays battles).
+        """
+        weight_sum = sum(weights.values())
+        shares = {player: 0 for player in weights}
+        if total <= 0 or weight_sum <= 0:
+            return shares
+        limit = (lambda p: weights[p]) if cap else (lambda p: total)
+        exact = {player: total * weight / weight_sum for player, weight in weights.items()}
+        for player in weights:
+            shares[player] = min(int(exact[player]), limit(player))
+        left = total - sum(shares.values())
+        by_remainder = sorted(weights, key=lambda p: (-(exact[p] - int(exact[p])), p))
+        for player in by_remainder + sorted(weights) * max(1, total):
+            if left <= 0:
+                break
+            if shares[player] < limit(player):
+                shares[player] += 1
+                left -= 1
+        return shares
+
+    def _side_survivors(self, battle, territory, side, survivors, defending):
+        """
+        The units each player of the winning side keeps - `survivors` in all. The losses
+        are shared as each side shares them: a defending team loses its allies' units
+        first and the owner's last (apply_multi_garrison_casualties' rule), allies
+        attacking together share them by army size (SimAllianceHandler's rule); within
+        one player's units the lowest levels fall first (a lone winner keeps its
+        highest-level units, as always). Returns {player: [unit dicts]}.
+        """
+        garrisons = self.territory_garrisons.get(territory, {})
+        pools = {player: list((garrisons.get(player) or {}).get('units', [])) for player in side}
+        losses = max(0, sum(len(units) for units in pools.values()) - survivors)
+        if len(side) == 1:
+            per_player = {side[0]: losses}
+        elif defending:
+            per_player, left = {}, losses
+            for player in sorted(side, key=lambda p: (p == battle.original_owner, p)):
+                per_player[player] = min(left, len(pools[player]))
+                left -= per_player[player]
+        else:
+            per_player = self._split_count(losses, {p: len(units) for p, units in pools.items()})
+        kept = {}
+        for player in side:
+            units = sorted(pools[player], key=lambda u: u.get('level', 0), reverse=True)
+            kept[player] = units[:max(0, len(units) - per_player.get(player, 0))]
+        return kept
+
+    def _remove_battle_side(self, territory, players):
+        """Remove these players' units from the territory (beaten in battle)."""
+        garrisons = self.territory_garrisons.get(territory, {})
+        for player in players:
+            garrisons.pop(player, None)
+
+    def _keep_side_survivors(self, territory, players, survivors):
+        """
+        Keep `survivors` of these players' units in the territory - highest level first,
+        as _update_battle_results() keeps a winning attacker's units - and remove the rest.
+        Returns the surviving unit dicts.
+        """
+        garrisons = self.territory_garrisons.get(territory, {})
+        pool = []
+        for player in players:
+            for unit in (garrisons.get(player) or {}).get('units', []):
+                pool.append((player, unit))
+        pool.sort(key=lambda entry: entry[1].get('level', 0), reverse=True)
+        kept = pool[:survivors]
+        kept_ids = {id(unit) for _player, unit in kept}
+        for player in players:
+            garrison = garrisons.get(player)
+            if garrison is None:
+                continue
+            units = [u for u in garrison.get('units', []) if id(u) in kept_ids]
+            garrison['units'] = units
+            # Counts from the units, as _sync_garrison_counts() would (without its
+            # "sync fix" warning - these losses are intended)
+            garrison['unmoved'] = sum(1 for u in units if u.get('status') in ('ready', 'ordered'))
+            garrison['moved'] = sum(1 for u in units if u.get('status') == 'moved')
+        return [unit for _player, unit in kept]
+
     def _apply_battle_casualties_simple(self, battle, winner, player_armies, player_compositions, territory, player_effective_strengths=None):
         """
         Apply casualties using simple system (no Keep bonus).
@@ -1870,8 +2126,10 @@ class MilitaryMixin:
         casualties = winner_count - surviving_armies
 
         # Apply casualties to winner's army using priority system
-        if winner == battle.original_owner:
-            # Winner is defender - check if there are allied defenders
+        winner_side = self._battle_side(battle, winner)
+        if battle.original_owner in winner_side:
+            # The defending side won - the owner, and any allies defending with it (their
+            # team's battle key can be an ally: the lowest player index of the team)
             # Get enemy composition for priority calculation
             enemy_comp = {}
             for p in player_armies:
@@ -1880,14 +2138,14 @@ class MilitaryMixin:
                     for ut, uc in comp.items():
                         enemy_comp[ut] = enemy_comp.get(ut, 0) + uc
 
-            # Check if there are allied garrisons defending this territory
-            has_allied_defenders = (hasattr(battle, 'allied_defenders') and
-                                   len(battle.allied_defenders) > 0)
+            # Allies defending with the owner (battle.allied_defenders also lists an
+            # ATTACKING team's members in simultaneous mode, so it cannot tell)
+            has_allied_defenders = len(winner_side) > 1
 
             if has_allied_defenders:
                 # Use multi-garrison casualty system (allies die first, owner dies last)
                 casualties_by_player = self.apply_multi_garrison_casualties(
-                    territory, casualties, enemy_comp, battle.original_owner
+                    territory, casualties, enemy_comp, battle.original_owner, players=winner_side
                 )
 
                 # Log casualties by player
@@ -1916,19 +2174,23 @@ class MilitaryMixin:
 
         return surviving_armies
 
-    def _handle_battle_tie_with_dice(self, battle, players_with_max, player_armies, territory):
+    def _handle_battle_tie_with_dice(self, battle, players_with_max, player_armies, territory,
+                                     rng=None):
         """
         Handle battle tie using dice roll system.
-        
+
         Phase 6: Extracted from resolve_battle() for maintainability.
+
+        Args:
+            rng: Random source for the dice (see resolve_battle); None = module random
         """
-        import random
-        
+        rng = rng or random
+
         # Roll dice only for tied players
         results = {}
         for player in players_with_max:
             army_count = battle.armies[player]
-            roll = sum(random.randint(1, 6) for _ in range(army_count))
+            roll = sum(rng.randint(1, 6) for _ in range(army_count))
             results[player] = roll
             player_label = "Neutral" if player == -1 else f"Player {player + 1}"
             self.add_message(f"  {player_label} ({army_count} armies) rolls: {roll}")
@@ -1981,12 +2243,24 @@ class MilitaryMixin:
             
             return winner, surviving_armies
 
-    def _update_battle_results(self, battle, winner, surviving_armies, player_compositions, territory):
+    def _update_battle_results(self, battle, winner, surviving_armies, player_compositions, territory,
+                               rng=None):
         """
         Update game state with battle results.
-        
+
         Phase 6: Extracted from resolve_battle() for maintainability.
+
+        `winner` is a battle.armies key - a team's key is its lowest player index - or,
+        from a Keep battle the defenders held, the owner. The result goes to the players
+        behind the key (team battles, see _battle_sides): a defending team that holds keeps
+        the territory with its owner, and every winning player keeps their own survivors
+        (_side_survivors). Afterwards battle.winner is who holds the territory.
+
+        Args:
+            rng: Random source for the Safe Haven retreat pick (see resolve_battle);
+                None = module random
         """
+        rng = rng or random
         if winner == -1 and surviving_armies == 0:
             # Perfect tie / mutual elimination with no surviving armies.
             # Dice-tie path already clears garrisons before returning (-1, 0), but
@@ -2000,11 +2274,35 @@ class MilitaryMixin:
             battle.winner = -1
             return
         # Note: winner == -1 with surviving_armies > 0 means neutral garrison won — continue with normal cleanup
-        
+
+        # The winning side and who holds the territory now. A defending team that held
+        # keeps it with its owner - its key can be an ally with a lower player index, and
+        # the territory (with the owner's buildings and units) used to go to that ally.
+        sides = self._battle_sides(battle)
+        winner_key = self._battle_key(battle, winner)
+        side = sides.get(winner_key, [winner])
+        defensive_win = battle.original_owner in side
+        new_owner = battle.original_owner if defensive_win else winner_key
+        units_before = getattr(battle, '_units_before', None) or {}
+        compositions_before = getattr(battle, '_compositions_before', None) or {}
+
+        # Several attackers at a Keep: those beaten in the attackers' own fight first
+        # (_fight_for_the_keep) were not killed by a defender that then held the Keep -
+        # no XP or kill credit to it for them (the attacker that beat them gets the credit)
+        prefight_winner = getattr(battle, 'keep_prefight_winner', None)
+        not_fought = set()
+        if prefight_winner != winner_key:
+            not_fought = set(getattr(battle, 'keep_prefight_losers', None) or ())
+        # The armies the winner actually fought - an attacker that won the attackers' fight
+        # and then lost at the Keep reached it with its survivors only
+        fought = {p: c for p, c in battle.armies.items() if p != winner_key and p not in not_fought}
+        if not_fought and prefight_winner in fought:
+            fought[prefight_winner] = getattr(battle, 'keep_prefight_survivors', fought[prefight_winner])
+
         # Veterancy: Check if territory's Keep has a Hero BEFORE buildings are destroyed
         # (destroy_buildings kills heroes, so we must check first)
         battle._keep_had_hero = False
-        if battle.original_owner != winner:
+        if not defensive_win:
             buildings = self.buildings.get(territory, {})
             for plot_idx, btype in buildings.items():
                 if btype == 'Keep':
@@ -2014,101 +2312,108 @@ class MilitaryMixin:
 
         # Destroy buildings if territory changes hands
         # Champion of the People: Pass winner as new_owner to preserve Farms/Mines
-        if battle.original_owner != winner:
-            self.destroy_buildings(territory, battle.original_owner, new_owner=winner)
+        if not defensive_win:
+            self.destroy_buildings(territory, battle.original_owner, new_owner=new_owner)
 
-        # Safe Haven & Scavenge the Fallen: Check abilities for losing players
+        # Safe Haven & Scavenge the Fallen: Check abilities for losing players - every
+        # player of every losing side
         # This needs to happen BEFORE clearing old units
-        for loser_player, loser_army_count in battle.armies.items():
-            if loser_player == winner:
+        for loser_key, loser_army_count in battle.armies.items():
+            if loser_key == winner_key:
                 continue  # Skip winner
-            if loser_player == -1:
-                continue  # Neutral armies have no heroes, gold, or abilities
+            members = sides.get(loser_key, [loser_key])
+            for loser_player in members:
+                if loser_player == -1:
+                    continue  # Neutral armies have no heroes, gold, or abilities
+                # A lone loser is its battle entry; a team member, its own units
+                if len(members) == 1:
+                    had_army = loser_army_count
+                    loser_comp = player_compositions.get(loser_key, {})
+                else:
+                    had_army = units_before.get(loser_player, 0)
+                    loser_comp = compositions_before.get(loser_player, {})
 
-            # Only trigger if loser had armies (actual battle, not empty territory capture)
-            if loser_army_count > 0:
-                # Scavenge the Fallen: Grant gold to losing player with Darius Brennhen
-                if self.player_has_darius_brennhen(loser_player):
-                    scavenge_gold = 30
-                    self.player_gold[loser_player] += scavenge_gold
-                    self.add_message(f"  Scavenge the Fallen: Player {loser_player + 1} gains {scavenge_gold} Gold from the battle!")
+                # Only trigger if loser had armies (actual battle, not empty territory capture)
+                if had_army > 0:
+                    # Scavenge the Fallen: Grant gold to losing player with Darius Brennhen
+                    if self.player_has_darius_brennhen(loser_player):
+                        scavenge_gold = 30
+                        self.player_gold[loser_player] += scavenge_gold
+                        self.add_message(f"  Scavenge the Fallen: Player {loser_player + 1} gains {scavenge_gold} Gold from the battle!")
 
-            # Safe Haven: Check if loser can retreat a unit to hero's Keep
-            safe_haven_territories = self.get_safe_haven_territories(loser_player)
-            if territory in safe_haven_territories:
-                # Get loser's composition
-                loser_comp = player_compositions.get(loser_player, {})
-                if loser_comp:
-                    # Get hero's Keep territory (Brennhen or Regnus Aevencourne)
-                    if 'Darius Brennhen' in self.heroes[loser_player]:
-                        brennhen_data = self.heroes[loser_player]['Darius Brennhen']
-                    else:
-                        brennhen_data = self.heroes[loser_player]['Regnus Aevencourne']
-                    keep_territory = brennhen_data['keep_territory']
+                # Safe Haven: Check if loser can retreat a unit to hero's Keep
+                safe_haven_territories = self.get_safe_haven_territories(loser_player)
+                if territory in safe_haven_territories:
+                    if loser_comp:
+                        # Get hero's Keep territory (Brennhen or Regnus Aevencourne)
+                        if 'Darius Brennhen' in self.heroes[loser_player]:
+                            brennhen_data = self.heroes[loser_player]['Darius Brennhen']
+                        else:
+                            brennhen_data = self.heroes[loser_player]['Regnus Aevencourne']
+                        keep_territory = brennhen_data['keep_territory']
 
-                    # Check if Keep territory has room for one more unit
-                    # Legacy counter fix: use get_territory_total_armies for allied garrisons
-                    current_keep_armies = self.get_territory_total_armies(keep_territory)
-                    if current_keep_armies < self.MAX_ARMIES_PER_TERRITORY:
-                        # Pick a random unit type from loser's composition
-                        import random
-                        available_types = list(loser_comp.keys())
-                        retreating_unit_type = random.choice(available_types)
+                        # Check if Keep territory has room for one more unit
+                        # Legacy counter fix: use get_territory_total_armies for allied garrisons
+                        current_keep_armies = self.get_territory_total_armies(keep_territory)
+                        if current_keep_armies < self.MAX_ARMIES_PER_TERRITORY:
+                            # Pick a random unit type from loser's composition
+                            available_types = list(loser_comp.keys())
+                            retreating_unit_type = rng.choice(available_types)
 
-                        # Add retreating unit to Keep territory
-                        if keep_territory not in self.army_units:
-                            self.army_units[keep_territory] = []
+                            # Add retreating unit to Keep territory
+                            if keep_territory not in self.army_units:
+                                self.army_units[keep_territory] = []
 
-                        # Find next available ID
-                        existing_ids = [u['id'] for u in self.army_units[keep_territory]]
-                        next_id = 0
-                        while next_id in existing_ids:
-                            next_id += 1
+                            # Find next available ID
+                            existing_ids = [u['id'] for u in self.army_units[keep_territory]]
+                            next_id = 0
+                            while next_id in existing_ids:
+                                next_id += 1
 
-                        # Create retreating unit (exhausted from battle, loses XP)
-                        # Phase 2E: Use _make_unit() factory for consistent unit dict creation
-                        self.army_units[keep_territory].append(self._make_unit(retreating_unit_type, next_id))
+                            # Create retreating unit (exhausted from battle, loses XP)
+                            # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+                            self.army_units[keep_territory].append(self._make_unit(retreating_unit_type, next_id))
 
-                        # M4 fix: Update garrison system alongside legacy counters
-                        self.add_garrison(
-                            keep_territory, loser_player,
-                            unmoved=0, moved=1,
-                            units=[self._make_unit(retreating_unit_type, next_id)]
-                        )
-                        # Update legacy army counters for Keep territory
-                        self.armies_moved[keep_territory] += 1
-                        self.armies[keep_territory] = self.armies_moved[keep_territory] + self.armies_unmoved[keep_territory]
+                            # M4 fix: Update garrison system alongside legacy counters
+                            self.add_garrison(
+                                keep_territory, loser_player,
+                                unmoved=0, moved=1,
+                                units=[self._make_unit(retreating_unit_type, next_id)]
+                            )
+                            # Update legacy army counters for Keep territory
+                            self.armies_moved[keep_territory] += 1
+                            self.armies[keep_territory] = self.armies_moved[keep_territory] + self.armies_unmoved[keep_territory]
 
-                        # Log the retreat
-                        self.add_message(f"  Safe Haven: 1 {retreating_unit_type} from Player {loser_player + 1} retreats to {keep_territory}!")
+                            # Log the retreat
+                            self.add_message(f"  Safe Haven: 1 {retreating_unit_type} from Player {loser_player + 1} retreats to {keep_territory}!")
 
         # Set territory ownership
-        self.territory_owners[territory] = winner
+        self.territory_owners[territory] = new_owner
         self._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
         self.invalidate_income_cache()  # FPS OPT: Ownership affects income
         self.invalidate_army_count_cache()  # FPS OPT: Army counts change on ownership change
         self.invalidate_territorial_bonus_cache()  # Ownership changed — refresh bonuses
 
         # Tutorial hook: notify territory conquered (only if ownership changed)
-        if self.tutorial_mission and battle.original_owner != winner:
+        if self.tutorial_mission and not defensive_win:
             self.tutorial_mission.notify_event(
                 'territory_conquered',
                 territory=territory,
-                new_owner=winner
+                new_owner=new_owner
             )
 
         # Player Level: award XP for conquering enemy territory with a battle
-        if battle.original_owner != winner:
-            self._track_stat(winner, 'xp_earned', 8)
+        if not defensive_win and new_owner >= 0:
+            self._track_stat(new_owner, 'xp_earned', 8)
 
         # Capital Assault: Check if conquered territory is enemy's capital
         # Note: Allies cannot eliminate each other - only enemies can capture capitals
         if self.victory_condition == "Capital Assault":
             for player_index, capital in self.player_starting_territories.items():
                 # Check: capital matches, not self, and not an ally (enemies only)
-                if capital == territory and player_index != winner and not self.are_allies(winner, player_index):
+                if capital == territory and player_index != new_owner and not self.are_allies(new_owner, player_index):
                     # Capital conquered - eliminate the player
-                    logger.info(f"[CAPITAL ASSAULT] Player {winner + 1} conquered Player {player_index + 1}'s capital!")
+                    logger.info(f"[CAPITAL ASSAULT] Player {new_owner + 1} conquered Player {player_index + 1}'s capital!")
                     self.eliminate_player(player_index)
                     # R9: Note: check_victory() is called at end of _update_battle_results()
 
@@ -2118,61 +2423,58 @@ class MilitaryMixin:
             self.add_message(f"  Army overflow: {excess} excess armies disbanded (territory limit: {self.MAX_ARMIES_PER_TERRITORY})")
             surviving_armies = self.MAX_ARMIES_PER_TERRITORY
 
-        # Veterancy-aware survivor preservation: use actual surviving unit objects
-        # from the garrison after casualties were applied (preserves XP/level).
-        # The casualty system already removed dead units from army_units/garrisons.
-        survivor_units = []
+        # Veterancy-aware survivor preservation: the actual surviving unit objects
+        # (preserves XP/level), each winning player keeping their own (_side_survivors)
+        survivors_by_player = {}
         if surviving_armies > 0:
-            # Try to get actual surviving units from winner's garrison (preserves XP)
-            winner_garrison = self.territory_garrisons.get(territory, {}).get(winner)
-            if winner_garrison and winner_garrison.get('units'):
-                # Surviving units are whatever remains after apply_casualties_with_priority
-                actual_survivors = list(winner_garrison['units'])
-                # Sort by level DESC so highest-level units are kept if we need to trim
-                actual_survivors.sort(key=lambda u: u.get('level', 0), reverse=True)
-                survivor_units = actual_survivors[:surviving_armies]
-            elif territory in self.army_units and self.army_units[territory]:
-                # Fallback to army_units (legacy path)
-                actual_survivors = list(self.army_units[territory])
-                actual_survivors.sort(key=lambda u: u.get('level', 0), reverse=True)
-                survivor_units = actual_survivors[:surviving_armies]
+            survivors_by_player = self._side_survivors(battle, territory, side, surviving_armies,
+                                                       defending=defensive_win)
+            if not any(survivors_by_player.values()):
+                survivor_units = []
+                if len(side) == 1 and territory in self.army_units and self.army_units[territory]:
+                    # Fallback to army_units (legacy path)
+                    actual_survivors = list(self.army_units[territory])
+                    actual_survivors.sort(key=lambda u: u.get('level', 0), reverse=True)
+                    survivor_units = actual_survivors[:surviving_armies]
 
-            # If we couldn't find actual units (edge case), create from composition
-            if not survivor_units:
-                winner_label = "Neutral" if winner == -1 else f"Player {winner + 1}"
-                logger.warning(f"[UNIT_TYPE_DIAG] _update_battle_results fallback: no survivor units found "
-                               f"for {winner_label} at {territory} ({surviving_armies} should survive). "
-                               f"Reconstructing from composition.")
-                winner_comp = player_compositions.get(winner, {})
-                unit_id = 0
-                if winner_comp:
-                    total_winner_armies = sum(winner_comp.values())
-                    for unit_type, count in winner_comp.items():
-                        proportion = count / total_winner_armies if total_winner_armies > 0 else 0
-                        allocated = max(1, int(surviving_armies * proportion)) if proportion > 0 else 0
-                        for _ in range(min(allocated, count)):
-                            if unit_id >= surviving_armies:
-                                break
-                            # Phase 2E: Use _make_unit() factory for consistent unit dict creation
-                            survivor_units.append(self._make_unit(unit_type, unit_id))
-                            unit_id += 1
-                # Fill remaining with Swordsmen if needed
-                if len(survivor_units) < surviving_armies:
-                    logger.warning(f"[UNIT_TYPE_DIAG] _update_battle_results: filling {surviving_armies - len(survivor_units)} "
-                                   f"remaining survivor slots with default Swordsmen at {territory}")
-                while len(survivor_units) < surviving_armies:
-                    # Phase 2E: Use _make_unit() factory for consistent unit dict creation
-                    survivor_units.append(self._make_unit('Swordsman', len(survivor_units)))
+                # If we couldn't find actual units (edge case), create from composition
+                if not survivor_units:
+                    winner_label = "Neutral" if winner_key == -1 else f"Player {winner_key + 1}"
+                    logger.warning(f"[UNIT_TYPE_DIAG] _update_battle_results fallback: no survivor units found "
+                                   f"for {winner_label} at {territory} ({surviving_armies} should survive). "
+                                   f"Reconstructing from composition.")
+                    winner_comp = player_compositions.get(winner_key, {})
+                    unit_id = 0
+                    if winner_comp:
+                        total_winner_armies = sum(winner_comp.values())
+                        for unit_type, count in winner_comp.items():
+                            proportion = count / total_winner_armies if total_winner_armies > 0 else 0
+                            allocated = max(1, int(surviving_armies * proportion)) if proportion > 0 else 0
+                            for _ in range(min(allocated, count)):
+                                if unit_id >= surviving_armies:
+                                    break
+                                # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+                                survivor_units.append(self._make_unit(unit_type, unit_id))
+                                unit_id += 1
+                    # Fill remaining with Swordsmen if needed
+                    if len(survivor_units) < surviving_armies:
+                        logger.warning(f"[UNIT_TYPE_DIAG] _update_battle_results: filling {surviving_armies - len(survivor_units)} "
+                                       f"remaining survivor slots with default Swordsmen at {territory}")
+                    while len(survivor_units) < surviving_armies:
+                        # Phase 2E: Use _make_unit() factory for consistent unit dict creation
+                        survivor_units.append(self._make_unit('Swordsman', len(survivor_units)))
+                survivors_by_player = {new_owner if new_owner in side else winner_key: survivor_units}
 
-            # Mark all survivors as 'moved' (just fought) and re-index IDs
-            for idx, unit in enumerate(survivor_units):
-                unit['id'] = idx
-                unit['status'] = 'moved'
-                unit['order'] = None
+            # Mark all survivors as 'moved' (just fought) and re-index IDs (per garrison)
+            for units in survivors_by_player.values():
+                for idx, unit in enumerate(units):
+                    unit['id'] = idx
+                    unit['status'] = 'moved'
+                    unit['order'] = None
 
             # --- Award battle XP to winning survivors ---
             # Only winners gain XP (confirmed). Calculate total XP from killed enemies.
-            total_enemies_killed = sum(c for p, c in battle.armies.items() if p != winner)
+            total_enemies_killed = sum(fought.values())
             if total_enemies_killed > 0:
                 # Calculate XP: 10 + enemy_level per enemy killed
                 # We need to estimate enemy levels from garrison data before they were cleared
@@ -2181,49 +2483,86 @@ class MilitaryMixin:
                 # Add bonus XP for high-level enemies killed
                 # Check if battle has stored enemy unit level data
                 if hasattr(battle, 'enemy_level_xp_bonus'):
-                    total_battle_xp += battle.enemy_level_xp_bonus.get(winner, 0)
+                    total_battle_xp += battle.enemy_level_xp_bonus.get(winner_key, 0)
                 # Hero Keep destruction bonus: +100 XP flat when destroying a Keep with a Hero
-                if getattr(battle, '_keep_had_hero', False) and battle.original_owner != winner:
+                if getattr(battle, '_keep_had_hero', False) and not defensive_win:
                     total_battle_xp += self.HERO_KEEP_DESTROY_XP
                     self.add_message(f"  Veterancy: +{self.HERO_KEEP_DESTROY_XP} XP bonus for destroying Hero Keep!")
-                for unit in survivor_units:
-                    self.award_unit_xp(unit, total_battle_xp)
+                for units in survivors_by_player.values():
+                    for unit in units:
+                        self.award_unit_xp(unit, total_battle_xp)
 
-        # IMPORTANT: Clear ALL garrisons in the territory (removes losing defenders)
-        # Then set only the winner's garrison
+        # IMPORTANT: Clear ALL garrisons in the territory (removes the losing sides)
+        # Then set each winning player's own survivors
         self.territory_garrisons[territory] = {}
 
         # Set garrison as source of truth (just fought, can't move)
-        self.set_garrison_armies(territory, winner, unmoved=0, moved=surviving_armies, units=survivor_units)
+        placed = False
+        for player, units in survivors_by_player.items():
+            if units:
+                self.set_garrison_armies(territory, player, unmoved=0, moved=len(units), units=units)
+                placed = True
+        if not placed:
+            self.set_garrison_armies(territory, new_owner, unmoved=0, moved=0, units=[])
 
         battle.resolved = True
-        battle.winner = winner
+        battle.winner = new_owner
         battle.surviving_armies = surviving_armies
 
         # Game logger: record battle resolution event
         if self.game_logger:
-            self.game_logger.record_battle(territory, battle.armies, winner, self.turn_number)
+            self.game_logger.record_battle(territory, battle.armies, winner_key, self.turn_number)
 
-        # Track units_killed stats for recap screen
-        if winner >= 0:
-            # Winner killed all loser armies
-            total_losers_killed = sum(c for p, c in battle.armies.items() if p != winner)
-            self._track_stat(winner, 'units_killed', total_losers_killed)
+        # Track units_killed stats for recap screen - credited to the players behind each
+        # side, by their own units (_credit_side)
+        if not_fought and prefight_winner is not None and prefight_winner >= 0:
+            # The attackers' own fight before the Keep: its winner killed the others, and
+            # they killed the units it lost there (proportional credit)
+            beaten = {p: battle.armies.get(p, 0) for p in not_fought}
+            self._credit_side(battle, sides, prefight_winner, 'units_killed', sum(beaten.values()))
+            prefight_losses = getattr(battle, 'keep_prefight_losses', 0)
+            total_beaten = sum(beaten.values())
+            if prefight_losses > 0 and total_beaten > 0:
+                for player, count in beaten.items():
+                    self._credit_side(battle, sides, player, 'units_killed',
+                                      round(prefight_losses * count / total_beaten))
+        if winner_key is not None and winner_key >= 0:
+            # Winner killed all loser armies (those it fought)
+            total_losers_killed = sum(fought.values())
+            self._credit_side(battle, sides, winner_key, 'units_killed', total_losers_killed)
             # Losers collectively killed winner's casualties (proportional credit)
-            winner_original = battle.armies.get(winner, 0)
+            winner_original = battle.armies.get(winner_key, 0)
             winner_casualties = winner_original - surviving_armies
             if winner_casualties > 0:
-                losers = [(p, c) for p, c in battle.armies.items() if p != winner and c > 0]
+                losers = [(p, c) for p, c in fought.items() if c > 0]
                 total_loser_armies = sum(c for _, c in losers)
                 for loser_p, loser_c in losers:
                     credit = round(winner_casualties * loser_c / total_loser_armies) if total_loser_armies > 0 else 0
-                    self._track_stat(loser_p, 'units_killed', max(0, credit))
+                    self._credit_side(battle, sides, loser_p, 'units_killed', max(0, credit))
 
         # IMPORTANT: Cleanup any empty garrisons (belt & suspenders)
         self.cleanup_empty_garrisons(territory)
 
         # Check for victory
         self.check_victory()
+
+    def _credit_side(self, battle, sides, key, stat, amount):
+        """
+        Credit `amount` of `stat` to the players fighting under battle key `key`, in
+        proportion to their own units at the start of the battle (a lone player: all of
+        it, as before). Neutral (-1) is never credited.
+        """
+        if amount <= 0 or key is None or key < 0:
+            return
+        members = [p for p in sides.get(key, [key]) if p is not None and p >= 0]
+        units_before = getattr(battle, '_units_before', None) or {}
+        weights = {p: units_before.get(p, 0) for p in members}
+        if len(members) <= 1 or sum(weights.values()) <= 0:
+            self._track_stat(key, stat, amount)
+            return
+        for player, share in self._split_count(amount, weights, cap=False).items():
+            if share > 0:
+                self._track_stat(player, stat, share)
 
     # ------------------------------------------------------------------
     # Battle Reports
@@ -2337,12 +2676,18 @@ class MilitaryMixin:
         held. Owner-only matches the scope of the feature ("your territory was attacked").
         """
         defender = getattr(battle, 'original_owner', None)
-        # Attacker = first participant that is not the territory's owner.
-        attacker = None
-        for player in battle.armies:
-            if player != defender:
-                attacker = player
-                break
+        # Attacker = the one that assaulted the Keep when several attackers fought each
+        # other first (_fight_for_the_keep); otherwise the first participant that is not
+        # the territory's owner.
+        attacker = getattr(battle, 'keep_prefight_winner', None)
+        if attacker is None:
+            # Not the owner's own side: an ally defending with a lower player index is the
+            # defending team's key, and was taken for the attacker (no report)
+            owner_side = self._battle_side(battle, defender)
+            for player in battle.armies:
+                if player not in owner_side:
+                    attacker = player
+                    break
 
         if not self._should_report_to(
                 defender, attacker,
@@ -2369,7 +2714,10 @@ class MilitaryMixin:
         # Keep-only defence N is the Keep bonus itself. That would report units the
         # defender never had. army_compositions is only ever populated from a real
         # garrison, so an absent entry correctly means "no units, the Keep fought alone".
-        original_comp = (getattr(battle, 'army_compositions', None) or {}).get(defender) or {}
+        # The owner's own units before the fight (resolve_battle's snapshot): in a team
+        # battle army_compositions holds the TEAM, keyed by its lowest player index
+        original_comp = ((getattr(battle, '_compositions_before', None) or {}).get(defender)
+                         or (getattr(battle, 'army_compositions', None) or {}).get(defender) or {})
         unit_breakdown = {}
         total_original = 0
         total_survived = 0
@@ -2420,9 +2768,31 @@ class MilitaryMixin:
             structures_remaining=remaining, unit_breakdown={},
             attacker_lost=0, attacker_survivors=0))
 
-    def resolve_battle(self, battle_index):
+    def resolve_battle_shared(self, battle_index):
+        """
+        Resolve a battle as the turn owner - what the sequential AI calls. Sequential
+        multiplayer (the host plays the AI's turns): main.py resolves it with a seed and
+        sends the result (BATTLE_RESOLVE), so every other PC replays the same battle - the
+        AI used to resolve it with its own dice and tell nobody. Otherwise: resolve_battle().
+
+        Returns:
+            bool: True if the battle was resolved
+        """
+        resolver = getattr(self, 'shared_battle_resolver', None)
+        if resolver is not None:
+            return resolver(battle_index)
+        return self.resolve_battle(battle_index)
+
+    def resolve_battle(self, battle_index, rng=None):
         """
         Resolve a battle using deterministic combat with unit type effectiveness.
+
+        Multiplayer: pass rng=random.Random(seed). The only random parts of a battle
+        (tie dice, the Safe Haven retreat pick) then come from that seed, so another PC
+        holding the same pre-battle state replays the battle exactly - with every side
+        effect (buildings, heroes, ability gold, stats, reports) - from the resolver's
+        seed (main.py BATTLE_RESOLVE). rng=None uses the module-level random, exactly as
+        before (single-player).
         
         Phase 6: Refactored into sub-methods for maintainability.
         Main method now orchestrates battle resolution:
@@ -2464,7 +2834,8 @@ class MilitaryMixin:
         
         Args:
             battle_index: Index into self.pending_battles list
-        
+            rng: Random source (random.Random) for the battle's random parts, or None
+
         Returns:
             bool: True if battle resolved successfully, False if invalid/already resolved
         """
@@ -2497,6 +2868,17 @@ class MilitaryMixin:
         self.last_battle_reports = []
         # Same for the heroes this battle kills (copied into its Battle Report)
         self._battle_hero_deaths = []
+        # Each player's own units here before the fight - a team side's members (kill
+        # credit, the owner's Battle Report): battle.armies merges a team under its key
+        battle._units_before = {}
+        battle._compositions_before = {}
+        for player, garrison in self.territory_garrisons.get(territory, {}).items():
+            composition = {}
+            for unit in garrison.get('units', []) or []:
+                unit_type = unit.get('type', 'Swordsman')
+                composition[unit_type] = composition.get(unit_type, 0) + 1
+            battle._units_before[player] = sum(composition.values())
+            battle._compositions_before[player] = composition
         
         # Get army counts and compositions
         player_armies = list(battle.armies.items())
@@ -2523,12 +2905,14 @@ class MilitaryMixin:
             # Step 2: Run two-phase Keep battle (determines winner internally)
             original_garrison = battle.original_garrison if hasattr(battle, 'original_garrison') else 0
             winner, surviving_armies = self._resolve_keep_battle(
-                battle, player_armies, player_compositions, territory, defender, original_garrison
+                battle, player_armies, player_compositions, territory, defender, original_garrison,
+                rng=rng
             )
             
             # Step 3: Update game state
-            self._update_battle_results(battle, winner, surviving_armies, player_compositions, territory)
-        
+            self._update_battle_results(battle, winner, surviving_armies, player_compositions, territory,
+                                        rng=rng)
+
         else:
             # NORMAL BATTLE: Use effective strength to determine winner
             
@@ -2546,17 +2930,19 @@ class MilitaryMixin:
                 )
                 
                 # Step 4: Update game state
-                self._update_battle_results(battle, winner, surviving_armies, player_compositions, territory)
-            
+                self._update_battle_results(battle, winner, surviving_armies, player_compositions,
+                                            territory, rng=rng)
+
             else:
                 # Tie - use dice roll system
                 self.add_message(f"  TIE detected! Rolling dice to determine winner...")
                 winner, surviving_armies = self._handle_battle_tie_with_dice(
-                    battle, players_with_max, player_armies, territory
+                    battle, players_with_max, player_armies, territory, rng=rng
                 )
-                
+
                 # Update game state
-                self._update_battle_results(battle, winner, surviving_armies, player_compositions, territory)
+                self._update_battle_results(battle, winner, surviving_armies, player_compositions,
+                                            territory, rng=rng)
         
         # Tutorial hook: notify battle resolved (only if player 0 won)
         if self.tutorial_mission and winner == 0:
@@ -2569,7 +2955,9 @@ class MilitaryMixin:
         # surviving_armies and player_compositions are bound in ALL THREE branches above
         # (Keep battle, normal battle, dice tie), the garrison is final, and army-overflow
         # trimming has already run. It is the only single point covering every path.
-        self._capture_battle_reports(battle, winner, territory)
+        # battle.winner: who holds the territory now (a defending team that held: its
+        # owner, whose team's key in battle.armies can be an ally)
+        self._capture_battle_reports(battle, battle.winner if battle.resolved else winner, territory)
 
         # Cleanup
         self.pending_battles.pop(battle_index)
@@ -3201,8 +3589,9 @@ class MilitaryMixin:
                                     # This ally has a garrison in the territory (defending ally)
                                     battle.allied_defenders.append(player)
 
-                        # Track Keep/Fortress bonus (if team leader is the original owner)
-                        if team_leader == current_owner and has_keep:
+                        # Track Keep/Fortress bonus - on the owner's team, whose key can be an
+                        # ally with a lower player index (the Keep then did not count as one)
+                        if has_keep and player_to_team_leader.get(current_owner) == team_leader:
                             battle.keep_bonus = keep_bonus
                             battle.keep_bonus_player = team_leader
                             battle.original_garrison = current_garrison
@@ -3277,9 +3666,12 @@ class MilitaryMixin:
             self.add_message(f"{len(self.pending_battles)} battles detected! Resolve them to continue.")
             logger.info(f"[TURN_DEBUG] _process_arrivals: {len(self.pending_battles)} battles → turn_phase='battles'")
         else:
-            # No battles - animations complete, advance to next player immediately
+            # No battles - animations complete, advance to next player immediately.
+            # Sequential multiplayer: only the turn owner's PC advances; a PC replaying
+            # another player's moves waits for their TURN_END (it used to advance on its
+            # own, sometimes twice for one turn)
             logger.info(f"[TURN_DEBUG] _process_arrivals: no battles, turn_phase={self.turn_phase}")
-            if self.turn_phase == 'execution':
+            if self.turn_phase == 'execution' and self.may_advance_turn():
                 self._advance_to_next_player()
 
     # R3: Removed legacy can_move_army() and move_army() — 0 external callers.

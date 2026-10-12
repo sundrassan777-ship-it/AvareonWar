@@ -11,10 +11,14 @@ to after menu/setup. Replaces the old pattern of loading everything at startup.
 
 Single-player: after loading completes, shows "Click any button to start".
 Multiplayer: exchanges GAME_READY handshake so both players start together.
+While waiting, Escape leaves the game (run() returns 'cancelled'); a client that loses
+the host shows why and returns 'disconnected'. Messages that arrive while waiting and
+are not GAME_READY are handed to the game afterwards instead of being dropped.
 """
 
 import sys
 import random
+import time
 import pygame
 
 from network_config import MessageType
@@ -149,6 +153,16 @@ class LoadingScreen:
         self.local_ready = False       # This player clicked "start"
         self.all_players_ready = False  # All remote players have sent GAME_READY
         self.remote_ready_players = set()  # Player indices that sent GAME_READY
+        # Messages taken off the queue while waiting that are not GAME_READY (chat, a
+        # PLAYER_DISCONNECT, the host's first game messages, ...). Handed back to the
+        # game - front of the queue, original order - when loading ends; they used to
+        # be thrown away.
+        self._deferred_messages = []
+        # How run() ended: 'start', 'cancelled' (Escape) or 'disconnected' (lost host)
+        self.result = None
+        # Client lost the host while waiting: shown in place of the prompt until a key
+        self.failure_message = None
+        self._failure_shown_at = 0.0
         # Reuse the network connection's protocol to maintain correct sequence numbers.
         # A fresh protocol resets seq to 0, which the server's anti-replay check
         # (server.py _handle_received_message) rejects as duplicate since the lobby
@@ -158,17 +172,18 @@ class LoadingScreen:
         else:
             self.protocol = None
 
-        # Determine how many remote players we expect (for host readiness check)
-        self.expected_remote_count = 0
+        # Which remote players the host waits for (GAME_READY from each human client).
+        # A client that drops while loading is taken off (PLAYER_DISCONNECT) - the host
+        # used to wait for it forever, with no way out.
+        self.expected_remote_players = set()
         if self.is_host and network_connection:
-            # Host expects GAME_READY from each connected client
             # setup_config tells us num_players; host is player 0
             num_players = setup_config.get('num_players', 2)
             # Only count human players (non-AI) besides the host
             player_is_ai = setup_config.get('player_is_ai', [False] * num_players)
             for i in range(1, num_players):
                 if not player_is_ai[i]:
-                    self.expected_remote_count += 1
+                    self.expected_remote_players.add(i)
 
         # Clock for frame timing
         self.clock = pygame.time.Clock()
@@ -178,6 +193,11 @@ class LoadingScreen:
 
         # Select a random tip based on game mode (campaign mission vs custom)
         self._select_tip()
+
+    @property
+    def expected_remote_count(self):
+        """How many remote players the host still waits for (kept for older callers)."""
+        return len(self.expected_remote_players)
 
     def _load_screen_assets(self):
         """Load background image, logo and create fonts for the loading screen."""
@@ -316,7 +336,13 @@ class LoadingScreen:
         label_y = bar_y + bar_height + 15
         if self.loading_complete:
             # Replace task label with prompt based on readiness state
-            if not self.is_multiplayer:
+            hint = None
+            if self.failure_message:
+                # Multiplayer: lost the host while waiting
+                prompt = self.failure_message
+                color = (230, 110, 100)
+                hint = "Press any key to return to the menu"
+            elif not self.is_multiplayer:
                 # Single-player: just click to start
                 prompt = "Click any key to continue"
                 color = (220, 200, 120)
@@ -324,13 +350,19 @@ class LoadingScreen:
                 # Multiplayer: local player hasn't clicked yet
                 prompt = "Click any key when ready"
                 color = (220, 200, 120)
+                hint = "Esc to leave the game"
             else:
                 # Multiplayer: local player clicked, waiting for others
                 prompt = "Waiting for other players..."
                 color = (180, 160, 100)
+                hint = "Esc to leave the game"
             prompt_surface = self.font_large.render(prompt, True, color)
             prompt_rect = prompt_surface.get_rect(centerx=sw // 2, top=label_y)
             self.screen.blit(prompt_surface, prompt_rect)
+            if hint:
+                hint_surface = self.font_small.render(hint, True, (170, 160, 140))
+                hint_rect = hint_surface.get_rect(centerx=sw // 2, top=prompt_rect.bottom + 6)
+                self.screen.blit(hint_surface, hint_rect)
         elif self.current_label:
             # Show current task label while still loading
             label_surface = self.font_small.render(self.current_label, True, (180, 180, 180))
@@ -341,7 +373,13 @@ class LoadingScreen:
         pygame.display.flip()
 
     def run(self):
-        """Execute all tasks with progress bar, then wait for start signal."""
+        """Execute all tasks with progress bar, then wait for start signal.
+
+        Returns:
+            'start' when the game should start. Multiplayer can also end with
+            'cancelled' (Escape while waiting) or 'disconnected' (the client lost the
+            host) - the caller then closes the connection and returns to the menu.
+        """
         tasks = self._build_task_list()
         total_tasks = len(tasks)
 
@@ -374,35 +412,90 @@ class LoadingScreen:
 
         # Phase 2: Wait for player input (and multiplayer readiness)
         # Single-player: any click/keypress starts the game
-        # Multiplayer: click sends GAME_READY, game auto-starts when all players ready
-        waiting = True
-        while waiting:
+        # Multiplayer: click sends GAME_READY, game auto-starts when all players ready;
+        # Escape leaves instead
+        while self.result is None:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     pygame.quit()
                     sys.exit()
-                elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
-                    if not self.is_multiplayer:
-                        # Single-player: start immediately on click/key
-                        waiting = False
-                    elif not self.local_ready:
-                        # Multiplayer: first click marks local player as ready
-                        self.local_ready = True
-                        self._send_game_ready()
-                        # If all remote players already ready, start immediately
-                        if self.all_players_ready:
-                            waiting = False
+                self._handle_wait_event(event)
+                if self.result is not None:
+                    break
 
-            # Poll for multiplayer readiness messages
-            if self.is_multiplayer and not self.all_players_ready:
-                self._poll_network_ready()
-
-            # Auto-start when all players (including local) are ready
-            if self.is_multiplayer and self.local_ready and self.all_players_ready:
-                waiting = False
+            if self.result is None:
+                self._update_wait_state()
 
             self._draw()
             self.clock.tick(menu_frame_cap(30))
+
+        if self.result == 'start':
+            # Whatever arrived while we waited belongs to the game
+            self._hand_over_deferred_messages()
+        return self.result
+
+    def _handle_wait_event(self, event):
+        """One input event while waiting to start (sets self.result when finished)."""
+        if event.type not in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+            return
+        if self.failure_message is not None:
+            # Lost the host: any key / click returns to the menu
+            self.result = 'disconnected'
+            return
+        if not self.is_multiplayer:
+            # Single-player: start immediately on click/key
+            self.result = 'start'
+            return
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            # Leave instead of waiting - e.g. a player who never readies up. The caller
+            # closes the connection; the others see this player disconnect.
+            logger.info("Left the multiplayer game from the loading screen")
+            self.result = 'cancelled'
+            return
+        if not self.local_ready:
+            # Multiplayer: first click marks local player as ready
+            self.local_ready = True
+            self._send_game_ready()
+            # If all remote players already ready, start immediately
+            if self.all_players_ready:
+                self.result = 'start'
+
+    def _update_wait_state(self):
+        """Per-frame multiplayer checks while waiting: lost host, readiness messages."""
+        if not self.is_multiplayer:
+            return
+        if self.failure_message is None and not self.is_host and \
+                getattr(self.network_connection, 'disconnected', False):
+            # The host left or the connection died: say so instead of "Waiting for
+            # other players..." forever
+            reason = getattr(self.network_connection, 'disconnect_reason', '')
+            self.failure_message = "Lost connection to the host" + (f" ({reason})" if reason else "")
+            self._failure_shown_at = time.monotonic()
+            logger.warning(f"Loading screen: {self.failure_message}")
+        if self.failure_message is not None:
+            # Leave on a key press, or by itself after a while
+            if time.monotonic() - self._failure_shown_at > 10.0:
+                self.result = 'disconnected'
+            return
+
+        # Poll for multiplayer readiness messages
+        if not self.all_players_ready:
+            self._poll_network_ready()
+
+        # Auto-start when all players (including local) are ready
+        if self.local_ready and self.all_players_ready:
+            self.result = 'start'
+
+    def _remote_players_ready(self):
+        """Host: every client it waits for has sent GAME_READY (or has left)."""
+        return self.expected_remote_players <= self.remote_ready_players
+
+    def _confirm_all_ready(self, why):
+        """Host: everyone is ready - tell the clients (GAME_READY from player 0) and start."""
+        confirm = self.protocol.create_game_ready(0)
+        self.network_connection.broadcast_message(confirm)
+        self.all_players_ready = True
+        logger.info(f"All players ready ({why}) — game starting")
 
     def _send_game_ready(self):
         """Send GAME_READY to remote player(s) indicating loading is done."""
@@ -413,27 +506,25 @@ class LoadingScreen:
             # Host does NOT broadcast its own readiness — only broadcasts
             # confirmation when all remote players are also ready. This prevents
             # the client from misinterpreting "host is ready" as "all ready."
-            if len(self.remote_ready_players) >= self.expected_remote_count:
-                confirm = self.protocol.create_game_ready(0)
-                self.network_connection.broadcast_message(confirm)
-                self.all_players_ready = True
-                logger.info("All players ready at host click — game starting")
+            # (With no human clients at all the set is empty: start right away.)
+            if self._remote_players_ready():
+                self._confirm_all_ready("at host click")
         else:
             # Client sends to server (which forwards to host)
             self.network_connection.send_message(message)
 
         logger.info(f"Sent GAME_READY (player {player_index})")
 
-        # If host has no remote human players (all AI), skip waiting
-        if self.is_host and self.expected_remote_count == 0:
-            self.all_players_ready = True
-
     def _poll_network_ready(self):
-        """Non-blocking check for incoming GAME_READY messages."""
+        """Non-blocking check for incoming GAME_READY messages.
+
+        Anything else is kept for the game (see _deferred_messages). Reading stops at
+        the moment everyone is ready: what follows - possibly the host's first game
+        messages - must reach the game loop untouched.
+        """
         if not self.network_connection:
             return
 
-        # Drain the message queue looking for GAME_READY
         # PING/PONG is handled by network threads automatically, so we only
         # need to process game-level messages here
         max_msgs = 20  # Prevent infinite loop on queue flooding
@@ -456,17 +547,32 @@ class LoadingScreen:
                     # Check if all expected remote players AND the host are ready.
                     # Require local_ready so host only broadcasts confirmation
                     # when it has also clicked ready (not just when clients are ready).
-                    if self.local_ready and len(self.remote_ready_players) >= self.expected_remote_count:
+                    if self.local_ready and self._remote_players_ready():
                         # All clients loaded — broadcast GAME_READY back to confirm
-                        confirm = self.protocol.create_game_ready(0)
-                        self.network_connection.broadcast_message(confirm)
-                        self.all_players_ready = True
-                        logger.info("All players ready — game starting")
+                        self._confirm_all_ready("last client loaded")
                 else:
                     # Client: receiving GAME_READY from host means everyone is ready
                     self.all_players_ready = True
                     logger.info("Host confirmed all players ready — game starting")
             else:
-                # Non-GAME_READY messages during loading are unexpected but harmless;
-                # log them for debugging
-                logger.debug(f"Received unexpected message during loading: {msg_type}")
+                if msg_type == MessageType.PLAYER_DISCONNECT and self.is_host:
+                    # A client dropped before the game started: stop waiting for it
+                    # (the game still gets the message and hands its seat to the AI)
+                    left = msg.get('data', {}).get('player_index')
+                    if left in self.expected_remote_players:
+                        self.expected_remote_players.discard(left)
+                        logger.info(f"Player {left} left while loading - no longer waiting for them")
+                        if self.local_ready and self._remote_players_ready():
+                            self._confirm_all_ready("remaining clients loaded")
+                else:
+                    logger.debug(f"Keeping {msg_type} for the game (arrived while loading)")
+                self._deferred_messages.append(msg)
+
+            if self.all_players_ready:
+                break
+
+    def _hand_over_deferred_messages(self):
+        """Put the messages kept while waiting back in front of the game's queue."""
+        if self._deferred_messages and self.network_connection is not None:
+            self.network_connection.message_queue.requeue_front(self._deferred_messages)
+        self._deferred_messages = []

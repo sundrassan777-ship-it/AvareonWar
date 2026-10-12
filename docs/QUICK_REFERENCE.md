@@ -356,9 +356,16 @@ Next Turn
 |---------|-------|-------------|
 | DEFAULT_PORT | 7777 | Server listen port |
 | MAX_CLIENTS | 3 | Host + 3 = 4 players |
+| NETWORK_VERSION | 2.0.0 | Must match exactly to join |
 | CONNECTION_TIMEOUT | 15.0s | No response = disconnect |
-| RECONNECTION_TIMEOUT | 60.0s | Window to reconnect (network_config.py; server.py uses 300s) |
+| RECONNECT_ENABLED | False | Rejoining a running game switched off for launch |
+| RECONNECTION_TIMEOUT | 60.0s | Window to reconnect (unused while RECONNECT_ENABLED is False) |
+| SEND_TIMEOUT | 10.0s | Longest one message may take to send before the peer counts as gone |
+| MESSAGE_BUFFER_SIZE | 64 KB | Bytes per socket read |
 | HEARTBEAT_INTERVAL | 5.0s | Ping frequency |
+
+**Lobby launch requirements:** 2+ players (incl. host), no empty slot between players,
+2+ teams, every player has a starting territory (`LobbyState.launch_blocker()`).
 
 **Player Slots:**
 | Slot | Index | Options |
@@ -383,16 +390,23 @@ MOVEMENT_ORDER, BUILDING_ORDER, TRAINING_ORDER
 EXECUTE_ORDERS, BATTLE_RESOLVE, TURN_END
 
 # Simultaneous
-SIM_PLAYER_READY, SIM_ALL_READY, SIM_TIMER_UPDATE
-SIM_BATTLE_RESULT, SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE
+SIM_PLAYER_READY, SIM_READY_STATE, SIM_ALL_READY, SIM_TIMER_UPDATE
+SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE   # (SIM_BATTLE_RESULT: legacy, unused)
 ```
 
 **Disconnect Behavior:**
 | Event | Result |
 |-------|--------|
-| Client disconnect | AI takes over, game continues |
+| Client disconnect | AI (Medium, run by the host) takes over, game continues; chat shows a **System** line (`gs.add_system_chat_message()`, sender `GameState.CHAT_SYSTEM_SENDER = 'system'`) |
 | Host disconnect | Game ends for all |
-| Reconnect within 5 min | Resume control from AI |
+| Rejoin a running game | Not possible at launch (`RECONNECT_ENABLED = False`) |
+
+**End of game:** each PC records achievements / XP for its own player
+(`player_level.local_human_index(game)`); the winner's allies win too (`gs.is_winner(player)`).
+
+**Robustness:** a received message that raises is logged and skipped
+(`Game._handle_network_message()` → `network_message_errors`; tests fail on any). Lobby
+territory claims are ordered by the host's clock and must name a territory of the map.
 
 **Common Network Methods:**
 ```python
@@ -430,7 +444,39 @@ server.send_to_player(player_idx, msg)
 - Defensive battles: original owner keeps territory
 - Alliance arrivals: biggest army clicks blue marker to assign owner
 
+**Multiplayer (main.py `Game` constants):**
+| Setting | Value | Meaning |
+|---------|-------|---------|
+| `SIM_AFK_RESOLVE_SECONDS` | 90 s | Untouched own battles / choices resolve themselves; a battle report left open this long after FIGHT closes |
+| `SIM_HOST_FALLBACK_SECONDS` | 180 s | Host settles everything still open in the resolving phase |
+| `SIM_AI_ACTION_DELAY` | 2 s | AI resolver / chooser waits (grey marker visible) |
+| Takeover difficulty | Medium | AI replacing a disconnected player |
+
 **Phase Flow:** Planning → Execution → Resolution → Next Round
+
+---
+
+## 🔁 Sequential Multiplayer Quick Reference
+
+**The turn owner is the truth** - the PC of the human whose turn it is, or the **host** for a
+computer player (only the host runs the AI; its messages are sent by the main loop):
+| Message | Sent by | Carries | Receivers |
+|---------|---------|---------|-----------|
+| `EXECUTE_ORDERS` | owner, when its moves start (End Turn / timer / AI - `on_orders_executing` hook) | state snapshot (moves included) | apply it, replay the moves |
+| `BATTLE_RESOLVE` | owner, per battle (human: on Close; AI: `resolve_battle_shared()`) | seed + outcome | replay the battle |
+| `TURN_END` | owner, once the turn has really ended (`on_turn_advanced` hook) | state snapshot after the advance | apply it, play the announcement |
+| `TURN_END` + `final` | owner, game ended in its turn | final state | apply it |
+
+Every client message carries its true sender (`from_player_index`, set by the server); each
+PC refuses these four - and a client's orders, gold and Hero abilities - from anyone but the
+turn owner (the host is never refused). See "Who may send what" in CODE_GUIDE.md.
+
+**Multiplayer (main.py `Game` constants):**
+| Setting | Value | Meaning |
+|---------|-------|---------|
+| `SEQ_AFK_RESOLVE_SECONDS` | 90 s | The owner's untouched battles resolve; a battle report left open this long closes |
+| `SEQ_BATTLE_FALLBACK_SECONDS` | 180 s | After this long in the battles phase everything still open is resolved |
+| Planning timer | 60 s base | Checked on the owner's PC only |
 
 ---
 

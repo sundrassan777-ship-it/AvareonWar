@@ -6,6 +6,7 @@ Handles message serialization, deserialization, and length-prefix framing.
 
 import json
 import struct
+import threading
 from typing import Dict, Any, List, Optional
 
 import sys
@@ -30,6 +31,9 @@ class NetworkProtocol:
     def __init__(self) -> None:
         # Counter for outgoing message sequence numbers (out-of-order/duplicate detection)
         self._sequence_number: int = 0
+        # The game loop and the network thread (PONG replies) both encode through the
+        # same protocol; `+= 1` is not atomic, so two messages could get the same number
+        self._sequence_lock = threading.Lock()
 
     def encode_message(self, message_type: str, data: Optional[Dict[str, Any]] = None) -> bytes:
         """
@@ -45,15 +49,17 @@ class NetworkProtocol:
         Raises:
             ValueError: If message is too large
         """
+        # Take the next sequence number atomically (see _sequence_lock)
+        with self._sequence_lock:
+            seq = self._sequence_number
+            self._sequence_number += 1
+
         # Build message structure with sequence number for out-of-order/duplicate detection
         message = {
             "type": message_type,
-            "seq": self._sequence_number,
+            "seq": seq,
             "data": data or {}
         }
-
-        # Increment sequence number after embedding it in the message
-        self._sequence_number += 1
 
         # Serialize to JSON
         json_data = json.dumps(message).encode('utf-8')
@@ -66,6 +72,38 @@ class NetworkProtocol:
         length_prefix = struct.pack('!I', len(json_data))
 
         return length_prefix + json_data
+
+    def encode_relayed(self, message: Dict[str, Any], from_player_index: int) -> bytes:
+        """
+        Re-frame a client's message for the other clients, stamped with its true sender.
+
+        The server relays client messages to the other clients. It used to forward the
+        raw bytes, so a receiver could not tell who sent a message, and a message could
+        claim to come from anyone. The stamp ('from_player_index' next to type/seq/data)
+        is set by the server from the connection it arrived on; receivers check what a
+        sender may do with it. The original type, seq and data are kept (clients do not
+        check the sequence numbers of what the server sends them).
+
+        Args:
+            message: Decoded client message (already validated by the server)
+            from_player_index: The server's index of the connection it arrived on
+
+        Returns:
+            Encoded message bytes (4-byte length prefix + JSON payload)
+
+        Raises:
+            ValueError: If message is too large
+        """
+        envelope = {
+            "type": message.get('type'),
+            "seq": message.get('seq'),
+            "data": message.get('data') or {},
+            "from_player_index": from_player_index,
+        }
+        json_data = json.dumps(envelope).encode('utf-8')
+        if len(json_data) > MAX_MESSAGE_SIZE:
+            raise ValueError(f"Message too large: {len(json_data)} bytes (max {MAX_MESSAGE_SIZE})")
+        return struct.pack('!I', len(json_data)) + json_data
 
     def decode_message(self, data: bytes) -> Optional[Dict[str, Any]]:
         """

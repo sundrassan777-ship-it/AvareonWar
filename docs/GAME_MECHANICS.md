@@ -153,6 +153,16 @@ A Keep (or Fortress) defending an empty territory fights alone with a flat stren
 (no unit counters apply to it). The battle screen shows the defender as "No units" plus the
 Keep line; before 2026-09-25 it wrongly listed 2 Swordsmen and an inflated strength.
 
+**Several attackers at one Keep** (simultaneous turns: enemies of the owner - and of each
+other - reach the same Keep in one round): the attackers **fight each other first**, by the
+normal battle rules (strength with counters and veterancy, strength-scaled losses, the
+winner always keeps at least 1 unit; equal strength is rolled with dice - one die per army
+- and a tie in the dice destroys every attacker). Only the winner then assaults the Keep
+(garrison, then the Keep itself) with its survivors. Allies attacking together are one
+side and never fight each other. The Keep's defender earns XP and "units killed" only for
+the attackers it actually fought. (Before 2026-10-12 only the strongest attacker fought
+the Keep and the others' units vanished without fighting.)
+
 **Casualties (Strength-Scaled):**
 - Winner casualties = `loser_count * (loser_strength / winner_strength)`
 - Dominant forces lose far fewer units (counters matter)
@@ -287,7 +297,7 @@ Campaign missions and Tales set their own starting gold.
 
 **Tooltips:** Hovering a disabled field/button reveals the reason (e.g. "Cannot send Gold to enemy players.", "Cannot send Gold to an eliminated player.", "Cannot send Gold to one player more than once every turn.").
 
-**Multiplayer:** The sender's client deducts instantly (optimistic), then broadcasts. Peers mirror the balance change without re-validation.
+**Multiplayer:** The sender's client deducts instantly, then broadcasts. Every other player's game checks the transfer before applying it (gold transfer switched on, a living ally, once per turn per pair) and caps it at the gold the sender has.
 
 ---
 
@@ -317,6 +327,8 @@ Each of the 57 territories on the map grants one permanent bonus to its owner. B
    - Reduces cost of hero recruitment
    - Separate from unit costs for balance
    - Example: Own 3 hero territories → -9% hero costs
+   - Stacks with Royal Decree; the Keep shows the price you pay. (Before 2026-10-12 this
+     bonus was listed but never applied.)
 
 5. **Pikeman Strength** (+10% per territory)
    - Increases Pikeman effective strength in combat
@@ -443,8 +455,14 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
 - Domination/Total Conquest aggregate territory counts per team
 - Only enemies can trigger Capital Assault eliminations
 - First team member with active territories represents winning team
+- **Every member of the winning team has won** - the victory screen, achievements and the
+  player-level victory XP count for all of them, not only the representative (before
+  2026-10-12 achievements and the victory XP counted only the representative's win, and in
+  multiplayer achievements were recorded for the host on every PC)
 
-**Multiplayer Disconnect Elimination:**
+**Multiplayer Disconnect Elimination** (inactive for launch - rejoining a game in progress
+is switched off, `RECONNECT_ENABLED = False`, so a disconnected player's empire is played
+by the AI for the rest of the game instead):
 - When a player disconnects, AI takes over for 60 seconds (reconnection window)
 - If the player does not reconnect, they are eliminated:
   - Territories distributed round-robin to living allies (alphabetical order)
@@ -453,8 +471,11 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
 - Chat messages notify all players of disconnect and elimination events
 
 **Anti-Win-Farming (Multiplayer):**
-- If all enemies were eliminated via disconnect and none earned >= 50 XP from gameplay actions, no XP is awarded for the game
-- Prevents exploiting disconnect elimination for easy XP farming
+- If every enemy left the game - eliminated via disconnect, or disconnected and replaced by
+  the AI - and none of them had earned >= 50 XP from gameplay actions while they played, no
+  XP is awarded for the game (for a replaced player: the XP they had when they left, not
+  what the AI earned afterwards)
+- Prevents a player leaving at once so the other can beat the AI for easy XP
 - If at least one enemy was defeated normally (through battles), or had >= 50 XP, XP is awarded normally
 
 **Planned:**
@@ -696,7 +717,8 @@ Persistent player level that tracks progression across all game modes. XP is ear
 
 ## 🌐 Multiplayer System
 
-Full 2-4 player multiplayer with AI slots, teams, and reconnection support.
+Full 2-4 player multiplayer with AI slots and teams. (Rejoining a game in progress is
+switched off for launch - see Disconnect Handling.)
 
 ### Getting Started
 
@@ -721,15 +743,29 @@ Full 2-4 player multiplayer with AI slots, teams, and reconnection support.
 
 **Slot Configuration:**
 - **Type**: Human waits for player, AI plays automatically, Empty removes slot
-- **Color**: Each player picks unique color (Red/Blue/Green/Yellow)
+- **Color**: Each player picks unique color (Red/Blue/Green/Yellow) - the game uses it for
+  their territories and army flags (also in Custom Game)
 - **Team**: Alliance grouping (Team 1-4, or FFA)
 - **Territory**: Starting capital selection
 
 **Territory Selection:**
-- Click map to claim starting territory
-- First-come-first-served (timestamp tiebreaker)
+- Click map to claim starting territory (only territories of the selected map)
+- First-come-first-served: the claim that reaches the host first wins - a territory someone
+  already holds cannot be taken by clicking it
 - Host can reassign territories
 - All players must select before launch
+
+**Launch requirements** (`LobbyState.launch_blocker()`; hovering the greyed Launch Game
+button tells the host which one is missing):
+- At least 2 players, including the host
+- No empty slot between players (slots fill from the top - set the gap to an AI, wait
+  for a player, or empty the slots below it)
+- At least 2 different teams
+- Every player has a starting territory
+
+**Shared game setup:** the host's map, settings, randomized bonuses and the random seed
+(Neutral Armies placement) are sent in `LOBBY_LAUNCH`, so every player starts the
+identical game. A player joins the slot the host's server assigned and keeps it.
 
 ### Teams & Alliances
 
@@ -738,6 +774,20 @@ Full 2-4 player multiplayer with AI slots, teams, and reconnection support.
 - Cannot attack allied territories
 - Allied captures trigger ownership choice popup
 - Allied defense combines all armies
+
+**Allies fighting together** (one army in the battle; since 2026-10-12 the result is shared
+fairly):
+- Every ally keeps their **own** surviving units afterwards.
+- Defending together: the allies' units fall first, the territory owner's last; if the
+  defence holds, the territory stays with its owner (buildings untouched). A Keep defends
+  for the whole team, even if only an ally has units there.
+- Attacking together: the losses are shared in proportion to each ally's army; the allies
+  then choose who owns the captured territory.
+- Each ally earns "units killed" by the size of their share of the army, and a losing ally's
+  Hero abilities (Scavenge the Fallen, Safe Haven) work as for the team's leader.
+- (Before 2026-10-12, when the owner's ally had the lower player number, a successful joint
+  defence handed the territory to the ally, destroyed the owner's buildings and lost the
+  owner's units; a winning team's other members lost all their units.)
 
 **Alliance Mechanics:**
 - Same team = allies
@@ -749,11 +799,27 @@ Full 2-4 player multiplayer with AI slots, teams, and reconnection support.
 
 ### Host Authority
 
-The host (Player 0) is authoritative:
-- Runs all game logic and AI
-- Resolves all battles
-- Broadcasts state changes to clients
-- Controls game flow and timing
+The host (Player 0) runs the server and the game setup:
+- Simultaneous turns: the host is authoritative for every round (orders, AI, round end)
+- Sequential turns: the PC of the player whose turn it is is authoritative for that turn
+  (see Multiplayer Rules (sequential))
+- Relays every player's actions to the others
+
+**Battles:** fought by the player whose turn it is (sequential) or by the battle's
+designated resolver (simultaneous). Every other PC replays the same battle from its
+random seed, so destroyed buildings, slain heroes, ability gold and reports happen for
+everyone at once, and veteran survivors keep their experience. Decisive Strike, Valorous
+Charge and Royal Charisma send the units they picked, so every player sees the same units
+affected.
+
+**Cheat codes** work in single-player only. **Team chat** is shown to allies only.
+
+**Fair play checks:** every message is marked with the player who really sent it, and
+every player's game refuses what that player may not do: acting for another player, acting
+outside your own turn (sequential), a battle result from someone who is not fighting that
+battle, an alliance choice from someone who is not choosing, a Hero ability with someone
+else's Hero, or gold sent to an enemy, twice in a turn, beyond what the sender has or in a
+game without gold transfer. In the lobby a player can change only their own colour and team.
 
 **Host-Only Actions:**
 - Kick players from lobby
@@ -762,24 +828,51 @@ The host (Player 0) is authoritative:
 - Launch game
 - End/pause game
 
+### Multiplayer Rules (sequential)
+
+- **The player whose turn it is decides.** When they end their turn, their moves go to
+  every player together with their whole game state; everyone watches the same armies
+  march and the same battles, and the next turn starts from that same state on every PC.
+  Nobody else's game moves on until that player's turn has really ended.
+- **Planning timer:** only the clock of the player whose turn it is counts. When it runs
+  out, their planned moves are carried out exactly as if they had pressed **End Turn**.
+- **End Turn** does nothing while it is greyed out (armies still moving, battles open).
+- **AFK battles:** battles the player leaves untouched for **90 seconds** are fought for
+  them, a battle report left open for 90 seconds closes, and after **3 minutes** every
+  battle still open is settled - the other players never wait forever.
+- **Cancelling a construction** refunds it on every player's screen.
+- **Game end:** the final state is shared, so every player's recap shows the same numbers.
+- **Computer players** are played by the host: their moves and battles reach every player
+  like a human player's (what they built shows up when their moves start, or at the end
+  of their turn).
+- **Leaving:** a player who disconnects is replaced by a **Medium AI** - even in the
+  middle of their own turn, which the AI then finishes.
+
 ### Disconnect Handling
 
 **Client Disconnects:**
-1. AI immediately takes over (Medium difficulty)
-2. Player can reconnect within 5 minutes
-3. Password shown on initial join (save it!)
-4. Game continues without interruption
+1. The host and every other player are told (`PLAYER_DISCONNECT`); chat shows a
+   **System** line "<name> has disconnected. AI taking over."
+2. The AI takes over the empire (Medium difficulty) for the rest of the game, played by
+   the host - including the rest of the current turn or round
+3. Rejoining a game in progress is not possible at launch; new connections to a running
+   game are refused ("The game has already started")
+
+**While loading:** Escape leaves the game. If a player leaves while the others are
+loading, the host stops waiting for them; if the host leaves, the others are told and
+return to the menu.
 
 **Host Disconnects:**
 - Game ends for all players
 - Disconnect dialog shown to clients
 - Players return to main menu
 
-**Reconnection:**
-1. Join same host IP
-2. Enter your name + password
-3. Resume control from AI
-4. Full state synchronized
+**Joining fails:** the player sees the host's reason - lobby full, game already started,
+different game version, or no game at that address.
+
+**Reconnection (switched off for launch):** the name + password reconnect code still
+exists (`network/server.py` RECONNECT_*, `NetworkClient.reconnect()`) but the game cannot
+hand a seat back yet; `RECONNECT_ENABLED` in `network_config.py` keeps it off.
 
 ### Network Messages
 
@@ -794,8 +887,9 @@ The host (Player 0) is authoritative:
 - `MOVEMENT_ORDER` - Army movement queued
 - `BUILDING_ORDER` - Building construction started
 - `TRAINING_ORDER` - Unit training queued
-- `BATTLE_RESOLVE` - Battle outcome
-- `TURN_END` - Turn completed
+- `EXECUTE_ORDERS` - The turn's moves begin (with the game state)
+- `BATTLE_RESOLVE` - Battle outcome (replayed from its random seed)
+- `TURN_END` - Turn completed (with the game state after it)
 
 **Simultaneous Mode Messages:**
 - `SIM_PLAYER_READY` - Player finished planning
@@ -826,10 +920,12 @@ The host (Player 0) is authoritative:
 - Timeout after 15 seconds no response
 
 **Synchronization:**
-- Host-authoritative model
-- All game logic runs on host
-- Clients receive state updates
-- Checksum validation (optional)
+- Simultaneous turns: the host is authoritative - it checks every order and sends its
+  game state when a round's moves begin and when the round ends
+- Sequential turns: the PC of the player whose turn it is is authoritative for that turn -
+  it sends its game state when its moves begin and when its turn ends
+- Battles are replayed everywhere from the resolver's random seed
+- Every PC applies those game-state snapshots, so a difference never outlives a turn
 
 ---
 
@@ -870,6 +966,11 @@ Select "Turn Mode: Simultaneous" in the game setup screen. Available in both sin
                   ▼
             Next Round
 ```
+
+**Computer players' spending:** a computer player plans only purchases it can pay for, in
+its own order of priority (Heroes first), as it does in sequential turns. (Before
+2026-10-12 it planned every purchase against its full gold; the round pays buildings and
+units first, so its Heroes and research usually failed and it got Heroes very late.)
 
 ### Timer System
 
@@ -932,9 +1033,33 @@ Units spawning from Barracks in simultaneous mode:
 ### UI Indicators
 
 - **Waiting...** button: Shows when you've clicked End Turn
-- **Waiting for: X, Y** text: Lists players still planning
+- **Waiting for: X, Y** text: Lists players still planning (in multiplayer the host keeps
+  everyone's list current)
 - **Blue particle marker**: Alliance arrival (click to assign territory)
 - **Red glow on flag**: Overflow warning (move armies or they disband)
+
+### Multiplayer Rules (simultaneous)
+
+- **The host decides.** When everyone is ready, the host checks every order (a move must
+  use units that exist and are ready; an army split into two orders along one route keeps
+  both halves), applies all builds, training, research and abilities, and sends that state
+  to every player together with the moves to play out. Battles are fought by their
+  resolver and replayed on every other PC.
+- **You are ready only when you say so** - End Turn, or your timer running out. In
+  multiplayer nobody is marked ready automatically, even with nothing to do - except a
+  player who has been **knocked out** (no territories left): they are out of every
+  following round and nobody waits for them (also when it happens mid-round).
+- **AFK battles:** if you leave your battles (or an alliance choice) untouched for **90
+  seconds**, your game resolves them for you, and a battle report left open for 90 seconds
+  closes by itself; after **180 seconds** of battles the host settles whatever is still
+  open, so a round can never stall.
+- **The round ends when everything is settled** - every battle fought, every alliance
+  choice made, and every battle report closed (a battle's result is shared when its report
+  is closed).
+- **AI battles and choices** are always made on the host's PC (2-second delay, so the grey
+  marker is visible), and the results reach every player.
+- **Leaving:** a player who disconnects is replaced by a **Medium AI** for the rest of the
+  game - it even plans the current round if they had not ended it.
 
 ---
 

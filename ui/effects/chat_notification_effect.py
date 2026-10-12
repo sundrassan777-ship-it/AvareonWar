@@ -141,10 +141,10 @@ class ChatNotificationEffect:
         else:
             timestamp, player_id, message, channel = chat_msg
 
-        # Get player info
+        # Get player info ("System" in gold for the game's own lines, e.g. disconnects)
         try:
-            player_color = self.game_state.get_player_color(player_id)
-            player_name = self.game_state.get_player_name(player_id, include_title=False)
+            player_color = self.game_state.chat_sender_color(player_id)
+            player_name = self.game_state.chat_sender_name(player_id, include_title=False)
         except (IndexError, AttributeError):
             return None
 
