@@ -6,7 +6,7 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ## Multiplayer: Smoother Connections
 
-*11 October 2026*
+*12 October 2026*
 
 ### Joining and the lobby
 
@@ -20,6 +20,10 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   the greyed-out **Launch Game** button to see what is missing.
 - Players who join through a **Steam invite** now play on the map the host picked.
 - With **Neutral Armies** on, every player now sees the same neutral garrisons.
+- The colour you pick is now the colour you play: your territories and your army flags
+  (in **Custom Game** too). The choice used to be ignored.
+- Fixed: a player whose computer clock was behind could take a starting territory someone
+  else had already picked. Now whoever clicks first gets it.
 
 ### Loading
 
@@ -90,6 +94,13 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 - Fixed (simultaneous turns): a player being knocked out of the game could crash the game
   for the others.
 
+### Your progress
+
+- Winning a multiplayer game now counts for you: achievements used to be credited to the
+  host's profile on every player's PC.
+- When your team wins, every player on the team gets the win for achievements and
+  player-level XP (in **Custom Game** too). Before, only one player of the team did.
+
 ### Fair play
 
 - Every game now checks who really sent each move, and refuses what that player may not
@@ -99,11 +110,15 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   transfer. A modified game could do all of these before.
 - In the lobby, a player can only change their own colour and team. A modified game could
   change other players' seats, kick them, or start the game.
+- A modified game can no longer pick a starting territory that is not on the map, change
+  its player's name to anything it likes, or crash the host's lobby.
 
 ### Chat
 
 - **Team chat** is now seen by your allies only. Before, enemies could read it too.
 - Cheat codes no longer work in multiplayer.
+- When a player leaves, the chat message about it now comes from **System**. It used to
+  look as if the host had written it.
 
 ### Connection
 
@@ -112,6 +127,8 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 - Fixed: players on slower connections could be dropped when the game sent a large update.
 - When a player leaves a game in progress, everyone is told. Rejoining a game in progress is
   not possible yet.
+- Fixed: an unexpected message from the network could close the game for a player. It is
+  now skipped (and written to the log) and the game carries on.
 
 ---
 

@@ -16,6 +16,22 @@ logger = get_logger(__name__)
 class VictoryMixin:
     """Mixin providing victory checking and player elimination methods for GameState."""
 
+    def is_winner(self, player):
+        """
+        Whether `player` won the game: the winner, or a member of the winning team. A team
+        victory names one representative in self.winner; every teammate has won too
+        (eliminated ones included - the team won). Shared by the victory screen,
+        achievements and player-level XP (the last two credited only the representative).
+        """
+        winner = getattr(self, 'winner', None)
+        if winner is None or player is None or winner < 0 or player < 0:
+            return False
+        if player == winner:
+            return True
+        teams = getattr(self, 'player_teams', None)
+        return (bool(teams) and player < len(teams) and winner < len(teams)
+                and teams[player] == teams[winner])
+
     def check_victory(self):
         """
         Check if any player has won based on the selected victory condition.

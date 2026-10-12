@@ -1,367 +1,111 @@
-# Multiplayer Simultaneous Mode - Testing Plan
+# Multiplayer - Pre-launch LAN Test Plan
 
-**Created:** 2026-02-01
-**Purpose:** Verify all sync fixes work correctly without breaking existing functionality
+**Updated:** 2026-10-12 (after the multiplayer audit, Phases 1-8 on `fix/multiplayer-sync`)
+**Purpose:** check on real PCs what the automated tests cannot: real networks, real timing,
+real players. The automated suite (`tests/test_mp_*.py`, see CODE_GUIDE "Testing Network
+Changes") already runs 2-4 real games in one process for every audit finding.
 
----
-
-## Test Configuration Options
-
-| Config | Players | Mode | Network |
-|--------|---------|------|---------|
-| **A** | 1 Human vs 1-3 AI | Simultaneous | Local (single-player) |
-| **B** | 2 Human | Simultaneous | Multiplayer (host + 1 client) |
-| **C** | 1 Human vs 1-3 AI | Sequential | Local (single-player) |
+This replaces the February 2026 plan; several things it checked work differently now
+(state snapshots instead of per-field gold syncs, seeded battle replays, host-run AI).
 
 ---
 
-## PART 1: Regression Tests (Must Pass Before New Features)
+## Before you start
 
-### Test 1.1: Sequential Mode Still Works
-**Config:** C (1 Human vs 1 AI, Sequential)
+- **PCs:** 2 for the first pass, then 3-4. All on the same build (the version check refuses
+  a mismatch with a message).
+- **Hosting:** Main Menu -> Multiplayer -> Host Game. **Joining:** Multiplayer -> Join Game,
+  enter the host's IP (shown on the host's lobby screen). Steam: the host's **Invite Friend**
+  button in the lobby.
+- **After every session, collect from each PC** (zip and name by player):
+  - `logs/avareonwar.log` (+ `.1`-`.3` if it rotated) - everything, incl. network warnings
+  - `Logs/sync/*.json` - per-game sync log (actions, turn checksums, any desync diff)
+  - `Logs/*.json` - per-game log
+- Note the time and turn/round when anything looks wrong - it makes the logs easy to find.
 
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Start new game: Sequential mode, 1 human vs 1 AI | Game starts, human is Player 1 |
-| 2 | End turn without actions | AI takes its turn, timer shows AI thinking |
-| 3 | Build a Farm | Farm construction starts, gold deducted |
-| 4 | End turn | Farm progress advances |
-| 5 | Train a unit at Barracks | Training starts |
-| 6 | Attack AI territory with 2+ armies | Battle popup appears |
-| 7 | Resolve battle | Winner determined, territory changes hands |
-| 8 | End turn | Income collected, construction/training progress |
+### Log lines that mean "look here"
 
-**Pass Criteria:** All steps complete without errors, AI takes turns normally
-
----
-
-### Test 1.2: Simultaneous Single-Player Still Works
-**Config:** A (1 Human vs 1 AI, Simultaneous)
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Start new game: Simultaneous mode, 1 human vs 1 AI | Game starts with timer countdown |
-| 2 | Queue movement order | Arrow appears on map |
-| 3 | Queue building order | Build icon appears on plot |
-| 4 | Click "Ready" button | Player marked ready |
-| 5 | Wait for AI to ready (or timer expires) | AI marks ready, execution starts |
-| 6 | Watch movement animations | Armies move simultaneously |
-| 7 | Observe battle markers (if conflict) | Battle markers appear |
-| 8 | Resolve any battles | Battles resolve, round completes |
-| 9 | New planning phase starts | Timer resets, can queue new orders |
-
-**Pass Criteria:** AI marks ready, execution works, round completes correctly
+| Line | Meaning |
+|------|---------|
+| `[SYNC] This PC's state differed from the turn owner's ...` | Sequential: this PC had drifted; the owner's state was applied (healed). Worth a report. |
+| `[NETWORK] Replayed battle at X differs from the resolver's ...` | A battle replay came out differently; the resolver's result was applied. Worth a report. |
+| `[NETWORK] Failed to apply <TYPE> - message skipped` (+ traceback) | A bug in a message handler. **Always report.** |
+| `[NETWORK] REJECTED ...` | A message refused by the rules (who may send what). Should never appear with honest players - report. |
+| `[NETWORK] Held messages waited Ns - applying them anyway` | A result arrived long before this PC finished its animation (15 s limit). Report with the turn. |
+| `Traceback (most recent call last)` anywhere | Report. |
 
 ---
 
-### Test 1.3: Basic Multiplayer Connection
-**Config:** B (2 Human, Simultaneous)
+## A. Connecting and the lobby
 
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Host starts multiplayer game | Lobby appears |
-| 2 | Client joins lobby | Both players see each other |
-| 3 | Host selects territory | Territory claimed for host |
-| 4 | Client selects territory | Territory claimed for client |
-| 5 | Host launches game | Both enter game |
-| 6 | Both players see same map state | Territory ownership matches |
+| # | Steps | Expected |
+|---|-------|----------|
+| A1 | Host a game; 1-3 players join. | Every PC lists every player in the right slot. Two players with the same name stay in their own slots. |
+| A2 | Each player picks a territory, colour and team. | Every PC shows the same picks. A client can only change its own colour/team/territory. |
+| A3 | Two players click the same territory at nearly the same time. | Exactly one gets it - the one whose click reached the host first. Nobody loses a territory they already held. |
+| A4 | A client leaves the lobby (Leave or closes the game). | Their slot empties on every PC, incl. the host. Their territory is free again. Someone else can join into that slot. |
+| A5 | Make slots 1 and 3 occupied with 2 empty, or put everyone on one team. | Launch is greyed out; hovering it says why. |
+| A6 | Host on a map other than Avareon (e.g. Azincournean Highlands); a friend joins **through a Steam invite**. | The client loads the same map as the host. |
+| A7 | Launch. While loading, a client presses Escape (or closes the game). | That client returns to the menu; the host and the others still start the game (the host does not wait forever). |
+| A8 | Launch normally. | Everyone gets to "click to start" and sees the same map, the same starting armies, and **the colours and flags chosen in the lobby**. With Neutral Armies on, the same neutral armies everywhere. With Randomize Bonuses on, the same bonuses everywhere. |
+| A9 | Try to join a game that has started. | Refused with a clear message ("The game has already started"). |
 
-**Pass Criteria:** Both players connected and see same initial state
+## B. Sequential turns
 
----
+Play 3-5 full turns per configuration: 2 humans; 2 humans + 1 AI; 4 players incl. allies.
 
-## PART 2: Sync Fix Tests
+| # | Steps | Expected |
+|---|-------|----------|
+| B1 | On your turn: build, train, research, hero training, castle upgrade, cancel one of each, demolish, move without fighting. | Every other PC shows the same result by the end of your turn (builds/trains may show at End Turn). |
+| B2 | Attack: win one battle, lose one, tie one (dice). | Every PC shows the same battle, the same survivors (types and levels), the same captured buildings destroyed, the same hero deaths, and the defender gets their Battle Report. |
+| B3 | Let the planning timer run out with moves queued. | The moves still happen on every PC, then the next player's turn starts once on every PC (nobody skips a turn). |
+| B4 | AI turn (game with an AI slot). | Every PC sees the same AI moves and battles; afterwards every PC shows the same map. |
+| B5 | Leave a battle untouched for 90 s on your turn. | It resolves itself on your PC; after 180 s everything left is settled. Nobody is stuck. |
+| B6 | Gold transfer to an ally (if enabled), once per turn. | Arrives once; the sender cannot send more than they have; enemies cannot receive. |
+| B7 | Team chat and all chat. | Team chat only reaches allies. |
 
-### Test 2.1: Unit Composition Preserved After Battle (Issue #6)
-**Config:** A or B (any Simultaneous mode)
+## C. Simultaneous rounds (primary mode - spend the most time here)
 
-**Setup:**
-- Player has territory with mixed units (Swordsman + Archer + Pikeman)
-- Train different unit types at Barracks before this test
+Same configurations as B, plus one 4-player game with 2 v 2 teams.
 
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Note unit composition in territory | e.g., "2 Swordsman, 1 Archer, 1 Pikeman" |
-| 2 | Attack enemy/neutral territory | Movement order created |
-| 3 | Execute phase completes | Battle occurs |
-| 4 | Win the battle | Territory captured |
-| 5 | Check surviving unit composition | **Should NOT be all Swordsmen** |
-| 6 | Hover over new territory | Unit types preserved (Archer, Pikeman visible) |
+| # | Steps | Expected |
+|---|-------|----------|
+| C1 | Everyone plans orders (moves, builds, trains, hero abilities), clicks End Turn at different times. | The "Waiting for: ..." list is right on every PC at every moment. Execution starts on every PC together. |
+| C2 | Two armies cross each other on the same border; one is larger. | The same forced-defence outcome on every PC. |
+| C3 | Several battles in one round, with different resolvers. | Each resolver fights their own; every PC ends the round with the same map. |
+| C4 | Allies capture the same territory together. | The alliance choice goes to the same player on every PC; the result is the same everywhere. |
+| C5 | A resolver walks away during battles for 90 s, then 180 s. | At 90 s their own PC resolves their battles; at 180 s the host settles everything left. The round ends on every PC. |
+| C6 | Split one army into two orders along the same route. | Both halves move. |
+| C7 | A Capital Assault victory, or an elimination mid-round. | The same result and the same end screen on every PC. |
 
-**Pass Criteria:** After battle, surviving units keep their original types (not all Swordsmen)
+## D. Leaving mid-game
 
-**For Multiplayer (Config B):** Both host AND client should see same unit composition
+| # | Steps | Expected |
+|---|-------|----------|
+| D1 | A client closes the game while planning (both modes). | Chat on every PC shows **System:** "<name> has disconnected. AI taking over." The AI (Medium) plays their empire from then on; the game continues. |
+| D2 | A client closes the game while their battle window is open / during their sequential turn. | Their battles are fought for them; the turn/round ends normally. |
+| D3 | The host closes the game. | Every client sees "Connection lost" and returns to the menu. |
+| D4 | Rejoining a running game. | Not possible for launch (reconnect is off by design). |
 
----
+## E. Progress and end of game
 
-### Test 2.2: Alliance Chooser Deterministic (Issue #2)
-**Config:** B (2 Human, Simultaneous, Allied/Same Team)
+| # | Steps | Expected |
+|---|-------|----------|
+| E1 | Finish a game a **client** wins. | That client gets the win in the recap, achievements and XP - not the host. |
+| E2 | Finish a team game the team wins. | **Every** player on the winning team is credited with the win (recap, achievements, XP). |
+| E3 | Win against a player who left on turn 1. | Little/no win XP (anti win-farming). |
+| E4 | Recap screen on each PC. | Opens on every PC with the same statistics. |
 
-**Setup:**
-- Both players on same team (alliance)
-- Both players have armies adjacent to same neutral territory
+## F. Quick smoke test (10 minutes, 2 PCs)
 
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Player 1 queues attack on neutral Territory X | Arrow shows |
-| 2 | Player 2 queues attack on same Territory X | Arrow shows |
-| 3 | Make sure both have EQUAL army counts | e.g., both send 3 armies |
-| 4 | Both mark ready | Execution starts |
-| 5 | Armies arrive simultaneously | Alliance marker appears (blue) |
-| 6 | Check who is the "chooser" | **Lower player index should be chooser** |
-| 7 | Host sees Player 1 (index 0) as chooser | Correct |
-| 8 | Client sees Player 1 (index 0) as chooser | **Same as host** |
-
-**Pass Criteria:** With equal armies, lowest player index is always chooser (deterministic, not random)
-
----
-
-### Test 2.3: Hero Ability Execution (Issue #3)
-**Config:** A (1 Human vs AI, Simultaneous)
-
-**Setup:**
-- Player has a Hero trained (e.g., Brennhen with "Reinforce" ability)
-- Hero ability is off cooldown
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Open Hero panel | Hero abilities visible |
-| 2 | Click hero ability (e.g., Reinforce) | Ability executes **immediately** (real-time) |
-| 3 | Verify effect appears instantly | Reinforce: 4 Swordsmen spawn in Keep territory |
-| 4 | Verify ability on cooldown | Cooldown indicator shows immediately |
-| 5 | (Optional) If silenced, ability button disabled | Vow of Silence blocks ability use |
-
-**Note:** Hero abilities execute in real-time during planning phase, NOT queued for execution.
-This allows for tactical counterplay (e.g., Vow of Silence must be used before enemy abilities).
-
-**Pass Criteria:** Hero ability executes immediately on click, effect visible, cooldown applied
+1. Host + 1 client, Simultaneous, Avareon, one AI slot.
+2. Round 1: each player moves, builds a Farm, trains a unit; End Turn.
+3. Round 2: attack the AI; fight the battle; check both PCs show the same result.
+4. Round 3: the client attacks the host; the host fights; check survivors on both PCs.
+5. The client closes the game; the host sees the System chat line and plays on vs. the AI.
+6. Collect both PCs' logs and check them for the lines in the table above.
 
 ---
 
-### Test 2.4: Hero Training Execution (Issue #4)
-**Config:** A (1 Human vs AI, Simultaneous)
-
-**Setup:**
-- Player has a Keep (not Castle)
-- Enough gold for hero training
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Click on Keep | Keep panel opens |
-| 2 | Click hero to train | Training starts **immediately** (real-time) |
-| 3 | Verify gold deducted | Gold reduced by hero cost |
-| 4 | Verify training indicator | Keep shows training in progress |
-| 5 | Complete required rounds | Training timer counts down each round |
-| 6 | Hero completes | Hero appears in Heroes panel |
-
-**Note:** Hero training starts immediately on click (gold deducted, training begins).
-The training process takes multiple rounds to complete.
-
-**Pass Criteria:** Hero training starts immediately on click, completes after required rounds
-
----
-
-### Test 2.5: Authoritative Gold Sync (Issue #10)
-**Config:** B (2 Human, Simultaneous)
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Note both players' starting gold | e.g., Host: 50, Client: 50 |
-| 2 | Host builds Farm (costs gold) | Gold deducted locally |
-| 3 | Client builds Farm | Gold deducted locally |
-| 4 | Both mark ready | Execution phase |
-| 5 | Round completes | Income collected |
-| 6 | Host checks client's gold (if visible) | Should match client's view |
-| 7 | Client checks their gold | Should match host's authoritative value |
-
-**Pass Criteria:** After SIM_ROUND_COMPLETE, gold values are synchronized
-
-**Verification (console logs):**
-Look for: `[NETWORK] Sync: Player X gold Y -> Z` (indicates correction applied)
-
----
-
-### Test 2.6: Forced Defend Notification (Issue #7)
-**Config:** B (2 Human, Simultaneous)
-
-**Setup:**
-- Player 1 has territory A adjacent to territory B
-- Player 2 owns territory B, has territory B adjacent to territory A
-- Crossing attack scenario
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Player 1 attacks from A to B | Arrow A→B |
-| 2 | Player 2 attacks from B to A | Arrow B→A |
-| 3 | Make Player 2's army larger | e.g., 5 vs 3 |
-| 4 | Both mark ready | Execution starts |
-| 5 | Crossing conflict detected | Larger army forces smaller to defend |
-| 6 | Player 1 (smaller) forced to defend | Message appears for Player 1 |
-| 7 | Player 1's attack is cancelled | Army stays in territory A |
-
-**Pass Criteria:** Forced defend notification sent to affected player
-
-**Console verification:**
-Look for: `[HOST] Broadcasting SIM_FORCED_DEFEND`
-
----
-
-### Test 2.7: Eliminated Players Sync (Issue #16)
-**Config:** A (1 Human vs 2 AI, Simultaneous)
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Capture all of AI Player 2's territories | AI eliminated |
-| 2 | Check eliminated status | AI should be eliminated |
-| 3 | Continue playing | Eliminated AI should not take turns |
-| 4 | Income phase | Eliminated player gets no income |
-| 5 | Round complete | Eliminated player skipped correctly |
-
-**Pass Criteria:** Eliminated players properly tracked and skipped
-
----
-
-### Test 2.8: Mark Ready Duplicate Prevention (Issue #22)
-**Config:** A or B (any Simultaneous)
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Enter planning phase | Timer counting |
-| 2 | Click Ready button | Marked as ready |
-| 3 | Rapidly click Ready button multiple times | No additional effect |
-| 4 | Check console logs | Only ONE "mark_ready" processed |
-
-**Pass Criteria:** Multiple Ready clicks don't cause multiple callbacks
-
-**Console verification:**
-Look for: `[SIM_STATE] Ignoring mark_ready - player X already ready`
-
----
-
-## PART 3: Multi-Client Validation Tests
-
-### Test 3.1: Player Index Validation
-**Config:** B (2 Human, Simultaneous)
-
-This is difficult to test without malformed messages, but verify:
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Client sends movement order | Order accepted by host |
-| 2 | Check console for validation | No rejection messages |
-| 3 | Order executes correctly | Armies move |
-
-**Console verification:**
-Should NOT see: `[NETWORK] REJECTED: Invalid player_index`
-
----
-
-## PART 4: Stress Tests
-
-### Test 4.1: Rapid Order Queueing
-**Config:** B (2 Human, Simultaneous)
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Both players rapidly queue multiple orders | Orders queue without errors |
-| 2 | Queue: 3 movements, 2 buildings, 1 training each | All orders visible |
-| 3 | Both mark ready quickly | Execution starts |
-| 4 | All orders execute | No missing orders |
-| 5 | Round completes | State consistent on both sides |
-
-**Pass Criteria:** No lost orders, no crashes, consistent state
-
----
-
-### Test 4.2: Client Disconnect and AI Takeover
-**Config:** B (2 Human, Simultaneous)
-
-| Step | Action | Expected Result |
-|------|--------|-----------------|
-| 1 | Start multiplayer game | Both connected |
-| 2 | Play 1-2 rounds normally | Game working |
-| 3 | Client closes game (force quit) | Client disconnects |
-| 4 | Host sees disconnect message | AI takes over client's slot |
-| 5 | Host continues playing | AI controls disconnected player |
-| 6 | Game still playable | No crash |
-
-**Pass Criteria:** Game continues with AI takeover
-
----
-
-## Test Execution Checklist
-
-### Before Testing
-- [ ] Clean build (no cached Python files)
-- [ ] Console visible for log monitoring
-- [ ] Note starting conditions
-
-### Regression Tests (MUST PASS FIRST)
-- [ ] Test 1.1: Sequential Mode Still Works
-- [ ] Test 1.2: Simultaneous Single-Player Still Works
-- [ ] Test 1.3: Basic Multiplayer Connection
-
-### Sync Fix Tests
-- [ ] Test 2.1: Unit Composition Preserved After Battle
-- [ ] Test 2.2: Alliance Chooser Deterministic
-- [ ] Test 2.3: Hero Ability Execution
-- [ ] Test 2.4: Hero Training Execution
-- [ ] Test 2.5: Authoritative Gold Sync
-- [ ] Test 2.6: Forced Defend Notification
-- [ ] Test 2.7: Eliminated Players Sync
-- [ ] Test 2.8: Mark Ready Duplicate Prevention
-
-### Multi-Client Tests
-- [ ] Test 3.1: Player Index Validation
-
-### Stress Tests
-- [ ] Test 4.1: Rapid Order Queueing
-- [ ] Test 4.2: Client Disconnect and AI Takeover
-
----
-
-## Console Log Indicators
-
-**Good Signs (expected):**
-```
-[SIM_STATE] Player X marked ready
-[SIM_PHASE] Executing X orders
-[HOST] Broadcasting SIM_ROUND_COMPLETE
-[NETWORK] Sync: Player X gold Y -> Z (if correction needed)
-```
-
-**Warning Signs (investigate):**
-```
-[NETWORK] WARNING: ... missing player_index
-[SIM_STATE] Ignoring mark_ready - not in planning phase
-```
-
-**Error Signs (bugs):**
-```
-[NETWORK] REJECTED: ...
-Traceback (most recent call last):
-AttributeError: ...
-KeyError: ...
-```
-
----
-
-## Quick Smoke Test (5 minutes)
-
-If short on time, run this minimal test:
-
-1. **Start:** 1 Human vs 1 AI, Simultaneous mode
-2. **Round 1:** Queue 1 movement order, click Ready
-3. **Verify:** AI marks ready, armies move
-4. **Round 2:** Build Farm, train unit, click Ready
-5. **Verify:** Construction started, training started
-6. **Round 3:** Attack AI territory, click Ready
-7. **Verify:** Battle occurs, resolve it
-8. **Round 4:** Check unit composition after battle
-9. **Verify:** Units not all Swordsmen
-
-**Pass:** Game played 4 rounds without crashes, units preserved types
-
----
-
-**Last Updated:** 2026-02-01
+**Report format:** what you did, what you expected, what you saw, the turn/round, which PC,
+plus the logs from every PC.

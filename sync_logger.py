@@ -19,7 +19,7 @@ Architecture:
 
 Hook points:
     - main.py _send_action_to_remote(): outgoing action logging
-    - main.py _handle_network_message(): incoming action logging
+    - main.py _apply_network_message(): incoming action logging
     - main.py _on_turn_advanced() / _handle_remote_turn_end(): turn boundary snapshots
     - main.py _report_snapshot_divergence(): desync diffs (sequential receivers)
     - simultaneous/sim_state.py _advance_round(): sim mode turn snapshots
@@ -98,8 +98,11 @@ class SyncLogger:
             data: Raw message payload dict
             source: 'local' for outgoing, 'remote' for incoming
         """
-        # Sync logger action recording for multiplayer state verification
-        action_type_str = str(action_type)
+        # Sync logger action recording for multiplayer state verification.
+        # The enum's value ('MOVEMENT_ORDER'): str(MessageType.X) is 'MessageType.X' on
+        # Python 3.11+, so every action sent as an enum was skipped and never logged (L1)
+        action_type_str = getattr(action_type, 'value', action_type)
+        action_type_str = str(action_type_str)
         if action_type_str not in LOGGED_ACTION_TYPES:
             return
 

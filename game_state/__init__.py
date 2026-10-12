@@ -193,6 +193,14 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
     # Constants
     MAX_ARMIES_PER_TERRITORY = 15  # Army limit to prevent spam
 
+    # Sender of the chat lines the game writes itself ("<name> has disconnected. AI
+    # taking over."). These used to be sent as player 0, so every PC showed them as
+    # written by the host. Deliberately not an int: a negative index would quietly pick
+    # a player from the end of the per-player lists instead of failing.
+    CHAT_SYSTEM_SENDER = 'system'
+    CHAT_SYSTEM_NAME = "System"
+    CHAT_SYSTEM_COLOR = (230, 196, 120)
+
     # Veterancy/Experience system constants
     LEVEL_XP_PER_LEVEL = [30, 45, 50, 55, 60]      # XP needed at each level (per-level increments)
     LEVEL_XP_CUMULATIVE = [30, 75, 125, 180, 240]   # Cumulative thresholds for levels 1-5
@@ -1041,11 +1049,14 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Store as (timestamp, player_id, message, channel) - 4-tuple
         self.chat_messages.append((timestamp, player_id, message, channel))
         channel_tag = "[TEAM]" if channel == "team" else "[ALL]"
-        logger.info(f"[CHAT] {channel_tag} [{timestamp}] Player {player_id + 1}: {message}")
+        # player_id is CHAT_SYSTEM_SENDER for the game's own lines (not a player)
+        from_player = type(player_id) is int and player_id >= 0
+        sender = f"Player {player_id + 1}" if from_player else self.CHAT_SYSTEM_NAME
+        logger.info(f"[CHAT] {channel_tag} [{timestamp}] {sender}: {message}")
 
         # Check for cheat code - single-player only. In multiplayer every PC runs this
         # for every chat line it receives, so the cheat worked online (for anyone).
-        if not self.network_mode and message.strip().lower() == "jurvikisrichboi":
+        if from_player and not self.network_mode and message.strip().lower() == "jurvikisrichboi":
             self.player_gold[player_id] += 3000
             self.add_message(f"Player {player_id + 1} used cheat code: +3000 Gold!")
             logger.info(f"[CHEAT] Player {player_id + 1} gained 3000 gold!")
@@ -1067,8 +1078,8 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
 
         timestamp, sender_id, message, channel = chat_msg
 
-        # All-chat is visible to everyone
-        if channel == "all":
+        # All-chat and the game's own lines (disconnect notices) are visible to everyone
+        if channel == "all" or sender_id == self.CHAT_SYSTEM_SENDER:
             return True
 
         # Team chat is visible to sender and their allies
@@ -1100,6 +1111,22 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         """
         return [msg for msg in self.chat_messages
                 if self.is_chat_visible_to_player(msg, viewer_player_id)]
+
+    def add_system_chat_message(self, message):
+        """A chat line written by the game itself (e.g. a disconnect notice), for everyone."""
+        self.add_chat_message(self.CHAT_SYSTEM_SENDER, message)
+
+    def chat_sender_name(self, sender_id, include_title=True):
+        """Name shown before a chat line: the player's name, or "System" for the game."""
+        if sender_id == self.CHAT_SYSTEM_SENDER:
+            return self.CHAT_SYSTEM_NAME
+        return self.get_player_name(sender_id, include_title=include_title)
+
+    def chat_sender_color(self, sender_id):
+        """Colour of that name: the player's colour, or a neutral gold for the game."""
+        if sender_id == self.CHAT_SYSTEM_SENDER:
+            return self.CHAT_SYSTEM_COLOR
+        return self.get_player_color(sender_id)
 
     def calculate_state_checksum(self):
         """

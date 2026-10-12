@@ -225,6 +225,39 @@ class TestTakeover:
             assert session.gs(index).current_player == 2
         assert state(session.gs(2)) == state(session.gs(0))
 
+    def test_the_chat_notice_comes_from_the_game(self, make_session, monkeypatch):
+        """L8: the "has disconnected" notice was added as player 0, so the chat tab and
+        the floating notice on every PC showed the host (P1) writing it."""
+        session = make_session(num_players=3)
+        session.peers.pop(2)                                 # their PC is gone
+        self._leave(session, index=2)
+        session.peers[0].step()
+        session.peers[1].step()
+        for index in (0, 1):
+            game = session.game(index)
+            gs = game.game_state
+            notices = [m for m in gs.get_visible_chat_messages(index) if "has disconnected" in m[2]]
+            assert [m[2] for m in notices] == ["P3 has disconnected. AI taking over."]
+
+            drawn = []                                       # (text, colour) the chat tab draws
+            real_text = game.sidebar_widgets.text
+            monkeypatch.setattr(game.sidebar_widgets, 'text',
+                                lambda text, *args, **kw: drawn.append((text, args[1:2])) or
+                                real_text(text, *args, **kw))
+            gs.active_sidebar_tab = 'chat'
+            game.draw_order_sidebar()
+            assert not any(text.startswith("P1") for text, _ in drawn)
+            assert ("System:", (gs.CHAT_SYSTEM_COLOR,)) in drawn
+
+            effect = game.chat_notification_effect           # the floating notice on the map
+            rendered = []
+            real_render = effect.font_bold.render
+            monkeypatch.setattr(effect, 'font_bold', SimpleNamespace(
+                render=lambda text, *a: rendered.append(text) or real_render(text, *a),
+                size=effect.font_bold.size))
+            effect.update(0.0)
+            assert "P1" not in rendered and "System" in rendered
+
 
 class TestWinFarming:
 

@@ -287,7 +287,7 @@ Campaign missions and Tales set their own starting gold.
 
 **Tooltips:** Hovering a disabled field/button reveals the reason (e.g. "Cannot send Gold to enemy players.", "Cannot send Gold to an eliminated player.", "Cannot send Gold to one player more than once every turn.").
 
-**Multiplayer:** The sender's client deducts instantly (optimistic), then broadcasts. Peers mirror the balance change without re-validation.
+**Multiplayer:** The sender's client deducts instantly, then broadcasts. Every other player's game checks the transfer before applying it (gold transfer switched on, a living ally, once per turn per pair) and caps it at the gold the sender has.
 
 ---
 
@@ -443,6 +443,10 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
 - Domination/Total Conquest aggregate territory counts per team
 - Only enemies can trigger Capital Assault eliminations
 - First team member with active territories represents winning team
+- **Every member of the winning team has won** - the victory screen, achievements and the
+  player-level victory XP count for all of them, not only the representative (before
+  2026-10-12 achievements and the victory XP counted only the representative's win, and in
+  multiplayer achievements were recorded for the host on every PC)
 
 **Multiplayer Disconnect Elimination** (inactive for launch - rejoining a game in progress
 is switched off, `RECONNECT_ENABLED = False`, so a disconnected player's empire is played
@@ -727,13 +731,15 @@ switched off for launch - see Disconnect Handling.)
 
 **Slot Configuration:**
 - **Type**: Human waits for player, AI plays automatically, Empty removes slot
-- **Color**: Each player picks unique color (Red/Blue/Green/Yellow)
+- **Color**: Each player picks unique color (Red/Blue/Green/Yellow) - the game uses it for
+  their territories and army flags (also in Custom Game)
 - **Team**: Alliance grouping (Team 1-4, or FFA)
 - **Territory**: Starting capital selection
 
 **Territory Selection:**
-- Click map to claim starting territory
-- First-come-first-served (timestamp tiebreaker)
+- Click map to claim starting territory (only territories of the selected map)
+- First-come-first-served: the claim that reaches the host first wins - a territory someone
+  already holds cannot be taken by clicking it
 - Host can reassign territories
 - All players must select before launch
 
@@ -819,7 +825,8 @@ game without gold transfer. In the lobby a player can change only their own colo
 ### Disconnect Handling
 
 **Client Disconnects:**
-1. The host and every other player are told (`PLAYER_DISCONNECT`)
+1. The host and every other player are told (`PLAYER_DISCONNECT`); chat shows a
+   **System** line "<name> has disconnected. AI taking over."
 2. The AI takes over the empire (Medium difficulty) for the rest of the game, played by
    the host - including the rest of the current turn or round
 3. Rejoining a game in progress is not possible at launch; new connections to a running

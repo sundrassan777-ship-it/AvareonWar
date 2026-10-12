@@ -278,3 +278,28 @@ class TestGoldTransfers:
         before = list(session.gs(0).player_gold)
         self._send(session, recipient=2, amount=10)
         assert session.gs(0).player_gold == before
+
+
+class TestBrokenMessages:
+
+    def test_a_message_that_fails_is_skipped_and_the_game_goes_on(self, make_session, monkeypatch):
+        """An exception while applying a received message used to escape the frame and
+        close the game for that player. Now it is logged and skipped; the messages after
+        it are still applied."""
+        session = make_session(num_players=2)
+        client = session.game(1)
+        real_add = client.game_state.add_chat_message
+
+        def add_chat_message(player, text, channel='all'):
+            if text == "breaks":
+                raise ValueError("a handler bug")
+            real_add(player, text, channel)
+        monkeypatch.setattr(client.game_state, 'add_chat_message', add_chat_message)
+
+        h.send_chat(session.game(0), "breaks")
+        h.send_chat(session.game(0), "arrives")
+        session.flush()
+        client._process_network_messages()           # Peer.step would fail the test here
+        assert client.network_message_errors == [MessageType.CHAT_MESSAGE]
+        assert [m[2] for m in client.game_state.chat_messages] == ["arrives"]
+        client.network_message_errors.clear()         # expected: keep the fixture's check quiet

@@ -397,9 +397,16 @@ SIM_ALLIANCE_CHOICE, SIM_ROUND_COMPLETE   # (SIM_BATTLE_RESULT: legacy, unused)
 **Disconnect Behavior:**
 | Event | Result |
 |-------|--------|
-| Client disconnect | AI takes over, game continues |
+| Client disconnect | AI (Medium, run by the host) takes over, game continues; chat shows a **System** line (`gs.add_system_chat_message()`, sender `GameState.CHAT_SYSTEM_SENDER = 'system'`) |
 | Host disconnect | Game ends for all |
-| Reconnect within 5 min | Resume control from AI |
+| Rejoin a running game | Not possible at launch (`RECONNECT_ENABLED = False`) |
+
+**End of game:** each PC records achievements / XP for its own player
+(`player_level.local_human_index(game)`); the winner's allies win too (`gs.is_winner(player)`).
+
+**Robustness:** a received message that raises is logged and skipped
+(`Game._handle_network_message()` → `network_message_errors`; tests fail on any). Lobby
+territory claims are ordered by the host's clock and must name a territory of the map.
 
 **Common Network Methods:**
 ```python

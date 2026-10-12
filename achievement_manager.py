@@ -16,7 +16,7 @@ Reward types: None, 'title' (shown under profile name), 'icon' (selectable in pr
 
 from datetime import datetime
 from settings_manager import settings
-from player_level import player_level_manager
+from player_level import local_human_index, player_level_manager
 from steam_integration import steam_manager
 from utils.logger import get_logger
 
@@ -702,11 +702,9 @@ class AchievementManager:
 
         # Accumulate per-unit-type training stats even on premature quit
         # (these achievements aren't tied to game completion)
-        human_player_index = None
-        for i in range(gs.num_players):
-            if not gs.player_is_ai[i]:
-                human_player_index = i
-                break
+        # This PC's own player - multiplayer: its seat; the first human player was the
+        # host on every PC, so clients got the host's wins, training and kills (H6)
+        human_player_index = local_human_index(game)
 
         if human_player_index is not None and human_player_index in gs.player_stats:
             p_stats = gs.player_stats[human_player_index]
@@ -737,7 +735,8 @@ class AchievementManager:
         self.stats['games_finished'] = self.stats.get('games_finished', 0) + 1
         logger.info(f"Game finished. Total games: {self.stats['games_finished']}")
 
-        human_won = human_player_index is not None and gs.winner == human_player_index
+        # The winner or a teammate (a team victory names one representative as gs.winner)
+        human_won = human_player_index is not None and gs.is_winner(human_player_index)
 
         # Determine game mode
         # Campaign detection via mission_id attribute (campaign_map is unreliable -

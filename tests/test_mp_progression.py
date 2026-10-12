@@ -47,21 +47,15 @@ def achievements(monkeypatch):
 
 class TestAchievements:
 
-    @pytest.mark.xfail(strict=True, reason="H6: multiplayer achievements credit the first human "
-                       "(the host) on every PC, so a client's win is never counted")
     def test_client_win_is_counted_on_the_client(self, achievements):
         achievements.record_game_result(finished_multiplayer_game(local_index=1, winner=1))
         assert achievements.stats.get('multiplayer_wins', 0) == 1
 
-    @pytest.mark.xfail(strict=True, reason="H6: the host's win is counted as a win on every "
-                       "client's PC")
     def test_host_win_is_not_a_win_for_the_client(self, achievements):
         achievements.record_game_result(finished_multiplayer_game(local_index=1, winner=0))
         assert achievements.stats.get('multiplayer_wins', 0) == 0
         assert achievements.stats.get('multiplayer_games_finished', 0) == 1
 
-    @pytest.mark.xfail(strict=True, reason="H6/M6: a team victory is credited only to the team's "
-                       "representative player")
     def test_team_victory_counts_for_every_member(self, achievements):
         # Host alone on team 1; players 2 and 3 win together and player 2 is the
         # representative - the test runs on player 3's PC
@@ -78,8 +72,6 @@ class TestPlayerLevel:
         bonus = player_level_manager._calculate_end_bonus(game, game.game_state, 1, False, True, None)
         assert bonus == XP_MULTIPLAYER_VICTORY_BONUS   # 1 human vs 1 human: doubled
 
-    @pytest.mark.xfail(strict=True, reason="M6: team-victory XP goes only to the team's "
-                       "representative; allies get the defeat bonus")
     def test_team_victory_pays_every_member(self):
         game = finished_multiplayer_game(local_index=1, winner=0, teams=[0, 0, 1], num_players=3)
         bonus = player_level_manager._calculate_end_bonus(game, game.game_state, 1, False, True, None)

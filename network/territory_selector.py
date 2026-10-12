@@ -1262,12 +1262,22 @@ class TerritorySelector:
                         logger.warning(f"Lobby: ignored territory claim for slot {player_index} "
                                        f"from player {sender}")
                         continue
-                    # Host processes territory claim
+                    # Only a territory of this map: any other name started the game with
+                    # a capital that does not exist, and a name that is not text (a list)
+                    # crashed this lobby
+                    if not (isinstance(territory, str) and territory in map_data.TERRITORY_POLYGONS):
+                        logger.warning(f"Lobby: ignored claim of unknown territory {territory!r} "
+                                       f"from player {sender}")
+                        continue
+                    # The host's clock decides who claimed first. The claim's own
+                    # timestamp is the client PC's clock, which can be minutes off: an
+                    # "earlier" claim takes a territory another player already holds
+                    # (claim_territory swaps them), and a non-number crashed the lobby.
+                    timestamp = time.time()
                     if self.lobby_state.claim_territory(player_index, territory, timestamp):
-                        # Update player name if provided
-                        slot = self.lobby_state.get_slot(player_index)
-                        if slot and player_name:
-                            slot.player_name = player_name
+                        # The claim's player_name is not applied: the slot already has the
+                        # name the server checked when they joined (LOBBY_JOIN), and the
+                        # unchecked one here could be anything (not text, any length)
                         self._sync_from_lobby_state()
                         # Broadcast update to all clients
                         self._send_slot_update(player_index)

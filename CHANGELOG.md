@@ -2,6 +2,53 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-12 - Multiplayer audit, Phase 8: progression, robustness, docs
+
+Branch `fix/multiplayer-sync`; the last phase of the audit - every audit test now passes
+(no xfail markers left). Developer guide: "Multiplayer sync model (overview)" (Network
+System), "Achievement System", "Player Level System" and "Player colours" (Game Setup
+Screens) in CODE_GUIDE.md. Manual LAN test plan: `docs/TESTING_PLAN_MULTIPLAYER_FIXES.md`
+(rewritten - the February plan checked behaviour Phases 3-7 replaced).
+- **H6** Achievements record the player at this PC (`player_level.local_human_index(game)`)
+  instead of the first non-AI player: in multiplayer every PC credited the host, so a
+  client's win counted for nobody.
+- **M6** A team win counts for every member: `GameState.is_winner(player)` (the winner or a
+  teammate) decides achievements and the player-level victory bonus, which counted only the
+  team's representative `gs.winner` (its allies got the defeat bonus; Custom Game teams
+  too). The victory cinematic already counted teams and now shares the helper.
+- **M14** The colours chosen in the lobby / Custom Game are used: `initialize_game()`
+  applies `player_colors` and keeps `Game.player_color_indices`, which also picks the army
+  flag images. Only loading a save applied colours before.
+- **L1** The sync logger dropped local actions (`str()` of the enum gave "MessageType.X");
+  it uses the enum's value now.
+- **L8** Disconnect notices are System chat lines (`gs.add_system_chat_message()`, sender
+  `GameState.CHAT_SYSTEM_SENDER`, shown as "System" by the chat tab and the floating
+  notices via `chat_sender_name()` / `chat_sender_color()`); they were added as player 0, so
+  chat showed the host writing them.
+- **A received message that raises is skipped, not fatal:** `_handle_network_message()` now
+  wraps the dispatcher (`_apply_network_message()`), logs the exception and records the type
+  in `Game.network_message_errors` - the exception escaped the frame and closed the game for
+  that player. The test harness fails a test on any recorded error
+  (`Peer.check_messages_applied()`, also in the `make_session` teardown).
+- **Found on the way (lobby):** the host ordered territory claims by the claim's timestamp -
+  the client PC's clock - so a client whose clock ran behind took territories other players
+  already held (`claim_territory()` swaps for an "earlier" claim); a non-number timestamp or
+  a territory that was not text crashed the host's lobby; names not on the map were accepted
+  (the game then started with a capital that does not exist); the claim's player name was
+  applied unchecked. The host now uses its own clock, accepts only territories of the map
+  and keeps the name the server sanitised at join.
+- **L3** checked: the snapshot apply and `_apply_battle_outcome()` refresh the income /
+  army / bonus caches; the last direct owner write was the `SIM_BATTLE_RESULT` handler,
+  which nothing sends any more - it now ignores the message (its apply set an army count
+  without units). **L2** moot: the STATE_DETAIL exchange went in Phase 5.
+- Docs: CODE_GUIDE (above), GAME_MECHANICS (team wins, gold-transfer checks, claims,
+  colours, System line), QUICK_REFERENCE (the disconnect table still promised reconnects),
+  CLAUDE.md, PATCHNOTES.
+- Tests: xfail removed for H6 / M6 (4, `test_mp_progression.py`), M14 and L1; new
+  `TestColours.test_army_flags_follow_the_chosen_colour`, 4 claim tests in
+  `TestLobbyValidation`, `TestTakeover.test_the_chat_notice_comes_from_the_game`
+  (`test_mp_seq_ai.py`), `TestBrokenMessages` (`test_mp_validation.py`).
+
 ## 2026-10-12 - Multiplayer audit, Phase 7: who may send what
 
 Branch `fix/multiplayer-sync`. Developer guide: "Who may send what" (Network System) in

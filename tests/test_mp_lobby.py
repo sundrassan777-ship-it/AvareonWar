@@ -443,8 +443,6 @@ class TestRealLobby:
 
 class TestColours:
 
-    @pytest.mark.xfail(strict=True, reason="M14: colour choices from the lobby / Custom Game are "
-                       "never applied to player_colors")
     def test_chosen_colours_are_used_in_game(self, display):
         from main import Game
         from config.constants import PLAYER_COLORS
@@ -456,6 +454,22 @@ class TestColours:
             assert game.game_state.player_colors[1] == PLAYER_COLORS[0]
         finally:
             game.__dict__.clear()                 # ~400 MB of map art; don't keep it alive
+            gc.collect()
+
+    def test_army_flags_follow_the_chosen_colour(self, display):
+        """Flags were picked by player number (player 1 always red) - they must match the
+        territory colour now that the chosen colours apply."""
+        from main import Game
+        game = Game()
+        try:
+            game.initialize_game({'num_players': 2, 'player_is_ai': [False, True],
+                                  'player_ai_difficulty': [1, 1], 'player_colors': [2, 0]})
+            assert game.player_color_indices == [2, 0]
+            green = pygame.image.load("assets/mapicons/GreenFlag1.png").convert_alpha()
+            flag = game.army_flag_icons[0][1]
+            assert pygame.image.tostring(flag, 'RGBA') == pygame.image.tostring(green, 'RGBA')
+        finally:
+            game.__dict__.clear()
             gc.collect()
 
 
@@ -485,3 +499,60 @@ class TestLobbyValidation:
         net.flush()
         host_sel._process_network_messages()
         assert host_sel.lobby_state.get_slot(2).state == SLOT_HUMAN
+
+    @staticmethod
+    def _claim(client, territory, **extra):
+        """A client's TERRITORY_SELECT, as a modified or badly-clocked client could send it."""
+        data = {'player_index': 1, 'territory_name': territory, 'timestamp': time.time()}
+        data.update(extra)
+        client.send_message(client.protocol.encode_message(MessageType.TERRITORY_SELECT, data))
+
+    def _lobby(self, display):
+        net = h.Network()
+        host_sel = selector(display, net.server, True, 0)
+        client = join(net, host_sel, 1, "P2")
+        return net, host_sel, client
+
+    def test_a_client_clock_cannot_take_a_claimed_territory(self, display):
+        """The claim's timestamp was the client PC's clock: one running behind the host's
+        made the claim "earlier", and it took a territory the host already held."""
+        net, host_sel, client = self._lobby(display)
+        held = h.spread_territories(2)[0]
+        assert host_sel.lobby_state.claim_territory(0, held)
+        self._claim(client, held, timestamp=time.time() - 600)      # their clock: 10 min behind
+        net.flush()
+        host_sel._process_network_messages()
+        assert host_sel.lobby_state.get_slot(0).territory == held
+        assert host_sel.lobby_state.get_slot(1).territory == ""
+
+    def test_claims_must_name_a_territory_of_the_map(self, display):
+        net, host_sel, client = self._lobby(display)
+        self._claim(client, "Atlantis")
+        self._claim(client, ["not", "a", "name"])                  # crashed the host's lobby
+        net.flush()
+        host_sel._process_network_messages()
+        assert host_sel.lobby_state.get_slot(1).territory == ""
+
+    def test_a_claim_with_a_broken_timestamp_still_works(self, display):
+        """A timestamp that is not a number crashed the host's lobby when the territory
+        was already taken; the host's own clock is used now."""
+        net, host_sel, client = self._lobby(display)
+        held, free = h.spread_territories(2)
+        assert host_sel.lobby_state.claim_territory(0, held)
+        self._claim(client, held, timestamp="soon")
+        self._claim(client, free, timestamp="soon")
+        net.flush()
+        host_sel._process_network_messages()
+        assert host_sel.lobby_state.get_slot(0).territory == held
+        assert host_sel.lobby_state.get_slot(1).territory == free
+
+    def test_a_claim_does_not_rename_the_player(self, display):
+        """The name a claim carries was applied unchecked (the server only checks the name
+        a player joins with)."""
+        net, host_sel, client = self._lobby(display)
+        territory = h.spread_territories(2)[1]
+        self._claim(client, territory, player_name="x" * 500)
+        net.flush()
+        host_sel._process_network_messages()
+        slot = host_sel.lobby_state.get_slot(1)
+        assert (slot.territory, slot.player_name) == (territory, "P2")

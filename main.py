@@ -595,6 +595,9 @@ class Game:
         # that has happened (or after a limit).
         self._held_network_messages = []
         self._held_network_since = None
+        # Types of received messages that raised while being applied (logged and
+        # skipped, see _handle_network_message). The test harness fails on any.
+        self.network_message_errors = []
         # Messages "sent" from another thread (the sequential AI's turn runs on a worker
         # thread on the host): queued here in order and sent by the main loop
         # (_flush_thread_messages). Message encoding is not thread-safe, and a main-thread
@@ -827,6 +830,24 @@ class Game:
             self.game_state.starting_gold = clamp_starting_gold(setup_config['starting_gold'])
             self.game_state.player_gold = [self.game_state.starting_gold] * len(self.game_state.player_gold)
 
+        # The colours chosen in the lobby / Custom Game (they were ignored, M14): indices
+        # into PLAYER_COLORS - a list in player order (Custom Game) or {slot: index} (lobby).
+        # A loaded save's colours are RGB values and applied by the save path instead.
+        # player_color_indices also picks each player's army flags (Red/Blue/... Flag).
+        self.player_color_indices = list(range(self.game_state.num_players))
+        chosen = setup_config.get('player_colors')
+        if isinstance(chosen, (list, dict)):
+            pairs = chosen.items() if isinstance(chosen, dict) else enumerate(chosen)
+            for player, color_index in pairs:
+                try:
+                    player = int(player)                    # JSON object keys are strings
+                except (TypeError, ValueError):
+                    continue
+                if (0 <= player < self.game_state.num_players and type(color_index) is int
+                        and 0 <= color_index < len(PLAYER_COLORS)):
+                    self.player_color_indices[player] = color_index
+                    self.game_state.player_colors[player] = PLAYER_COLORS[color_index]
+
         # Randomize territory bonuses if enabled (not used in campaign — campaign never sets this flag)
         if self.randomize_bonuses:
             bonus_mapping = setup_config.get('bonus_mapping')
@@ -1035,10 +1056,13 @@ class Game:
         # Format: {player_index: {tier: pygame.Surface}}
         # tier 1: 1-4 armies, tier 2: 5-9 armies, tier 3: 10+ armies
         self.army_flag_icons = {}
-        # Load all 4 player flag colors (Red, Blue, Green, Yellow)
+        # Load all 4 player flag colors (Red, Blue, Green, Yellow) - each player's flags in
+        # the colour chosen for them (player_color_indices), so flags match the territories
         player_flag_colors = ['Red', 'Blue', 'Green', 'Yellow']
+        color_indices = getattr(self, 'player_color_indices', None) or []
         for player_index in range(len(player_flag_colors)):
-            color_name = player_flag_colors[player_index]
+            color_index = color_indices[player_index] if player_index < len(color_indices) else player_index
+            color_name = player_flag_colors[color_index]
             self.army_flag_icons[player_index] = {}
             for tier in range(1, 4):  # Tiers 1, 2, 3
                 flag_path = f"assets/mapicons/{color_name}Flag{tier}.png"
@@ -1856,6 +1880,21 @@ class Game:
 
     def _handle_network_message(self, message: dict, allow_hold: bool = True):
         """
+        Handle a single network message from a remote player (see
+        _apply_network_message). A message that raises while being applied is logged
+        and skipped: the exception used to escape the frame and close the game for
+        this player. The next state snapshot (turn end / round end) heals whatever
+        the message left half-applied.
+        """
+        try:
+            self._apply_network_message(message, allow_hold)
+        except Exception:
+            msg_type = message.get('type') if isinstance(message, dict) else None
+            logger.exception(f"[NETWORK] Failed to apply {msg_type} - message skipped")
+            self.network_message_errors.append(msg_type)
+
+    def _apply_network_message(self, message: dict, allow_hold: bool = True):
+        """
         Handle a single network message from remote player.
 
         Args:
@@ -2012,7 +2051,8 @@ class Game:
 
                     # Chat notification: inform all players about the disconnect
                     player_name = self.game_state.player_names[player_index] if self.game_state.player_names[player_index] else f"Player {player_index + 1}"
-                    self.game_state.add_chat_message(0, f"{player_name} has disconnected. AI taking over.")
+                    # A system line: sent as player 0 it read as written by the host
+                    self.game_state.add_system_chat_message(f"{player_name} has disconnected. AI taking over.")
 
         elif msg_type == MessageType.DISCONNECT_ELIMINATION:
             # Player eliminated after reconnect timeout (60s) — both host and clients process this
@@ -2022,7 +2062,7 @@ class Game:
 
                 # Chat notification
                 player_name = self.game_state.player_names[player_index] if self.game_state.player_names[player_index] else f"Player {player_index + 1}"
-                self.game_state.add_chat_message(0, f"{player_name} has been disconnected and eliminated.")
+                self.game_state.add_system_chat_message(f"{player_name} has been disconnected and eliminated.")
 
                 # Execute disconnect elimination (ally territory distribution + cleanup)
                 self.game_state.eliminate_player_disconnect(player_index)
@@ -2107,31 +2147,11 @@ class Game:
                     self.sim_state.player_timers[player_id] = remaining
 
         elif msg_type == MessageType.SIM_BATTLE_RESULT:
-            # Battle result from the player who resolved it
-            territory = data.get('territory')
-            result = data.get('result', {})
-            logger.info(f"[NETWORK] Battle result for {territory}: {result}")
-
-            if self.sim_state is not None:
-                # Apply battle result to game state
-                winner = result.get('winner')
-                surviving_armies = result.get('surviving_armies', 0)
-                new_owner = result.get('new_owner')
-
-                if territory and new_owner is not None:
-                    self.game_state.territory_owners[territory] = new_owner
-                    self.game_state._territory_owners_version += 1  # FPS OPT: Invalidate overlay cache
-                    self.game_state.invalidate_territorial_bonus_cache()  # Ownership changed
-                    self.game_state.set_garrison_armies(territory, new_owner,
-                                                       unmoved=0, moved=surviving_armies, units=None)
-
-                # Remove from pending battles if tracked
-                if hasattr(self.sim_state, 'pending_battles'):
-                    # Battles can be objects (with .territory attr) or dicts
-                    self.sim_state.pending_battles = [
-                        b for b in self.sim_state.pending_battles
-                        if getattr(b, 'territory', b.get('territory') if isinstance(b, dict) else None) != territory
-                    ]
+            # Legacy: nothing sends this any more (every PC replays a battle from
+            # BATTLE_RESOLVE's seed, and the server takes this type from no client). Its
+            # old apply - new owner plus a bare army count, no units, no cache refresh -
+            # would only corrupt the territory, so it is ignored.
+            logger.warning(f"[NETWORK] Ignored legacy SIM_BATTLE_RESULT for {data.get('territory')}")
 
         elif msg_type == MessageType.SIM_HERO_ABILITY:
             # Hero ability used by another player - apply the effect locally
@@ -3773,18 +3793,8 @@ class Game:
 
     def _is_victory_for_local_player(self):
         """Check if the local human player (or their team) won the game."""
-        local = self.get_local_player()
-        winner = self.game_state.winner
-        if winner is None or winner < 0:  # M3 fix: guard against None winner
-            return False
-        # Direct match
-        if local == winner:
-            return True
-        # Team match: check if local player and winner are on the same team
-        teams = getattr(self.game_state, 'player_teams', None)
-        if teams and local < len(teams) and winner < len(teams):
-            return teams[local] == teams[winner]
-        return False
+        # Same rule as achievements and player-level XP (GameState.is_winner)
+        return self.game_state.is_winner(self.get_local_player())
 
     def _all_animations_complete(self):
         """Check if all game animations have finished (safe to start victory cinematic).

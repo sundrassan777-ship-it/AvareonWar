@@ -176,6 +176,26 @@ def get_progress_for_xp(total_xp):
     }
 
 
+def local_human_index(game):
+    """
+    The player whose progress this PC records (achievements, player-level XP): in
+    multiplayer this PC's own seat (local_player_index); otherwise the first human player.
+    Shared by both systems - achievements used to credit the first human, i.e. the host,
+    on every PC (H6).
+    """
+    gs = game.game_state
+    local_idx = getattr(gs, 'local_player_index', None)
+    if local_idx is None:
+        local_idx = getattr(game, 'local_player_index', None)
+    if isinstance(local_idx, int) and 0 <= local_idx < gs.num_players:
+        return local_idx
+    # Single-player: find first human
+    for i in range(gs.num_players):
+        if not gs.player_is_ai[i]:
+            return i
+    return None
+
+
 class PlayerLevelManager:
     """
     Singleton player level manager. Tracks persistent XP and level,
@@ -319,18 +339,9 @@ class PlayerLevelManager:
         """
         Find the local human player index.
         In multiplayer, uses local_player_index. Otherwise, finds first non-AI player.
+        (local_human_index(), shared with the achievement manager.)
         """
-        gs = game.game_state
-        # Multiplayer: use local_player_index if available
-        local_idx = getattr(gs, 'local_player_index', None)
-        if local_idx is not None and not gs.player_is_ai[local_idx]:
-            return local_idx
-
-        # Single-player: find first human
-        for i in range(gs.num_players):
-            if not gs.player_is_ai[i]:
-                return i
-        return None
+        return local_human_index(game)
 
     def _is_disconnect_farming(self, gs, human_index):
         """
@@ -412,7 +423,9 @@ class PlayerLevelManager:
     def _calculate_end_bonus(self, game, gs, human_index, is_campaign,
                              is_multiplayer, mission):
         """Calculate end-of-game bonus XP"""
-        human_won = gs.winner == human_index
+        # The winner or a teammate: a team victory names one representative as gs.winner,
+        # and its allies used to get the defeat bonus (M6)
+        human_won = gs.is_winner(human_index)
 
         if is_campaign:
             # Campaign: 100 XP for first-time win, 0 otherwise

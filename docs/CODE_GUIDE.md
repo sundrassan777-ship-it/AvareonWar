@@ -1827,7 +1827,7 @@ python tests/test_2v2_simultaneous_40turn.py
 
 **Modules:** `network/server.py`, `network/client.py`, `network/protocol.py`, `network/message_queue.py`, `network/lobby.py`, `network/territory_selector.py`, `network/multiplayer_setup.py`, `network/upnp.py`
 **Total:** ~4,900+ lines
-**Status:** Full 2-4 player multiplayer with AI slots, reconnection support, UPnP internet play
+**Status:** Full 2-4 player multiplayer with host-run AI slots, AI takeover when a player leaves, UPnP internet play (reconnecting is off for launch)
 
 ### Architecture Overview
 
@@ -1863,6 +1863,30 @@ python tests/test_2v2_simultaneous_40turn.py
 | Sockets | Blocking sends with `SEND_TIMEOUT` (never non-blocking `sendall()`); reads only after `select()` |
 | Allied vision | Allies see each other's movement arrows |
 | Internet play | UPnP auto port-forward + public IP detection (graceful LAN fallback) |
+
+### Multiplayer sync model (overview)
+
+The pre-launch multiplayer audit (2026-10, Phases 1-8, tests `tests/test_mp_*.py`) settled
+one rule per question. The sections below hold the details.
+
+| Question | Rule | Details |
+|----------|------|---------|
+| Whose state is true? | **Simultaneous:** the host's - a whole-game snapshot when execution starts (`SIM_ALL_READY`) and when the round ends (`SIM_ROUND_COMPLETE`). **Sequential:** the turn owner's (a human's own PC; the host for computer players) - snapshot with the moves (`EXECUTE_ORDERS`) and at turn end (`TURN_END`). Receivers never advance a turn on their own. | "Multiplayer model (the host is the truth)", "Sequential multiplayer: the turn owner is the truth", "State snapshots" |
+| How do battles stay identical? | The resolver sends a seed; every PC replays `resolve_battle()` with it; a different outcome is corrected to the resolver's. | "Battle sync" |
+| Other random picks? | Shipped as results (Royal Charisma, Decisive Strike, Valorous Charge). | "Battle sync" |
+| Who runs the AI? | The host only - lobby AI slots and taken-over empires. | "AI System", "Sequential multiplayer: ..." |
+| A player leaves mid-game? | `PLAYER_DISCONNECT` → the AI (Medium) plays their empire; a **System** chat line tells everyone. Reconnecting is off for launch. | "Connection lifecycle", "AI takeover" |
+| Who may send what? | The server stamps each client message with its sender and drops claims to act for another player; each PC checks the rest. | "Who may send what" |
+| A received message raises? | Logged and skipped; the next snapshot heals what it left half-applied. | "main.py Network Integration" |
+| Achievements / XP / recap? | Each PC records its own player; the winner's allies win too (`GameState.is_winner()`); stats travel in the snapshots. | "Achievement System", "Player Level System" |
+
+**Accepted limits (launch):** the host leaving ends the game (no host migration); the
+sequential turn owner is trusted for its own turn (its snapshot is the truth by design);
+rare same-round cross-battle effects (a Capital Assault elimination or a Safe Haven retreat
+touching another pending battle) can differ between PCs until the next snapshot - no stall,
+it heals; a client's battle report left open past the 180 s host fallback can show a
+different result than the host settled; other players see an AI turn's builds and training
+when its moves start or when its turn ends. Reconnecting is deferred (`RECONNECT_ENABLED`).
 
 ### network/upnp.py (~150 lines)
 
@@ -1945,7 +1969,12 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
 - **Lobby** (`territory_selector._process_network_messages()`): a client's
   LOBBY_SLOT_UPDATE changes only its own slot's colour and team (`set_player_color` /
   `set_player_team`); every field of any slot used to be applied. TERRITORY_SELECT only for
-  the sender's slot.
+  the sender's slot and only a territory of the current map (`map_data.TERRITORY_POLYGONS`).
+  **The host's clock orders claims** (`time.time()` when the host handles it): the claim's
+  own `timestamp` is the client PC's clock, which can be minutes off - a claim "earlier"
+  than the holder's took their territory (`claim_territory()` swaps), and a non-number
+  crashed the host's lobby. The claim's `player_name` is not applied (the slot keeps the
+  name the server sanitised at join).
 - Not checked: what the turn owner does in its own sequential turn (its snapshot is the
   truth by design), cooldowns / silence (timing differs per PC).
 
@@ -1955,7 +1984,8 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
 1. Define in `network_config.py` MessageType class
 2. Add handler in `_handle_received_message()` if server needs to process it
 3. Update `NetworkClient` to send/receive
-4. Add handler in `main.py _handle_network_message()`
+4. Add handler in `main.py _apply_network_message()` (called through the
+   `_handle_network_message()` guard)
 5. If the message is a gameplay event other clients need to see, add it to `_RELAY_MESSAGE_TYPES` in `server.py`
 6. **If clients send it:** add it to `_CLIENT_MESSAGE_TYPES` (otherwise the server drops it
    from clients), to `_SENDER_FIELDS` if its data names the acting player, and decide what
@@ -2198,19 +2228,35 @@ self.local_player_index      # 0 for host, 1-3 for clients
 
 **Key Methods:**
 ```python
-_process_network_messages()   # Process incoming messages
-_handle_network_message(msg)  # Route message to handler
+_process_network_messages()   # Process incoming messages (held ones first, in order)
+_handle_network_message(msg)  # Guard: applies one message; logs + skips it if it raises
+_apply_network_message(msg)   # Route message to handler
 _send_action_to_remote(type, data)  # Send action to network
 ```
 
 **Adding new message handler in main.py:**
 ```python
-# In _handle_network_message():
+# In _apply_network_message():
 elif msg_type == MessageType.YOUR_NEW_MESSAGE:
     data = message.get('data', {})
     # Handle the message
     self.game_state.do_something(data)
 ```
+
+**A message that raises is skipped, not fatal** (multiplayer audit, Phase 8):
+`_handle_network_message()` wraps `_apply_network_message()`; an exception is logged
+(`logger.exception`, "Failed to apply X - message skipped") and its type recorded in
+`Game.network_message_errors`. It used to escape the frame and close the game for that
+player. The test harness fails a test on any recorded error (`Peer.step()` and the
+`make_session` teardown), so handler bugs stay loud in tests - a test that provokes one on
+purpose clears the list.
+
+**System chat lines:** lines the game writes itself (disconnect notices) go through
+`gs.add_system_chat_message(text)`. Their sender is `GameState.CHAT_SYSTEM_SENDER`
+(`'system'`, deliberately not an int - a negative index silently picks a player from the end
+of the per-player lists); the chat tab and the floating notices show them as "System" via
+`chat_sender_name()` / `chat_sender_color()`. They were added as player 0 and read as written
+by the host. Anything that shows a chat line's sender must use those helpers.
 
 ### Battle sync (seeded replay) and held messages
 
@@ -2299,29 +2345,15 @@ joined through the real `NetworkServer` / `NetworkClient` logic over in-memory s
 the run). Real-socket tests (`TestRealSockets`) cover large frames and refusal reasons.
 
 ```bash
-# Run network tests
-py -m pytest tests/test_mp_transport.py tests/test_mp_lobby.py tests/test_mp_sequential.py tests/test_mp_simultaneous.py tests/test_mp_progression.py
-pytest tests/test_network_server.py
-pytest tests/test_network_protocol.py
-
-# Manual testing (2-4 players)
-# Terminal 1 (Host):
-python main.py --multiplayer --host
-
-# Terminal 2-4 (Clients):
-python main.py --multiplayer --join <host_ip>
-
-# Test checklist:
-# [ ] Host creates lobby, clients join
-# [ ] AI slot configuration works
-# [ ] Territory selection syncs
-# [ ] Game launches for all players
-# [ ] Orders sync correctly
-# [ ] Battles resolve for all
-# [ ] Client disconnect → AI takeover
-# [ ] Host disconnect → game ends
-# [ ] Reconnection with password works
+# Run network tests (all audit findings are fixed: no xfail markers are left)
+py -m pytest tests/test_mp_transport.py tests/test_mp_lobby.py tests/test_mp_validation.py tests/test_mp_foundations.py tests/test_mp_battles.py tests/test_mp_sequential.py tests/test_mp_seq_flow.py tests/test_mp_seq_ai.py tests/test_mp_simultaneous.py tests/test_mp_sim_flow.py tests/test_mp_progression.py
+py -m pytest tests/test_network_server.py tests/test_network_protocol.py
 ```
+
+**Manual testing on real PCs:** `docs/TESTING_PLAN_MULTIPLAYER_FIXES.md` - the pre-launch LAN
+test plan (lobby, both turn modes, players leaving, progression), which logs to collect and
+which log lines mean "report this". Start the game normally on each PC and use Main Menu →
+Multiplayer → Host Game / Join Game.
 
 ---
 
@@ -3754,6 +3786,15 @@ using filename stem as key (only for games with a `campaign_map`, which tales ha
 
 **Data flow:** Game ends → `show_recap_if_ended()` → `achievement_manager.record_game_result(game)` → detects mode, increments stats, checks thresholds → returns newly earned list → `RecapScreen` shows preview popups → user returns to main menu → achievement panel shows all achievements. Campaign missions set `gs.winner = 0` and `gs.phase = 'ended'` in their `_start_victory` method to trigger this flow.
 
+**Whose game is recorded (multiplayer audit, Phase 8):** the player at THIS PC -
+`player_level.local_human_index(game)` (`gs.local_player_index`, else
+`game.local_player_index`, else the first human for single-player). It used to be the first
+non-AI player, i.e. the host, on every PC: a client's win credited nobody. **A win counts
+for the winner's allies too** - always ask `gs.is_winner(player)` (victory.py: the winner or
+a player on the winner's team), never compare with `gs.winner` directly. The player-level
+XP uses the same two helpers; the victory/defeat cinematic
+(`Game._is_victory_for_local_player()`) asks `is_winner()` too.
+
 **Achievement definitions:** Hardcoded in `ACHIEVEMENTS` list in `achievement_manager.py`. Each has id, name, description, category, icon path, reward_type (None/title/icon), reward_id, stat_key, stat_threshold. Dual-reward achievements use optional `reward_type_2`/`reward_id_2` fields.
 
 **Categories:** general, campaign, training, conquest. Defined in `CATEGORIES` list.
@@ -3825,7 +3866,7 @@ The player level system tracks persistent XP across games. XP is accumulated dur
 
 **Architecture:**
 - `player_level.py`: Singleton `PlayerLevelManager`, tiered XP formula (`XP_TIERS`), `xp_for_level()`/`level_from_xp()` conversion, `record_game_xp()` end-of-game calculation
-- `game_state/`: 10 hook sites use `_track_stat(player, 'xp_earned', amount)` — stats tracked for all players, only human player's read at game end
+- `game_state/`: 10 hook sites use `_track_stat(player, 'xp_earned', amount)` — stats tracked for all players, only the local human's read at game end (`local_human_index(game)`; multiplayer: this PC's player). The victory bonus goes to every member of the winning team (`gs.is_winner()`), not only the team's representative `gs.winner`
 - `main_menu.py`: Gold-filled level bar in profile panel (to the right of name input)
 - `recap_screen.py`: Animated XP bar after achievement popups with level-up particle burst
 
@@ -4313,6 +4354,17 @@ Path to the game:
 - `Game.initialize_game()` applies it only when the key is present, so campaigns and tales
   (which set their own gold) are unaffected. Saves and replays already store
   `starting_gold`.
+
+### Player colours
+
+Both screens put the chosen colours in the game config as `player_colors` (Custom Game: a
+list by player; lobby: `{slot: colour index}`, from `_build_config_from_lobby()`).
+`Game.initialize_game()` applies them - `game_state.player_colors[p] = PLAYER_COLORS[index]`
+- and keeps the indices in `Game.player_color_indices`, which picks each player's army flag
+images (`assets/mapicons/<Red|Blue|Green|Yellow>Flag<tier>.png`). Invalid entries keep the
+default.
+The choice used to be ignored (only loading a save applied colours), so everyone played in
+the default colours. Campaigns and tales pass no `player_colors` and are unaffected.
 
 ### Label tooltips
 

@@ -2356,8 +2356,9 @@ class UIRenderer:
             team = w.text("[TEAM]", 'small_bold', (110, 210, 110))
             screen.blit(team, (nx, y))
             nx += team.get_width() + 5
-        name = w.text(w.fit_text(f"{gs.get_player_name(spec['player'])}:", 'small_bold', x + width - nx),
-                      'small_bold', gs.get_player_color(spec['player']))
+        # chat_sender_*: "System" for the game's own lines (disconnect notices)
+        name = w.text(w.fit_text(f"{gs.chat_sender_name(spec['player'])}:", 'small_bold', x + width - nx),
+                      'small_bold', gs.chat_sender_color(spec['player']))
         screen.blit(name, (nx, y))
         ly = y + spec['name_h']
         for line in spec['lines']:

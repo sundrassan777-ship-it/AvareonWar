@@ -234,6 +234,7 @@ class Peer:
         game = self.game
         gs = game.game_state
         game._process_network_messages()
+        self.check_messages_applied()
         gs.update_animations(dt)
         sim = game.sim_state
         # Same hand-off as Game.run(): executing + no animations left -> arrivals
@@ -262,6 +263,13 @@ class Peer:
                 gs._complete_turn_announcement()
         else:
             self._announcement_elapsed = None
+
+    def check_messages_applied(self):
+        """A received message that raised is logged and skipped by the game (players
+        keep playing, Game._handle_network_message) - in a test it is a failure."""
+        errors = self.game.network_message_errors
+        if errors:
+            raise AssertionError(f"P{self.index + 1} could not apply {errors} (see the log)")
 
     def busy(self):
         game = self.game
@@ -356,8 +364,13 @@ def make_session():
         return session
 
     yield factory
-    for session in sessions:
-        session.close()
+    try:
+        for session in sessions:
+            for peer in session.peers.values():
+                peer.check_messages_applied()
+    finally:
+        for session in sessions:
+            session.close()
 
 
 def make_game(connection, local_index, config):

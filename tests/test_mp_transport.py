@@ -331,8 +331,6 @@ class TestClientDisconnectReporting:
 
 class TestSyncLogger:
 
-    @pytest.mark.xfail(strict=True, reason="L1: str(MessageType.X) is 'MessageType.X' on Python "
-                       "3.11+, so actions sent with enum types are never logged")
     def test_sync_logger_records_enum_action_types(self):
         from game_state import GameState
         from sync_logger import SyncLogger
