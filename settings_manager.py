@@ -74,6 +74,10 @@ SETTING_TYPES = {
     'campaign_missions_xp_claimed': (list,),
     # Setup screen options
     'show_setup_borders': (bool,),
+    # Steam networking kill switches (no Options-menu entry - edit config.json, or use the
+    # --no-steam-join-hook / --no-steam-relay launch options; see steam_integration.py)
+    'steam_join_hook': (bool,),
+    'steam_relay': (bool,),
 }
 
 
@@ -147,6 +151,11 @@ class SettingsManager:
 
             # Setup screen options
             'show_setup_borders': False,        # Show territory borders in setup screens
+
+            # Steam networking kill switches: False turns the feature off for a build
+            # where it misbehaves, without touching anything else
+            'steam_join_hook': True,    # receive "join game" requests while the game runs
+            'steam_relay': True,        # join/host over Steam's relay network (SDR)
         }
 
         # Current settings (loaded from file or defaults)

@@ -16845,6 +16845,16 @@ if __name__ == "__main__":
     if _steam_connect_target:
         logger.info(f"Steam invite detected: will auto-connect to {_steam_connect_target}")
 
+    # Steam networking diagnostics (launch option --sdr-test, a support tool players never
+    # see otherwise): runs INSTEAD of the menu and quits when its window closes. It shows
+    # the +connect target above too, so a test can tell how an invite arrived. Static
+    # import so PyInstaller bundles the module. See steam_sdr_test.py.
+    if '--sdr-test' in sys.argv:
+        import steam_sdr_test
+        steam_sdr_test.run(screen, connect_target=_steam_connect_target)
+        pygame.quit()
+        sys.exit()
+
     # Main menu loop
     # Book of Tales scenarios: id (book_of_tales.SCENARIOS 'id') -> launch info, in
     # the same shape as the campaign loop's _MISSION_REGISTRY. Defined at this level

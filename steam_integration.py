@@ -40,6 +40,51 @@ logger = get_logger(__name__)
 # Steam App ID — must match Steamworks partner dashboard
 STEAM_APP_ID = 4518130
 
+# Kill switches for the Steam networking features (steam_networking.py), so a build where
+# one misbehaves stays playable: a Steam launch option, or the matching config.json key
+# set to false. Join hook = "join game" requests while the game runs (callback 337);
+# relay = joining/hosting through Steam Datagram Relay.
+NO_JOIN_HOOK_FLAG = '--no-steam-join-hook'
+NO_RELAY_FLAG = '--no-steam-relay'
+
+# The Steam networking diagnostics launch option (steam_sdr_test.py, started from main.py)
+SDR_TEST_FLAG = '--sdr-test'
+# Temporary safety gate: until the two-PC spike has confirmed the ctypes binding on real
+# Steam, only --sdr-test binds steam_networking - regular play stays exactly as before.
+# Set to False once the Steam bridge (multiplayer over SDR) starts using the binding.
+NETWORKING_ONLY_FOR_SDR_TEST = True
+
+
+def steam_feature_switches(argv=None, settings_obj=None):
+    """
+    Which Steam networking features may run: (join_hook, relay).
+
+    A feature is off when its launch option is given OR its config.json key is false.
+
+    Args:
+        argv: command line (default sys.argv)
+        settings_obj: settings source with .get() (default settings_manager.settings)
+    """
+    import sys
+    argv = sys.argv if argv is None else argv
+    if settings_obj is None:
+        try:
+            from settings_manager import settings as settings_obj
+        except Exception:
+            settings_obj = None
+
+    def setting_on(key):
+        if settings_obj is None:
+            return True
+        try:
+            return settings_obj.get(key, True) is not False
+        except Exception:
+            return True
+
+    join_hook = NO_JOIN_HOOK_FLAG not in argv and setting_on('steam_join_hook')
+    relay = NO_RELAY_FLAG not in argv and setting_on('steam_relay')
+    return join_hook, relay
+
 
 def _encode(s):
     """Encode a string to bytes for ctypes calls.
@@ -104,6 +149,10 @@ class SteamManager:
             except Exception as e:
                 logger.warning(f"RequestCurrentStats() failed: {e}")
 
+            # Steam networking (relay joining, rich presence, join requests) binds to the
+            # DLL SteamworksPy just initialised - so only after SteamInit succeeded
+            self._init_networking()
+
             return True
         except ImportError:
             logger.info("SteamworksPy not installed — running without Steam integration")
@@ -144,8 +193,32 @@ class SteamManager:
         logger.warning(f"Steam stats readiness timed out after {max_wait}s — proceeding anyway")
         return False
 
+    def _init_networking(self):
+        """
+        Bind steam_networking to the initialised DLL, honouring the kill switches
+        (steam_feature_switches). Never fails Steam initialisation: without it,
+        multiplayer simply stays TCP-only.
+        """
+        import sys
+        if NETWORKING_ONLY_FOR_SDR_TEST and SDR_TEST_FLAG not in sys.argv:
+            logger.info("Steam networking not bound (only --sdr-test uses it for now)")
+            return
+        try:
+            from steam_networking import steam_net
+            join_hook, relay = steam_feature_switches()
+            steam_net.init(join_hook=join_hook, relay=relay)
+        except Exception as e:
+            logger.warning(f"Steam networking setup failed: {e}")
+
     def shutdown(self):
         """Shut down Steamworks SDK.  Safe to call even if not initialized."""
+        # Steam networking first: it unregisters the callbacks Steam would otherwise call
+        # into Python during/after SteamShutdown (crash on exit)
+        try:
+            from steam_networking import steam_net
+            steam_net.shutdown()
+        except Exception as e:
+            logger.warning(f"Steam networking shutdown error: {e}")
         if self._initialized and self._steamworks is not None:
             try:
                 self._steamworks.unload()
