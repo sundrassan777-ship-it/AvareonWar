@@ -15,7 +15,8 @@ import json
 from typing import Optional
 
 from utils.logger import get_logger
-from network_config import DEFAULT_PORT, UPNP_DISCOVERY_TIMEOUT, UPNP_DESCRIPTION
+from network_config import (DEFAULT_PORT, UPNP_DISCOVERY_TIMEOUT, UPNP_DESCRIPTION,
+                            UPNP_DISCOVERY_ATTEMPTS)
 
 logger = get_logger(__name__)
 
@@ -71,6 +72,10 @@ class UPnPManager:
         self._thread: Optional[threading.Thread] = None
         self._cleaned_up: bool = False
         self._lock = threading.Lock()
+        # True once the background setup is completely done, public-IP lookup included.
+        # status turns FAILED before that lookup runs, so is_complete() reads this flag:
+        # a Steam invite sent in between carried only the LAN address.
+        self._finished: bool = False
 
     def setup_async(self, port: int, local_ip: str) -> None:
         """
@@ -89,6 +94,39 @@ class UPnPManager:
 
     def _setup_worker(self) -> None:
         """Background worker: discover IGD, create mapping, detect public IP."""
+        try:
+            self._run_setup()
+        finally:
+            # Done for good (success or failure, public IP looked up) - see is_complete()
+            self._finished = True
+
+    def _discover(self, upnp):
+        """
+        Search for the router, up to UPNP_DISCOVERY_ATTEMPTS times.
+
+        Returns:
+            The number of devices found, 0 / None when no router answered.
+        """
+        devices_found = None
+        for attempt in range(1, UPNP_DISCOVERY_ATTEMPTS + 1):
+            try:
+                devices_found = upnp.discover()
+            except Exception as e:
+                # miniupnpc 2.3 raises instead of returning 0 when no router answers -
+                # with its text for "no error", so the log read "UPnP setup failed: Success"
+                logger.warning(f"UPnP: no router answered the discovery, attempt {attempt}/"
+                               f"{UPNP_DISCOVERY_ATTEMPTS} (miniupnpc: {e})")
+                devices_found = None
+            else:
+                if devices_found == 0:
+                    logger.warning(f"UPnP: No IGD devices found, attempt {attempt}/"
+                                   f"{UPNP_DISCOVERY_ATTEMPTS}")
+            if devices_found:
+                break
+        return devices_found
+
+    def _run_setup(self) -> None:
+        """Discovery, port mapping and public-IP detection (body of _setup_worker)."""
         # Guard against miniupnpc being absent — UPNP_AVAILABLE is set at module
         # load time. We do not attempt to install packages at runtime (security).
         if not UPNP_AVAILABLE:
@@ -104,17 +142,9 @@ class UPnPManager:
 
             upnp = miniupnpc.UPnP()
             upnp.discoverdelay = UPNP_DISCOVERY_TIMEOUT
-            try:
-                devices_found = upnp.discover()
-            except Exception as e:
-                # miniupnpc 2.3 raises instead of returning 0 when no router answers -
-                # with its text for "no error", so the log read "UPnP setup failed: Success"
-                logger.warning(f"UPnP: no router answered the discovery (miniupnpc: {e})")
-                devices_found = None
+            devices_found = self._discover(upnp)
 
             if not devices_found:
-                if devices_found == 0:
-                    logger.warning("UPnP: No IGD devices found")
                 self.status = UPNP_STATUS_FAILED
                 self.error_message = "No UPnP router found"
                 self._detect_public_ip()
@@ -202,6 +232,26 @@ class UPnPManager:
             return self.public_ip
         return local_ip
 
+    def get_join_addresses(self, local_ip: str) -> list:
+        """
+        Every address a player might reach this host at, best first (Steam invites
+        carry them all; the joining PC tries each in turn).
+
+        With a mapped port the public IP works from anywhere, so it goes first. Without
+        one the LAN address is the one known to work (same network); the public IP is
+        still listed in case the host forwarded port 7777 by hand.
+        """
+        if self.status == UPNP_STATUS_SUCCESS and self.public_ip:
+            addresses = [self.public_ip, local_ip]
+        else:
+            addresses = [local_ip, self.public_ip]
+        # Drop unknown / duplicate entries, keep the order
+        result = []
+        for address in addresses:
+            if address and address not in result:
+                result.append(address)
+        return result
+
     def get_status_text(self) -> str:
         """Get a human-readable status string for UI display."""
         if self.status == UPNP_STATUS_DISCOVERING:
@@ -215,5 +265,5 @@ class UPnPManager:
         return ""
 
     def is_complete(self) -> bool:
-        """Check if setup has finished (success or failure)."""
-        return self.status in (UPNP_STATUS_SUCCESS, UPNP_STATUS_FAILED)
+        """Check if setup has finished (success or failure), public-IP lookup included."""
+        return self._finished

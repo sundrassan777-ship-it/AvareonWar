@@ -61,6 +61,9 @@ CHECKSUM_FREQUENCY = 1  # validate state every N turns
 
 # UPnP Settings (for internet play auto-configuration)
 UPNP_DISCOVERY_TIMEOUT = 2000  # milliseconds for UPnP IGD device discovery
+# Discovery tries before giving up. Some routers miss the first search request (a
+# second host attempt mapped the port where the first one found no router).
+UPNP_DISCOVERY_ATTEMPTS = 2
 UPNP_DESCRIPTION = "AvareonWar"  # Description shown in router admin panel
 
 # Message Types (Protocol Constants)

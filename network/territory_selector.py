@@ -18,7 +18,7 @@ from network.lobby import (
     SLOT_EMPTY, SLOT_HUMAN, SLOT_AI, SLOT_DISCONNECTED,
     AI_EASY, AI_MEDIUM, AI_HARD, PLAYER_COLORS as LOBBY_PLAYER_COLORS
 )
-from network_config import MessageType
+from network_config import MessageType, DEFAULT_PORT
 from config.constants import (ORIGINAL_MAP_WIDTH, ORIGINAL_MAP_HEIGHT, STARTING_GOLD_DEFAULT,
                               clamp_starting_gold)
 from settings_manager import settings
@@ -1961,7 +1961,6 @@ class TerritorySelector:
         if not display_ip:
             return
 
-        upnp_status = server.get_upnp_status_text() if hasattr(server, 'get_upnp_status_text') else ""
         upnp_complete = server.is_upnp_complete() if hasattr(server, 'is_upnp_complete') else True
         upnp_succeeded = (server.upnp_manager is not None
                           and server.upnp_manager.status == "success") if hasattr(server, 'upnp_manager') else False
@@ -1989,8 +1988,26 @@ class TerritorySelector:
         label_rect = label_text.get_rect(centerx=self.left_panel_width // 2, y=ip_y)
         ip_rect = ip_text.get_rect(centerx=self.left_panel_width // 2, y=ip_y + int(16 * self.ui_scale))
 
+        # (i) mark: how to join on the same network / over the internet, depending on
+        # whether the router opened the port (config/setup_tooltips.py host_ip_*). Shift
+        # the label left by half the mark so label + mark stay centred.
+        mark_shift = (self.setup_tooltips.mark_size() + max(4, int(round(6 * self.ui_scale)))) // 2
+        label_rect.x -= mark_shift
+        if upnp_succeeded:
+            tip_key = 'host_ip_internet'
+        elif upnp_complete:
+            tip_key = 'host_ip_lan'
+        else:
+            tip_key = 'host_ip_pending'
+
         self.screen.blit(label_text, label_rect)
         self.screen.blit(ip_text, ip_rect)
+
+        for key in ('host_ip_pending', 'host_ip_lan', 'host_ip_internet'):
+            if key != tip_key:
+                self.tooltip_rects.pop(key, None)  # the state moved on - drop the old one
+        self.tooltip_rects[tip_key] = self.setup_tooltips.draw_label_mark(
+            self.screen, label_rect, self.hovered_tooltip == tip_key)
 
         # Store rect for click/hover detection
         self._ip_click_rect = ip_rect
@@ -2647,12 +2664,20 @@ class TerritorySelector:
                 btn_rect = pygame.Rect(btn_x, btn_y, invite_btn_w, invite_btn_h)
                 self._friend_picker_rects['invite_buttons'][steam_id] = btn_rect
 
-                btn_hovered = btn_rect.collidepoint(mouse_pos) and not already_invited
+                addresses_ready = self._join_addresses_ready()
+                btn_hovered = (btn_rect.collidepoint(mouse_pos)
+                               and self._can_invite_friend(steam_id))
                 if already_invited:
                     # "Invited" label — green tint
                     pygame.draw.rect(self.screen, (40, 70, 40), btn_rect, border_radius=4)
                     pygame.draw.rect(self.screen, (100, 200, 100), btn_rect, 1, border_radius=4)
                     btn_text = label_font.render("Invited", True, (100, 200, 100))
+                elif not addresses_ready:
+                    # Still finding our internet address (UPnP / public IP) - an invite
+                    # now would carry only the LAN address
+                    pygame.draw.rect(self.screen, (60, 60, 60), btn_rect, border_radius=4)
+                    pygame.draw.rect(self.screen, GRAY, btn_rect, 1, border_radius=4)
+                    btn_text = label_font.render("Wait...", True, GRAY)
                 else:
                     # "Invite" button
                     bg_color = PARCHMENT_HOVER if btn_hovered else PARCHMENT_COLOR
@@ -2683,6 +2708,41 @@ class TerritorySelector:
                                  arrow_text.get_rect(centerx=panel_x + panel_w // 2,
                                                      top=list_bottom + 2))
 
+    def _join_addresses_ready(self) -> bool:
+        """True once the host knows every address it can be joined at (UPnP and the
+        public-IP lookup are done). Invites wait for it: one sent earlier carried only
+        the LAN address, useless to a friend over the internet."""
+        server = self.network_connection
+        if hasattr(server, 'is_upnp_complete'):
+            return server.is_upnp_complete()
+        return True
+
+    def _can_invite_friend(self, steam_id) -> bool:
+        """Whether the Invite button of this friend is clickable."""
+        return self._join_addresses_ready() and steam_id not in self._invited_friends
+
+    def _invite_connect_string(self) -> Optional[str]:
+        """
+        The Steam invite's launch argument: "+connect ip1:port,ip2:port" - every address
+        this host might be reached at, best first (server.get_join_addresses()). The
+        invited PC tries each (network.client.connect_any), so the same invite works for
+        a friend on our network and one over the internet.
+        """
+        from network.client import format_connect_targets
+        server = self.network_connection
+        if hasattr(server, 'get_join_addresses'):
+            addresses = server.get_join_addresses()
+        elif hasattr(server, 'get_display_ip'):
+            addresses = [server.get_display_ip()]
+        else:
+            addresses = [self.host_ip]
+        targets = format_connect_targets(addresses, DEFAULT_PORT)
+        if not targets:
+            return None
+        # Include +connect prefix so Steam passes it as a launch parameter that
+        # main.py's sys.argv parser can detect
+        return f"+connect {targets}"
+
     def _handle_friend_picker_click(self, pos):
         """Handle clicks within the friend picker modal."""
         # Close button
@@ -2695,18 +2755,11 @@ class TerritorySelector:
         # Check invite button clicks
         invite_buttons = self._friend_picker_rects.get('invite_buttons', {})
         for steam_id, btn_rect in invite_buttons.items():
-            if btn_rect.collidepoint(pos) and steam_id not in self._invited_friends:
+            if btn_rect.collidepoint(pos) and self._can_invite_friend(steam_id):
                 sound_manager.play_ui_click()
-                # Get host IP for connection string
                 from steam_integration import steam_manager
-                from network_config import DEFAULT_PORT
-                server = self.network_connection
-                display_ip = (server.get_display_ip()
-                              if hasattr(server, 'get_display_ip') else self.host_ip)
-                if display_ip:
-                    # Include +connect prefix so Steam passes it as a launch parameter
-                    # that main.py's sys.argv parser can detect
-                    connect_str = f"+connect {display_ip}:{DEFAULT_PORT}"
+                connect_str = self._invite_connect_string()
+                if connect_str:
                     if steam_manager.invite_friend(steam_id, connect_str):
                         self._invited_friends.add(steam_id)
                         logger.info(f"Invited friend {steam_id} with connect string '{connect_str}'")
