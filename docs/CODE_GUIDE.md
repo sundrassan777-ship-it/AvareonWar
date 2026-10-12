@@ -1970,7 +1970,8 @@ when its moves start or when its turn ends. Reconnecting is deferred (`RECONNECT
 **Key Class:** `UPnPManager` — full lifecycle: discover IGD → map port → detect public IP → cleanup
 
 **When to Modify:**
-- Change UPnP timeout/description → `network_config.py` constants `UPNP_DISCOVERY_TIMEOUT`, `UPNP_DESCRIPTION`
+- Change UPnP timeout/description/retries → `network_config.py` constants `UPNP_DISCOVERY_TIMEOUT`, `UPNP_DESCRIPTION`, `UPNP_DISCOVERY_ATTEMPTS` (discovery is tried twice - some routers miss the first search)
+- Change which addresses a Steam invite carries / their order → `get_join_addresses()` (mapped port: public first; otherwise LAN first, public IP still listed in case the host forwarded the port by hand)
 - Change public IP detection APIs → `PUBLIC_IP_APIS` list in `network/upnp.py`
 - Change UI status messages → `get_status_text()` in `UPnPManager`
 - Change port mapping protocol (e.g. UDP) → `_setup_worker()` addportmapping call
@@ -1980,7 +1981,27 @@ router answers (older versions return 0 devices). `_setup_worker()` treats both 
 router found"; the log used to say "UPnP setup failed: Success". The lobby shows "LAN only
 (forward port 7777 for internet)" either way.
 
-**Integration points:** `server.setup_upnp()` starts it, `server.stop()` cleans up, `territory_selector._draw_host_ip()` polls status
+**`is_complete()` means fully done:** it reads `_finished`, set in a `finally` at the end of
+`_setup_worker()` - after the public-IP lookup. `status` turns FAILED *before* that lookup,
+so checking the status let a Steam invite go out with the LAN address only. Anything that
+needs the public IP waits for `is_complete()` (the friend picker shows "Wait...").
+
+**Integration points:** `server.setup_upnp()` starts it, `server.stop()` cleans up, `territory_selector._draw_host_ip()` polls status (its "Join IP:" (i) tooltip is `host_ip_pending` / `host_ip_lan` / `host_ip_internet` in `config/setup_tooltips.py`), `server.get_join_addresses()` feeds Steam invites
+
+**Joining with several addresses (Steam invites):** the invite's launch argument is
+`+connect ip1:port,ip2:port` (`network.client.format_connect_targets()` /
+`parse_connect_targets()` - no spaces, a single `ip:port` still parses). The invited PC calls
+`NetworkClient.connect_any(targets)`: each address in turn with `connect()`, stopping at the
+first success or as soon as one reached a host that refused us (`_host_answered` - the host's
+reason is the one to show). When every address timed out, the reason covers both cases (same
+network / port forwarding). A single timeout says what to check via `unreachable_reason(host)`:
+home-network addresses → same Wi-Fi, guest network, router device isolation, VPN; public
+addresses → forward TCP 7777.
+
+**Diagnosing "could not reach the host":** the host log (`logs/avareonwar.log` next to the
+exe) shows `Server started! IP: ...`, the UPnP result and the invite's connect string. No
+`Client connected from` line means the joining PC's packets never arrived - a network
+problem, not the game (on the joining PC: `Test-NetConnection <host ip> -Port 7777`).
 
 ### network/server.py (~1,000 lines)
 
@@ -3888,7 +3909,7 @@ using filename stem as key (only for games with a `campaign_map`, which tales ha
 
 **Architecture:** Singleton `AchievementManager` owns all definitions and stat tracking. `AchievementPanel` is a UI helper class created by `MainMenu` to render panel content. Achievement data persisted to `config.json` via `settings_manager`.
 
-**Steam integration:** `steam_integration.py` provides `SteamManager` singleton. On startup: `initialize()` calls `SteamInit()` + `RequestCurrentStats()`, then `pump_until_stats_ready()` waits for stats callback before `sync_to_steam()`. Achievement IDs are encoded to bytes before passing to SteamworksPy (no argtypes on achievement methods). Steam persona name auto-updates `settings.player_name` on startup; profile panel shows "(Steam)" indicator and disables name editing when Steam is active. **Friend invites:** `can_invite()` checks Steam is initialized, `get_online_friends()` enumerates friends via `GetFriendCount`/`GetFriendByIndex`/`GetFriendPersonaName`, `invite_friend(steam_id, connect_string)` sends invite via `InviteFriend` with host IP:port. Invited friends receive Steam notification; accepting launches game with `+connect ip:port` arg.
+**Steam integration:** `steam_integration.py` provides `SteamManager` singleton. On startup: `initialize()` calls `SteamInit()` + `RequestCurrentStats()`, then `pump_until_stats_ready()` waits for stats callback before `sync_to_steam()`. Achievement IDs are encoded to bytes before passing to SteamworksPy (no argtypes on achievement methods). Steam persona name auto-updates `settings.player_name` on startup; profile panel shows "(Steam)" indicator and disables name editing when Steam is active. **Friend invites:** `can_invite()` checks Steam is initialized, `get_online_friends()` enumerates friends via `GetFriendCount`/`GetFriendByIndex`/`GetFriendPersonaName`, `invite_friend(steam_id, connect_string)` sends invite via `InviteFriend` with every host address (`+connect ip1:port,ip2:port`, see "Joining with several addresses" under network/upnp.py). Invited friends receive Steam notification; accepting launches game with that `+connect` arg. A friend can be invited again after `INVITE_COOLDOWN_SECONDS` (30, `network/territory_selector.py`); meanwhile the row shows "Invited" + "again in 0:23" (`_invited_friends` = {steam_id: monotonic time}, `_invite_cooldown_left()`).
 
 **Data flow:** Game ends → `show_recap_if_ended()` → `achievement_manager.record_game_result(game)` → detects mode, increments stats, checks thresholds → returns newly earned list → `RecapScreen` shows preview popups → user returns to main menu → achievement panel shows all achievements. Campaign missions set `gs.winner = 0` and `gs.phase = 'ended'` in their `_start_victory` method to trigger this flow.
 
@@ -3900,6 +3921,13 @@ for the winner's allies too** - always ask `gs.is_winner(player)` (victory.py: t
 a player on the winner's team), never compare with `gs.winner` directly. The player-level
 XP uses the same two helpers; the victory/defeat cinematic
 (`Game._is_victory_for_local_player()`) asks `is_winner()` too.
+
+**Multiplayer stats need a human enemy:** `multiplayer_games_finished` and `multiplayer_wins`
+(all Conquest achievements, from "A Step Into the World" up) only count when
+`player_level.has_human_opponent(gs, player)`: an enemy on another team who started as a
+human (`not player_is_ai`, or in `ai_takeover_xp` / `disconnect_eliminations`), and not
+disconnect farming (`_is_disconnect_farming()`, the end-of-game XP rule). A host who filled
+the lobby with AI slots used to earn them.
 
 **Achievement definitions:** Hardcoded in `ACHIEVEMENTS` list in `achievement_manager.py`. Each has id, name, description, category, icon path, reward_type (None/title/icon), reward_id, stat_key, stat_threshold. Dual-reward achievements use optional `reward_type_2`/`reward_id_2` fields.
 

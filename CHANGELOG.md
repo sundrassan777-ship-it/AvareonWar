@@ -2,6 +2,31 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-12 - Joining over several addresses, Steam re-invites, human opponent for Conquest
+
+Prompted by a failed same-Wi-Fi test: the host log showed the server listening, UPnP
+getting no answer from the router (3/3), every invite carrying only the LAN address, and no
+client ever arriving - a network problem between the PCs, but the game made it hard to see.
+- Steam invites carry every host address, `+connect ip1:port,ip2:port`
+  (`server.get_join_addresses()`, `network.client.format_connect_targets()` /
+  `parse_connect_targets()`); the invited PC tries each with `NetworkClient.connect_any()`,
+  stopping at a host refusal. Single-address invites still parse.
+- `UPnPManager.is_complete()` waits for the public-IP lookup (`_finished`); status turned
+  FAILED before it ran. The friend picker shows "Wait..." until then.
+- UPnP discovery is tried `UPNP_DISCOVERY_ATTEMPTS` (2) times.
+- Connect timeouts say what to check (`unreachable_reason()`): home-network address → same
+  Wi-Fi / guest network / router isolation / VPN; public address → forward TCP 7777.
+- Lobby: (i) tooltip on "Join IP:" (`host_ip_pending` / `host_ip_lan` / `host_ip_internet`).
+- Server: no "Accept error 10038" logged when the lobby closes.
+- Friend picker: a friend can be invited again after 30 s (`INVITE_COOLDOWN_SECONDS`), with
+  an "again in 0:23" countdown; it used to be once per lobby.
+- Achievements: multiplayer games / wins (all Conquest achievements, "A Step Into the
+  World" included) only count against at least one human enemy
+  (`player_level.has_human_opponent()`, disconnect-farming rule included).
+- Tests: `tests/test_steam_invite.py` (19), `TestJoinAddresses` + real-socket
+  `connect_any` tests in `tests/test_mp_transport.py`, UPnP retry / completion / address
+  order in `tests/test_upnp.py`, `TestHumanOpponentRequired` in `tests/test_mp_progression.py`.
+
 ## 2026-10-12 - Team battles: every ally keeps their own result
 
 Owner's decision (found while changing Keep battles). Both turn modes key a battle by team
