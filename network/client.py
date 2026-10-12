@@ -4,6 +4,7 @@ Network client implementation for multiplayer client.
 Client player uses this to connect to a host server.
 """
 
+import ipaddress
 import select
 import socket
 import threading
@@ -39,6 +40,61 @@ _MAX_READS_PER_LOOP = 16
 _FAREWELL_SEND_TIMEOUT = 1.0  # seconds
 
 
+def format_connect_targets(hosts, port: int = DEFAULT_PORT) -> str:
+    """
+    The address part of a Steam invite: "ip1:port,ip2:port" (no spaces, so Steam keeps
+    it one launch argument). parse_connect_targets() reads it back.
+    """
+    return ",".join(f"{host}:{port}" for host in hosts if host)
+
+
+def parse_connect_targets(text: str):
+    """
+    Read the address list of a "+connect" launch argument: "ip:port", or several
+    comma-separated (Steam invites carry the host's LAN and public address). A
+    missing or broken port means DEFAULT_PORT.
+
+    Returns:
+        [(host, port), ...] in the given order, duplicates dropped
+    """
+    targets = []
+    for part in (text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        host, port = part, DEFAULT_PORT
+        if ":" in part:
+            host, port_str = part.rsplit(":", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = DEFAULT_PORT
+        host = host.strip()
+        if host and (host, port) not in targets:
+            targets.append((host, port))
+    return targets
+
+
+def unreachable_reason(host: str) -> str:
+    """
+    What to tell the player when the host's PC never answered (connect timed out).
+
+    A home-network address (192.168.x.x, 10.x.x.x, ...) that does not answer means the
+    two PCs cannot see each other on that network; a public address that does not
+    answer usually means the host's router does not forward the game port.
+    """
+    try:
+        is_private = ipaddress.ip_address(host).is_private
+    except ValueError:
+        is_private = False  # a host name - treat like an internet address
+    if is_private:
+        return (f"Could not reach {host} on your home network - check that both PCs are "
+                f"on the same network (not a guest Wi-Fi), that the router does not keep "
+                f"Wi-Fi devices apart, and that no VPN is on")
+    return (f"Could not reach {host} - the host's router must forward TCP port "
+            f"{DEFAULT_PORT} to the host's PC, and the host's firewall must allow the game")
+
+
 class NetworkClient:
     """
     Network client for joining multiplayer games.
@@ -72,6 +128,7 @@ class NetworkClient:
         self.last_pong_time = 0
         self.disconnected = False  # Set to True when disconnected
         self.disconnect_reason = ""  # Reason for disconnection
+        self._host_answered = False  # Last connect() reached a host (see connect_any)
 
         # Reconnection support
         self.reconnect_password = ""  # Password for reconnection (received on connect)
@@ -108,6 +165,9 @@ class NetworkClient:
         with self._state_lock:
             self.disconnected = False
         self.disconnect_reason = ""
+        # Whether a game host took the TCP connection (connect_any() stops trying other
+        # addresses once one reached the host, even if it then refused us)
+        self._host_answered = False
 
         try:
             # Create socket
@@ -117,6 +177,7 @@ class NetworkClient:
             # Connect to server
             logger.info(f"Connecting to {host}:{port}...")
             self.socket.connect((host, port))
+            self._host_answered = True
 
             # Blocking sends with a time limit (SEND_TIMEOUT). A non-blocking sendall()
             # fails mid-frame when the kernel buffer fills (large messages); reads stay
@@ -168,8 +229,10 @@ class NetworkClient:
             return True
 
         except socket.timeout:
-            logger.warning("Connection timeout")
-            self.disconnect_reason = "Connection timed out - check the address and the host's firewall"
+            logger.warning(f"Connection to {host}:{port} timed out")
+            # Say what to check - "check the address and the host's firewall" sent
+            # players hunting the firewall when the two PCs could not see each other
+            self.disconnect_reason = unreachable_reason(host)
             self.disconnect()
             return False
         except ConnectionRefusedError:
@@ -182,6 +245,46 @@ class NetworkClient:
             self.disconnect_reason = f"Connection error: {e}"
             self.disconnect()
             return False
+
+    def connect_any(self, targets, player_name: str = "Player") -> bool:
+        """
+        Connect to the first host address that answers (Steam invites carry several:
+        the host's LAN address and its public one - which one works depends on where
+        the joining PC is).
+
+        Stops early when a host turned us away (CONNECT_REJECT: lobby full, version
+        mismatch, ...) - we reached the host, another address would reach the same one.
+
+        Args:
+            targets: [(host, port), ...] in the order to try
+            player_name: Player name to send in connection request
+
+        Returns:
+            True if connected; otherwise disconnect_reason holds the most useful reason
+            (a host's refusal, else the first address's failure)
+        """
+        failed = []  # (host, reason) of every address that did not answer
+        for host, port in targets:
+            if self.connect(host, port=port, player_name=player_name):
+                return True
+            if self._host_answered:
+                return False  # the host refused us - its reason is the one to show
+            failed.append((host, self.disconnect_reason))
+            logger.info(f"Could not reach {host}:{port}, trying the next address")
+
+        if not failed:
+            self.disconnect_reason = "No address to connect to"
+        elif len(failed) == 1:
+            self.disconnect_reason = failed[0][1]
+        else:
+            # Which address should have worked depends on where this PC is - cover both
+            hosts = " or ".join(host for host, _ in failed)
+            self.disconnect_reason = (
+                f"Could not reach the host at {hosts}. On the same network: check both PCs "
+                f"use the same Wi-Fi (not a guest one), the router does not keep devices "
+                f"apart, and no VPN is on. Over the internet: the host's router must "
+                f"forward TCP port {DEFAULT_PORT}")
+        return False
 
     def disconnect(self):
         """Disconnect from server (called from main thread)"""

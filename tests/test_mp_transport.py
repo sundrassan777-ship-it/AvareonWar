@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mp_harness as h  # noqa: E402
-from network.client import NetworkClient  # noqa: E402
+from network.client import (NetworkClient, format_connect_targets,  # noqa: E402
+                            parse_connect_targets, unreachable_reason)
 from network.message_queue import NetworkMessageQueue  # noqa: E402
 from network.protocol import MessageBuffer, NetworkProtocol  # noqa: E402
 from network.server import NetworkServer  # noqa: E402
@@ -293,6 +294,100 @@ class TestRealSockets:
         assert not client.connect('127.0.0.1', self._port(server), player_name="Stranger")
         assert client.disconnect_reason == "The game has already started"
         assert server.clients == {}
+
+    def test_connect_any_skips_a_dead_address(self, server):
+        """A Steam invite lists several host addresses; one that nobody answers on must
+        not stop the join - the next one is tried."""
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(('127.0.0.1', 0))
+        dead_port = probe.getsockname()[1]
+        probe.close()                                           # nothing listens there now
+        client = NetworkClient()
+        try:
+            assert client.connect_any([('127.0.0.1', dead_port),
+                                       ('127.0.0.1', self._port(server))], player_name="Two")
+            assert client.server_address == ('127.0.0.1', self._port(server))
+            assert client.player_index == 1
+        finally:
+            client.disconnect()
+
+    def test_connect_any_stops_when_the_host_refuses(self, server):
+        """A refusal means we reached the host: its reason is shown, and the other
+        addresses (the same host) are not tried."""
+        server.reserved_slots = {1, 2, 3}
+        client = NetworkClient()
+        tried = []
+        real_connect = client.connect
+
+        def counting_connect(host, port=7777, player_name="Player"):
+            tried.append((host, port))
+            return real_connect(host, port=port, player_name=player_name)
+        client.connect = counting_connect
+        assert not client.connect_any([('127.0.0.1', self._port(server)),
+                                       ('127.0.0.1', 1)], player_name="Late")
+        assert tried == [('127.0.0.1', self._port(server))]
+        assert client.disconnect_reason == "No slots available"
+
+
+class TestJoinAddresses:
+    """Steam invite address lists and the "could not reach the host" reasons."""
+
+    def test_connect_string_round_trip(self):
+        text = format_connect_targets(['212.20.115.148', '192.168.18.5', None], 7777)
+        assert text == '212.20.115.148:7777,192.168.18.5:7777'
+        assert parse_connect_targets(text) == [('212.20.115.148', 7777), ('192.168.18.5', 7777)]
+
+    def test_old_single_address_invites_still_parse(self):
+        assert parse_connect_targets('192.168.0.103:7777') == [('192.168.0.103', 7777)]
+        assert parse_connect_targets('10.0.0.2') == [('10.0.0.2', 7777)]
+        assert parse_connect_targets('10.0.0.2:abc') == [('10.0.0.2', 7777)]
+
+    def test_blank_and_duplicate_entries_are_dropped(self):
+        assert parse_connect_targets(' 1.2.3.4:7777 ,, 1.2.3.4:7777,') == [('1.2.3.4', 7777)]
+        assert parse_connect_targets('') == []
+        assert parse_connect_targets(None) == []
+
+    def test_timeout_reason_points_at_the_home_network_for_lan_addresses(self):
+        reason = unreachable_reason('192.168.18.5')
+        assert 'home network' in reason and 'VPN' in reason
+
+    def test_timeout_reason_points_at_port_forwarding_for_public_addresses(self):
+        reason = unreachable_reason('212.20.115.148')
+        assert 'forward TCP port 7777' in reason
+
+    def test_every_address_failing_covers_both_cases(self):
+        client = NetworkClient()
+
+        def unreachable(host, port=7777, player_name="Player"):
+            client._host_answered = False
+            client.disconnect_reason = unreachable_reason(host)
+            return False
+        client.connect = unreachable
+        assert not client.connect_any([('192.168.18.5', 7777), ('212.20.115.148', 7777)])
+        reason = client.disconnect_reason
+        assert '192.168.18.5 or 212.20.115.148' in reason
+        assert 'same network' in reason.lower() and 'forward TCP port 7777' in reason
+
+    def test_one_failing_address_keeps_its_own_reason(self):
+        client = NetworkClient()
+
+        def unreachable(host, port=7777, player_name="Player"):
+            client._host_answered = False
+            client.disconnect_reason = unreachable_reason(host)
+            return False
+        client.connect = unreachable
+        assert not client.connect_any([('192.168.18.5', 7777)])
+        assert client.disconnect_reason == unreachable_reason('192.168.18.5')
+
+    def test_server_lists_the_public_address_when_known(self):
+        server = NetworkServer(port=0)
+        server.get_local_ip = lambda: '192.168.18.5'
+        assert server.get_join_addresses() == ['192.168.18.5']   # no UPnP set up
+        from network.upnp import UPnPManager
+        server.upnp_manager = UPnPManager()
+        server.upnp_manager.status = 'failed'
+        server.upnp_manager.public_ip = '212.20.115.148'
+        assert server.get_join_addresses() == ['192.168.18.5', '212.20.115.148']
 
 
 class TestSenderIdentity:

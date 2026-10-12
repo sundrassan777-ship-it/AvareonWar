@@ -446,6 +446,10 @@ class NetworkServer:
             # No connection pending
             pass
         except OSError as e:
+            if not self.running:
+                # stop() closed the listening socket while select() still reported it
+                # (WinError 10038) - expected when leaving the lobby, not an error
+                return
             logger.error(f"Accept error: {e}")
 
     def _reject_connection(self, client_socket, reason: str):
@@ -1281,6 +1285,21 @@ class NetworkServer:
         if self.upnp_manager:
             return self.upnp_manager.get_display_ip(local_ip)
         return local_ip
+
+    def get_join_addresses(self) -> list:
+        """Every address players might join at, best first (see UPnPManager)."""
+        local_ip = self.get_local_ip()
+        if self.upnp_manager:
+            return self.upnp_manager.get_join_addresses(local_ip)
+        return [local_ip]
+
+    def get_public_ip(self) -> Optional[str]:
+        """The host's internet address (from UPnP or a lookup service), None if unknown."""
+        return self.upnp_manager.public_ip if self.upnp_manager else None
+
+    def is_upnp_mapped(self) -> bool:
+        """True when UPnP forwarded the port (internet players can join directly)."""
+        return bool(self.upnp_manager and self.upnp_manager.port_mapped)
 
     def get_upnp_status_text(self) -> str:
         """Get UPnP status text for UI display."""

@@ -4,6 +4,24 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Multiplayer: Easier Joining
+
+*12 October 2026*
+
+- **Steam invites** now include both your home-network address and your internet address,
+  and your friend's game tries each one. The same invite works for a friend on your Wi-Fi
+  and a friend far away.
+- When the game cannot reach the host, it now says what to check: that both PCs are on the
+  same network (not a guest Wi-Fi), that the router doesn't keep devices apart, that no VPN
+  is on, or, over the internet, that the host's router forwards port 7777.
+- Hover over the **(i)** next to **Join IP** in the lobby for how friends can join you.
+- The game now tries a second time to open the game port on your router automatically.
+- You can invite the same friend again after 30 seconds.
+- **A Step Into the World** and the other multiplayer-win achievements now need at least
+  one human opponent. Games against only computer players no longer count.
+
+---
+
 ## Multiplayer: Smoother Connections
 
 *12 October 2026*

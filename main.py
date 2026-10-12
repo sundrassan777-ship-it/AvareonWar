@@ -17567,32 +17567,25 @@ if __name__ == "__main__":
             connect_target = _steam_connect_target
             _steam_connect_target = None  # Clear so subsequent loops go to main menu
 
-            # Parse IP and port from connect string (format: "ip:port")
-            if ':' in connect_target:
-                host_ip, port_str = connect_target.rsplit(':', 1)
-                try:
-                    port = int(port_str)
-                except ValueError:
-                    port = 7777
-            else:
-                host_ip = connect_target
-                port = 7777
+            # Connect string: "ip:port", or several comma-separated - invites carry the
+            # host's LAN and public address and we try each (network.client)
+            from network.client import NetworkClient, parse_connect_targets
+            from network.multiplayer_setup import run_client_lobby
+            targets = parse_connect_targets(connect_target)
+            target_text = ", ".join(f"{h}:{p}" for h, p in targets)
 
-            logger.info(f"Steam invite: connecting to {host_ip}:{port}")
+            logger.info(f"Steam invite: connecting to {target_text}")
 
             # Stop menu music
             music_manager.stop()
 
             # Connect as client, then the same lobby + game flow as Join Game
             # (network.multiplayer_setup.run_client_lobby, _play_multiplayer_game)
-            from network.client import NetworkClient
-            from network.multiplayer_setup import run_client_lobby
-
             client = NetworkClient()
             player_name = settings.get_player_name()
 
-            if not client.connect(host_ip, port=port, player_name=player_name):
-                logger.warning(f"Steam invite: failed to connect to {host_ip}:{port}: "
+            if not client.connect_any(targets, player_name=player_name):
+                logger.warning(f"Steam invite: failed to connect to {target_text}: "
                                f"{client.disconnect_reason}")
                 # Say why (lobby full, version mismatch, ...), then the main menu
                 MultiplayerSetup(screen)._show_error(
@@ -17601,7 +17594,7 @@ if __name__ == "__main__":
                 music_manager.start_menu_music()
                 continue
 
-            logger.info(f"Steam invite: connected to {host_ip}:{port}")
+            logger.info(f"Steam invite: connected to {client.server_address}")
             lobby_result = run_client_lobby(screen, client)
 
             if lobby_result == 'quit':

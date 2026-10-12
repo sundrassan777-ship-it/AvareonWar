@@ -82,6 +82,36 @@ SETUP_TOOLTIPS = {
         ],
     },
 
+    # Multiplayer lobby: hovering the "Join IP:" label (host only). Which one shows
+    # depends on whether the router forwarded the game port (UPnP).
+    'host_ip_pending': {
+        'title': "Join Address",
+        'entries': [
+            (None, "Setting up internet access with your router. Players on your own "
+                   "network can already join with this address."),
+        ],
+    },
+    'host_ip_lan': {
+        'title': "Join Address",
+        'entries': [
+            ("Same network", "Players on your Wi-Fi or home network join with this "
+                             "address. If it times out, check that both PCs use the same "
+                             "network (not a guest Wi-Fi), that the router does not keep "
+                             "Wi-Fi devices apart, and that no VPN is on."),
+            ("Over the internet", "Your router did not open the game port automatically "
+                                  "(UPnP). Forward TCP port 7777 to this PC in your router "
+                                  "settings; players then join with your public IP. Steam "
+                                  "invites include both addresses."),
+        ],
+    },
+    'host_ip_internet': {
+        'title': "Join Address",
+        'entries': [
+            (None, "Your router opened the game port, so players anywhere can join with "
+                   "this address. Steam invites include it."),
+        ],
+    },
+
     # Multiplayer lobby: hovering the greyed "Launch Game" button (host only).
     # One entry per reason in network/lobby.py LobbyState.launch_blocker().
     'launch_players': {

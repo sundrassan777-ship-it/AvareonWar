@@ -196,6 +196,32 @@ def local_human_index(game):
     return None
 
 
+def has_human_opponent(gs, player):
+    """
+    Whether `player` faced at least one human enemy (another team) in this game -
+    what makes a multiplayer win count for the Conquest achievements. A host who
+    launched a lobby filled with AI slots used to earn "A Step Into the World".
+
+    An enemy whose player left and was taken over by the AI (ai_takeover_xp) or was
+    eliminated on disconnect still started as a human. An opponent who left at once,
+    with almost no XP, does not count (player_level._is_disconnect_farming, the same
+    rule the end-of-game XP uses).
+    """
+    if player is None or not (0 <= player < gs.num_players):
+        return False
+    teams = gs.player_teams
+    took_over = getattr(gs, 'ai_takeover_xp', None) or {}
+    left = getattr(gs, 'disconnect_eliminations', None) or set()
+    started_human = [
+        i for i in range(gs.num_players)
+        if i != player and teams[i] != teams[player]
+        and (not gs.player_is_ai[i] or i in took_over or i in left)
+    ]
+    if not started_human:
+        return False
+    return not player_level_manager._is_disconnect_farming(gs, player)
+
+
 class PlayerLevelManager:
     """
     Singleton player level manager. Tracks persistent XP and level,
