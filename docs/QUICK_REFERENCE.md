@@ -460,6 +460,10 @@ computer player (only the host runs the AI; its messages are sent by the main lo
 | `TURN_END` | owner, once the turn has really ended (`on_turn_advanced` hook) | state snapshot after the advance | apply it, play the announcement |
 | `TURN_END` + `final` | owner, game ended in its turn | final state | apply it |
 
+Every client message carries its true sender (`from_player_index`, set by the server); each
+PC refuses these four - and a client's orders, gold and Hero abilities - from anyone but the
+turn owner (the host is never refused). See "Who may send what" in CODE_GUIDE.md.
+
 **Multiplayer (main.py `Game` constants):**
 | Setting | Value | Meaning |
 |---------|-------|---------|

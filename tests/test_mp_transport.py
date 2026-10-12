@@ -225,8 +225,10 @@ class TestRealSockets:
             received = _wait_for(client.message_queue, MessageType.FULL_STATE_SYNC)
             assert received['data']['blob'] == payload['blob']
 
-            client.send_message(client.protocol.encode_message(MessageType.FULL_STATE_SYNC, payload))
-            received = _wait_for(server.message_queue, MessageType.FULL_STATE_SYNC)
+            # A client's large message: TURN_END, which carries its state snapshot (a
+            # client may not send FULL_STATE_SYNC - the server drops host-only types)
+            client.send_message(client.protocol.encode_message(MessageType.TURN_END, payload))
+            received = _wait_for(server.message_queue, MessageType.TURN_END)
             assert received['data']['blob'] == payload['blob']
             assert received['from_player_index'] == 1
             assert client.is_connected() and 1 in server.clients
@@ -295,8 +297,6 @@ class TestRealSockets:
 
 class TestSenderIdentity:
 
-    @pytest.mark.xfail(strict=True, reason="L5: the server accepts and relays payloads whose "
-                       "player_index is not the sender")
     def test_server_drops_spoofed_player_index(self):
         net = h.Network()
         liar, victim = net.add_client(1), net.add_client(2)

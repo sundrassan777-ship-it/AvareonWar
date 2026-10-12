@@ -88,14 +88,60 @@ _SEQ_EXEMPT_TYPES = frozenset({
 # Time allowed for the tiny reject / farewell messages to peers we are dropping anyway
 _FAREWELL_SEND_TIMEOUT = 1.0  # seconds
 
-# Messages only the HOST sends. One arriving from a client (a modified client or a bug)
-# is dropped: the host would otherwise run the client-side handling of e.g. a round end.
-_HOST_ONLY_TYPES = frozenset({
-    MessageType.SIM_ALL_READY,
-    MessageType.SIM_ROUND_COMPLETE,
-    MessageType.SIM_READY_STATE,
-    MessageType.SIM_TIMER_UPDATE,
+# The only messages a CLIENT may send; anything else is the host's to send and is dropped
+# when a client sends it (a modified client or a bug) - the host would otherwise run the
+# client-side handling of e.g. a round end, a player leaving, a lobby launch or a kick.
+# (It used to be a short deny-list of host-only types, so e.g. a client could tell the
+# host that another player had left - and the AI took their empire.)
+_CLIENT_MESSAGE_TYPES = frozenset({
+    # Connection
+    MessageType.CONNECT_REQUEST,
+    MessageType.DISCONNECT,
+    MessageType.PONG,
+    MessageType.RECONNECT_REQUEST,
+    # Lobby and loading (own slot only - see _SENDER_FIELDS)
+    MessageType.LOBBY_SLOT_UPDATE,
+    MessageType.TERRITORY_SELECT,
+    MessageType.GAME_READY,
+    # Game
+    MessageType.CHAT_MESSAGE,
+    MessageType.MOVEMENT_ORDER,
+    MessageType.BUILDING_ORDER,
+    MessageType.TRAINING_ORDER,
+    MessageType.ORDER_REMOVE,
+    MessageType.RESEARCH_ORDER,
+    MessageType.HERO_TRAINING_ORDER,
+    MessageType.EXECUTE_ORDERS,
+    MessageType.BATTLE_RESOLVE,
+    MessageType.TURN_END,
+    MessageType.GOLD_TRANSFER,
+    MessageType.SIM_HERO_ABILITY,
+    MessageType.SIM_PLAYER_READY,
+    MessageType.SIM_ALLIANCE_CHOICE,
 })
+
+# The data field naming the acting player in a client message. It must be the sender's
+# own index (L5: it was trusted, so a client could act - chat, order, claim a lobby slot -
+# as anyone); a missing one is filled in, so no receiver falls back to guessing. Messages
+# without such a field (BATTLE_RESOLVE, SIM_ALLIANCE_CHOICE) are judged by their sender
+# stamp (from_player_index) on the receiving PCs.
+_SENDER_FIELDS = {
+    MessageType.LOBBY_SLOT_UPDATE: 'player_index',
+    MessageType.TERRITORY_SELECT: 'player_index',
+    MessageType.GAME_READY: 'player_index',
+    MessageType.CHAT_MESSAGE: 'player_index',
+    MessageType.MOVEMENT_ORDER: 'player_index',
+    MessageType.BUILDING_ORDER: 'player_index',
+    MessageType.TRAINING_ORDER: 'player_index',
+    MessageType.ORDER_REMOVE: 'player_index',
+    MessageType.RESEARCH_ORDER: 'player_index',
+    MessageType.HERO_TRAINING_ORDER: 'player_index',
+    MessageType.EXECUTE_ORDERS: 'player_index',
+    MessageType.TURN_END: 'player_index',
+    MessageType.GOLD_TRANSFER: 'player_index',
+    MessageType.SIM_HERO_ABILITY: 'player_id',
+    MessageType.SIM_PLAYER_READY: 'player_id',
+}
 
 
 @dataclass
@@ -612,8 +658,9 @@ class NetworkServer:
 
         msg_type = message.get('type')
 
-        if msg_type in _HOST_ONLY_TYPES:
-            logger.warning(f"Dropped host-only {msg_type} sent by player {from_player_index}")
+        if msg_type not in _CLIENT_MESSAGE_TYPES:
+            logger.warning(f"Dropped {msg_type} sent by player {from_player_index} - "
+                           f"only the host sends it")
             return
 
         # Security (H1): Sequence number validation to prevent replay attacks.
@@ -632,11 +679,22 @@ class NetworkServer:
                         return
                     connection.last_seq = msg_seq
 
+        # Who sent it: a message naming another player as the actor is dropped (L5)
+        if not self._check_sender(message, from_player_index):
+            return
+
         # 3+ player relay: forward gameplay messages to other clients so they
         # can see each other's actions in real-time. The host still receives
-        # the message via message_queue below. The sender is excluded.
+        # the message via message_queue below. The sender is excluded. The relayed copy
+        # carries the sender's index (from_player_index), set here from the connection -
+        # receivers decide with it what that player may do.
         if raw_bytes is not None and msg_type in _RELAY_MESSAGE_TYPES:
-            self._relay_to_other_clients(raw_bytes, from_player_index)
+            try:
+                stamped = self.protocol.encode_relayed(message, from_player_index)
+            except (TypeError, ValueError) as exc:
+                logger.warning(f"Could not relay {msg_type} from player {from_player_index}: {exc}")
+            else:
+                self._relay_to_other_clients(stamped, from_player_index)
 
         # Handle connection messages
         if msg_type == MessageType.CONNECT_REQUEST:
@@ -659,6 +717,34 @@ class NetworkServer:
             # Forward to game loop
             logger.debug(f"[SERVER] Forwarding {msg_type} from player {from_player_index} to game loop (seq={msg_seq})")
             self.message_queue.receive_message(message)
+
+    @staticmethod
+    def _check_sender(message: dict, from_player_index: int) -> bool:
+        """
+        A client may only act as itself (L5). Every player-naming field of its message
+        (player_index / player_id) must be the index of the connection it arrived on;
+        the type's acting-player field (_SENDER_FIELDS) is filled in when missing, so no
+        receiver has to guess who sent it.
+
+        Returns:
+            bool: False if the message names another player (it is dropped)
+        """
+        msg_type = message.get('type')
+        data = message.get('data')
+        if not isinstance(data, dict):
+            return False
+        for field in ('player_index', 'player_id'):
+            claimed = data.get(field)
+            # A real int only: 1.0 and True compare equal to 1, and a float index would
+            # crash every receiver that looks a player up with it
+            if claimed is not None and (type(claimed) is not int or claimed != from_player_index):
+                logger.warning(f"Dropped {msg_type} from player {from_player_index}: "
+                               f"it claims to come from player {claimed!r}")
+                return False
+        field = _SENDER_FIELDS.get(msg_type)
+        if field is not None and data.get(field) is None:
+            data[field] = from_player_index
+        return True
 
     @staticmethod
     def _sanitize_player_name(name: str, fallback: str = "Player") -> str:

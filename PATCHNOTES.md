@@ -90,6 +90,16 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 - Fixed (simultaneous turns): a player being knocked out of the game could crash the game
   for the others.
 
+### Fair play
+
+- Every game now checks who really sent each move, and refuses what that player may not
+  do: acting for another player, acting outside their own turn, deciding a battle or an
+  allied territory they are not fighting over, using another player's Hero, or sending
+  gold to an enemy, more than once a turn, more than they have, or in a game without gold
+  transfer. A modified game could do all of these before.
+- In the lobby, a player can only change their own colour and team. A modified game could
+  change other players' seats, kick them, or start the game.
+
 ### Chat
 
 - **Team chat** is now seen by your allies only. Before, enemies could read it too.

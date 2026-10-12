@@ -1750,6 +1750,56 @@ class Game:
     # anyway - our own animations and turn announcement always finish well within this
     _NETWORK_HOLD_LIMIT = 15.0  # seconds
 
+    # ========== WHO MAY SEND WHAT (multiplayer audit, Phase 7) ==========
+    # The server stamps every client message with the index of the connection it came on
+    # (from_player_index) and drops any that names another player as the actor. Each PC
+    # then checks what that player may do now. The host is the authority: its messages
+    # carry no stamp and are never refused (it also plays the computer players' turns).
+
+    # Sequential mode: only the player whose turn it is acts - their turn's actions, moves,
+    # battles and turn end. (Accepted from anyone before: e.g. a TURN_END from another
+    # player replaced the whole game with their snapshot.)
+    _TURN_OWNER_MESSAGES = frozenset({
+        MessageType.MOVEMENT_ORDER,
+        MessageType.BUILDING_ORDER,
+        MessageType.TRAINING_ORDER,
+        MessageType.ORDER_REMOVE,
+        MessageType.RESEARCH_ORDER,
+        MessageType.HERO_TRAINING_ORDER,
+        MessageType.EXECUTE_ORDERS,
+        MessageType.BATTLE_RESOLVE,
+        MessageType.TURN_END,
+        MessageType.GOLD_TRANSFER,
+        MessageType.SIM_HERO_ABILITY,
+    })
+
+    @staticmethod
+    def _message_sender(message):
+        """
+        The client a received message came from - the index the server stamped on it - or
+        None for the host (the host's own messages carry no stamp and are trusted).
+        """
+        sender = message.get('from_player_index')
+        if isinstance(sender, int) and not isinstance(sender, bool):
+            return sender
+        return None
+
+    def _refusal_for(self, msg_type, sender):
+        """
+        Why the client `sender` may not send `msg_type` now (None: it may). Checks that
+        hold for every message; the handlers check the rest (a battle's resolver, an
+        alliance marker's chooser, a hero's owner, a gold transfer's limits).
+        """
+        if sender is None:
+            return None
+        gs = self.game_state
+        if gs is None or not (0 <= sender < gs.num_players):
+            return "not a player of this game"
+        if self.sim_state is None and msg_type in self._TURN_OWNER_MESSAGES:
+            if gs.current_player != sender or gs.player_is_ai[sender]:
+                return f"it is Player {gs.current_player + 1}'s turn"
+        return None
+
     def _turn_start_pending(self):
         """
         Sequential multiplayer: this PC's turn announcement is still running, and with it
@@ -1829,6 +1879,13 @@ class Game:
             self._hold_network_message(message)
             return
 
+        # A client may only send what it may do now (the host is never refused)
+        sender = self._message_sender(message)
+        refusal = self._refusal_for(msg_type, sender)
+        if refusal:
+            logger.warning(f"[NETWORK] REJECTED {msg_type} from Player {sender + 1}: {refusal}")
+            return
+
         # Sync logger: record incoming action from remote player
         sync_logger = getattr(self.game_state, 'sync_logger', None)
         if sync_logger:
@@ -1856,7 +1913,7 @@ class Game:
 
         elif msg_type == MessageType.GOLD_TRANSFER:
             # Remote player sent gold to an ally — mirror the balance change locally.
-            self._handle_remote_gold_transfer(data)
+            self._handle_remote_gold_transfer(data, sender=self._message_sender(message))
 
         elif msg_type == MessageType.RESEARCH_ORDER:
             # Sync fix: Remote player started research (sequential mode)
@@ -2085,6 +2142,19 @@ class Game:
             target = data.get('target')  # For targeted abilities
             logger.debug(f"[NETWORK] Received SIM_HERO_ABILITY: Player {player_id} used {hero_name}'s {ability_name}")
 
+            # A client casts only with a Hero of its own, and only that Hero's ability (the
+            # host is never refused). Any player's ability, any Hero, was run as sent.
+            sender = self._message_sender(message)
+            if sender is not None and self.game_state is not None:
+                hero = self.game_state.heroes.get(sender, {}).get(hero_name) if player_id == sender else None
+                abilities = self.game_state.HERO_TYPES.get(hero_name, {}).get('abilities', [])
+                ability_ok = (isinstance(ability_index, int) and 0 <= ability_index < len(abilities)
+                              and abilities[ability_index].get('name') == ability_name)
+                if not hero or not ability_ok:
+                    logger.warning(f"[NETWORK] REJECTED: {ability_name} of {hero_name} from Player "
+                                   f"{sender + 1} - not their Hero / not its ability")
+                    return
+
             if self.game_state is not None and hero_name:
                 # Temporarily set current_player to execute the ability
                 original_player = self.game_state.current_player
@@ -2210,6 +2280,18 @@ class Game:
 
             if self.sim_state is not None and territory:
                 pm = self.sim_state.phase_manager
+                sender = self._message_sender(message)
+                if pm is not None and sender is not None:
+                    # A client may choose only for a marker it is the chooser of, and only
+                    # one of the allies who took the territory (the host - AI choices, AFK
+                    # fallback - is never refused). Any choice from anyone was applied.
+                    marker = next((m for m in pm.pending_alliance_markers
+                                   if m.get('territory') == territory), None)
+                    if (marker is None or marker.get('chooser') != sender
+                            or new_owner not in (marker.get('players') or [])):
+                        logger.warning(f"[NETWORK] REJECTED: Alliance choice for {territory} from "
+                                       f"Player {sender + 1} (marker: {marker})")
+                        return
                 if pm is not None:
                     # Same as on the chooser's PC: owner + overflow mark (the old handler
                     # set the owner by hand and its overflow check never ran)
@@ -2464,13 +2546,17 @@ class Game:
             # Restore current_player even if cancel methods throw
             self.game_state.current_player = original_player
 
-    def _handle_remote_gold_transfer(self, data: dict):
+    def _handle_remote_gold_transfer(self, data: dict, sender=None):
         """Apply a gold transfer that happened on a remote peer.
 
         The sender has already deducted locally and broadcast the actual
-        post-clamp amount, so we mirror the balance change without
-        re-running validation — doing so could reject the transfer for
-        the wrong reason (e.g. our view of "current turn" lags slightly).
+        post-clamp amount, so we mirror the balance change without re-running the
+        sender-side rules that depend on timing (the transfer cap). What a transfer can
+        never be is checked (Phase 7 of the multiplayer audit) when a client sent it -
+        `sender`, the index the server stamped on it (None: the host, trusted): the
+        sender's own gold, only in a game with gold transfer on, to an ally, once per pair
+        per turn, at most what the sender has. A client could send gold from anyone to
+        anyone (an enemy's gold to itself), even in games without gold transfer.
         """
         sender_idx = data.get('player_index')
         recipient_idx = data.get('recipient_index')
@@ -2493,6 +2579,31 @@ class Game:
         if amount <= 0:
             return
 
+        tracker = (self.sim_state.gold_transfers_this_round
+                   if self.sim_state is not None
+                   else self.game_state.gold_transfers_this_turn)
+        if sender is not None:
+            gs = self.game_state
+            refusal = None
+            if sender_idx != sender:
+                refusal = f"sent as Player {sender_idx + 1}"
+            elif getattr(gs, 'gold_transfer_pct', 0) <= 0:
+                refusal = "gold transfer is off in this game"
+            elif recipient_idx == sender_idx or not gs.are_allies(sender_idx, recipient_idx):
+                refusal = "the recipient is not an ally"
+            elif recipient_idx in gs.eliminated_players:
+                refusal = "the recipient is out of the game"
+            elif (sender_idx, recipient_idx) in tracker:
+                refusal = "already sent to this player this turn"
+            if refusal:
+                logger.warning(f"[NETWORK] REJECTED: GOLD_TRANSFER from Player {sender + 1}: {refusal}")
+                return
+            # Never more than the sender has
+            amount = min(amount, max(0, gs.player_gold[sender_idx]))
+            if amount <= 0:
+                logger.warning(f"[NETWORK] REJECTED: GOLD_TRANSFER from Player {sender + 1}: no gold")
+                return
+
         self.game_state.player_gold[sender_idx] -= amount
         self.game_state.player_gold[recipient_idx] += amount
 
@@ -2506,9 +2617,6 @@ class Game:
 
         # Mark the sender→recipient pair as used so peers enforce the once-per-turn rule
         # against any further transfer attempts from the remote sender this turn/round.
-        tracker = (self.sim_state.gold_transfers_this_round
-                   if self.sim_state is not None
-                   else self.game_state.gold_transfers_this_turn)
         tracker.add((sender_idx, recipient_idx))
 
         # Action log parity — remote peers log the transfer too so everyone sees it.
@@ -13317,11 +13425,12 @@ class Game:
                                    moved=data.get('surviving_armies', 0),
                                    units=data.get('surviving_units'))
 
-    def _enforce_remote_battle_outcome(self, territory, data):
+    def _enforce_remote_battle_outcome(self, territory, data, apply=True):
         """
         After replaying a remote battle: if our result differs from the resolver's (the
         two PCs' states had already drifted apart), the resolver's outcome for this
-        territory wins - it is what that player saw.
+        territory wins - it is what that player saw. apply=False (the simultaneous-mode
+        host, whose replay stands): the difference is only logged.
         """
         gs = self.game_state
 
@@ -13335,7 +13444,10 @@ class Game:
         garrisons = data.get('garrisons')
         if isinstance(garrisons, dict):
             mismatch = mismatch or summary(garrisons) != summary(gs.territory_garrisons.get(territory, {}))
-        if mismatch:
+        if mismatch and not apply:
+            logger.warning(f"[NETWORK] Replayed battle at {territory} differs from the resolver's "
+                           f"result - keeping ours (the host's result stands)")
+        elif mismatch:
             logger.warning(f"[NETWORK] Replayed battle at {territory} differs from the resolver's "
                            f"result - applying theirs")
             self._apply_battle_outcome(territory, data)
@@ -13374,13 +13486,36 @@ class Game:
             self._hold_network_message(message)
             return
 
+        # A client's result counts only for a battle that exists here, and only from the
+        # player who resolves it (simultaneous mode: its designated resolver - the turn
+        # owner in sequential mode is checked in _refusal_for). The host's results (AI,
+        # AFK fallback, its own battles) are always taken. A client's result for a
+        # territory without a battle used to be applied as sent: any owner, any army.
+        sender = self._message_sender(message)
+        if sender is not None:
+            if index is None:
+                logger.warning(f"[NETWORK] REJECTED: Battle result for {territory} from Player "
+                               f"{sender + 1} - no pending battle there")
+                return
+            resolver = getattr(gs.pending_battles[index], 'resolver', None)
+            if self.sim_state is not None and resolver is not None and resolver != sender:
+                logger.warning(f"[NETWORK] REJECTED: Battle result for {territory} from Player "
+                               f"{sender + 1} - Player {resolver + 1} resolves it")
+                return
+
         if index is not None and isinstance(seed, int):
             # Replay the resolver's battle
             gs.resolve_battle(index, rng=random.Random(seed))
             if self.sim_state is not None:
                 # Simultaneous mode ends rounds via complete_round(), never the sequential flag
                 gs.ready_to_advance_turn = False
-            self._enforce_remote_battle_outcome(territory, data)
+            # A different result means the states had drifted apart. Sequential mode: the
+            # turn owner's result wins (its TURN_END would bring it anyway). Simultaneous
+            # mode on the host - the authority for the round - our own replay stands, so a
+            # client cannot claim a battle result its seed does not give; the round's end
+            # snapshot brings everyone to it.
+            self._enforce_remote_battle_outcome(
+                territory, data, apply=not (self.sim_state is not None and self.local_player_index == 0))
         else:
             if index is None and not self._in_battle_phase():
                 logger.warning(f"[NETWORK] REJECTED: Battle result for {territory} - no pending battle found")

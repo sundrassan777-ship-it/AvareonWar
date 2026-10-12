@@ -1255,6 +1255,13 @@ class TerritorySelector:
                 timestamp = data.get('timestamp', time.time())
 
                 if self.is_host:
+                    # A client claims for its own slot only (the server also drops claims
+                    # naming another slot)
+                    sender = msg.get('from_player_index')
+                    if isinstance(sender, int) and player_index != sender:
+                        logger.warning(f"Lobby: ignored territory claim for slot {player_index} "
+                                       f"from player {sender}")
+                        continue
                     # Host processes territory claim
                     if self.lobby_state.claim_territory(player_index, territory, timestamp):
                         # Update player name if provided
@@ -1300,10 +1307,28 @@ class TerritorySelector:
                     self.lobby_synced = True  # Client is now synced with host
                     logger.info(f"Received full lobby state sync (settings: Victory={self.victory_options[self.victory_condition]}, Tax={self.taxation_options[self.taxation_level]}, Mode={self.turn_mode_options[self.turn_mode]})")
 
+            elif msg_type == MessageType.LOBBY_SLOT_UPDATE and self.is_host:
+                # A CLIENT's update (the server stamps who sent it and drops updates for
+                # other slots): only its own colour and team change. Every field of any slot
+                # used to be applied - a client could turn others into AI or empty slots,
+                # or take territories without claiming them.
+                sender = msg.get('from_player_index')
+                if isinstance(sender, int) and data.get('player_index') == sender:
+                    color, team = data.get('color'), data.get('team')
+                    if isinstance(color, int) and not isinstance(color, bool):
+                        self.lobby_state.set_player_color(sender, color)
+                    if isinstance(team, int) and not isinstance(team, bool):
+                        self.lobby_state.set_player_team(sender, team)
+                    self._sync_from_lobby_state()
+                    self._broadcast_lobby_state()
+                else:
+                    logger.warning(f"Lobby: ignored slot update for slot {data.get('player_index')} "
+                                   f"from player {sender}")
+
             elif msg_type == MessageType.LOBBY_SLOT_UPDATE:
-                # Single slot update
+                # Single slot update (from the host)
                 player_index = data.get('player_index')
-                if 0 <= player_index < self.num_players:
+                if isinstance(player_index, int) and 0 <= player_index < self.num_players:
                     slot = self.lobby_state.get_slot(player_index)
                     if slot:
                         if 'state' in data:

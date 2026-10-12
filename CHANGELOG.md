@@ -2,6 +2,40 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-12 - Multiplayer audit, Phase 7: who may send what
+
+Branch `fix/multiplayer-sync`. Developer guide: "Who may send what" (Network System) in
+CODE_GUIDE.md.
+- **L5 (server)** A client may only act as itself: `NetworkServer._check_sender()` drops a
+  message whose `player_index` / `player_id` names another player (or is not a real int -
+  1.0 / True compare equal to 1, and a float index crashed receivers), and fills in the type's
+  acting-player field (`_SENDER_FIELDS`) when missing (receivers fell back to guessing
+  "1 if local == 0 else 0"). Relayed copies are re-framed with the sender's index
+  (`NetworkProtocol.encode_relayed()`, `from_player_index`) - the raw bytes used to be
+  forwarded, so receivers could not tell who sent a message.
+- **Server allow-list** `_CLIENT_MESSAGE_TYPES` replaces the Phase 4 host-only deny-list:
+  e.g. a client's PLAYER_DISCONNECT used to make the host hand another player's empire to
+  the AI, and LOBBY_JOIN / LEAVE / LAUNCH / KICK, AI_TAKEOVER, SETUP_CONFIG ... reached the
+  host's lobby / game as if the server or host had sent them.
+- **Receivers** (`Game._message_sender()`, `_refusal_for()`; the host is never refused):
+  sequential actions, moves, battles, gold and TURN_END only from the turn owner (a TURN_END
+  from another player replaced the whole game with their snapshot); BATTLE_RESOLVE only for a
+  battle that exists here and, in simultaneous mode, from its resolver (a result for a
+  territory without a battle was applied: any owner, any army); SIM_ALLIANCE_CHOICE only
+  from the marker's chooser and for one of its allies; SIM_HERO_ABILITY only with the
+  sender's own Hero and that Hero's ability (anything was run as sent); GOLD_TRANSFER only
+  with gold transfer on, to a live ally, once per pair per turn, capped at the sender's
+  gold.
+- **Simultaneous host keeps its own replay** when a client's claimed battle outcome differs
+  from what its seed gives (`_enforce_remote_battle_outcome(apply=False)`); sequential mode
+  keeps "the turn owner's result wins".
+- **Lobby:** a client's LOBBY_SLOT_UPDATE changes only its own colour and team (it could
+  rewrite any slot: state, AI, territory, name); TERRITORY_SELECT only for its own slot.
+- `test_mp_transport`'s large-frame test sends its client-side payload as TURN_END (clients
+  may not send FULL_STATE_SYNC).
+- Tests: `tests/test_mp_validation.py` (28), `TestLobbyValidation` (2); strict xfail removed
+  for L5.
+
 ## 2026-10-12 - Multiplayer audit, Phase 6: computer players and takeover in sequential mode
 
 Branch `fix/multiplayer-sync`. Developer guide: "Sequential multiplayer: the turn owner is the

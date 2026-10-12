@@ -1922,7 +1922,32 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
   request unread makes Windows reset the connection, which discards the reject before
   the client reads it (the player never saw "Lobby is full").
 
-**Message Relay (3+ player support):** The server relays gameplay messages from one client to all other clients via `_RELAY_MESSAGE_TYPES` set. This enables real-time sync in 3+ player games (orders, battles, chat, hero abilities, turn ends). Raw bytes are relayed for zero overhead; the sender is excluded to prevent echoes.
+**Message Relay (3+ player support):** The server relays gameplay messages from one client to all other clients via `_RELAY_MESSAGE_TYPES` set. This enables real-time sync in 3+ player games (orders, battles, chat, hero abilities, turn ends). The relayed copy is re-framed with the sender's index (`NetworkProtocol.encode_relayed()`, `from_player_index` next to type/seq/data); the sender is excluded to prevent echoes.
+
+**Who may send what** (multiplayer audit, Phase 7; tests `tests/test_mp_validation.py`,
+`TestLobbyValidation` in `tests/test_mp_lobby.py`):
+- **Server** (`_handle_received_message()`): a client may send only `_CLIENT_MESSAGE_TYPES`
+  (everything else is the host's - e.g. a client's PLAYER_DISCONNECT used to hand another
+  player's empire to the AI); `_check_sender()` drops a message whose `player_index` /
+  `player_id` is not the sender (L5) and fills in the type's acting-player field
+  (`_SENDER_FIELDS`) when missing; every message to the host and every relayed copy carries
+  `from_player_index`.
+- **Each PC** (`main.py`): `Game._message_sender(message)` = that stamp, None for the host
+  (whose messages carry none - the host is the authority and is never refused).
+  `_refusal_for()`: sequential mode, only the turn owner sends `_TURN_OWNER_MESSAGES`. The
+  handlers check the rest: BATTLE_RESOLVE only for a battle that exists here and (simultaneous)
+  from its resolver - a result for a territory without a battle used to be applied; the
+  simultaneous HOST keeps its own seeded replay when a client claims another outcome
+  (`_enforce_remote_battle_outcome(apply=False)`); SIM_ALLIANCE_CHOICE only from the
+  marker's chooser, for one of its allies; SIM_HERO_ABILITY only with the sender's own Hero
+  and that Hero's ability; GOLD_TRANSFER only with gold transfer on, to a live ally, once
+  per pair, capped at the sender's gold.
+- **Lobby** (`territory_selector._process_network_messages()`): a client's
+  LOBBY_SLOT_UPDATE changes only its own slot's colour and team (`set_player_color` /
+  `set_player_team`); every field of any slot used to be applied. TERRITORY_SELECT only for
+  the sender's slot.
+- Not checked: what the turn owner does in its own sequential turn (its snapshot is the
+  truth by design), cooldowns / silence (timing differs per PC).
 
 #### When to Modify
 
@@ -1932,7 +1957,11 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
 3. Update `NetworkClient` to send/receive
 4. Add handler in `main.py _handle_network_message()`
 5. If the message is a gameplay event other clients need to see, add it to `_RELAY_MESSAGE_TYPES` in `server.py`
-6. Test with host and multiple clients
+6. **If clients send it:** add it to `_CLIENT_MESSAGE_TYPES` (otherwise the server drops it
+   from clients), to `_SENDER_FIELDS` if its data names the acting player, and decide what
+   the sender may do (`_TURN_OWNER_MESSAGES` / a check in its handler, using
+   `_message_sender()`)
+7. Test with host and multiple clients
 
 ✅ **Sync a new game action in sequential multiplayer:**
 Every action that modifies game state must send a network message. Pattern:

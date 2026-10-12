@@ -457,3 +457,31 @@ class TestColours:
         finally:
             game.__dict__.clear()                 # ~400 MB of map art; don't keep it alive
             gc.collect()
+
+
+class TestLobbyValidation:
+    """Phase 7: a client changes only its own slot, and only its colour and team."""
+
+    def test_a_client_changes_only_its_own_colour_and_team(self, display):
+        net = h.Network()
+        host_sel = selector(display, net.server, True, 0)
+        client = join(net, host_sel, 1, "P2")
+        slot = host_sel.lobby_state.get_slot(1)
+        new_colour = host_sel.lobby_state.get_slot(3).color      # an empty slot's (swapped)
+        client.send_message(client.protocol.create_lobby_slot_update(1, {
+            'color': new_colour, 'team': 3, 'state': SLOT_AI, 'ai_difficulty': 2,
+            'territory': h.spread_territories(4)[1]}))
+        net.flush()
+        host_sel._process_network_messages()
+        assert (slot.color, slot.team) == (new_colour, 3)
+        assert slot.state == SLOT_HUMAN and slot.territory == ""     # the rest ignored
+
+    def test_a_client_cannot_change_another_slot(self, display):
+        net = h.Network()
+        host_sel = selector(display, net.server, True, 0)
+        client = join(net, host_sel, 1, "P2")
+        join(net, host_sel, 2, "P3")
+        client.send_message(client.protocol.create_lobby_slot_update(2, {'state': SLOT_EMPTY}))
+        net.flush()
+        host_sel._process_network_messages()
+        assert host_sel.lobby_state.get_slot(2).state == SLOT_HUMAN

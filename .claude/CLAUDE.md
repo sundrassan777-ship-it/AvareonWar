@@ -177,6 +177,7 @@ AvareonWar/
 - [tests/test_mp_battles.py](tests/test_mp_battles.py) - Seeded battle replay on receivers (seed + full survivors, hero/Keep/report once, early result held, disagreeing replay corrected, seedless fallback with allies, FIGHT on a vanished battle, dice ties reproduce)
 - [tests/test_mp_foundations.py](tests/test_mp_foundations.py) - State snapshot round trip / per-PC chat / AI flags / cleared work in progress / income, Decisive Strike + Valorous Charge picks, integer default unit ids
 - [tests/test_mp_seq_flow.py](tests/test_mp_seq_flow.py) - Sequential multiplayer (the turn owner is the truth): a 3-player turn identical everywhere, a 4-player full round, only the owner sends TURN_END, receivers never advance on their own, TURN_END waits for the replay, messages wait for our turn-start effects, a stale clock never cuts a turn short, only the owner's timer ends the turn (C2), desync reported + corrected at EXECUTE_ORDERS, a 3-player battle, AFK (untouched battles, report left open, abandoned window), final state at game end
+- [tests/test_mp_validation.py](tests/test_mp_validation.py) - Who may send what: relayed messages carry their sender, missing player fields filled in, host-only types and claims for other slots dropped (L5), sequential actions / TURN_END only from the turn owner, battle results only for a real battle and from its resolver, the simultaneous host keeps its own replay, alliance choices only from the chooser and for an ally, Hero abilities only with your own Hero, gold transfer rules (allies, once per turn, capped, only when on)
 - [tests/test_mp_seq_ai.py](tests/test_mp_seq_ai.py) - Sequential multiplayer computer players + takeover: only the host runs the AI (C1), the AI's moves / battles reach every PC (queued from its worker thread, kept in order), a player leaving while planning / after their moves / during their battles has the turn finished by the AI on the host, anti-farming with AI takeovers, snapshots summarised in logs
 - [tests/test_mp_sim_flow.py](tests/test_mp_sim_flow.py) - Simultaneous multiplayer: host state wins at execution start, 3- and 4-player rounds end identical (incl. per-PC current_player), round end clears leftovers, host-only AI battles / choices / round ends, SIM_READY_STATE waiting list, client timers ready only themselves, AFK (90 s own / 180 s host, report left open, host's own window), round end waits for the host's open battle report + keeps its alliance marker in its round, late alliance choice / stale popup never end the next round, AI takeover while planning / resolving, order validation (units used twice, count from unit list), alliance marker removal by territory
 
@@ -477,6 +478,7 @@ After making code changes, ask yourself:
 - Add/modify map → `maps/manifest.json` (registry), `maps/<map_id>/` (data files), `map_data.py` (loader)
 - Fortress territories → `maps/<map_id>/fortress_territories.json`, `map_data.is_fortress_territory()`, `game_state/military.py` (defense), `game_state/buildings.py` (Keep restriction)
 - Change network → `network/protocol.py`
+- Add a message clients send / decide who may send it → `network/server.py` `_CLIENT_MESSAGE_TYPES` (else dropped from clients) + `_SENDER_FIELDS` (acting-player field, must be the sender); receivers: `main.py` `_message_sender()` (stamp; None = host, trusted) / `_refusal_for()` (`_TURN_OWNER_MESSAGES`) + checks in the handler. See "Who may send what" in CODE_GUIDE.md
 - Change multiplayer sync logging/desync diagnosis → `sync_logger.py`, `main.py` `_report_snapshot_divergence()` (receiver diffs its state against the owner's snapshot) + the turn-snapshot hooks
 - Change internet play / UPnP → `network/upnp.py` and `network_config.py`
 - Modify simultaneous mode → `simultaneous/sim_state.py`, `sim_conflict_resolver.py`
@@ -526,7 +528,7 @@ After making code changes, ask yourself:
 - Change Steam invite UI → `network/territory_selector.py` (friend picker modal)
 - Change Steam invite auto-connect → `main.py` (`steam_invite_join` action, `+connect` launch param)
 - Change Steam player name behavior → `main_menu.py` `_open_profile()` + `_draw_profile_panel()`
-- Multiplayer lobby → `network/lobby.py`; lobby UI / slot seating / launch → `network/territory_selector.py` (slot = the server's player index, never look players up by name)
+- Multiplayer lobby → `network/lobby.py`; lobby UI / slot seating / launch → `network/territory_selector.py` (slot = the server's player index, never look players up by name; a client's slot update changes only its own colour / team)
 - Modify player level/XP → `player_level.py`
 - Change level formula/XP amounts → `player_level.py` constants
 - Player level profile UI → `main_menu.py` `_draw_profile_panel()`

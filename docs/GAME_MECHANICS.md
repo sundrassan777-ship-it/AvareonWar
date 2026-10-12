@@ -782,6 +782,13 @@ affected.
 
 **Cheat codes** work in single-player only. **Team chat** is shown to allies only.
 
+**Fair play checks:** every message is marked with the player who really sent it, and
+every player's game refuses what that player may not do: acting for another player, acting
+outside your own turn (sequential), a battle result from someone who is not fighting that
+battle, an alliance choice from someone who is not choosing, a Hero ability with someone
+else's Hero, or gold sent to an enemy, twice in a turn, beyond what the sender has or in a
+game without gold transfer. In the lobby a player can change only their own colour and team.
+
 **Host-Only Actions:**
 - Kick players from lobby
 - Configure AI slots
