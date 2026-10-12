@@ -16,7 +16,7 @@ Reward types: None, 'title' (shown under profile name), 'icon' (selectable in pr
 
 from datetime import datetime
 from settings_manager import settings
-from player_level import local_human_index, player_level_manager
+from player_level import has_human_opponent, local_human_index, player_level_manager
 from steam_integration import steam_manager
 from utils.logger import get_logger
 
@@ -749,6 +749,7 @@ class AchievementManager:
 
         # Increment mode-specific total game counters (win or loss) for win rate stats
         has_ai_opponent = False
+        vs_human = False  # multiplayer: faced a human enemy (set below)
         if is_custom:
             has_ai_opponent = any(
                 gs.player_is_ai[i] for i in range(gs.num_players) if i != human_player_index
@@ -757,15 +758,23 @@ class AchievementManager:
                 self.stats['custom_games_ai_finished'] = self.stats.get('custom_games_ai_finished', 0) + 1
                 logger.info(f"Custom game (vs AI) finished. Total: {self.stats['custom_games_ai_finished']}")
         elif is_multiplayer:
-            self.stats['multiplayer_games_finished'] = self.stats.get('multiplayer_games_finished', 0) + 1
-            logger.info(f"Multiplayer game finished. Total: {self.stats['multiplayer_games_finished']}")
+            # Multiplayer stats (Conquest achievements, win rate) only count games
+            # against at least one human enemy - a lobby filled with AIs is a Custom
+            # Game in all but name, and gave "A Step Into the World" for free
+            vs_human = has_human_opponent(gs, human_player_index)
+            if vs_human:
+                self.stats['multiplayer_games_finished'] = self.stats.get('multiplayer_games_finished', 0) + 1
+                logger.info(f"Multiplayer game finished. Total: {self.stats['multiplayer_games_finished']}")
+            else:
+                logger.info("Multiplayer game without a human opponent - not counted "
+                            "for multiplayer stats")
 
         # Increment win-specific stat counters only if human won
         if human_won:
             if is_custom and has_ai_opponent:
                 self.stats['custom_game_ai_wins'] = self.stats.get('custom_game_ai_wins', 0) + 1
                 logger.info(f"Custom game AI win recorded. Total: {self.stats['custom_game_ai_wins']}")
-            elif is_multiplayer:
+            elif is_multiplayer and vs_human:
                 self.stats['multiplayer_wins'] = self.stats.get('multiplayer_wins', 0) + 1
                 logger.info(f"Multiplayer win recorded. Total: {self.stats['multiplayer_wins']}")
             elif is_campaign:
