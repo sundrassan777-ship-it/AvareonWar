@@ -8,6 +8,7 @@ Expanded for 2-4 player multiplayer with Type/Color/Team configuration.
 
 import pygame
 from typing import Optional, Tuple, Dict, List, Any
+import math
 import random
 import time
 import map_data
@@ -32,6 +33,9 @@ from ui.setup_tooltip import SetupTooltips
 from ui.setup_frames import SetupFrames
 
 logger = get_logger(__name__)
+
+# A friend's Invite button stays "Invited" this long, then it can be clicked again
+INVITE_COOLDOWN_SECONDS = 30
 
 
 # Colors
@@ -225,7 +229,10 @@ class TerritorySelector:
         # Friend picker modal state (Steam invite — host only)
         self._show_friend_picker = False
         self._friend_list = []  # Cached online Steam friends [{steam_id, name}, ...]
-        self._invited_friends = set()  # Steam IDs already invited
+        # Steam ID -> time.monotonic() of the last invite. A friend can be invited
+        # again after INVITE_COOLDOWN_SECONDS (it used to be once per lobby, so a
+        # missed or failed invite could not be resent)
+        self._invited_friends = {}
         self._friend_scroll_offset = 0  # Scroll position in friend list
         self._friend_picker_rects = {}  # Computed rects for friend picker elements
 
@@ -2636,7 +2643,14 @@ class TerritorySelector:
                 friend = self._friend_list[idx]
                 steam_id = friend['steam_id']
                 name = friend['name']
-                already_invited = steam_id in self._invited_friends
+                # Invited recently: "Invited" + countdown until it can be sent again
+                countdown = self._invite_countdown_text(steam_id)
+                already_invited = countdown is not None
+                countdown_surface = (self.tiny_font.render(countdown, True, TEXT_COLOR_DIM)
+                                     if countdown else None)
+                countdown_gap = int(8 * scale)
+                countdown_w = (countdown_surface.get_width() + countdown_gap
+                               if countdown_surface else 0)
 
                 # Row hover highlight
                 row_rect = pygame.Rect(list_left, y, list_width, row_h)
@@ -2648,7 +2662,7 @@ class TerritorySelector:
                 # Friend name (left-aligned, vertically centered in row)
                 name_surface = label_font.render(name, True, TEXT_COLOR)
                 # Truncate name if too wide (leave space for invite button)
-                max_name_width = list_width - invite_btn_w - int(15 * scale)
+                max_name_width = list_width - invite_btn_w - int(15 * scale) - countdown_w
                 if name_surface.get_width() > max_name_width:
                     # Render truncated name with ellipsis
                     truncated = name
@@ -2672,6 +2686,9 @@ class TerritorySelector:
                     pygame.draw.rect(self.screen, (40, 70, 40), btn_rect, border_radius=4)
                     pygame.draw.rect(self.screen, (100, 200, 100), btn_rect, 1, border_radius=4)
                     btn_text = label_font.render("Invited", True, (100, 200, 100))
+                    # "again in 0:23" left of the button
+                    self.screen.blit(countdown_surface, countdown_surface.get_rect(
+                        right=btn_rect.left - countdown_gap, centery=btn_rect.centery))
                 elif not addresses_ready:
                     # Still finding our internet address (UPnP / public IP) - an invite
                     # now would carry only the LAN address
@@ -2717,9 +2734,24 @@ class TerritorySelector:
             return server.is_upnp_complete()
         return True
 
+    def _invite_cooldown_left(self, steam_id) -> float:
+        """Seconds until this friend can be invited again (0 = now)."""
+        sent = self._invited_friends.get(steam_id)
+        if sent is None:
+            return 0.0
+        return max(0.0, INVITE_COOLDOWN_SECONDS - (time.monotonic() - sent))
+
+    def _invite_countdown_text(self, steam_id) -> Optional[str]:
+        """'again in 0:23' while this friend's invite is cooling down, else None."""
+        left = self._invite_cooldown_left(steam_id)
+        if left <= 0:
+            return None
+        seconds = int(math.ceil(left))
+        return f"again in {seconds // 60}:{seconds % 60:02d}"
+
     def _can_invite_friend(self, steam_id) -> bool:
         """Whether the Invite button of this friend is clickable."""
-        return self._join_addresses_ready() and steam_id not in self._invited_friends
+        return self._join_addresses_ready() and self._invite_cooldown_left(steam_id) <= 0
 
     def _invite_connect_string(self) -> Optional[str]:
         """
@@ -2761,7 +2793,7 @@ class TerritorySelector:
                 connect_str = self._invite_connect_string()
                 if connect_str:
                     if steam_manager.invite_friend(steam_id, connect_str):
-                        self._invited_friends.add(steam_id)
+                        self._invited_friends[steam_id] = time.monotonic()
                         logger.info(f"Invited friend {steam_id} with connect string '{connect_str}'")
                 return
 
