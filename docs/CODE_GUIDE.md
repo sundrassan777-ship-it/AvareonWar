@@ -1900,9 +1900,9 @@ python tests/test_2v2_simultaneous_40turn.py
 
 ## Network System
 
-**Modules:** `network/server.py`, `network/client.py`, `network/protocol.py`, `network/message_queue.py`, `network/lobby.py`, `network/territory_selector.py`, `network/multiplayer_setup.py`, `network/upnp.py`
+**Modules:** `network/server.py`, `network/client.py`, `network/protocol.py`, `network/message_queue.py`, `network/lobby.py`, `network/territory_selector.py`, `network/multiplayer_setup.py`, `network/upnp.py`, `network/steam_bridge.py` (+ `steam_networking.py` at the root)
 **Total:** ~4,900+ lines
-**Status:** Full 2-4 player multiplayer with host-run AI slots, AI takeover when a player leaves, UPnP internet play (reconnecting is off for launch)
+**Status:** Full 2-4 player multiplayer with host-run AI slots, AI takeover when a player leaves, joining through Steam's relay (no port forwarding - "Steam joining (SDR bridge)"), UPnP internet play as the fallback (reconnecting is off for launch)
 
 ### Architecture Overview
 
@@ -1937,7 +1937,7 @@ python tests/test_2v2_simultaneous_40turn.py
 | Host disconnect | Game ends for all clients |
 | Sockets | Blocking sends with `SEND_TIMEOUT` (never non-blocking `sendall()`); reads only after `select()` |
 | Allied vision | Allies see each other's movement arrows |
-| Internet play | UPnP auto port-forward + public IP detection (graceful LAN fallback) |
+| Internet play | Steam friends join through Steam Datagram Relay (a loopback bridge, the TCP protocol unchanged); by address: UPnP auto port-forward + public IP detection (graceful LAN fallback) |
 
 ### Multiplayer sync model (overview)
 
@@ -1989,19 +1989,108 @@ needs the public IP waits for `is_complete()` (the friend picker shows "Wait..."
 **Integration points:** `server.setup_upnp()` starts it, `server.stop()` cleans up, `territory_selector._draw_host_ip()` polls status (its "Join IP:" (i) tooltip is `host_ip_pending` / `host_ip_lan` / `host_ip_internet` in `config/setup_tooltips.py`), `server.get_join_addresses()` feeds Steam invites
 
 **Joining with several addresses (Steam invites):** the invite's launch argument is
-`+connect ip1:port,ip2:port` (`network.client.format_connect_targets()` /
-`parse_connect_targets()` - no spaces, a single `ip:port` still parses). The invited PC calls
-`NetworkClient.connect_any(targets)`: each address in turn with `connect()`, stopping at the
-first success or as soon as one reached a host that refused us (`_host_answered` - the host's
-reason is the one to show). When every address timed out, the reason covers both cases (same
-network / port forwarding). A single timeout says what to check via `unreachable_reason(host)`:
-home-network addresses → same Wi-Fi, guest network, router device isolation, VPN; public
-addresses → forward TCP 7777.
+`+connect steam-<SteamID64>,ip1:port,ip2:port` - the Steam target first (works on any network,
+see "Steam joining (SDR bridge)"), then the addresses (`network.client.format_connect_targets()`
+/ `parse_connect_targets()` - no spaces, a single `ip:port` still parses). The host's rich
+presence `connect` carries the same string. The invited PC calls
+`NetworkClient.connect_any(targets)`: each target in turn (`connect_steam()` / `connect()`),
+stopping at the first success or as soon as one reached a host that refused us
+(`_host_answered` - the host's reason is the one to show), or when the host's game said it
+hosts nothing (Steam end 1003 / 1004, or a Steam timeout while the host's presence shows no
+lobby) - its addresses lead to the same game. When every address timed out, the reason covers
+both cases (same network / port forwarding). A single timeout says what to check via
+`unreachable_reason(host)`: home-network addresses → same Wi-Fi, guest network, router device
+isolation, VPN; public addresses → forward TCP 7777. Both end with `STEAM_JOIN_HINT` (join
+through the Steam Friends tab instead).
 
 **Diagnosing "could not reach the host":** the host log (`logs/avareonwar.log` next to the
 exe) shows `Server started! IP: ...`, the UPnP result and the invite's connect string. No
 `Client connected from` line means the joining PC's packets never arrived - a network
 problem, not the game (on the joining PC: `Test-NetConnection <host ip> -Port 7777`).
+
+### Steam joining (SDR bridge) - steam_networking.py, network/steam_bridge.py
+
+**What it does:** Steam friends join a lobby through Steam Datagram Relay (SDR): no address,
+no port forwarding, on any network (built 2026-10-13, SDR Phases 1-5, branch
+`feature/steam-sdr`). The game's TCP protocol is untouched: a **loopback bridge** copies its
+byte stream over a Steam connection, so `NetworkServer` / `NetworkClient`, the message format
+and every multiplayer test work as before.
+
+```
+Steam peer ──SDR──> [steam_bridge thread] ──127.0.0.1 TCP──> NetworkServer (unchanged)
+NetworkClient (unchanged) ──127.0.0.1 TCP──> [steam_bridge thread] ──SDR──> host
+```
+
+| File | Role |
+|------|------|
+| `steam_networking.py` | ctypes binding to Steam's flat API (`steam_net`): ISteamNetworkingSockets (listen, connect, send, receive, status callbacks), relay setup, rich presence, invites, `ISteamApps::GetLaunchCommandLine`, join requests (callback 337). SteamworksPy has none of these |
+| `network/steam_bridge.py` | `steam_bridge`: one daemon thread carrying pairs (Steam connection ↔ loopback socket). Host side `start_hosting()` / `stop_hosting()`, joiner side `open_join()` → `SteamJoin`, graceful closes, failure wording `describe_end()` |
+| `steam_integration.py` | `steam_manager`: the start-up `+connect` (`launch_connect_target()`), join requests (`take_join_request()`, dedupe, `drop_join_requests_for()`), hosting presence (`set_hosting_presence()` / `clear_hosting_presence()` / `get_hosting_friends()`), kill switches (`steam_feature_switches()`) |
+| `network/client.py` | `SteamTarget`, `connect_steam()`, `connect_any()` (the Steam target first, then the addresses) |
+| `network/server.py` | `setup_steam()` / `steam_host_id()`; loopback peers are exempt from the per-IP limit (the bridge limits per SteamID); `_reject_connection()` waits for the bridge |
+| `network/multiplayer_setup.py` | Join Game screen: "Steam Friends" / "Direct IP" tabs (`HostingFriendsList`, `FriendJoin`); `connect_with_progress()` (Connecting screen with Cancel); join requests taken on the multiplayer menu and Join Game screen |
+| `network/territory_selector.py` | the host's presence while the lobby is open (`_update_hosting_presence()`, cleared in `run()`'s `finally`), the "or via Steam" / "Steam off" note after the join address, the invite string |
+| `main.py` | `steam_invite_join` (start-up `+connect` or a request the main menu took), in-game toast `_notify_steam_join_request()`, `--sdr-test` |
+
+**Ways in** (all end in `connect_with_progress()` → `run_client_lobby()`):
+1. **Steam Friends tab:** friends whose rich presence `connect` holds a joinable `+connect`, re-read every 2 s → `FriendJoin(name, connect)`.
+2. **Invite** (Invite Friend in the lobby): `+connect steam-<id>,lan:7777[,public:7777]`. Game closed: Steam starts it with that (read by `launch_connect_target()`, Steam's launch command line first, argv as fallback). Game running: callback 337.
+3. **Steam's "Join Game"** on a hosting friend in Steam's friends list: Steam uses their presence `connect` exactly like an invite.
+4. **Direct IP:** unchanged.
+
+A join request (337) is acted on by the main menu, the multiplayer menu and the Join Game
+screen; during a game it waits for the main menu with a gold toast; in a lobby or on the
+Connecting screen it waits for the next menu. After a successful join, a waiting request for
+the same host is dropped (`drop_join_requests_for()` - "Join Game" pressed twice).
+
+**Rules (each learnt the hard way - keep them):**
+1. **Every screen pumps Steam.** A friend's incoming connection reaches the host only while its main thread calls `SteamAPI_RunCallbacks`: `steam_manager.run_callbacks()` once per frame in every screen loop of the multiplayer flow (menus, lobby, loading screen, error screen). Phase 3: the lobby did not, so every Steam join timed out after 15 s. The bridge logs "Steam callbacks have not run for N s" (`MAIN_PUMP_WARN_SECONDS` = Steam's 15 s connect timeout). Tests: `TestEveryScreenPumpsSteam`.
+2. **Connection status is a separate pump.** `SteamAPI_RunCallbacks` does not deliver it: the bridge thread runs `ISteamNetworkingSockets::RunCallbacks` itself; the status handler only appends to a locked deque. Never `ManualDispatch` - SteamworksPy owns callback dispatch.
+3. **Never lose or reorder bytes.** A loopback read of ≤ 256 KB (`PIECE_SIZE`) = one reliable Steam message; `LimitExceeded` keeps the piece and stops reading that loopback; above 2 MB (`LOCAL_BACKLOG_LIMIT`) the bridge stops pulling that peer's messages (Steam keeps them - lossless). Global send buffer 4 MB. SDR's default rate (~256 KB/s) is plenty: snapshots are 19-34 KB.
+4. **Close gracefully - Windows resets otherwise.** Closing a socket with unread data resets the connection, and the reset destroys what the other side has not read yet. Loopback ends → forward the rest, `CloseConnection(linger)`. Steam ends → hand the loopback the last bytes, `SHUT_WR`, read until it closes (≤ 1 s), close. A listener closed with a client still in its accept queue resets that client: `_on_steam_closed()` accepts it first (a pass runs status events before `_pump()`'s accept).
+5. **The host keeps its listen socket** from its first lobby until the game exits (`CloseListenSocket` drops accepted connections ungracefully). Between lobbies it refuses at once with end reason 1003 → "X is not hosting a game right now" instead of a 15 s timeout.
+6. **Refusals must reach the joiner.** The server refuses at accept time, before the bridge has forwarded the joiner's request: `_reject_connection(..., client_address)` waits up to 1.6 s for a loopback peer to close (internet peers: a quiet 0.2 s - the refusal runs on the server's only network loop).
+7. **What a failure means** (`describe_end()`, measured on real Steam): timeout 5003 looks the same after 15 s for "not hosting", "game closed" and "unreachable" - the host's rich presence picks the wording. App codes: 1001 too many attempts (5 per 10 s per SteamID), 1002 the host's server refused the loopback, 1003 not hosting, 1004 game closing. `connect_any()` skips the invite's addresses after 1003 / 1004 or a 5003 whose host's presence shows no lobby (`SteamJoin.host_game_refused` / `host_not_hosting`); unreadable presence = unknown, the addresses are still tried.
+8. **The Steam target is colon-free:** `steam-<SteamID64>` (old builds crashed on `steam:<id>` - OverflowError in the port parse).
+9. **Presence belongs to the host's lobby:** set when it opens, set again when the connect string changes (UPnP adds the public address; checked once a second - the string opens a socket for the LAN address), cleared however the lobby ends (`run()`'s `finally`). It carries the addresses too - readable by every Steam friend playing the game - so Steam's "Join Game" still works when the relay fails or is switched off.
+10. **Shutdown order:** `steam_manager.shutdown()` stops the bridge (lingering closes still go out), then `steam_net.shutdown()` unregisters 337 and the status callback, then Steam shuts down (a callback into Python after that crashes on exit).
+11. **Kill switches** (read once at start, logged): `--no-steam-relay` / config `"steam_relay": false` → no SDR (the lobby shows "Steam off", joining by address as before); `--no-steam-join-hook` / `"steam_join_hook": false` → callback 337 not registered (invites with the game closed still work).
+12. **ctypes hygiene:** structure sizes asserted at import, out-structures with 256 B slack, every callback / vtable object module-level for the process lifetime.
+
+**Steamworks settings (outside the code):**
+- Installation → General Installation Settings → Advanced Options → **"Enable using ISteamApps::GetLaunchCommandLine()"** is on (2026-10-13): an invite or "Join Game" starts a closed game without Steam's "launched with arguments" warning, and running games still get callback 337. The game reads `GetLaunchCommandLine` first, argv as fallback.
+- **Rich presence text:** `docs/steam/rich_presence.vdf`, uploaded under Community → Rich Presence. The game sets `steam_display` to `HOSTING_DISPLAY_TOKEN` (`#Status_Hosting`); Steam shows nothing for a token it does not know, so the game works before the upload. Change both together - `test_the_display_token_is_in_the_file_to_upload` checks them - and upload again. Check it with Steam's rich presence test page while hosting.
+
+**Logs** (`logs/avareonwar.log` next to the exe; logs grow across sessions, so read only the
+part after the previous copy): host `Hosting through Steam as <id>`, `Steam peer <id> (<name>)
+is connecting` / `-> local port N`, `Steam connection <id> connected (relayed|direct)` + status
+block, `Client connected from Steam <id> ...`, `Steam presence: hosting - friends join with
+'...'` / `not hosting`, `refused, not hosting right now`. Joiner: `Joining Steam host <id>
+(<name>) (local port N, relay <state>)`, `Friends hosting (Steam presence): ...` (changes
+only), `Steam join request from <id>: '...'`, `Steam invite detected (Steam's launch command
+line)`, `Joining <name> through Steam`, failures `Joining steam-<id> failed: <reason>`.
+
+**`--sdr-test` (support tool, shipped):** with the launch option `--sdr-test` (Steam → the
+game's Properties → Launch Options) a diagnostics window opens instead of the game and logs to
+`logs/sdr_test.log`: App ID, SteamID, relay / sign-in state, the launch `+connect`, every join
+request. Keys: S single-PC self-test, H host, J join the selected friend (echo round trips),
+I invite, R join the host of the last join request. Two-PC steps: `steam_sdr_test.py`
+docstring.
+
+**When to Modify:**
+- A Steam failure's wording → `steam_bridge.describe_end()` (+ `TestReasons` in `tests/test_steam_bridge.py`)
+- Bridge throughput or closing → the constants at the top of `network/steam_bridge.py`; keep rules 3-4
+- A new screen in the multiplayer flow → `steam_manager.run_callbacks()` every frame (rule 1) + a `TestEveryScreenPumpsSteam` case; a menu should also take join requests (`steam_manager.take_join_request()`)
+- What friends see while you host → `steam_integration.set_hosting_presence()` (+ `docs/steam/rich_presence.vdf`, uploaded again)
+- The Join Game screen's list → `network/multiplayer_setup.py` (`HostingFriendsList`, `_draw_friend_rows()`, `_join_screen_layout()`); the panel's metal frame takes ~65 px a side of its 620 px
+- Which targets a joiner tries, in which order → `connect_any()` / `connect_steam()` in `network/client.py`
+
+**Tests:** `tests/test_steam_networking.py` (the binding against a fake DLL),
+`tests/test_steam_bridge.py` (a fake relay + real sockets, server and client end to end),
+`tests/test_steam_join.py` (launch target, join requests, Connecting screen, every screen
+pumps), `tests/test_steam_presence.py` (presence, Join Game tabs and list, the lobby's Steam
+note), `tests/test_steam_invite.py` (invite string, cooldown). Real Steam needs two PCs with a
+playtest build: `docs/TESTING_PLAN_MULTIPLAYER_FIXES.md` "Joining through Steam".
 
 ### network/server.py (~1,000 lines)
 
@@ -3946,7 +4035,7 @@ the lobby with AI slots used to earn them.
 - **Change preview popup**: Modify `_draw_achievement_preview()` / `_update_achievement_preview()` in `recap_screen.py`.
 - **Change profile title/icon UI**: Modify `_draw_profile_panel()` in `main_menu.py`.
 - **Change Steam achievement sync**: Modify `steam_integration.py` (`unlock_achievement`, `pump_until_stats_ready`). Achievement IDs must be bytes-encoded.
-- **Change Steam friend invites**: Modify `steam_integration.py` (`can_invite`, `get_online_friends`, `invite_friend`). Friend picker UI in `network/territory_selector.py` (`_draw_friend_picker`, `_handle_friend_picker_click`). Auto-connect via `+connect` launch param handled in `main.py` (`steam_invite_join` action).
+- **Change Steam friend invites**: Modify `steam_integration.py` (`can_invite`, `get_online_friends`, `invite_friend`). Friend picker UI in `network/territory_selector.py` (`_draw_friend_picker`, `_handle_friend_picker_click`). Auto-connect via `+connect` launch param handled in `main.py` (`steam_invite_join` action). Joining through Steam itself (relay, presence, join requests): see "Steam joining (SDR bridge)" in the Network System.
 - **Change Steam name behavior**: Modify `_open_profile()` in `main_menu.py` (detection) and `_draw_profile_panel()` (UI). Startup auto-set in `main.py`.
 
 ## Recap Screen

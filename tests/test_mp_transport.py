@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mp_harness as h  # noqa: E402
-from network.client import (NetworkClient, SteamTarget,  # noqa: E402
+from network.client import (STEAM_JOIN_HINT, NetworkClient, SteamTarget,  # noqa: E402
                             format_connect_targets, parse_connect_targets, target_label,
                             unreachable_reason)
 from network.message_queue import NetworkMessageQueue  # noqa: E402
@@ -423,10 +423,12 @@ class TestJoinAddresses:
     def test_timeout_reason_points_at_the_home_network_for_lan_addresses(self):
         reason = unreachable_reason('192.168.18.5')
         assert 'home network' in reason and 'VPN' in reason
+        assert reason.endswith(STEAM_JOIN_HINT)     # the way round it (Phase 5)
 
     def test_timeout_reason_points_at_port_forwarding_for_public_addresses(self):
         reason = unreachable_reason('212.20.115.148')
         assert 'forward TCP port 7777' in reason
+        assert reason.endswith(STEAM_JOIN_HINT)
 
     def test_every_address_failing_covers_both_cases(self):
         client = NetworkClient()
@@ -440,6 +442,7 @@ class TestJoinAddresses:
         reason = client.disconnect_reason
         assert '192.168.18.5 or 212.20.115.148' in reason
         assert 'same network' in reason.lower() and 'forward TCP port 7777' in reason
+        assert reason.endswith(STEAM_JOIN_HINT)
 
     def test_one_failing_address_keeps_its_own_reason(self):
         client = NetworkClient()

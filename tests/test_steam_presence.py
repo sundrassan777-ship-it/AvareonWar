@@ -32,7 +32,8 @@ from network.client import SteamTarget  # noqa: E402
 from network.multiplayer_setup import (  # noqa: E402
     FRIEND_ROWS_VISIBLE, FRIENDS_REFRESH_SECONDS, JOIN_TAB_ROW_HEIGHT, NO_FRIENDS_HOSTING,
     FriendJoin, HostingFriendsList, MultiplayerSetup)
-from steam_integration import HOSTING_STATUS, SteamManager, steam_manager  # noqa: E402
+from steam_integration import (  # noqa: E402
+    HOSTING_DISPLAY_TOKEN, HOSTING_STATUS, SteamManager, steam_manager)
 from steam_networking import steam_net  # noqa: E402
 
 HOST_ID = 76561198886995069
@@ -63,12 +64,16 @@ class _FakeFriends:
 
     def __init__(self):
         self.ids = []
+        self.names = {}
 
     def GetFriendCount(self, flags):
         return len(self.ids)
 
     def GetFriendByIndex(self, index, flags):
         return self.ids[index]
+
+    def GetFriendPersonaName(self, steam_id):
+        return self.names.get(steam_id, '').encode('utf-8')   # bytes, as SteamworksPy
 
 
 @pytest.fixture
@@ -104,7 +109,7 @@ class TestOurPresence:
     def test_set_then_cleared(self, steam):
         assert steam.manager.set_hosting_presence(f'+connect steam-{HOST_ID},192.168.18.5:7777')
         assert steam.ours == {'connect': f'+connect steam-{HOST_ID},192.168.18.5:7777',
-                              'status': HOSTING_STATUS}
+                              'status': HOSTING_STATUS, 'steam_display': HOSTING_DISPLAY_TOKEN}
         steam.manager.clear_hosting_presence()
         assert steam.ours == {}
         calls = len(steam.calls)
@@ -116,6 +121,46 @@ class TestOurPresence:
         assert not steam.manager.set_hosting_presence(f'+connect steam-{HOST_ID}')
         steam.manager.clear_hosting_presence()
         assert steam.calls == []
+
+    def test_the_display_token_is_in_the_file_to_upload(self):
+        """Steam friends lists show "steam_display" only as a token from the localization
+        file uploaded in Steamworks (Community -> Rich Presence): the game's token and the
+        file must agree, or friends see nothing."""
+        import re
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            'docs', 'steam', 'rich_presence.vdf')
+        with open(path, encoding='utf-8') as f:
+            parts = re.findall(r'"([^"]*)"|([{}])', f.read())
+        # A minimal KeyValues reader: "key" "value" or "key" { ... }
+        stack, current, key = [], {}, None
+        for text, brace in parts:
+            if brace == '{':
+                child = {}
+                current[key] = child
+                stack.append(current)
+                current, key = child, None
+            elif brace == '}':
+                current = stack.pop()
+            elif key is None:
+                key = text
+            else:
+                current[key], key = text, None
+        assert current['lang']['english']['tokens'][HOSTING_DISPLAY_TOKEN] == HOSTING_STATUS
+
+
+class TestFriendCountLog:
+
+    def test_logged_only_when_the_count_changes(self, steam, caplog):
+        friends = steam.manager._steamworks.Friends
+        steam.friends(HOST_ID, OTHER_ID)
+        friends.names.update({HOST_ID: 'Weel', OTHER_ID: 'Ann'})
+        with caplog.at_level(logging.INFO):
+            for _ in range(3):
+                assert [f['name'] for f in steam.manager.get_online_friends()] == ['Ann', 'Weel']
+            steam.friends(HOST_ID)
+            steam.manager.get_online_friends()
+        lines = [r.getMessage() for r in caplog.records if 'Steam friends' in r.getMessage()]
+        assert lines == ["Found 2 Steam friends", "Found 1 Steam friends"]
 
 
 class TestHostingFriends:

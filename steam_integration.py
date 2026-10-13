@@ -70,7 +70,12 @@ JOIN_REQUEST_MAX_AGE_SECONDS = 600
 #   "connect" - the invite's "+connect steam-<id>,ip:port,...": Steam's "Join Game" on
 #               the host passes it to the friend's game (launch / callback 337)
 #   "status"  - shown in Steam's "view game info" dialog and on our Join screen
+#   "steam_display" - what Steam friends lists show next to the game: a localization
+#               token whose text lives in docs/steam/rich_presence.vdf, uploaded in
+#               Steamworks (Community -> Rich Presence). A token Steam does not know shows
+#               nothing (Valve's ISteamFriends docs), so it is safe before the upload.
 HOSTING_STATUS = "Hosting a lobby"
+HOSTING_DISPLAY_TOKEN = "#Status_Hosting"
 
 
 def steam_feature_switches(argv=None, settings_obj=None):
@@ -165,6 +170,8 @@ class SteamManager:
         self._hosting_presence = None
         # Hosting friends as last logged (get_hosting_friends logs changes only)
         self._hosting_friends_logged = None
+        # Friend count as last logged (get_online_friends logs changes only)
+        self._online_friends_logged = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -378,9 +385,10 @@ class SteamManager:
     def set_hosting_presence(self, connect_string, status=HOSTING_STATUS):
         """
         Tell friends we host a lobby: rich presence "connect" (Steam shows "Join Game" on
-        us, friends' Join screens list us) and "status". The host's lobby calls this while
-        it is open (network/territory_selector.py) and clear_hosting_presence() when it
-        closes or launches.
+        us, friends' Join screens list us), "status" and "steam_display" (the friends
+        list's "Hosting a lobby"). The host's lobby calls this while it is open
+        (network/territory_selector.py) and clear_hosting_presence() when it closes or
+        launches.
 
         Returns:
             True if Steam took it
@@ -391,6 +399,7 @@ class SteamManager:
             from steam_networking import steam_net
             ok = steam_net.set_rich_presence('connect', connect_string or '')
             ok = steam_net.set_rich_presence('status', status or '') and ok
+            ok = steam_net.set_rich_presence('steam_display', HOSTING_DISPLAY_TOKEN) and ok
         except Exception as e:
             logger.warning(f"Could not set the Steam hosting presence: {e}")
             return False
@@ -406,8 +415,8 @@ class SteamManager:
         self._hosting_presence = None
         try:
             from steam_networking import steam_net
-            steam_net.set_rich_presence('connect', '')
-            steam_net.set_rich_presence('status', '')
+            for key in ('connect', 'status', 'steam_display'):
+                steam_net.set_rich_presence(key, '')
         except Exception as e:
             logger.warning(f"Could not clear the Steam hosting presence: {e}")
             return
@@ -610,7 +619,11 @@ class SteamManager:
                     friends.append({'steam_id': steam_id, 'name': name})
             # Sort alphabetically by name for consistent display
             friends.sort(key=lambda f: f['name'].lower())
-            logger.info(f"Found {len(friends)} Steam friends")
+            # Logged when the count changes only - the --sdr-test tool asks every 15 s
+            # (its log was mostly this line); the lobby's friend picker on every open
+            if len(friends) != self._online_friends_logged:
+                self._online_friends_logged = len(friends)
+                logger.info(f"Found {len(friends)} Steam friends")
             return friends
         except Exception as e:
             logger.warning(f"Failed to get Steam friends list: {e}")

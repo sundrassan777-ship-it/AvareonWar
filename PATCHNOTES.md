@@ -4,6 +4,31 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Multiplayer: Join Friends Through Steam
+
+*13 October 2026*
+
+- **Join your Steam friends with no network setup.** Joining now goes through Steam, so it
+  works on any network: no IP address, no port forwarding, no router settings - also when
+  two PCs on the same Wi-Fi cannot reach each other directly.
+- **Join Game → Steam Friends:** the Join Game screen lists your Steam friends who are hosting
+  a lobby right now. Click **Join** next to one. The address box is on the **Direct IP** tab.
+- **"Join Game" in Steam:** in your Steam friends list, choose **Join Game** on a friend who is
+  hosting. If War of Avareon is closed, it starts and joins them; if it is open on a menu, it
+  joins at once. During a game, a message tells you, and the join happens when you return to
+  the main menu.
+- **Steam invites** go through Steam too, and no longer bring up Steam's warning about launch
+  options when they start the game.
+- Your Steam friends can see when you are hosting (**Hosting a lobby**). In your lobby, the
+  address line ends with **or via Steam** while friends can join you this way.
+- Joining shows a **Connecting** screen with a **Cancel** button, and says why it did not work
+  - for example "Weel is not hosting a game right now" - straight away instead of after a
+  long wait.
+- Joining by IP address works as before, and the game still tries the host's address if
+  Steam cannot connect you.
+
+---
+
 ## Multiplayer: Easier Joining
 
 *12 October 2026*

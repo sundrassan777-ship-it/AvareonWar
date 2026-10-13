@@ -142,6 +142,7 @@ Benefits:
 - `protocol.py` - Message serialization
 - `message_queue.py` - Thread-safe queue
 - `upnp.py` - UPnP port forwarding and public IP detection
+- `steam_bridge.py` - Joining through Steam's relay: copies the TCP byte stream over Steam connections via 127.0.0.1 (server and client unchanged); binding in `steam_networking.py` at the root
 
 **Simultaneous Mode** (simultaneous/):
 - `sim_state.py` - SimultaneousGameState wrapper
@@ -609,7 +610,8 @@ class UIConstants:
 **Multiplayer** (network/ package, fully operational):
 - TCP server supporting up to 4 players
 - State synchronization via message protocol
-- UPnP port forwarding for internet play
+- Joining through Steam (Steam Datagram Relay - no port forwarding), Steam Friends list on Join Game
+- UPnP port forwarding for internet play by address
 - Simultaneous turn mode with conflict resolution
 
 ### **Not Yet Implemented:**

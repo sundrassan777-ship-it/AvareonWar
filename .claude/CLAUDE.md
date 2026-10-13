@@ -81,6 +81,13 @@ AvareonWar/
 **Player Level System:**
 - [player_level.py](player_level.py) - Player level/XP logic, tiered progression formula, persistence, end-of-game calculation
 
+**Steam (joining through Steam: CODE_GUIDE "Steam joining (SDR bridge)"):**
+- [steam_integration.py](steam_integration.py) - `steam_manager`: achievements, invites, start-up `+connect`, join requests (callback 337), hosting rich presence + hosting friends, kill switches
+- [steam_networking.py](steam_networking.py) - `steam_net`: ctypes binding to Steam's flat API (networking sockets / relay, rich presence, `GetLaunchCommandLine`, the join-request callback) - SteamworksPy has none of these
+- [network/steam_bridge.py](network/steam_bridge.py) - `steam_bridge`: copies the game's TCP stream over Steam connections through 127.0.0.1 (server and client unchanged)
+- [steam_sdr_test.py](steam_sdr_test.py) - `--sdr-test` diagnostics window (shipped as a support tool)
+- [docs/steam/rich_presence.vdf](docs/steam/rich_presence.vdf) - Steam friends-list text ("Hosting a lobby"), uploaded in Steamworks (Community → Rich Presence)
+
 **Game Logging:**
 - [game_logger.py](game_logger.py) - Per-game JSON logging (custom/multiplayer only), writes to Logs/ folder
 - [sync_logger.py](sync_logger.py) - Multiplayer state sync verification logging, action history, turn snapshots, desync diffs, writes to Logs/sync/
@@ -176,6 +183,10 @@ AvareonWar/
 - [tests/test_game_logger.py](tests/test_game_logger.py) - Per-game JSON log: round records list their battles / buildings, rounds numbered from 1 in both modes, the unfinished last round written, sequential rounds still counted once player 0 is out
 - [tests/test_upnp.py](tests/test_upnp.py) - UPnP setup without a network (miniupnpc 2.3 raising "Success" = no router found), discovery retry, `is_complete()` only after the public-IP lookup, join-address order
 - [tests/test_steam_invite.py](tests/test_steam_invite.py) - Lobby Steam invites: connect string carries LAN + public address, "Wait..." until UPnP is done, 30 s re-invite cooldown + countdown layout, "Join IP:" tooltip per UPnP result
+- [tests/test_steam_networking.py](tests/test_steam_networking.py) - Steam flat-API binding against a fake DLL: struct layouts, init order + kill switches, message copy/release, status callback, the emulated join-request callback
+- [tests/test_steam_bridge.py](tests/test_steam_bridge.py) - Steam bridge over a fake relay + real sockets / server / client: bytes both ways without loss, graceful closes (no resets), refusals reach the joiner, failure wording, rate limit, "not hosting" ends the attempt at once (no address attempts), Cancel
+- [tests/test_steam_join.py](tests/test_steam_join.py) - Joining from Steam: launch `+connect` (Steam's command line first), join requests (dedupe, age, menus + Join Game screen take them, a second request for the joined host dropped), in-game toast, Connecting screen, every multiplayer screen pumps Steam
+- [tests/test_steam_presence.py](tests/test_steam_presence.py) - Hosting presence (set while the lobby is open, cleared however it ends), hosting friends, the lobby's "or via Steam" note at 720p-1080p, Join Game "Steam Friends" / "Direct IP" tabs (join, scroll, empty state, layout, hover/flash), the uploaded rich presence token
 - [tests/mp_harness.py](tests/mp_harness.py) - Multiplayer test harness: 2-4 real `Game`s in one process over the real server/client logic with in-memory sockets (`Session`, `make_session` fixture, input helpers). Fails a test when a received message raised (`Game.network_message_errors`, checked by `Peer.step()` and the fixture teardown). Every audit finding is fixed: no `xfail` markers are left in the `test_mp_*` files
 - [tests/test_mp_transport.py](tests/test_mp_transport.py) - Sequence numbers (PONG/DISCONNECT exempt, per connection), disconnect notices (lobby + in game, send failures, once), refused rejoin, requeue order, real sockets (large frames to a slow reader, refusal reasons, `connect_any` skipping a dead address / stopping at a refusal), invite connect strings + "could not reach" reasons
 - [tests/test_mp_lobby.py](tests/test_mp_lobby.py) - Lobby leave/join by server index, launch rules + tooltip, shared seed/map/config, loading screen (keeps messages, Escape, host skips leavers, lost host), real-socket connect -> lobby -> launch -> loading handshake, chosen colours + army flags in game, client slot updates (own colour/team only), territory claims (host's clock orders them, only map territories, broken timestamps, name not applied)
@@ -215,6 +226,7 @@ AvareonWar/
 - [network/protocol.py](network/protocol.py) - Message serialization
 - [network/message_queue.py](network/message_queue.py) - Thread-safe queue
 - [network/upnp.py](network/upnp.py) - UPnP port forwarding and public IP detection for internet play
+- [network/steam_bridge.py](network/steam_bridge.py) - Joining through Steam's relay (no port forwarding): the loopback bridge between Steam connections and the unchanged TCP server / client
 - [network/state_snapshot.py](network/state_snapshot.py) - Whole-game snapshots (`build_snapshot` / `apply_snapshot`) on top of the save serializer, for "this is the true state" messages
 - [network/lobby.py](network/lobby.py) - Multiplayer lobby management
 - [network/multiplayer_setup.py](network/multiplayer_setup.py) - Multiplayer configuration UI
@@ -488,7 +500,11 @@ After making code changes, ask yourself:
 - Add a message clients send / decide who may send it → `network/server.py` `_CLIENT_MESSAGE_TYPES` (else dropped from clients) + `_SENDER_FIELDS` (acting-player field, must be the sender); receivers: `main.py` `_message_sender()` (stamp; None = host, trusted) / `_refusal_for()` (`_TURN_OWNER_MESSAGES`) + checks in the handler. See "Who may send what" in CODE_GUIDE.md
 - Change multiplayer sync logging/desync diagnosis → `sync_logger.py`, `main.py` `_report_snapshot_divergence()` (receiver diffs its state against the owner's snapshot) + the turn-snapshot hooks
 - Change internet play / UPnP → `network/upnp.py` and `network_config.py`
-- Change what a Steam invite carries / how the invited PC connects → `server.get_join_addresses()` + `territory_selector._invite_connect_string()` (`+connect ip1:port,ip2:port`), `network/client.py` `parse_connect_targets()` / `connect_any()` / `unreachable_reason()`; re-invite wait `INVITE_COOLDOWN_SECONDS`
+- Change what a Steam invite carries / how the invited PC connects → `server.get_join_addresses()` + `territory_selector._invite_connect_string()` (`+connect steam-<id>,ip1:port,ip2:port` - the Steam target first), `network/client.py` `parse_connect_targets()` / `connect_any()` / `connect_steam()` / `unreachable_reason()`; re-invite wait `INVITE_COOLDOWN_SECONDS`
+- Change joining through Steam (relay bridge, failure wording, closing) → `network/steam_bridge.py` (`describe_end()` for the wording) + `steam_networking.py`. **Every screen of the multiplayer flow must call `steam_manager.run_callbacks()` each frame** (a friend's Steam join reaches the host only through it - add the screen to `TestEveryScreenPumpsSteam`), and never close a socket with unread data (Windows resets it). See "Steam joining (SDR bridge)" in CODE_GUIDE.md
+- Change what friends see while you host (rich presence) → `steam_integration.set_hosting_presence()` / `clear_hosting_presence()` + `territory_selector._update_hosting_presence()`; the friends-list text is `docs/steam/rich_presence.vdf` (upload it again in Steamworks after a change)
+- Change the Join Game screen's Steam Friends list → `network/multiplayer_setup.py` (`HostingFriendsList`, `_get_host_ip()`, `_draw_friend_rows()`, `_join_screen_layout()`); the friends come from `steam_manager.get_hosting_friends()`
+- Steam join requests (invite accepted / "Join Game" while the game runs) → `steam_manager.take_join_request()`, taken by the main menu, the multiplayer menu and the Join Game screen; in a game a toast (`main.py` `_notify_steam_join_request()`); after a join `drop_join_requests_for()`
 - Multiplayer stats / Conquest achievements → count only with a human enemy (`player_level.has_human_opponent()`)
 - Modify simultaneous mode → `simultaneous/sim_state.py`, `sim_conflict_resolver.py`
 - Simultaneous multiplayer flow → host: `main.py` `_sim_start_execution_phase()` (validate + apply non-movement + `SIM_ALL_READY{snapshot, movement_orders}`) / `_sim_broadcast_round_complete()` (snapshot); client: `_sim_apply_all_ready()` / `_sim_apply_round_complete()` (restore `current_player` = local after a snapshot). Per-frame work: `_update_simultaneous()` (timers, `SIM_READY_STATE`, host-only AI resolvers / choosers, `_sim_afk_watchdog()`, new-round AI). **Any new "end the round now?" check must use `Game._sim_round_may_end()`** (it waits for an open battle report of ours). See "Multiplayer model (the host is the truth)" in CODE_GUIDE.md
@@ -539,7 +555,7 @@ After making code changes, ask yourself:
 - Change Steam achievement sync → `steam_integration.py`
 - Change Steam friend invites → `steam_integration.py` (can_invite, get_online_friends, invite_friend)
 - Change Steam invite UI → `network/territory_selector.py` (friend picker modal)
-- Change Steam invite auto-connect → `main.py` (`steam_invite_join` action, `+connect` launch param)
+- Change Steam invite auto-connect → `main.py` (`steam_invite_join` action, `+connect` launch param - read by `steam_manager.launch_connect_target()`, Steam's launch command line first, argv as fallback)
 - Change Steam player name behavior → `main_menu.py` `_open_profile()` + `_draw_profile_panel()`
 - Multiplayer lobby → `network/lobby.py`; lobby UI / slot seating / launch → `network/territory_selector.py` (slot = the server's player index, never look players up by name; a client's slot update changes only its own colour / team)
 - Modify player level/XP → `player_level.py`

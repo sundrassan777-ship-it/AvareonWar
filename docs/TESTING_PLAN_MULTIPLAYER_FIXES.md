@@ -105,6 +105,29 @@ Same configurations as B, plus one 4-player game with 2 v 2 teams.
 5. The client closes the game; the host sees the System chat line and plays on vs. the AI.
 6. Collect both PCs' logs and check them for the lines in the table above.
 
+## G. Joining through Steam (2 PCs, a playtest build on both)
+
+Added 2026-10-13 with Steam joining (CODE_GUIDE "Steam joining (SDR bridge)"). A = host,
+B = a Steam friend. Steam must be running and online on both. Copy both logs afterwards -
+they grow across sessions, so say when the test started.
+
+| # | Steps | Expected |
+|---|-------|----------|
+| G1 | A hosts. B opens Join Game. | B's **Steam Friends** tab lists A within ~2 s; **Join** gets B into the lobby in 1-2 s. A's lobby line ends with "or via Steam". |
+| G2 | B's game closed: B uses **Join Game** on A in Steam's friends list (or accepts A's invite). | The game starts and joins A - no "launched with arguments" warning from Steam. |
+| G3 | B's game open on the main menu, the multiplayer menu or Join Game: Join Game on A in Steam (also press it twice). | B joins at once from any of those screens, once. |
+| G4 | B in a game (single player): A invites B. | A gold message in B's game; B joins after returning to the main menu. |
+| G5 | Play a few rounds over Steam, incl. a battle; then A quits mid-game. | The game plays normally; B sees "Connection lost". |
+| G6 | A fills the free slots with AI; B tries to join. | Refused with the reason ("No slots available"), at once. |
+| G7 | A goes back to the main menu; B uses an old invite. | A leaves B's list within ~2 s; B is told "A is not hosting a game right now" at once (no address attempts). |
+| G8 | A starts the game with the launch option `--no-steam-relay`. | A's lobby says "Steam off"; B still sees A in the list and joins by address. |
+| G9 | B on another network (e.g. a phone hotspot); B joins from the list. | Joins; B's log says "connected (relayed)". |
+| G10 | B presses Cancel while "Connecting to A through Steam". | Back at once. |
+
+**If something fails, `--sdr-test`** (launch option) opens a diagnostics window instead of the
+game and writes `logs/sdr_test.log`: relay state, a single-PC self-test (S), host (H) / join
+(J) between the two PCs.
+
 ---
 
 **Report format:** what you did, what you expected, what you saw, the turn/round, which PC,

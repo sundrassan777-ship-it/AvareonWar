@@ -123,13 +123,20 @@ def parse_connect_targets(text: str):
     return targets
 
 
+# Ends every "could not reach that address" reason: joining through Steam's relay needs
+# none of the network checks before it (the Join Game screen's Steam Friends tab)
+STEAM_JOIN_HINT = ("Joining through Steam needs none of this: pick the host on the Steam "
+                   "Friends tab of Join Game")
+
+
 def unreachable_reason(host: str) -> str:
     """
     What to tell the player when the host's PC never answered (connect timed out).
 
     A home-network address (192.168.x.x, 10.x.x.x, ...) that does not answer means the
     two PCs cannot see each other on that network; a public address that does not
-    answer usually means the host's router does not forward the game port.
+    answer usually means the host's router does not forward the game port. Either way,
+    joining through Steam avoids it (STEAM_JOIN_HINT).
     """
     try:
         is_private = ipaddress.ip_address(host).is_private
@@ -138,9 +145,10 @@ def unreachable_reason(host: str) -> str:
     if is_private:
         return (f"Could not reach {host} on your home network - check that both PCs are "
                 f"on the same network (not a guest Wi-Fi), that the router does not keep "
-                f"Wi-Fi devices apart, and that no VPN is on")
+                f"Wi-Fi devices apart, and that no VPN is on. {STEAM_JOIN_HINT}")
     return (f"Could not reach {host} - the host's router must forward TCP port "
-            f"{DEFAULT_PORT} to the host's PC, and the host's firewall must allow the game")
+            f"{DEFAULT_PORT} to the host's PC, and the host's firewall must allow the "
+            f"game. {STEAM_JOIN_HINT}")
 
 
 class NetworkClient:
@@ -471,7 +479,7 @@ class NetworkClient:
                 f"Could not reach the host at {hosts}. On the same network: check both PCs "
                 f"use the same Wi-Fi (not a guest one), the router does not keep devices "
                 f"apart, and no VPN is on. Over the internet: the host's router must "
-                f"forward TCP port {DEFAULT_PORT}")
+                f"forward TCP port {DEFAULT_PORT}. {STEAM_JOIN_HINT}")
         else:
             address_reason = ""
         if steam_failures:

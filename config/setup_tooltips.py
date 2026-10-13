@@ -99,9 +99,10 @@ SETUP_TOOLTIPS = {
                              "network (not a guest Wi-Fi), that the router does not keep "
                              "Wi-Fi devices apart, and that no VPN is on."),
             ("Over the internet", "Your router did not open the game port automatically "
-                                  "(UPnP). Forward TCP port 7777 to this PC in your router "
-                                  "settings; players then join with your public IP. Steam "
-                                  "invites include both addresses."),
+                                  "(UPnP). Steam friends can still join you through Steam "
+                                  "(the note after the address). Anyone else needs TCP port "
+                                  "7777 forwarded to this PC in your router settings, then "
+                                  "joins with your public IP."),
         ],
     },
     'host_ip_internet': {
