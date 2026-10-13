@@ -289,6 +289,33 @@ class TestRealSockets:
         assert time.monotonic() - started < 3.0
         assert client.disconnect_reason == "No slots available"
 
+    def test_refusal_survives_a_late_connect_request(self, server):
+        """A joiner behind the Steam bridge sends its CONNECT_REQUEST only once Steam has
+        connected its side - after the server refused it at accept time. The server
+        stopped waiting at its first 0.2 s read timeout and closed; the late request
+        then made Windows reset the connection, which threw the CONNECT_REJECT away
+        unread (flaky test_the_hosts_refusal_reaches_the_joiner, 2026-10-13)."""
+        server.reserved_slots = {1, 2, 3}
+        protocol = NetworkProtocol()
+        buffer = MessageBuffer()
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.settimeout(5)
+        try:
+            raw.connect(('127.0.0.1', self._port(server)))
+            time.sleep(0.5)                                     # Steam still connecting
+            raw.sendall(protocol.create_connect_request("Late"))
+            time.sleep(0.2)                                     # the reader comes round later
+            while True:
+                chunk = raw.recv(4096)
+                if not chunk:
+                    break
+                buffer.add_data(chunk)
+            message = protocol.decode_message(buffer.extract_message())
+            assert message['type'] == MessageType.CONNECT_REJECT
+            assert message['data']['reason'] == "No slots available"
+        finally:
+            raw.close()
+
     def test_nobody_can_join_a_running_game(self, server):
         server.set_game_started(True)
         client = NetworkClient()
@@ -328,6 +355,51 @@ class TestRealSockets:
                                        ('127.0.0.1', 1)], player_name="Late")
         assert tried == [('127.0.0.1', self._port(server))]
         assert client.disconnect_reason == "No slots available"
+
+
+class _QuietSocket:
+    """A refused peer that sends nothing: every read times out (0.2 s in real life),
+    until `closes_after` reads, when it closes its end."""
+
+    def __init__(self, closes_after=None):
+        self.reads = 0
+        self.closes_after = closes_after
+
+    def settimeout(self, _):
+        pass
+
+    def sendall(self, _):
+        pass
+
+    def shutdown(self, _):
+        pass
+
+    def close(self):
+        pass
+
+    def recv(self, _):
+        self.reads += 1
+        if self.reads == self.closes_after:
+            return b''
+        raise socket.timeout()
+
+
+class TestRefusalWait:
+    """How long a refusal waits for the peer - it runs on the server's only network loop."""
+
+    def test_a_quiet_stranger_is_not_waited_for(self):
+        """A port scanner that never closes must not stall the game: a quiet 0.2 s ends it."""
+        stranger = _QuietSocket()
+        NetworkServer(port=0)._reject_connection(stranger, "Lobby is full",
+                                                 ('203.0.113.5', 50000))
+        assert stranger.reads == 1
+
+    def test_the_steam_bridge_is_waited_for(self):
+        """The bridge forwards the joiner's request late (see
+        test_refusal_survives_a_late_connect_request): wait until it closes."""
+        bridge = _QuietSocket(closes_after=4)
+        NetworkServer(port=0)._reject_connection(bridge, "Lobby is full", ('127.0.0.1', 50001))
+        assert bridge.reads == 4
 
 
 class TestJoinAddresses:

@@ -12,6 +12,7 @@ end-to-end tests, NetworkServer and NetworkClient.
 
 import logging
 import os
+import select
 import socket
 import sys
 import threading
@@ -496,6 +497,29 @@ class TestClosing:
         assert recv_until_eof(linked['server']) == b''
         assert join.failure_reason() == "Lost the connection to Hosty (Steam stopped hearing from them)"
 
+    def test_a_client_still_waiting_at_the_listener_gets_a_clean_end(self, make_bridge,
+                                                                      local_server):
+        """Steam ended before the bridge took the client off its listener: a pass runs
+        the status changes before the accept, and closing a listener resets the
+        connections still waiting on it - the client got WinError 10054 instead of an end
+        (test_lost_steam_connection_closes_the_local_sides in a slow full run,
+        2026-10-13). The bridge takes the waiting client first."""
+        host_bridge, _ = make_bridge(HOST_ID, 'Hosty')
+        join_bridge, _ = make_bridge(JOINER_ID, 'Joiny')
+        host_bridge.start_hosting(local_server.getsockname()[1])
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.settimeout(5)
+        try:
+            with join_bridge._lock:                 # the bridge thread cannot accept meanwhile
+                join = join_bridge.open_join(HOST_ID)
+                pair = join._pair
+                client.connect(('127.0.0.1', join.local_port))
+                assert select.select([pair.listener], [], [], 2)[0]   # waiting, not taken
+                join_bridge._on_steam_closed(pair, 5003, 'Connection dropped')
+            assert recv_until_eof(client) == b''
+        finally:
+            client.close()
+
     def test_a_vanished_connection_is_noticed_without_a_callback(self, linked):
         handle = linked['join_bridge']._active[0].conn
         linked['join_fake'].vanish(handle)
@@ -710,6 +734,21 @@ class TestReasons:
 
     def test_an_unknown_host_is_called_the_host(self):
         assert describe_end(END_NOT_HOSTING, False) == "The host is not hosting a game right now"
+
+    @pytest.mark.parametrize('code, refused', [
+        (END_NOT_HOSTING, True),        # the host's game: no lobby open
+        (END_GAME_CLOSED, True),        # the host's game: exiting
+        (5003, False),                  # nobody answered: the IP addresses may still work
+        (END_REFUSED_RATE, False),
+        (1000, False),
+    ])
+    def test_which_endings_rule_out_the_hosts_addresses(self, code, refused):
+        """connect_any() skips an invite's IP addresses after these (host_game_refused)."""
+        pair = steam_bridge_module._Pair(conn=1, steam_id=HOST_ID, side='join')
+        join = steam_bridge_module.SteamJoin(None, pair)
+        assert not join.host_game_refused       # still running
+        pair.steam_closed, pair.end_reason = True, code
+        assert join.host_game_refused is refused
 
 
 # ---------------------------------------------------------------------------
@@ -961,5 +1000,28 @@ class TestEndToEnd:
         client = steam_client(bridge)
         started = time.monotonic()
         assert not client.connect_steam(HOST_ID, player_name='Joiny')
-        assert time.monotonic() - started < 2.0
+        # Not Steam's 15 s timeout. Up to ~2 s more when the fake relay's instant refusal
+        # beats the client to the bridge's listener: Windows takes ~2 s to refuse a
+        # connect to a closed local port (measured 2026-10-13; real Steam's refusal takes
+        # a relay round trip, long after the client connected)
+        assert time.monotonic() - started < 5.0
+        assert client.disconnect_reason == "Hosty is not hosting a game right now"
+
+    def test_not_hosting_skips_the_invites_addresses(self, host, make_bridge):
+        """Owner's two-PC test 5 (2026-10-13): after the host's "not hosting" the invite's
+        IP addresses were still tried (5 s each) - they lead to the same stopped server."""
+        address = ('127.0.0.1', tcp_port(host))
+        host.stop()
+        bridge, _ = make_bridge(JOINER_ID, 'Joiny')
+        client = steam_client(bridge)
+        tried = []
+        real_connect = client.connect
+
+        def connect(host_, port=7777, player_name="Player", **kwargs):
+            if '_steam_join' not in kwargs:         # connect_steam()'s own loopback leg
+                tried.append((host_, port))
+            return real_connect(host_, port=port, player_name=player_name, **kwargs)
+        client.connect = connect
+        assert not client.connect_any([SteamTarget(HOST_ID), address], player_name='Joiny')
+        assert tried == []
         assert client.disconnect_reason == "Hosty is not hosting a game right now"

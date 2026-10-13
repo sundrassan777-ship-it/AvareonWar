@@ -227,6 +227,19 @@ class SteamJoin:
     def ended(self):
         return self._pair.steam_closed
 
+    @property
+    def host_game_refused(self):
+        """
+        The host's game itself ended the attempt: "not hosting" (END_NOT_HOSTING) or
+        "game closed" (END_GAME_CLOSED, its game exiting while we connected). That is
+        final for the whole invite: the host's bridge stops hosting only when its game
+        server stops (NetworkServer.stop()), so the host's IP addresses cannot answer
+        either - no point spending 5 s on each of them (owner's two-PC test 5,
+        2026-10-13).
+        """
+        return (self._pair.steam_closed and
+                self._pair.end_reason in (END_NOT_HOSTING, END_GAME_CLOSED))
+
     def failure_reason(self):
         """Why the Steam side ended, for the player; None while it is fine (or closed normally)."""
         pair = self._pair
@@ -644,6 +657,11 @@ class SteamBridge:
                     pair.to_local += data
         # Free Steam's handle (the peer is gone - nothing lingers)
         self._close_steam(pair, 0, '', linger=False)
+        if pair.listener is not None:
+            # A client already waiting on the listener is taken first: a pass runs the
+            # status changes before the accept, and closing a listener resets the
+            # connections still waiting on it - the client would see a reset, not an end
+            self._accept_client(pair)
         if pair.listener is not None:
             # Joiner whose client never connected: refuse it from now on
             self._close_listener(pair)

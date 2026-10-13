@@ -88,6 +88,11 @@ _SEQ_EXEMPT_TYPES = frozenset({
 # Time allowed for the tiny reject / farewell messages to peers we are dropping anyway
 _FAREWELL_SEND_TIMEOUT = 1.0  # seconds
 
+# Longest wait for a refused peer to close after our CONNECT_REJECT (see
+# _reject_connection): the Steam bridge waits the whole time, anyone else only until
+# a quiet 0.2 s.
+_REJECT_DRAIN_SECONDS = 1.6
+
 # The only messages a CLIENT may send; anything else is the host's to send and is dropped
 # when a client sends it (a modified client or a bug) - the host would otherwise run the
 # client-side handling of e.g. a round end, a player leaving, a lobby launch or a kick.
@@ -413,7 +418,8 @@ class NetworkServer:
                 if len(attempts) >= self._rate_limit_max:
                     logger.warning(f"Rate limited connection from {client_ip} "
                                    f"({len(attempts)} attempts in {self._rate_limit_window}s)")
-                    self._reject_connection(client_socket, "Too many connection attempts")
+                    self._reject_connection(client_socket, "Too many connection attempts",
+                                            client_address)
                     return
                 attempts.append(now)
                 self._connection_attempts[client_ip] = attempts
@@ -428,7 +434,8 @@ class NetworkServer:
                 # used to hand a stranger a free slot whose messages were relayed to
                 # every player.
                 logger.warning(f"Rejected connection from {peer} - game in progress")
-                self._reject_connection(client_socket, "The game has already started")
+                self._reject_connection(client_socket, "The game has already started",
+                                        client_address)
                 return
 
             # M13 fix: Hold lock across check + insert to prevent TOCTOU race
@@ -463,7 +470,7 @@ class NetworkServer:
                 # Outside the lock: the reject waits briefly for the peer (see
                 # _reject_connection) and must not hold up the lobby meanwhile
                 logger.warning(f"Rejected connection from {peer} - {reject_reason}")
-                self._reject_connection(client_socket, reject_reason)
+                self._reject_connection(client_socket, reject_reason, client_address)
                 return
 
             logger.info(f"Client connected from {peer} as Player {player_index + 1}")
@@ -481,24 +488,40 @@ class NetworkServer:
                 return
             logger.error(f"Accept error: {e}")
 
-    def _reject_connection(self, client_socket, reason: str):
+    def _reject_connection(self, client_socket, reason: str, client_address=None):
         """
         Turn a new connection away with a reason the joining player gets to see.
 
         The peer's CONNECT_REQUEST is usually already waiting, unread, when we reject.
         Closing a socket with unread data makes Windows reset the connection, and the
         reset throws away our CONNECT_REJECT before the client reads it - the player
-        saw no reason at all. So: send, close our sending side, read what is waiting
-        (briefly), then close.
+        saw no reason at all. So: send, close our sending side, read what is waiting,
+        then close.
+
+        How long to read: the Steam bridge (a loopback peer - our own code, it closes
+        as soon as it has our reply) gets until it closes, at most
+        _REJECT_DRAIN_SECONDS. It connects before the joiner's CONNECT_REQUEST exists
+        (we refuse at accept time) and forwards the request when it comes; ending the
+        wait at the first quiet 0.2 s let that late request reset the connection - the
+        same lost reason (test_mp_transport.py test_refusal_survives_a_late_connect_request).
+        Anyone else sent its request with the connection, so a quiet 0.2 s ends it:
+        this runs on the server's only network loop, and a stranger who never closes
+        (a port scanner) must not stall the game for everyone.
         """
+        from_bridge = bool(client_address) and client_address[0] in ('127.0.0.1', '::1')
         try:
             client_socket.settimeout(_FAREWELL_SEND_TIMEOUT)
             client_socket.sendall(self.protocol.create_connect_reject(reason))
             client_socket.shutdown(socket.SHUT_WR)
             client_socket.settimeout(0.2)
-            for _ in range(8):
-                if not client_socket.recv(MESSAGE_BUFFER_SIZE):
-                    break  # the client closed its end after reading the reject
+            deadline = time.monotonic() + _REJECT_DRAIN_SECONDS
+            while time.monotonic() < deadline:
+                try:
+                    if not client_socket.recv(MESSAGE_BUFFER_SIZE):
+                        break  # the client closed its end after reading the reject
+                except socket.timeout:
+                    if not from_bridge:
+                        break  # quiet for 0.2 s - not worth stalling the loop for
         except Exception:
             pass  # best effort - the connection is being dropped anyway
         finally:
