@@ -895,6 +895,25 @@ class TestEndToEnd:
                 wait_until(lambda: not host.clients, what='slot freed')
         assert time.monotonic() - started < 10.0
 
+    def test_cancel_stops_a_steam_join_at_once(self, make_bridge, sdr):
+        """The "Connecting..." screen's Cancel: no waiting out Steam's 15 s, and the
+        Steam attempt is dropped (not left running)."""
+        sdr.connect_timeout = 30                    # Steam would keep looking
+        bridge, join_fake = make_bridge(JOINER_ID, 'Joiny')
+        client = steam_client(bridge)
+        outcome = {}
+        worker = threading.Thread(target=lambda: outcome.update(
+            ok=client.connect_any([SteamTarget(NOBODY_ID)], player_name='Joiny')))
+        worker.start()
+        wait_until(lambda: bridge._active, what='join started')
+        started = time.monotonic()
+        client.cancel_connect()
+        worker.join(5)
+        assert time.monotonic() - started < 1.0
+        assert outcome['ok'] is False and client.disconnect_reason == "Cancelled"
+        wait_until(lambda: not bridge._active, what='Steam attempt dropped')
+        assert any(op[3] == 'Join cancelled' for op in join_fake.closes())
+
     def test_not_hosting_after_the_lobby_closed(self, host, make_bridge):
         host.stop()
         bridge, _ = make_bridge(JOINER_ID, 'Joiny')

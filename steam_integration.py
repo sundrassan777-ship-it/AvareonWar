@@ -50,6 +50,15 @@ NO_RELAY_FLAG = '--no-steam-relay'
 # The Steam networking diagnostics launch option (steam_sdr_test.py, started from main.py)
 SDR_TEST_FLAG = '--sdr-test'
 
+# Join requests (Steam callback 337: the player accepted an invite or chose "Join Game"
+# on a friend while our game runs). The main menu acts on them; in a game or another
+# screen they wait for the main menu (in a game, with a toast).
+# A request for the same host as the invite this game was launched with, within this
+# many seconds of the launch, is that invite again - not a second join.
+JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS = 120
+# A request older than this is dropped: the host's lobby is most likely gone by now
+JOIN_REQUEST_MAX_AGE_SECONDS = 600
+
 
 def steam_feature_switches(argv=None, settings_obj=None):
     """
@@ -90,6 +99,41 @@ def _encode(s):
     return s
 
 
+def connect_target_from_args(args):
+    """
+    The target of a "+connect <target>" launch argument, '' if none. Steam passes it as
+    two arguments or as one "+connect <target>" depending on platform; both work (the
+    last one given wins).
+    """
+    args = list(args or [])
+    target = ''
+    for i, arg in enumerate(args):
+        if arg == '+connect' and i + 1 < len(args):
+            target = args[i + 1]
+        elif arg.startswith('+connect '):
+            target = arg[len('+connect '):]
+    return target.strip().strip('"').strip()
+
+
+def connect_target_from_command_line(text):
+    """connect_target_from_args() for a whole command line string (ISteamApps's)."""
+    return connect_target_from_args((text or '').split())
+
+
+def same_join_host(first, second):
+    """
+    Whether two connect strings lead to the same host: the same Steam host when both
+    name one ("steam-<id>"), else the same address list.
+    """
+    from network.client import SteamTarget, parse_connect_targets
+    a, b = parse_connect_targets(first), parse_connect_targets(second)
+    steam_a = next((t for t in a if isinstance(t, SteamTarget)), None)
+    steam_b = next((t for t in b if isinstance(t, SteamTarget)), None)
+    if steam_a is not None and steam_b is not None:
+        return steam_a == steam_b
+    return bool(a) and a == b
+
+
 class SteamManager:
     """Singleton wrapper for Steamworks SDK.  Safe to call even when Steam is unavailable."""
 
@@ -99,6 +143,9 @@ class SteamManager:
         # Whether RequestCurrentStats() callback has been processed —
         # required before SetAchievement/GetAchievement will work
         self._stats_ready = False
+        # The "+connect" target this launch came with, and when (join request dedupe)
+        self._launch_connect_target = ''
+        self._launch_time = time.monotonic()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -330,6 +377,104 @@ class SteamManager:
             pass
 
     # ------------------------------------------------------------------
+    # Joining a friend's game: the launch "+connect", join requests (337)
+    # ------------------------------------------------------------------
+
+    def launch_connect_target(self, argv=None):
+        """
+        The "+connect" target this launch came with, '' if none: from Steam's own launch
+        command line first (no "launching with arguments" warning once the app's Steam
+        configuration sends joins that way), else the OS command line (invites before
+        that, older Steam setups). Remembered, so a join request for the same host right
+        after start-up is not acted on a second time.
+
+        Call once at start-up, after initialize().
+        """
+        import sys
+        source, target = "Steam's launch command line", ''
+        try:
+            from steam_networking import steam_net
+            target = connect_target_from_command_line(steam_net.launch_command_line())
+        except Exception as e:
+            logger.warning(f"Could not read Steam's launch command line: {e}")
+        if not target:
+            source = "the command line"
+            target = connect_target_from_args(sys.argv if argv is None else argv)
+        if target:
+            logger.info(f"Steam invite detected ({source}): will auto-connect to {target}")
+        self._launch_connect_target = target
+        self._launch_time = time.monotonic()
+        return target
+
+    def _join_request_problem(self, join, now=None):
+        """Why a join request is not acted on (a short text for the log), None if it is."""
+        now = time.monotonic() if now is None else now
+        if not join.connect:
+            return "it carries no game to join"
+        if now - join.received > JOIN_REQUEST_MAX_AGE_SECONDS:
+            return f"older than {JOIN_REQUEST_MAX_AGE_SECONDS // 60} minutes"
+        if (self._launch_connect_target
+                and join.received - self._launch_time < JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS
+                and same_join_host(join.connect, self._launch_connect_target)):
+            return "it is the invite this game was launched with"
+        return None
+
+    def peek_join_request(self):
+        """
+        The join request waiting for the main menu, None if none (or one that will be
+        dropped). Left in place - for the in-game toast; the main menu takes it.
+        """
+        try:
+            from steam_networking import steam_net
+            join = steam_net.peek_join_request()
+        except Exception:
+            return None
+        if join is None or self._join_request_problem(join) is not None:
+            return None
+        return join
+
+    def take_join_request(self):
+        """
+        The join request to act on now (the main menu calls this every frame), or None.
+        Taken: each is acted on once; the newest wins if several arrived.
+        """
+        try:
+            from steam_networking import steam_net
+            join = steam_net.take_join_request()
+        except Exception:
+            return None
+        if join is None:
+            return None
+        problem = self._join_request_problem(join)
+        if problem:
+            logger.info(f"Steam join request '{join.connect}' ignored: {problem}")
+            return None
+        logger.info(f"Steam join request: joining '{join.connect}'")
+        return join
+
+    def friend_name(self, steam_id):
+        """A Steam friend's name, '' if unknown or Steam is unavailable."""
+        if not steam_id:
+            return ''
+        try:
+            from steam_networking import steam_net
+            name = steam_net.friend_name(steam_id)
+        except Exception:
+            return ''
+        # Steam answers "[unknown]" for people it knows nothing about
+        return '' if not name or name == '[unknown]' else name
+
+    def join_request_host_name(self, join):
+        """The Steam name of the host a join request leads to, '' if unknown."""
+        from network.client import SteamTarget, parse_connect_targets
+        for target in parse_connect_targets(join.connect):
+            if isinstance(target, SteamTarget):
+                name = self.friend_name(target.steam_id)
+                if name:
+                    return name
+        return self.friend_name(join.friend_steam_id)
+
+    # ------------------------------------------------------------------
     # Friend Invites
     # ------------------------------------------------------------------
 
@@ -368,7 +513,8 @@ class SteamManager:
     def invite_friend(self, steam_id, connect_string):
         """Send a game invite to a Steam friend with a connection string.
         The friend receives a Steam notification; accepting launches the game
-        with +connect <connect_string> as a command-line argument.
+        with +connect <connect_string> as a command-line argument (or, if their game
+        already runs, sends it a join request - take_join_request()).
         Returns True if the invite was sent successfully."""
         if not self._initialized:
             return False

@@ -56,6 +56,17 @@ class FakeSteamApi:
     def SteamAPI_SteamUtils_v010(self):
         return 0x5000
 
+    def SteamAPI_SteamApps_v008(self):
+        return 0x6000
+
+    # ISteamApps: the launch command line (a string buffer filled like Steam does)
+    launch_command_line = ''
+
+    def SteamAPI_ISteamApps_GetLaunchCommandLine(self, _apps, buffer, size):
+        data = self.launch_command_line.encode('utf-8')[:size - 1]
+        buffer.value = data
+        return len(data)
+
     # Relay setup
     def SteamAPI_ISteamNetworkingUtils_SetGlobalCallback_SteamNetConnectionStatusChanged(self, _utils, fn):
         self.calls.append(('global_callback', None if fn is None else fn.value))
@@ -456,6 +467,46 @@ class TestJoinHook:
             request.m_rgchConnect = f'+connect {target}'.encode()
             _call_slot(net, 0, ctypes.addressof(request))
         assert net.take_join_request().connect == '5.6.7.8:7777'
+
+    def test_peek_leaves_the_request_for_the_main_menu(self, net):
+        # The in-game toast peeks; the main menu takes it later
+        request = GameRichPresenceJoinRequested_t()
+        request.m_rgchConnect = f'+connect steam-{HOST_ID}'.encode()
+        _call_slot(net, 0, ctypes.addressof(request))
+        first = net.peek_join_request()
+        assert first is net.peek_join_request() is not None
+        assert net.take_join_request() is first
+        assert net.peek_join_request() is None
+
+
+class TestLaunchCommandLine:
+    """ISteamApps::GetLaunchCommandLine: an invite's "+connect" without the OS command
+    line (no "launching with arguments" warning from Steam)."""
+
+    def test_read_from_steam(self, net, fake_api):
+        fake_api.launch_command_line = f'+connect steam-{HOST_ID},192.168.18.5:7777'
+        assert net.launch_command_line() == f'+connect steam-{HOST_ID},192.168.18.5:7777'
+
+    def test_empty_when_steam_has_none(self, net):
+        assert net.launch_command_line() == ''
+
+    def test_without_the_apps_interface_networking_still_works(self):
+        class NoApps(FakeSteamApi):
+            SteamAPI_SteamApps_v008 = None      # not found in this DLL
+        networking = SteamNetworking()
+        assert networking.init(api=NoApps())
+        assert networking.relay_enabled
+        assert networking.launch_command_line() == ''
+        networking.shutdown()
+
+    def test_functions_are_typed_for_the_real_dll(self):
+        assert sn._FUNCTIONS['SteamAPI_SteamApps_v008'] == (ctypes.c_void_p, [])
+        restype, argtypes = sn._FUNCTIONS['SteamAPI_ISteamApps_GetLaunchCommandLine']
+        assert restype is ctypes.c_int
+        assert argtypes == [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+
+    def test_unbound_module_reads_nothing(self):
+        assert SteamNetworking().launch_command_line() == ''
 
     def test_layout_mismatch_turns_the_hook_off(self):
         # Steam did not set the registered flag where we expect it -> unregister, stay off

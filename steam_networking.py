@@ -65,6 +65,10 @@ _UTILS_ACCESSORS = ('SteamAPI_SteamNetworkingUtils_SteamAPI_v004',)
 _FRIENDS_ACCESSORS = ('SteamAPI_SteamFriends_v018',)
 _USER_ACCESSORS = ('SteamAPI_SteamUser_v023',)
 _STEAM_UTILS_ACCESSORS = ('SteamAPI_SteamUtils_v010',)
+_APPS_ACCESSORS = ('SteamAPI_SteamApps_v008',)
+
+# Buffer for ISteamApps::GetLaunchCommandLine (our "+connect ..." strings are ~100 bytes)
+_LAUNCH_COMMAND_LINE_BYTES = 1024
 
 # Invalid handles (steamnetworkingtypes.h)
 INVALID_HANDLE = 0
@@ -282,6 +286,10 @@ _FUNCTIONS = {
     'SteamAPI_SteamFriends_v018': (_P, []),
     'SteamAPI_SteamUser_v023': (_P, []),
     'SteamAPI_SteamUtils_v010': (_P, []),
+    'SteamAPI_SteamApps_v008': (_P, []),
+    # ISteamApps (isteamapps.h: the connect string of a Steam launch, without the OS
+    # command line - see launch_command_line())
+    'SteamAPI_ISteamApps_GetLaunchCommandLine': (ctypes.c_int, [_P, ctypes.c_char_p, ctypes.c_int]),
     # ISteamNetworkingSockets
     'SteamAPI_ISteamNetworkingSockets_CreateListenSocketP2P': (ctypes.c_uint32, [_P, ctypes.c_int, ctypes.c_int, _P]),
     'SteamAPI_ISteamNetworkingSockets_ConnectP2P': (ctypes.c_uint32, [_P, _P, ctypes.c_int, ctypes.c_int, _P]),
@@ -402,6 +410,7 @@ class SteamNetworking:
         self._friends = None              # ISteamFriends*
         self._user = None                 # ISteamUser*
         self._steam_utils = None          # ISteamUtils*
+        self._apps = None                 # ISteamApps* (optional: launch command line)
         self.relay_enabled = False        # SDR usable (switch on + init succeeded)
         self.relay_switched_off = False   # the player turned SDR off (--no-steam-relay)
         self.join_hook_enabled = False    # callback 337 registered and layout-checked
@@ -463,6 +472,12 @@ class SteamNetworking:
             logger.warning(f"Steam networking unavailable: interface lookup failed ({e})")
             self._api = None
             return False
+        try:
+            # Optional: only the launch command line needs it - joining works without
+            self._apps = self._accessor(_APPS_ACCESSORS)
+        except Exception as e:
+            logger.info(f"Steam launch command line unavailable ({e})")
+            self._apps = None
         if not (self._sockets and self._utils and self._friends and self._user):
             logger.warning("Steam networking unavailable: Steam returned no interface "
                            "(SteamInit not done?)")
@@ -507,6 +522,7 @@ class SteamNetworking:
         self.join_hook_enabled = False
         self._api = None
         self._sockets = self._utils = self._friends = self._user = self._steam_utils = None
+        self._apps = None
         logger.info("Steam networking shut down")
 
     @staticmethod
@@ -633,6 +649,11 @@ class SteamNetworking:
         with self._join_lock:
             join, self._join_pending = self._join_pending, None
         return join
+
+    def peek_join_request(self):
+        """The newest join request not yet handled, left in place (the in-game toast)."""
+        with self._join_lock:
+            return self._join_pending
 
     def join_history(self):
         """Recent join requests, oldest first (diagnostics)."""
@@ -879,6 +900,25 @@ class SteamNetworking:
         if not self.available or not self._steam_utils:
             return 0
         return int(self._api.SteamAPI_ISteamUtils_GetAppID(self._steam_utils))
+
+    def launch_command_line(self):
+        """
+        The command line Steam started us with when it did not put it on the OS command
+        line: steam://run/<appid>//<command line>, or an invite / "Join Game" once the
+        app's Steam configuration sends rich presence joins this way (Valve's
+        isteamapps.h calls the OS command line a security risk, and Steam warns the
+        player about launch arguments). '' if none or unavailable.
+        """
+        if not self.available or not self._apps:
+            return ''
+        try:
+            buffer = ctypes.create_string_buffer(_LAUNCH_COMMAND_LINE_BYTES)
+            length = self._api.SteamAPI_ISteamApps_GetLaunchCommandLine(
+                self._apps, buffer, _LAUNCH_COMMAND_LINE_BYTES)
+        except Exception as e:
+            logger.warning(f"Could not read Steam's launch command line: {e}")
+            return ''
+        return _text(buffer.value) if length > 0 else ''
 
     # ------------------------------------------------------------------
     # Friends: rich presence, invites, names

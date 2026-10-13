@@ -7,11 +7,12 @@ Expanded for 2-4 players with AI support and alliance system.
 
 import pygame
 import socket
+import threading
 import time
 from typing import Optional, Tuple, Dict, List
 
 from network.server import NetworkServer
-from network.client import NetworkClient
+from network.client import NetworkClient, SteamTarget, parse_connect_targets
 from network.protocol import NetworkProtocol
 from network.lobby import LobbyState, LobbySlot, SLOT_EMPTY, SLOT_HUMAN, SLOT_AI
 from network_config import MessageType
@@ -23,8 +24,15 @@ from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
 from config.constants import STARTING_GOLD_DEFAULT, clamp_starting_gold
+from steam_integration import steam_manager
 
 logger = get_logger(__name__)
+
+# The error screen after a failed join: shown at least this long, longer for long
+# reasons (Steam's say what to check), at most the maximum (a click / key closes it)
+ERROR_MIN_MS = 3000
+ERROR_MS_PER_CHAR = 60
+ERROR_MAX_MS = 12000
 
 
 # Colors
@@ -37,6 +45,7 @@ GREEN = (0, 200, 0)
 RED = (200, 0, 0)
 BLUE = (100, 150, 255)
 BRASS_COLOR = (181, 166, 66)
+CONNECTING_HINT_COLOR = (235, 222, 190)   # parchment: secondary text on the wooden panel
 
 # Option labels: the lobby sends indices, the game config stores the victory name
 VICTORY_OPTIONS = ["Domination (45+)", "Capital Assault", "Total Conquest"]
@@ -459,22 +468,28 @@ class MultiplayerSetup:
         """
         # Show IP input screen
         host_ip = self._get_host_ip()
+        if host_ip == 'quit':
+            # Alt+F4 on the IP screen. It used to be tried as a host name ("quit")
+            # and showed a connection error instead of closing the game.
+            return 'quit'
         if not host_ip:
             return None
 
         # Connect to server
         client = NetworkClient()
 
-        # Show connecting screen
-        self._render_connecting(host_ip)
-        draw_custom_cursor(self.screen)
-        pygame.display.flip()
-
         # Use profile name from settings
         from settings_manager import settings
         player_name = settings.get_player_name()
 
-        if not client.connect(host_ip, player_name=player_name):
+        # Behind the "Connecting..." screen (shared with Steam invites in main.py), so
+        # the window keeps responding and the player can cancel
+        connected = self.connect_with_progress(client, parse_connect_targets(host_ip), player_name)
+        if connected == 'quit':
+            return 'quit'
+        if connected == 'cancelled':
+            return None
+        if not connected:
             # Say why (lobby full, version mismatch, nobody hosting, ...)
             reason = client.disconnect_reason
             self._show_error(f"Could not join {host_ip}" + (f": {reason}" if reason else ""))
@@ -580,17 +595,165 @@ class MultiplayerSetup:
             is_clicked = (clicked_btn == 'exit')
             self._draw_join_screen_button(exit_button_rect, "Exit", WHITE, is_hovered, is_clicked)
 
-    def _render_connecting(self, host_ip: str):
-        """Render connecting screen"""
-        self.screen.fill(BLACK)
+    def connect_with_progress(self, client, targets, player_name):
+        """
+        Join a host while this screen shows "Connecting to X..." with the seconds
+        waited and a Cancel button. One path for Join Game (Direct IP), Steam invites
+        and join requests from Steam (main.py).
 
-        title_text = self.title_font.render("Connecting...", True, WHITE)
-        title_rect = title_text.get_rect(center=(self.width // 2, self.height // 2 - 50))
-        self.screen.blit(title_text, title_rect)
+        The connect runs on a worker thread (client.connect_any - Steam first, then the
+        addresses): finding a host through Steam can take 15 s, and a window that does
+        not handle its events for 5 s is marked "Not Responding" by Windows - it used to
+        freeze for as long as the connect took.
 
-        ip_text = self.text_font.render(f"Connecting to {host_ip}", True, LIGHT_GRAY)
-        ip_rect = ip_text.get_rect(center=(self.width // 2, self.height // 2 + 50))
-        self.screen.blit(ip_text, ip_rect)
+        Args:
+            client: a new NetworkClient (not reused after a cancel)
+            targets: parse_connect_targets() list, tried in order
+            player_name: our name for the host's lobby
+
+        Returns:
+            True connected, False failed (client.disconnect_reason says why),
+            'cancelled' (Cancel / Esc), 'quit' (Alt+F4)
+        """
+        result = {}
+        # Taken by the worker when it reports and by a cancel: a connect that got
+        # through just as the player cancelled is always closed again, never leaked
+        lock = threading.Lock()
+
+        def work():
+            try:
+                connected = client.connect_any(targets, player_name=player_name)
+            except Exception as e:
+                logger.error(f"Joining failed: {e}", exc_info=True)
+                client.disconnect_reason = f"Connection error: {e}"
+                connected = False
+            with lock:
+                if connected and client.connect_cancelled:
+                    client.disconnect()   # got through just as the player cancelled
+                    connected = False
+                result['connected'] = connected
+
+        def cancel():
+            with lock:
+                client.cancel_connect()
+                if result.get('connected'):
+                    client.disconnect()   # the worker had just got through - leave again
+
+        worker = threading.Thread(target=work, name='mp-connect', daemon=True)
+        worker.start()
+
+        # Layout (Join screen style): title, what we are doing, seconds, Cancel. Wider
+        # than the Join screen's panel: "Connecting to <Steam name> through Steam..."
+        center_x, center_y = self.width // 2, self.height // 2
+        cancel_rect = pygame.Rect(center_x - 200, center_y + 80, 400, 70)
+        panel_width = min(820, self.width - 80)
+        panel_top, panel_bottom = center_y - 190, cancel_rect.bottom + 60
+        max_text_width = panel_width - 2 * 90       # inside the frame's pillars
+        panel = None
+        if self.options_panel_image:
+            # Scaled once, not every frame
+            panel = pygame.transform.smoothscale(
+                self.options_panel_image, (panel_width, panel_bottom - panel_top))
+        text_cache = {}
+
+        def text(label, font, color):
+            """The label with a dark drop shadow (readable on the wood), cached."""
+            key = (label, id(font), color)
+            if key not in text_cache:
+                face = font.render(label, True, color)
+                shadow = font.render(label, True, BLACK)
+                surface = pygame.Surface((face.get_width() + 2, face.get_height() + 2),
+                                         pygame.SRCALPHA)
+                surface.blit(shadow, (2, 2))
+                surface.blit(face, (0, 0))
+                text_cache[key] = surface
+            return text_cache[key]
+
+        fitted_cache = {}
+
+        def fitted(label, fonts):
+            """(font, label) that fits inside the frame: the first font wide enough,
+            else the smallest with the label shortened (a very long Steam name)."""
+            if label not in fitted_cache:
+                for font in fonts:
+                    if font.size(label)[0] <= max_text_width:
+                        fitted_cache[label] = (font, label)
+                        break
+                else:
+                    font, short = fonts[-1], label
+                    while short and font.size(short + '...')[0] > max_text_width:
+                        short = short[:-1]
+                    fitted_cache[label] = (font, short + '...')
+            return fitted_cache[label]
+
+        target_names = {}
+
+        def status_lines():
+            """What we are doing now, plus a hint while Steam looks for the host."""
+            target = client.current_target
+            if isinstance(target, SteamTarget):
+                if target not in target_names:
+                    target_names[target] = steam_manager.friend_name(target.steam_id) or "the host"
+                return (f"Connecting to {target_names[target]} through Steam...",
+                        "Steam can take up to 15 seconds to find the host")
+            if target is not None:
+                return f"Connecting to {target[0]}...", ""
+            return "Connecting...", ""
+
+        started = time.monotonic()
+
+        def draw(cancel_clicked=False):
+            if self.background_image:
+                self.screen.blit(self.background_image, (0, 0))
+            else:
+                self.screen.fill(BLACK)
+            if panel is not None:
+                self.screen.blit(panel, (center_x - panel_width // 2, panel_top))
+            status, hint = status_lines()
+            status_font, status = fitted(status, (self.text_font, self.small_font))
+            hint_font, hint = fitted(hint, (self.small_font,))
+            seconds = int(time.monotonic() - started)
+            for label, font, color, y in (
+                    ("Joining Game", self.title_font, WHITE, center_y - 120),
+                    (status, status_font, WHITE, center_y - 45),
+                    (hint, hint_font, CONNECTING_HINT_COLOR, center_y - 5),
+                    (f"{seconds} s", self.small_font, CONNECTING_HINT_COLOR, center_y + 32)):
+                if label:
+                    surface = text(label, font, color)
+                    self.screen.blit(surface, surface.get_rect(center=(center_x, y)))
+            # Main-menu style button: hover highlight + click flash
+            self._draw_join_screen_button(
+                cancel_rect, "Cancel", WHITE,
+                cancel_rect.collidepoint(pygame.mouse.get_pos()), cancel_clicked)
+            draw_custom_cursor(self.screen)
+            pygame.display.flip()
+
+        clock = pygame.time.Clock()
+        while worker.is_alive():
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    # Alt+F4: stop joining and tell the caller to exit the entire app
+                    cancel()
+                    return 'quit'
+                if event.type == _MUSIC_END_EVENT:
+                    _music_manager.handle_music_end_event()
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    cancel()
+                    return 'cancelled'
+                if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                        and cancel_rect.collidepoint(event.pos)):
+                    sound_manager.play_ui_click()
+                    cancel()
+                    draw(cancel_clicked=True)     # one frame of click flash
+                    return 'cancelled'
+
+            # Steam keeps working meanwhile (overlay, invites)
+            steam_manager.run_callbacks()
+            draw()
+            clock.tick(menu_frame_cap())
+
+        worker.join()
+        return result.get('connected', False)
 
     def _get_host_ip(self) -> Optional[str]:
         """
@@ -968,11 +1131,18 @@ class MultiplayerSetup:
             lines.append(line)
         return lines or ['']
 
+    @staticmethod
+    def _error_display_ms(message: str) -> int:
+        """How long the error screen stays up: long reasons (what to check, Steam's)
+        long enough to be read - 3 s for a short message, up to 12 s."""
+        return max(ERROR_MIN_MS, min(ERROR_MAX_MS, ERROR_MS_PER_CHAR * len(message)))
+
     def _show_error(self, message: str):
         """Show error message"""
         clock = pygame.time.Clock()
         showing = True
         start_time = pygame.time.get_ticks()
+        shown_ms = self._error_display_ms(message)
 
         while showing:
             for event in pygame.event.get():
@@ -981,8 +1151,8 @@ class MultiplayerSetup:
                 if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
                     return
 
-            # Auto-dismiss after 3 seconds
-            if pygame.time.get_ticks() - start_time > 3000:
+            # Auto-dismiss (3 s for a short message, up to 12 s for a long one)
+            if pygame.time.get_ticks() - start_time > shown_ms:
                 return
 
             self.screen.fill(BLACK)

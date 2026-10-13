@@ -2725,10 +2725,24 @@ class TerritorySelector:
                                  arrow_text.get_rect(centerx=panel_x + panel_w // 2,
                                                      top=list_bottom + 2))
 
+    def _steam_host_id(self) -> int:
+        """Our SteamID64 while friends can join us through Steam's relay, else 0."""
+        server = self.network_connection
+        if hasattr(server, 'steam_host_id'):
+            try:
+                return int(server.steam_host_id() or 0)
+            except Exception:
+                return 0
+        return 0
+
     def _join_addresses_ready(self) -> bool:
         """True once the host knows every address it can be joined at (UPnP and the
         public-IP lookup are done). Invites wait for it: one sent earlier carried only
-        the LAN address, useless to a friend over the internet."""
+        the LAN address, useless to a friend over the internet. Not while friends can
+        join through Steam: the invite's Steam target works from anywhere, the
+        addresses after it are only the fallback."""
+        if self._steam_host_id():
+            return True
         server = self.network_connection
         if hasattr(server, 'is_upnp_complete'):
             return server.is_upnp_complete()
@@ -2755,10 +2769,13 @@ class TerritorySelector:
 
     def _invite_connect_string(self) -> Optional[str]:
         """
-        The Steam invite's launch argument: "+connect ip1:port,ip2:port" - every address
-        this host might be reached at, best first (server.get_join_addresses()). The
-        invited PC tries each (network.client.connect_any), so the same invite works for
-        a friend on our network and one over the internet.
+        The Steam invite's launch argument: "+connect steam-<our id>,ip1:port,ip2:port" -
+        our SteamID when friends can join through Steam's relay (works on any network,
+        no port forwarding), then every address this host might be reached at, best
+        first (server.get_join_addresses()). The invited PC tries each in order
+        (network.client.connect_any), so the same invite works for a friend on our
+        network and one over the internet - and for older builds, which skip the
+        Steam target as an unknown host name.
         """
         from network.client import format_connect_targets
         server = self.network_connection
@@ -2768,7 +2785,7 @@ class TerritorySelector:
             addresses = [server.get_display_ip()]
         else:
             addresses = [self.host_ip]
-        targets = format_connect_targets(addresses, DEFAULT_PORT)
+        targets = format_connect_targets(addresses, DEFAULT_PORT, steam_id=self._steam_host_id())
         if not targets:
             return None
         # Include +connect prefix so Steam passes it as a launch parameter that

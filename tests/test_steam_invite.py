@@ -4,7 +4,9 @@ Steam invites from the multiplayer lobby (network/territory_selector.py friend p
 
 - the invite carries every address the host can be joined at (LAN + public), so the
   same invite works for a friend on the host's network and one over the internet
-- Invite waits ("Wait...") until UPnP and the public-IP lookup are done
+- while friends can join through Steam's relay, the host's SteamID leads the invite
+- Invite waits ("Wait...") until UPnP and the public-IP lookup are done (not when the
+  invite goes through Steam)
 - a friend can be invited again after INVITE_COOLDOWN_SECONDS (it used to be once per
   lobby); meanwhile the row shows "Invited" and a countdown
 - the host's "Join IP:" label carries an (i) tooltip matching the UPnP result
@@ -33,7 +35,7 @@ def pygame_display():
 class _StubServer:
     """Enough of NetworkServer for a host lobby: messages + the join-address API."""
 
-    def __init__(self, upnp_done=True, mapped=False, public_ip='212.20.115.148'):
+    def __init__(self, upnp_done=True, mapped=False, public_ip='212.20.115.148', steam_id=0):
         from network.protocol import NetworkProtocol
         self.protocol = NetworkProtocol()
         self.sent = []
@@ -42,6 +44,10 @@ class _StubServer:
         self.mapped = mapped
         self.public_ip = public_ip
         self.upnp_manager = None
+        self.steam_id = steam_id        # != 0: friends can join through Steam's relay
+
+    def steam_host_id(self):
+        return self.steam_id
 
     # message plumbing used by TerritorySelector
     def get_incoming_message(self):
@@ -141,6 +147,34 @@ def test_invite_waits_for_the_internet_address(pygame_display, steam, clock):
     server.upnp_done = True
     sel._handle_friend_picker_click(_invite_button(sel).center)
     assert len(steam) == 1
+
+
+# ---------------------------------------------------------------- through Steam's relay
+
+HOST_STEAM_ID = 76561198886995069
+
+
+def test_invite_leads_with_our_steam_id(pygame_display, steam, clock):
+    """Friends can join through Steam: the invite names our SteamID first (works on any
+    network), the addresses stay as the fallback (and for older builds)."""
+    sel = _lobby(_StubServer(upnp_done=True, mapped=False, steam_id=HOST_STEAM_ID))
+    sel._handle_friend_picker_click(_invite_button(sel).center)
+    assert steam == [(FRIEND, f'+connect steam-{HOST_STEAM_ID},192.168.18.5:7777,212.20.115.148:7777')]
+
+
+def test_invite_through_steam_parses_back_steam_first(pygame_display, steam, clock):
+    from network.client import SteamTarget, parse_connect_targets
+    sel = _lobby(_StubServer(steam_id=HOST_STEAM_ID))
+    text = sel._invite_connect_string()
+    assert parse_connect_targets(text[len('+connect '):]) == [
+        SteamTarget(HOST_STEAM_ID), ('192.168.18.5', 7777), ('212.20.115.148', 7777)]
+
+
+def test_invite_through_steam_does_not_wait_for_upnp(pygame_display, steam, clock):
+    server = _StubServer(upnp_done=False, public_ip=None, steam_id=HOST_STEAM_ID)
+    sel = _lobby(server)
+    sel._handle_friend_picker_click(_invite_button(sel).center)
+    assert steam == [(FRIEND, f'+connect steam-{HOST_STEAM_ID},192.168.18.5:7777')]
 
 
 # ---------------------------------------------------------------- cooldown

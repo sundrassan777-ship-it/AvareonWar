@@ -1577,6 +1577,9 @@ class Game:
             TOP_PANEL_HEIGHT, self.game_state, self.local_player_index,
             self.small_font, self.small_font_bold
         )
+        # The Steam join request the "opens at the main menu" toast was shown for
+        # (_notify_steam_join_request - once per request and game)
+        self._steam_join_toast_for = None
 
         # Initialize drawing helpers (Phase 3: added small_font_bold for tooltip names)
         self.helpers = DrawingHelpers(
@@ -5605,6 +5608,26 @@ class Game:
                 continue
             self.chat_notification_effect.add_system_notification(
                 format_action_error('hero_slain', hero=event[1], territory=event[2]))
+
+    def _notify_steam_join_request(self):
+        """
+        The player accepted a Steam invite (or chose "Join Game" on a friend) during this
+        game: the game is not left for it - the join starts at the main menu
+        (MainMenu.run takes the request). Tell them once per request: "X's game opens
+        when you return to the main menu" ('steam_join_pending' in
+        config/action_error_messages.py). News, not an error: gold, no denial sound.
+        """
+        join = steam_manager.peek_join_request()
+        if join is None or join is getattr(self, '_steam_join_toast_for', None):
+            return
+        self._steam_join_toast_for = join
+        if not getattr(self, 'chat_notification_effect', None):
+            return
+        from config.action_error_messages import format_action_error
+        from ui.effects.chat_notification_effect import NEWS_MSG_COLOR
+        friend = steam_manager.join_request_host_name(join) or "A friend"
+        self.chat_notification_effect.add_system_notification(
+            format_action_error('steam_join_pending', friend=friend), color=NEWS_MSG_COLOR)
 
     def _show_action_failure_feedback(self):
         """Show the action error recorded by the last game_state action method.
@@ -11688,6 +11711,8 @@ class Game:
 
             # Process Steam callbacks (overlay notifications, achievement popups)
             steam_manager.run_callbacks()
+            # A friend's game chosen in Steam meanwhile waits for the main menu - say so
+            self._notify_steam_join_request()
 
             # Process network messages (multiplayer)
             if self.multiplayer_mode:
@@ -16831,19 +16856,12 @@ if __name__ == "__main__":
     _set_app_icon()  # Re-apply icon after display creation
     pygame.mouse.set_visible(False)  # Hide system cursor — custom cursor drawn via utils/cursor.py
 
-    # Check for Steam invite auto-connect launch parameter (+connect ip:port)
-    # When a friend accepts a Steam invite, the game is launched with this argument.
-    # Steam may pass the connect string as two args (+connect ip:port) or as a single
-    # arg (+connect ip:port) depending on platform — handle both cases.
-    _steam_connect_target = None
-    for _i, _arg in enumerate(sys.argv):
-        if _arg == '+connect' and _i + 1 < len(sys.argv):
-            _steam_connect_target = sys.argv[_i + 1]
-        elif _arg.startswith('+connect '):
-            # Single-arg form: Steam passed the entire "+connect ip:port" as one argument
-            _steam_connect_target = _arg[len('+connect '):]
-    if _steam_connect_target:
-        logger.info(f"Steam invite detected: will auto-connect to {_steam_connect_target}")
+    # Check for a Steam invite's auto-connect target (+connect steam-<id>,ip:port,...).
+    # When a friend accepts a Steam invite with the game closed, Steam starts it with
+    # this - in Steam's own launch command line or on the OS command line (both forms
+    # read by steam_integration.launch_connect_target(), which also remembers it so the
+    # same invite arriving again as a join request is not joined twice).
+    _steam_connect_target = steam_manager.launch_connect_target() or None
 
     # Steam networking diagnostics (launch option --sdr-test, a support tool players never
     # see otherwise): runs INSTEAD of the menu and quits when its window closes. It shows
@@ -17230,6 +17248,10 @@ if __name__ == "__main__":
             if not music_manager.is_playing():
                 music_manager.start_menu_music()
             action = main_menu.run()
+            if action == 'steam_invite_join':
+                # A friend's game chosen in Steam while the game runs (invite accepted /
+                # "Join Game"): the menu took the join request - join it like an invite
+                _steam_connect_target = main_menu.steam_join_target
 
         if action == 'quit':
             pygame.quit()
@@ -17572,8 +17594,8 @@ if __name__ == "__main__":
                 pygame.quit()
                 sys.exit()
         elif action == 'steam_invite_join':
-            # Auto-join multiplayer game via Steam invite (+connect ip:port)
-            # Parse host address from the connect target
+            # Join a friend's game from Steam: an invite that started the game
+            # (+connect), or a join request taken by the main menu. Parse the targets
             connect_target = _steam_connect_target
             _steam_connect_target = None  # Clear so subsequent loops go to main menu
 
@@ -17591,11 +17613,22 @@ if __name__ == "__main__":
             music_manager.stop()
 
             # Connect as client, then the same lobby + game flow as Join Game
-            # (network.multiplayer_setup.run_client_lobby, _play_multiplayer_game)
+            # (network.multiplayer_setup.run_client_lobby, _play_multiplayer_game).
+            # The connect runs behind a "Connecting..." screen with Cancel (Steam can
+            # take up to 15 s to find a host - a frozen window looked crashed)
             client = NetworkClient()
             player_name = settings.get_player_name()
+            connected = MultiplayerSetup(screen).connect_with_progress(client, targets, player_name)
 
-            if not client.connect_any(targets, player_name=player_name):
+            if connected == 'quit':
+                # Alt+F4 while connecting - exit the entire app
+                pygame.quit()
+                sys.exit()
+            if connected == 'cancelled':
+                logger.info(f"Steam invite: joining {target_text} cancelled")
+                music_manager.start_menu_music()
+                continue
+            if not connected:
                 logger.warning(f"Steam invite: failed to connect to {target_text}: "
                                f"{client.disconnect_reason}")
                 # Say why (lobby full, version mismatch, ...), then the main menu

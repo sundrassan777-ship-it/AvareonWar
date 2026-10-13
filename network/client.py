@@ -183,6 +183,12 @@ class NetworkClient:
         self.steam_bridge = None
         self._steam_join = None
 
+        # Joining in the background (multiplayer_setup.connect_with_progress): the target
+        # being tried now (what the "Connecting..." screen shows) and the player's Cancel.
+        # A cancelled client is not reused - make a new one for the next attempt.
+        self.current_target = None
+        self._cancel_connect = threading.Event()
+
         # Reconnection support
         self.reconnect_password = ""  # Password for reconnection (received on connect)
         self.player_name = ""  # Store name for reconnection
@@ -226,6 +232,9 @@ class NetworkClient:
         # addresses once one reached the host, even if it then refused us)
         self._host_answered = False
         self._steam_join = _steam_join
+        if self._cancel_connect.is_set():
+            self.disconnect_reason = "Cancelled"
+            return False
 
         try:
             # Create socket
@@ -272,6 +281,12 @@ class NetworkClient:
                     # survives disconnect() so the join screen can show it.
                     logger.warning(f"Connection refused: {self.disconnect_reason}")
                     self.disconnect()
+                    return False
+                if self._cancel_connect.is_set():
+                    # The player pressed Cancel on the "Connecting..." screen
+                    logger.info(f"Connecting to {host}:{port} cancelled")
+                    self.disconnect()
+                    self.disconnect_reason = "Cancelled"
                     return False
                 if time.monotonic() - start_time > timeout:
                     logger.warning("Connection timeout - no response from server")
@@ -332,6 +347,9 @@ class NetworkClient:
         with self._state_lock:
             self.disconnected = False
         self._host_answered = False
+        if self._cancel_connect.is_set():
+            self.disconnect_reason = "Cancelled"
+            return False
         bridge = self._get_steam_bridge()
         try:
             join = bridge.open_join(steam_id)
@@ -346,9 +364,12 @@ class NetworkClient:
             return True
 
         # Failed. Whose reason counts: the host's refusal ("Lobby is full") if Steam got
-        # through, otherwise Steam's
+        # through, otherwise Steam's - unless the player cancelled
         host_reason = self.disconnect_reason
         join.close()
+        if self._cancel_connect.is_set():
+            self.disconnect_reason = "Cancelled"
+            return False
         steam_reason = join.failure_reason()
         self._host_answered = join.reached_host
         if not join.reached_host:
@@ -364,6 +385,21 @@ class NetworkClient:
             return self.steam_bridge
         from network.steam_bridge import steam_bridge
         return steam_bridge
+
+    def cancel_connect(self):
+        """
+        The player gave up on joining (Cancel / Esc on the "Connecting..." screen; any
+        thread). The connect running on the worker thread returns False with reason
+        "Cancelled": at once while it waits for the host's answer or for Steam, after
+        the current attempt for an address that is still being reached (at most 5 s).
+        """
+        if not self._cancel_connect.is_set():
+            logger.info("Joining cancelled by the player")
+        self._cancel_connect.set()
+
+    @property
+    def connect_cancelled(self) -> bool:
+        return self._cancel_connect.is_set()
 
     @staticmethod
     def _is_link_reason(reason: str) -> bool:
@@ -395,6 +431,10 @@ class NetworkClient:
         steam_failures = []  # reasons of Steam attempts that did not reach the host
         failed = []          # (host, reason) of every address that did not answer
         for target in targets:
+            if self._cancel_connect.is_set():
+                self.disconnect_reason = "Cancelled"
+                return False
+            self.current_target = target    # shown by the "Connecting..." screen
             if isinstance(target, SteamTarget):
                 connected = self.connect_steam(target.steam_id, player_name=player_name)
             else:
@@ -410,6 +450,9 @@ class NetworkClient:
                 failed.append((target[0], self.disconnect_reason))
                 logger.info(f"Could not reach {target_label(target)}, trying the next address")
 
+        if self._cancel_connect.is_set():
+            self.disconnect_reason = "Cancelled"
+            return False
         if not failed and not steam_failures:
             self.disconnect_reason = "No address to connect to"
             return False
