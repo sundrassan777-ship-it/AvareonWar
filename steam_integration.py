@@ -12,7 +12,7 @@
 #   steam_manager.initialize()          # Call once at startup after pygame.init()
 #   steam_manager.pump_until_stats_ready()  # Wait for stats before syncing achievements
 #   steam_manager.unlock_achievement("apprentice")
-#   steam_manager.set_rich_presence("Playing Campaign - Mission 3")
+#   steam_manager.set_hosting_presence("+connect steam-<id>,ip:port")  # lobby open
 #   steam_manager.shutdown()            # Call before sys.exit()
 
 """
@@ -63,6 +63,14 @@ JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS = 120
 JOIN_REQUEST_LAUNCH_GRACE_SECONDS = 5
 # A request older than this is dropped: the host's lobby is most likely gone by now
 JOIN_REQUEST_MAX_AGE_SECONDS = 600
+
+# Hosting presence (Steam rich presence), set by the host's lobby while it is open and
+# read by friends' Join screens - Steam shares rich presence between friends playing the
+# same game (isteamfriends.h):
+#   "connect" - the invite's "+connect steam-<id>,ip:port,...": Steam's "Join Game" on
+#               the host passes it to the friend's game (launch / callback 337)
+#   "status"  - shown in Steam's "view game info" dialog and on our Join screen
+HOSTING_STATUS = "Hosting a lobby"
 
 
 def steam_feature_switches(argv=None, settings_obj=None):
@@ -153,6 +161,10 @@ class SteamManager:
         self._launch_time = time.monotonic()
         # When joining that target ended (connected, failed or cancelled); None = not yet
         self._launch_join_done = None
+        # Our hosting presence as last set: (connect, status), None = not hosting
+        self._hosting_presence = None
+        # Hosting friends as last logged (get_hosting_friends logs changes only)
+        self._hosting_friends_logged = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -359,29 +371,87 @@ class SteamManager:
             return None
 
     # ------------------------------------------------------------------
-    # Rich Presence
+    # Hosting presence (Steam rich presence; HOSTING_STATUS above). Through the flat
+    # API (steam_networking): SteamworksPy has no rich presence calls.
     # ------------------------------------------------------------------
 
-    def set_rich_presence(self, status):
-        """Set Steam rich presence string (shown in friends list)."""
-        if not self._initialized:
-            return
+    def set_hosting_presence(self, connect_string, status=HOSTING_STATUS):
+        """
+        Tell friends we host a lobby: rich presence "connect" (Steam shows "Join Game" on
+        us, friends' Join screens list us) and "status". The host's lobby calls this while
+        it is open (network/territory_selector.py) and clear_hosting_presence() when it
+        closes or launches.
 
+        Returns:
+            True if Steam took it
+        """
+        if not self._initialized:
+            return False
         try:
-            self._steamworks.Friends.SetRichPresence("steam_display", "#Status")
-            self._steamworks.Friends.SetRichPresence("status", status)
+            from steam_networking import steam_net
+            ok = steam_net.set_rich_presence('connect', connect_string or '')
+            ok = steam_net.set_rich_presence('status', status or '') and ok
         except Exception as e:
-            logger.warning(f"Failed to set rich presence: {e}")
+            logger.warning(f"Could not set the Steam hosting presence: {e}")
+            return False
+        self._hosting_presence = (connect_string, status)
+        logger.info(f"Steam presence: hosting - friends join with '{connect_string}'"
+                    + ("" if ok else " (Steam did not take it)"))
+        return ok
 
-    def clear_rich_presence(self):
-        """Clear Steam rich presence."""
-        if not self._initialized:
+    def clear_hosting_presence(self):
+        """Friends stop seeing us as hosting (lobby closed or launched). Safe to repeat."""
+        if not self._initialized or self._hosting_presence is None:
             return
-
+        self._hosting_presence = None
         try:
-            self._steamworks.Friends.ClearRichPresence()
-        except Exception:
-            pass
+            from steam_networking import steam_net
+            steam_net.set_rich_presence('connect', '')
+            steam_net.set_rich_presence('status', '')
+        except Exception as e:
+            logger.warning(f"Could not clear the Steam hosting presence: {e}")
+            return
+        logger.info("Steam presence: not hosting")
+
+    def get_hosting_friends(self):
+        """
+        Friends hosting a lobby now, by name: [{'steam_id', 'name', 'connect', 'status'}]
+        - 'connect' without its "+connect" (targets for parse_connect_targets()). Read
+        from their rich presence (set_hosting_presence), which Steam shares between friends
+        playing the same game. [] without Steam.
+
+        Quiet: the Join screen asks every 2 s, so a line is logged only when the list
+        changes (not the "Found N Steam friends" of get_online_friends()).
+        """
+        if not self._initialized:
+            return []
+        from network.client import parse_connect_targets
+        try:
+            from steam_networking import steam_net
+            if not steam_net.available:
+                return []
+            hosting = []
+            for steam_id in self._friend_ids():
+                connect = connect_target_from_command_line(
+                    steam_net.get_friend_rich_presence(steam_id, 'connect'))
+                if not parse_connect_targets(connect):
+                    continue  # not hosting (or nothing we could join)
+                hosting.append({
+                    'steam_id': steam_id,
+                    'name': self.friend_name(steam_id) or str(steam_id),
+                    'connect': connect,
+                    'status': steam_net.get_friend_rich_presence(steam_id, 'status'),
+                })
+        except Exception as e:
+            logger.warning(f"Could not read which friends are hosting: {e}")
+            return []
+        hosting.sort(key=lambda f: f['name'].lower())
+        summary = [(f['steam_id'], f['connect']) for f in hosting]
+        if summary != self._hosting_friends_logged:
+            self._hosting_friends_logged = summary
+            listed = ', '.join(f"{f['name']} ('{f['connect']}')" for f in hosting)
+            logger.info(f"Friends hosting (Steam presence): {listed or 'none'}")
+        return hosting
 
     # ------------------------------------------------------------------
     # Joining a friend's game: the launch "+connect", join requests (337)
@@ -515,13 +585,8 @@ class SteamManager:
             return []
 
         try:
-            from steamworks.enums import FriendFlags
-            count = self._steamworks.Friends.GetFriendCount(FriendFlags.IMMEDIATE)
             friends = []
-            for i in range(count):
-                steam_id = self._steamworks.Friends.GetFriendByIndex(i, FriendFlags.IMMEDIATE)
-                if not steam_id:
-                    continue
+            for steam_id in self._friend_ids():
                 name = self._steamworks.Friends.GetFriendPersonaName(steam_id)
                 # GetFriendPersonaName returns c_char_p (bytes in Python 3)
                 if isinstance(name, bytes):
@@ -535,6 +600,14 @@ class SteamManager:
         except Exception as e:
             logger.warning(f"Failed to get Steam friends list: {e}")
             return []
+
+    def _friend_ids(self):
+        """SteamID64s of our Steam friends (regular friends, online or not)."""
+        from steamworks.enums import FriendFlags
+        friends = self._steamworks.Friends
+        count = friends.GetFriendCount(FriendFlags.IMMEDIATE)
+        ids = (friends.GetFriendByIndex(i, FriendFlags.IMMEDIATE) for i in range(count))
+        return [steam_id for steam_id in ids if steam_id]
 
     def invite_friend(self, steam_id, connect_string):
         """Send a game invite to a Steam friend with a connection string.

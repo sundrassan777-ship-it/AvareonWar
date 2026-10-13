@@ -38,6 +38,14 @@ logger = get_logger(__name__)
 # A friend's Invite button stays "Invited" this long, then it can be clicked again
 INVITE_COOLDOWN_SECONDS = 30
 
+# Host: how often the lobby checks whether its Steam hosting presence (the invite's
+# connect string) changed - UPnP adds the public address. Building the string looks up
+# the LAN address with a socket, so not every frame.
+PRESENCE_REFRESH_SECONDS = 1.0
+
+# Host: the Steam note after the join address (green = friends can join through Steam)
+STEAM_ON_COLOR = (140, 220, 140)
+
 
 # Colors
 BLACK = (0, 0, 0)
@@ -266,6 +274,12 @@ class TerritorySelector:
         self._ip_copied_timer = 0  # Countdown in ms for floating "Copied!" text
         self._ip_copied_pos = (0, 0)  # Mouse position when copy was triggered
 
+        # Steam hosting presence (host only): the connect string friends see, None = not
+        # set; when it was last checked (_update_hosting_presence)
+        self._presence_connect = None
+        self._presence_checked = float('-inf')
+        self._steam_note_cache = {}  # (text, color) -> rendered Steam note (_steam_note)
+
         # Initialize pygame.scrap for clipboard copy support
         try:
             pygame.scrap.init()
@@ -463,7 +477,9 @@ class TerritorySelector:
         self.player_frame_pad = max(2, int(round(4 * self.ui_scale)))
         frame_off_y = by + self.player_frame_pad
         if self.is_host:
-            # Matches _draw_host_ip(): label at title_y + 28, IP line 16 below it
+            # Matches _draw_host_ip(): label at title_y + 28, IP line 16 below it (the
+            # Steam note shares the IP line - a line of its own pushed Return to Main
+            # Menu off a 900p screen)
             above = self.title_y + int(28 * self.ui_scale) + int(16 * self.ui_scale) + self.text_font.get_height()
         else:
             above = self.title_y + self.title_font.get_height() // 2
@@ -559,6 +575,40 @@ class TerritorySelector:
             Tuple of (lobby_state, victory_condition, taxation_level, turn_mode), or None if cancelled.
             The lobby_state contains all player slots with territories, colors, teams.
         """
+        try:
+            return self._run_lobby()
+        finally:
+            # Friends must stop seeing a lobby to join the moment it closes: launched,
+            # Return to Main Menu, Alt+F4 or an error (host only)
+            self._clear_hosting_presence()
+
+    def _update_hosting_presence(self, now=None):
+        """
+        Host: keep our Steam rich presence in step with the lobby - "connect" = the
+        invite's connect string, so friends' Join screens list us and Steam's "Join Game"
+        on us works. Set again when the string changes (UPnP adds the public address);
+        checked every PRESENCE_REFRESH_SECONDS. Each string is set once, even if Steam
+        refused it (no log line every second).
+        """
+        if not self.is_host:
+            return
+        now = time.monotonic() if now is None else now
+        if now - self._presence_checked < PRESENCE_REFRESH_SECONDS:
+            return
+        self._presence_checked = now
+        connect = self._invite_connect_string()
+        if connect and connect != self._presence_connect:
+            self._presence_connect = connect
+            steam_manager.set_hosting_presence(connect)
+
+    def _clear_hosting_presence(self):
+        """Host: friends no longer see this lobby (it closed or launched)."""
+        if self.is_host and self._presence_connect is not None:
+            self._presence_connect = None
+            steam_manager.clear_hosting_presence()
+
+    def _run_lobby(self):
+        """The lobby loop (run() clears the hosting presence however it ends)."""
         clock = pygame.time.Clock()
         running = True
 
@@ -612,6 +662,8 @@ class TerritorySelector:
             # Steam callbacks every frame: a friend joining through Steam reaches the
             # host's lobby only through this pump (without it their join timed out)
             steam_manager.run_callbacks()
+            # Host: friends see this lobby in Steam / on their Join screen
+            self._update_hosting_presence()
 
             # Check if cancelled (Return to Main Menu clicked)
             if self.cancelled:
@@ -1996,14 +2048,25 @@ class TerritorySelector:
         label_text = self.small_font.render(label_str, True, WHITE)
         ip_text = self.text_font.render(display_ip, True, ip_color)
 
-        # Center both horizontally
+        # (i) mark width, gap included (setup_tooltips.draw_label_mark)
+        mark_w = self.setup_tooltips.mark_size() + max(4, int(round(6 * self.ui_scale)))
+
+        # The IP line also says whether friends can join through Steam: "or via Steam" /
+        # "Steam off" with its own (i) mark, centred together with the address
+        steam_note, steam_key = self._steam_note()
+        note_gap = int(10 * self.ui_scale)
+        row_w = ip_text.get_width() + note_gap + steam_note.get_width() + mark_w
+
+        # Center horizontally
         label_rect = label_text.get_rect(centerx=self.left_panel_width // 2, y=ip_y)
-        ip_rect = ip_text.get_rect(centerx=self.left_panel_width // 2, y=ip_y + int(16 * self.ui_scale))
+        ip_rect = ip_text.get_rect(x=self.left_panel_width // 2 - row_w // 2,
+                                   y=ip_y + int(16 * self.ui_scale))
+        note_rect = steam_note.get_rect(x=ip_rect.right + note_gap, centery=ip_rect.centery)
 
         # (i) mark: how to join on the same network / over the internet, depending on
         # whether the router opened the port (config/setup_tooltips.py host_ip_*). Shift
         # the label left by half the mark so label + mark stay centred.
-        mark_shift = (self.setup_tooltips.mark_size() + max(4, int(round(6 * self.ui_scale)))) // 2
+        mark_shift = mark_w // 2
         label_rect.x -= mark_shift
         if upnp_succeeded:
             tip_key = 'host_ip_internet'
@@ -2021,8 +2084,34 @@ class TerritorySelector:
         self.tooltip_rects[tip_key] = self.setup_tooltips.draw_label_mark(
             self.screen, label_rect, self.hovered_tooltip == tip_key)
 
+        # Steam note after the address, with its (i) mark
+        self.screen.blit(steam_note, note_rect)
+        for key in ('host_steam', 'host_steam_off'):
+            if key != steam_key:
+                self.tooltip_rects.pop(key, None)  # Steam hosting changed - drop the old one
+        self.tooltip_rects[steam_key] = self.setup_tooltips.draw_label_mark(
+            self.screen, note_rect, self.hovered_tooltip == steam_key)
+
         # Store rect for click/hover detection
         self._ip_click_rect = ip_rect
+
+    def _steam_note(self):
+        """
+        Host: the note after the join address - whether friends can also join through
+        Steam (no address, no port forwarding needed): green "or via Steam" with the
+        how-to tooltip, or grey "Steam off" with why (config/setup_tooltips.py
+        host_steam / host_steam_off). Returns (cached surface, tooltip key).
+        """
+        if self._steam_host_id():
+            text, color, tip_key = "or via Steam", STEAM_ON_COLOR, 'host_steam'
+        else:
+            # TEXT_COLOR_DIM: plain GRAY all but vanished on the dark wood
+            text, color, tip_key = "Steam off", TEXT_COLOR_DIM, 'host_steam_off'
+        surface = self._steam_note_cache.get((text, color))
+        if surface is None:
+            surface = self.small_font.render(text, True, color)
+            self._steam_note_cache[(text, color)] = surface
+        return surface, tip_key
 
     def _draw_player_info(self):
         """Draw player information rows with Type/Color/Team dropdowns.

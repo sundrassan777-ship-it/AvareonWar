@@ -154,6 +154,10 @@ def describe_end(end_reason, connected, host_name='', hosting=None):
         if hosting:
             return (f"Could not reach {who} through Steam (timed out) - check both PCs' "
                     f"internet connections")
+        if hosting is False:
+            # Their rich presence (set while their lobby is open) says no lobby - also
+            # when their game is closed (Steam clears presence then)
+            return f"{_sentence(who)} is not hosting a game right now"
         # Measured on real Steam: "not hosting" and "game closed" both end like this
         return (f"Could not reach {who} through Steam - they may not be hosting right "
                 f"now, or their game is closed")
@@ -240,6 +244,20 @@ class SteamJoin:
         return (self._pair.steam_closed and
                 self._pair.end_reason in (END_NOT_HOSTING, END_GAME_CLOSED))
 
+    @property
+    def host_not_hosting(self):
+        """
+        Steam timed out without reaching the host, and the host's rich presence says they
+        host no lobby (their lobby sets it while open; Steam clears it when their game
+        closes): their IP addresses lead nowhere either - skip them (Phase 3 two-PC test
+        4: 15 s of Steam, then 10 s of hopeless addresses). False while the presence is
+        unknown: then the addresses are still worth a try.
+        """
+        pair = self._pair
+        return (pair.steam_closed and not pair.steam_connected
+                and pair.end_reason == _END_TIMEOUT
+                and self._bridge.friend_is_hosting(pair.steam_id) is False)
+
     def failure_reason(self):
         """Why the Steam side ended, for the player; None while it is fine (or closed normally)."""
         pair = self._pair
@@ -309,7 +327,12 @@ class SteamBridge:
         return None
 
     def friend_is_hosting(self, steam_id):
-        """Whether the friend's rich presence "connect" invites to their Steam lobby."""
+        """
+        Whether the friend's rich presence "connect" invites to their Steam lobby: True /
+        False, or None when presence cannot be read on this PC (unknown - not "no").
+        """
+        if not getattr(self._api, 'available', True):
+            return None
         try:
             connect = self._api.get_friend_rich_presence(steam_id, 'connect')
         except Exception:

@@ -9,6 +9,7 @@ import pygame
 import socket
 import threading
 import time
+from collections import namedtuple
 from typing import Optional, Tuple, Dict, List
 
 from network.server import NetworkServer
@@ -33,6 +34,51 @@ logger = get_logger(__name__)
 ERROR_MIN_MS = 3000
 ERROR_MS_PER_CHAR = 60
 ERROR_MAX_MS = 12000
+
+# Join Game screen, Steam Friends tab: friends hosting a lobby, from their Steam rich
+# presence (steam_manager.get_hosting_friends - the host's lobby sets it). Shown only
+# with Steam; the Direct IP tab is the address box it always was.
+FRIENDS_REFRESH_SECONDS = 2.0     # the list is re-read this often
+FRIEND_ROWS_VISIBLE = 3           # more scroll (mouse wheel)
+FRIEND_ROW_HEIGHT = 64
+FRIEND_ROW_SPACING = 6
+JOIN_TAB_ROW_HEIGHT = 70          # the title moves up this much to make room for the tabs
+NO_FRIENDS_HOSTING = "No friends are hosting right now - ask them to host, or use Direct IP."
+
+# What the Join Game screen returns when a friend was picked on the Steam Friends tab:
+# their Steam name and connect targets ("steam-<id>,ip:port,..." - parse_connect_targets)
+FriendJoin = namedtuple('FriendJoin', ['name', 'connect'])
+
+
+class HostingFriendsList:
+    """
+    The Steam Friends tab's list: friends hosting a lobby, re-read every
+    FRIENDS_REFRESH_SECONDS while the tab is shown, scrolled a row at a time.
+    """
+
+    def __init__(self, source=None):
+        # Late-bound by default, so tests can replace steam_manager.get_hosting_friends
+        self._source = source or (lambda: steam_manager.get_hosting_friends())
+        self.friends = []
+        self.scroll = 0                   # index of the first visible friend
+        self._next_refresh = float('-inf')
+
+    def update(self, now: float):
+        """Re-read the hosting friends when due (the first call always reads)."""
+        if now < self._next_refresh:
+            return
+        self._next_refresh = now + FRIENDS_REFRESH_SECONDS
+        self.friends = list(self._source() or [])
+        self.scroll = max(0, min(self.scroll, self.max_scroll()))
+
+    def max_scroll(self) -> int:
+        return max(0, len(self.friends) - FRIEND_ROWS_VISIBLE)
+
+    def scroll_by(self, rows: int):
+        self.scroll = max(0, min(self.scroll + rows, self.max_scroll()))
+
+    def visible(self) -> List[Dict]:
+        return self.friends[self.scroll:self.scroll + FRIEND_ROWS_VISIBLE]
 
 
 # Colors
@@ -146,12 +192,17 @@ class MultiplayerSetup:
             self.button_font = pygame.font.Font(regular_path, 29)
             self.text_font = pygame.font.Font(regular_path, 28)
             self.small_font = pygame.font.Font(regular_path, 20)
+            # Join screen: tab labels + friend names, and the friends' status line
+            self.list_font = pygame.font.Font(semibold_path, 24)
+            self.status_font = pygame.font.Font(regular_path, 17)
         except (FileNotFoundError, pygame.error, OSError):
             self.title_font = pygame.font.Font(None, 72)
             self.subtitle_font = pygame.font.Font(None, 48)
             self.button_font = pygame.font.Font(None, 36)
             self.text_font = pygame.font.Font(None, 32)
             self.small_font = pygame.font.Font(None, 24)
+            self.list_font = pygame.font.Font(None, 30)
+            self.status_font = pygame.font.Font(None, 22)
 
         # Load assets
         try:
@@ -180,6 +231,10 @@ class MultiplayerSetup:
         # State
         self.result = None  # 'host', 'join', 'back'
         self.phase = 'select'  # 'select', 'host', 'join'
+
+        # Drawing caches (these screens redraw every frame): scaled art / buttons, text
+        self._surface_cache = {}
+        self._text_cache = {}
 
         # Hover and click state tracking (for main menu style button effects)
         self.hovered_button = None
@@ -468,7 +523,8 @@ class MultiplayerSetup:
         Returns:
             Tuple of ('client', client, config) or None if cancelled
         """
-        # Show IP input screen
+        # Show the Join Game screen: an address typed on the Direct IP tab, or a friend
+        # picked on the Steam Friends tab (FriendJoin)
         host_ip = self._get_host_ip()
         if host_ip == 'quit':
             # Alt+F4 on the IP screen. It used to be tried as a host name ("quit")
@@ -476,6 +532,11 @@ class MultiplayerSetup:
             return 'quit'
         if not host_ip:
             return None
+        if isinstance(host_ip, FriendJoin):
+            logger.info(f"Joining {host_ip.name} from the Steam Friends list ('{host_ip.connect}')")
+            targets, join_label = parse_connect_targets(host_ip.connect), f"{host_ip.name}'s game"
+        else:
+            targets, join_label = parse_connect_targets(host_ip), host_ip
 
         # Connect to server
         client = NetworkClient()
@@ -486,7 +547,7 @@ class MultiplayerSetup:
 
         # Behind the "Connecting..." screen (shared with Steam invites in main.py), so
         # the window keeps responding and the player can cancel
-        connected = self.connect_with_progress(client, parse_connect_targets(host_ip), player_name)
+        connected = self.connect_with_progress(client, targets, player_name)
         if connected == 'quit':
             return 'quit'
         if connected == 'cancelled':
@@ -494,10 +555,10 @@ class MultiplayerSetup:
         if not connected:
             # Say why (lobby full, version mismatch, nobody hosting, ...)
             reason = client.disconnect_reason
-            self._show_error(f"Could not join {host_ip}" + (f": {reason}" if reason else ""))
+            self._show_error(f"Could not join {join_label}" + (f": {reason}" if reason else ""))
             return None
 
-        logger.info(f"Connected to server at {host_ip}")
+        logger.info(f"Connected to server at {join_label}")
 
         # Lobby (shared with Steam-invite joins in main.py)
         logger.info("Connected! Starting territory selection...")
@@ -757,37 +818,26 @@ class MultiplayerSetup:
         worker.join()
         return result.get('connected', False)
 
-    def _get_host_ip(self) -> Optional[str]:
+    def _steam_friends_available(self) -> bool:
         """
-        Get host IP address from user input.
-
-        Uses MPSetBG.png background, OptionsMenuBG panel, TextBar.png input field,
-        and main-menu-style Join Game / Exit buttons. Supports hold-to-delete backspace.
-
-        Returns:
-            IP address string or None if cancelled
+        Whether the Join Game screen shows the Steam Friends tab: Steam is running and
+        friends' rich presence can be read (steam_networking). Hidden without Steam.
         """
-        # Initialize clipboard support for Ctrl+V paste
         try:
-            pygame.scrap.init()
+            from steam_networking import steam_net
+            return bool(steam_manager.can_invite() and steam_net.available)
         except Exception:
-            pass  # Non-fatal — paste just won't work
+            return False
 
-        input_text = "127.0.0.1"  # Default to localhost
-        input_active = True
-        cursor_visible = True
-        cursor_timer = 0
+    def _join_screen_layout(self, steam_tabs: bool) -> Dict:
+        """
+        Geometry of the Join Game screen (fixed pixel sizes, as the rest of this screen).
 
-        # Backspace hold-to-delete state
-        backspace_held = False
-        backspace_hold_timer = 0
-        backspace_initial_delay = 400  # ms before repeat starts
-        backspace_repeat_rate = 50  # ms between repeated deletes
-
-        # Layout: TextBar input + two buttons vertically stacked, centered
-        button_width = 400
-        button_height = 70
-        button_spacing = 20
+        The Direct IP content sits where it always did. With the Steam Friends tab the
+        title and the panel top move up JOIN_TAB_ROW_HEIGHT to make room for the tab row,
+        and the friends list takes the area of the address box and its Join button.
+        """
+        button_width, button_height, button_spacing = 400, 70, 20
         text_bar_width = 400
         text_bar_layout_height = 80  # Layout spacing height (for positioning other elements)
         text_bar_visual_height = 400  # Visual height of TextBar.png (unsquished)
@@ -799,39 +849,99 @@ class MultiplayerSetup:
         start_y = self.height // 2 - group_height // 2 + 30
 
         # Layout rect (small, for positioning buttons/title relative to text bar)
-        text_bar_layout_rect = pygame.Rect(
-            center_x - text_bar_width // 2, start_y,
-            text_bar_width, text_bar_layout_height
-        )
+        bar = pygame.Rect(center_x - text_bar_width // 2, start_y, text_bar_width, text_bar_layout_height)
         # Visual rect (large, for rendering the TextBar.png centered on layout rect)
-        text_bar_rect = pygame.Rect(
-            center_x - text_bar_width // 2,
-            text_bar_layout_rect.centery - text_bar_visual_height // 2,
-            text_bar_width, text_bar_visual_height
-        )
-        join_button_rect = pygame.Rect(
-            center_x - button_width // 2,
-            text_bar_layout_rect.bottom + button_spacing,
-            button_width, button_height
-        )
-        exit_button_rect = pygame.Rect(
-            center_x - button_width // 2,
-            join_button_rect.bottom + button_spacing,
-            button_width, button_height
-        )
+        bar_visual = pygame.Rect(center_x - text_bar_width // 2, bar.centery - text_bar_visual_height // 2,
+                                 text_bar_width, text_bar_visual_height)
+        join = pygame.Rect(center_x - button_width // 2, bar.bottom + button_spacing,
+                           button_width, button_height)
+        exit_rect = pygame.Rect(center_x - button_width // 2, join.bottom + button_spacing,
+                                button_width, button_height)
 
-        # Panel background sizing (covers title + all elements)
-        panel_top = text_bar_layout_rect.top - 165  # Space above for title + label
-        panel_bottom = exit_button_rect.bottom + 90  # Space below
-        panel_width = 620  # Match selection screen panel width
+        # Panel background covering the title and every element (space above for the
+        # title + label, below the Exit button); 620 wide like the selection screen
+        shift = JOIN_TAB_ROW_HEIGHT if steam_tabs else 0
+        panel_top = bar.top - 165 - shift
+        layout = {
+            'center_x': center_x,
+            'bar': bar,
+            'bar_visual': bar_visual,
+            'join': join,
+            'exit': exit_rect,
+            'panel': pygame.Rect(center_x - 310, panel_top, 620, exit_rect.bottom + 90 - panel_top),
+            'title_center': (center_x, bar.top - 70 - shift),
+            'label_center': (center_x, bar.top - 30),
+            'tabs': {},
+            'list': None,
+        }
+        if steam_tabs:
+            # Inside the panel's wooden area (its metal frame takes ~65 px a side)
+            tab_w, tab_h, tab_gap = 225, 46, 10
+            tab_top = bar.top - 76 - tab_h // 2
+            layout['tabs'] = {
+                'steam': pygame.Rect(center_x - tab_gap // 2 - tab_w, tab_top, tab_w, tab_h),
+                'ip': pygame.Rect(center_x + tab_gap // 2, tab_top, tab_w, tab_h),
+            }
+            list_top = bar.top - 42
+            layout['list'] = pygame.Rect(center_x - 235, list_top, 470, join.bottom - list_top)
+        return layout
 
-        # Hover/click tracking for buttons
+    @staticmethod
+    def _friend_row_rects(list_rect, count):
+        """[(row rect, Join button rect)] of the first `count` rows of the friends list."""
+        rows = []
+        for i in range(count):
+            # 12 px on the right stay free for the scrollbar
+            row = pygame.Rect(list_rect.x, list_rect.y + i * (FRIEND_ROW_HEIGHT + FRIEND_ROW_SPACING),
+                              list_rect.width - 12, FRIEND_ROW_HEIGHT)
+            join = pygame.Rect(row.right - 12 - 120, row.centery - 22, 120, 44)
+            rows.append((row, join))
+        return rows
+
+    def _get_host_ip(self):
+        """
+        The Join Game screen.
+
+        With Steam: two tabs - "Steam Friends" (shown first: friends hosting a lobby, from
+        their Steam rich presence, each with a Join button) and "Direct IP" (the address
+        box). Without Steam: the address box only, as it always was. Tab switches tabs.
+
+        Uses MPSetBG.png background, OptionsMenuBG panel, TextBar.png input field, and
+        main-menu-style buttons. Supports hold-to-delete backspace.
+
+        Returns:
+            The typed address (str), a FriendJoin for a friend picked on the Steam
+            Friends tab, None if cancelled, or 'quit' (Alt+F4)
+        """
+        # Initialize clipboard support for Ctrl+V paste
+        try:
+            pygame.scrap.init()
+        except Exception:
+            pass  # Non-fatal — paste just won't work
+
+        input_text = "127.0.0.1"  # Default to localhost
+        cursor_visible = True
+        cursor_timer = 0
+
+        # Backspace hold-to-delete state
+        backspace_held = False
+        backspace_hold_timer = 0
+        backspace_initial_delay = 400  # ms before repeat starts
+        backspace_repeat_rate = 50  # ms between repeated deletes
+
+        steam_tabs = self._steam_friends_available()
+        layout = self._join_screen_layout(steam_tabs)
+        tab = 'steam' if steam_tabs else 'ip'
+        friends = HostingFriendsList()
+        row_buttons = []  # [(Join rect, friend)] as last drawn - what a click picks
+
+        # Hover/click tracking ('join', 'exit', 'tab_<name>' or ('row', steam_id))
         hovered_btn = None
         clicked_btn = None
 
         clock = pygame.time.Clock()
 
-        while input_active:
+        while True:
             dt = clock.get_time()
 
             for event in pygame.event.get():
@@ -842,7 +952,12 @@ class MultiplayerSetup:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         return None
-                    elif event.key == pygame.K_RETURN:
+                    if event.key == pygame.K_TAB and steam_tabs:
+                        tab = 'ip' if tab == 'steam' else 'steam'
+                        continue
+                    if tab != 'ip':
+                        continue  # typing only goes to the address box
+                    if event.key == pygame.K_RETURN:
                         return input_text if input_text else None
                     elif event.key == pygame.K_BACKSPACE:
                         # Delete one character immediately, start hold timer
@@ -865,7 +980,7 @@ class MultiplayerSetup:
                             pass  # Clipboard not available
                     else:
                         # Add character if valid for IP address
-                        if event.unicode in '0123456789.':
+                        if event.unicode and event.unicode in '0123456789.':
                             if len(input_text) < 15:  # Max IP length
                                 input_text += event.unicode
 
@@ -874,16 +989,28 @@ class MultiplayerSetup:
                         backspace_held = False
                         backspace_hold_timer = 0
 
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 1:
-                        if join_button_rect.collidepoint(event.pos):
+                if event.type == getattr(pygame, 'MOUSEWHEEL', -1) and tab == 'steam':
+                    friends.scroll_by(-event.y)
+
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    tab_hit = next((name for name, rect in layout['tabs'].items()
+                                    if rect.collidepoint(event.pos)), None)
+                    if tab_hit:
+                        if tab_hit != tab:
                             sound_manager.play_ui_click()
-                            clicked_btn = 'join'
-                            return input_text if input_text else None
-                        elif exit_button_rect.collidepoint(event.pos):
-                            sound_manager.play_ui_click()
-                            clicked_btn = 'exit'
-                            return None
+                            tab = tab_hit
+                        clicked_btn = f'tab_{tab_hit}'  # flash for a frame
+                    elif layout['exit'].collidepoint(event.pos):
+                        sound_manager.play_ui_click()
+                        return None
+                    elif tab == 'ip' and layout['join'].collidepoint(event.pos):
+                        sound_manager.play_ui_click()
+                        return input_text if input_text else None
+                    elif tab == 'steam':
+                        for rect, friend in row_buttons:
+                            if rect.collidepoint(event.pos):
+                                sound_manager.play_ui_click()
+                                return FriendJoin(friend['name'], friend['connect'])
 
             # Handle backspace hold-to-delete repeating
             if backspace_held and input_text:
@@ -903,75 +1030,16 @@ class MultiplayerSetup:
                 cursor_visible = not cursor_visible
                 cursor_timer = 0
 
+            # The friends hosting right now (re-read every FRIENDS_REFRESH_SECONDS)
+            if tab == 'steam':
+                friends.update(time.monotonic())
+
             # Update hover state
-            mouse_pos = pygame.mouse.get_pos()
-            hovered_btn = None
-            if join_button_rect.collidepoint(mouse_pos):
-                hovered_btn = 'join'
-            elif exit_button_rect.collidepoint(mouse_pos):
-                hovered_btn = 'exit'
+            hovered_btn = self._join_screen_hover(layout, tab, row_buttons, pygame.mouse.get_pos())
 
             # --- Render ---
-            # Background
-            if self.background_image:
-                self.screen.blit(self.background_image, (0, 0))
-            else:
-                self.screen.fill(BLACK)
-
-            # Options panel background behind all elements
-            if self.options_panel_image:
-                panel_height = panel_bottom - panel_top
-                panel_x = center_x - panel_width // 2
-                scaled_panel = pygame.transform.smoothscale(
-                    self.options_panel_image, (panel_width, panel_height)
-                )
-                self.screen.blit(scaled_panel, (panel_x, panel_top))
-
-            # Title (positioned relative to layout rect, not visual rect)
-            title_text = self.title_font.render("Join Game", True, WHITE)
-            title_rect = title_text.get_rect(center=(center_x, text_bar_layout_rect.top - 70))
-            self.screen.blit(title_text, title_rect)
-
-            # Label above text bar
-            label_text = self.text_font.render("Enter Host IP Address:", True, LIGHT_GRAY)
-            label_rect = label_text.get_rect(center=(center_x, text_bar_layout_rect.top - 30))
-            self.screen.blit(label_text, label_rect)
-
-            # Text bar input field using TextBar.png (visual rect, larger than layout)
-            if self.text_bar_image:
-                scaled_bar = pygame.transform.smoothscale(
-                    self.text_bar_image, (text_bar_rect.width, text_bar_rect.height)
-                )
-                # Offset TextBar.png 8px down to align with input text visually
-                self.screen.blit(scaled_bar, (text_bar_rect.x, text_bar_rect.y + 23))
-            else:
-                # Fallback: dark rect with border (use layout rect for fallback)
-                pygame.draw.rect(self.screen, (20, 20, 20), text_bar_layout_rect)
-                pygame.draw.rect(self.screen, WHITE, text_bar_layout_rect, 2)
-
-            # IP text centered on the visual TextBar (not layout rect) for alignment
-            text_surface = self.text_font.render(input_text, True, WHITE)
-            text_render_rect = text_surface.get_rect(center=text_bar_rect.center)
-            self.screen.blit(text_surface, text_render_rect)
-
-            # Blinking cursor
-            if cursor_visible:
-                cursor_x = text_render_rect.right + 3
-                cursor_y = text_bar_rect.centery
-                pygame.draw.line(self.screen, WHITE,
-                                 (cursor_x, cursor_y - 15), (cursor_x, cursor_y + 15), 2)
-
-            # Join Game button (brass text, main menu style)
-            self._draw_join_screen_button(
-                join_button_rect, "Join Game", BRASS_COLOR,
-                hovered_btn == 'join', clicked_btn == 'join'
-            )
-
-            # Exit button (white text, main menu style)
-            self._draw_join_screen_button(
-                exit_button_rect, "Exit", WHITE,
-                hovered_btn == 'exit', clicked_btn == 'exit'
-            )
+            row_buttons = self._draw_join_screen(layout, tab, input_text, cursor_visible, friends,
+                                                 hovered_btn, clicked_btn)
 
             # Reset click flash after render
             clicked_btn = None
@@ -982,29 +1050,243 @@ class MultiplayerSetup:
             steam_manager.run_callbacks()
             clock.tick(menu_frame_cap())
 
+    @staticmethod
+    def _join_screen_hover(layout, tab, row_buttons, pos):
+        """The Join Game screen control under the mouse (ids as in _get_host_ip), or None."""
+        for name, rect in layout['tabs'].items():
+            if rect.collidepoint(pos):
+                return f'tab_{name}'
+        if layout['exit'].collidepoint(pos):
+            return 'exit'
+        if tab == 'ip' and layout['join'].collidepoint(pos):
+            return 'join'
+        if tab == 'steam':
+            for rect, friend in row_buttons:
+                if rect.collidepoint(pos):
+                    return ('row', friend['steam_id'])
         return None
+
+    def _draw_join_screen(self, layout, tab, input_text, cursor_visible, friends,
+                          hovered_btn=None, clicked_btn=None):
+        """
+        Draw one frame of the Join Game screen.
+
+        Returns:
+            [(Join button rect, friend)] of the Steam Friends rows drawn ([] on Direct IP)
+        """
+        # Background
+        if self.background_image:
+            self.screen.blit(self.background_image, (0, 0))
+        else:
+            self.screen.fill(BLACK)
+
+        # Options panel background behind all elements
+        panel = layout['panel']
+        if self.options_panel_image:
+            self.screen.blit(self._scaled(self.options_panel_image, panel.size), panel.topleft)
+
+        # Title
+        title_text = self._text(self.title_font, "Join Game", WHITE)
+        self.screen.blit(title_text, title_text.get_rect(center=layout['title_center']))
+
+        # Tabs (only with Steam)
+        for name, label in (('steam', "Steam Friends"), ('ip', "Direct IP")):
+            rect = layout['tabs'].get(name)
+            if rect is not None:
+                self._draw_join_tab(rect, label, active=(tab == name),
+                                    hovered=hovered_btn == f'tab_{name}',
+                                    clicked=clicked_btn == f'tab_{name}')
+
+        row_buttons = []
+        if tab == 'ip':
+            # Label above text bar
+            label_text = self._text(self.text_font, "Enter Host IP Address:", LIGHT_GRAY)
+            self.screen.blit(label_text, label_text.get_rect(center=layout['label_center']))
+
+            # Text bar input field using TextBar.png (visual rect, larger than layout)
+            bar_visual = layout['bar_visual']
+            if self.text_bar_image:
+                # Offset TextBar.png down to align with input text visually
+                self.screen.blit(self._scaled(self.text_bar_image, bar_visual.size),
+                                 (bar_visual.x, bar_visual.y + 23))
+            else:
+                # Fallback: dark rect with border (use layout rect for fallback)
+                pygame.draw.rect(self.screen, (20, 20, 20), layout['bar'])
+                pygame.draw.rect(self.screen, WHITE, layout['bar'], 2)
+
+            # IP text centered on the visual TextBar (not layout rect) for alignment
+            text_surface = self._text(self.text_font, input_text, WHITE)
+            text_render_rect = text_surface.get_rect(center=bar_visual.center)
+            self.screen.blit(text_surface, text_render_rect)
+
+            # Blinking cursor
+            if cursor_visible:
+                cursor_x = text_render_rect.right + 3
+                cursor_y = bar_visual.centery
+                pygame.draw.line(self.screen, WHITE,
+                                 (cursor_x, cursor_y - 15), (cursor_x, cursor_y + 15), 2)
+
+            # Join Game button (brass text, main menu style)
+            self._draw_join_screen_button(layout['join'], "Join Game", BRASS_COLOR,
+                                          hovered_btn == 'join', clicked_btn == 'join')
+        else:
+            row_buttons = self._draw_friend_rows(layout['list'], friends, hovered_btn, clicked_btn)
+
+        # Exit button (white text, main menu style)
+        self._draw_join_screen_button(layout['exit'], "Exit", WHITE,
+                                      hovered_btn == 'exit', clicked_btn == 'exit')
+        return row_buttons
+
+    def _draw_join_tab(self, rect, label, active, hovered, clicked):
+        """
+        One Join Game tab: the main menu button art - the open tab as bright as the other
+        buttons, with brass text and a brass underline; the other one dimmed - with the
+        hover highlight and click flash of every button here.
+        """
+        if clicked:
+            state = 'click'
+        elif active:
+            state = 'hover' if hovered else 'normal'
+        else:
+            state = 'dim_hover' if hovered else 'dim'
+        surface = self._button_surface(rect.size, state)
+        if surface is not None:
+            self.screen.blit(surface, rect)
+        else:
+            shade = {'click': 120, 'hover': 90, 'normal': 75, 'dim_hover': 60}.get(state, 45)
+            pygame.draw.rect(self.screen, (shade, shade, shade + 15), rect, border_radius=10)
+            pygame.draw.rect(self.screen, BRASS_COLOR if active else GRAY, rect, 2, border_radius=10)
+        text = self._text(self.list_font, label, BRASS_COLOR if active else LIGHT_GRAY)
+        text_rect = text.get_rect(center=rect.center)
+        self.screen.blit(text, text_rect)
+        if active:
+            pygame.draw.line(self.screen, BRASS_COLOR, (text_rect.left, text_rect.bottom - 2),
+                             (text_rect.right, text_rect.bottom - 2), 2)
+
+    def _draw_friend_rows(self, list_rect, friends, hovered_btn=None, clicked_btn=None):
+        """
+        The Steam Friends tab: one row per friend hosting a lobby (name, their status,
+        Join), a scrollbar when there are more than FRIEND_ROWS_VISIBLE, or the hint that
+        nobody is hosting.
+
+        Returns:
+            [(Join button rect, friend)] as drawn
+        """
+        visible = friends.visible()
+        if not visible:
+            # The hint on a dark box like a row's, in the parchment colour the Connecting
+            # screen uses for secondary text (grey was too faint on the light wood)
+            lines = self._wrap_text(NO_FRIENDS_HOSTING, self.small_font, list_rect.width - 60)
+            line_height = self.small_font.get_linesize()
+            box = pygame.Rect(0, 0, list_rect.width - 12, len(lines) * line_height + 36)
+            box.center = list_rect.center
+            self.screen.blit(self._row_background(box.size), box.topleft)
+            y = box.centery - len(lines) * line_height // 2
+            for line in lines:
+                text = self._text(self.small_font, line, CONNECTING_HINT_COLOR)
+                self.screen.blit(text, text.get_rect(centerx=box.centerx, y=y))
+                y += line_height
+            return []
+
+        row_buttons = []
+        for friend, (row, join) in zip(visible, self._friend_row_rects(list_rect, len(visible))):
+            self.screen.blit(self._row_background(row.size), row.topleft)
+            text_width = join.left - row.x - 28
+            name = self._text(self.list_font, self._fit_text(self.list_font, friend['name'], text_width), WHITE)
+            status = self._text(self.status_font, self._fit_text(
+                self.status_font, friend.get('status') or "Hosting a lobby", text_width), LIGHT_GRAY)
+            text_top = row.centery - (name.get_height() + status.get_height()) // 2
+            self.screen.blit(name, (row.x + 16, text_top))
+            self.screen.blit(status, (row.x + 16, text_top + name.get_height()))
+            key = ('row', friend['steam_id'])
+            self._draw_join_screen_button(join, "Join", BRASS_COLOR, hovered_btn == key,
+                                          clicked_btn == key)
+            row_buttons.append((join, friend))
+
+        # Scrollbar when the list is longer than the rows shown
+        if friends.max_scroll():
+            track = pygame.Rect(list_rect.right - 6, list_rect.y, 4,
+                                FRIEND_ROWS_VISIBLE * (FRIEND_ROW_HEIGHT + FRIEND_ROW_SPACING)
+                                - FRIEND_ROW_SPACING)
+            pygame.draw.rect(self.screen, DARK_GRAY, track, border_radius=2)
+            thumb_height = max(16, track.height * FRIEND_ROWS_VISIBLE // len(friends.friends))
+            thumb_y = track.y + (track.height - thumb_height) * friends.scroll // friends.max_scroll()
+            pygame.draw.rect(self.screen, BRASS_COLOR, (track.x, thumb_y, track.width, thumb_height),
+                             border_radius=2)
+        return row_buttons
+
+    def _row_background(self, size):
+        """A friend row's dark, brass-edged background (cached per size)."""
+        key = ('friend_row', size)
+        surface = self._surface_cache.get(key)
+        if surface is None:
+            surface = pygame.Surface(size, pygame.SRCALPHA)
+            pygame.draw.rect(surface, (15, 12, 8, 170), surface.get_rect(), border_radius=8)
+            pygame.draw.rect(surface, BRASS_COLOR, surface.get_rect(), 1, border_radius=8)
+            self._surface_cache[key] = surface
+        return surface
+
+    @staticmethod
+    def _fit_text(font, text, max_width):
+        """`text`, shortened with '...' if it is wider than max_width (long Steam names)."""
+        if font.size(text)[0] <= max_width:
+            return text
+        while text and font.size(text + '...')[0] > max_width:
+            text = text[:-1]
+        return text.rstrip() + '...'
+
+    def _button_surface(self, size, state='normal'):
+        """
+        MainMenuButtonNew scaled to `size` and darkened like the main menu, with the
+        highlight of `state` ('normal' / 'hover' / 'click'; 'dim' / 'dim_hover' = darker,
+        for a tab that is not open); cached. None without the art.
+        """
+        if not self.button_bg_image:
+            return None
+        key = ('button', tuple(size), state)
+        surface = self._surface_cache.get(key)
+        if surface is None:
+            # smoothscale makes a new surface, so it can be tinted in place
+            surface = pygame.transform.smoothscale(self.button_bg_image, tuple(size))
+            # Base darkening (matching main menu; a closed tab darker still)
+            base = 70 if state.startswith('dim') else 100
+            surface.fill((base, base, base, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            # Click flash / hover highlight
+            add = {'hover': 40, 'click': 80, 'dim_hover': 30}.get(state, 0)
+            if add:
+                surface.fill((add, add, add, 0), special_flags=pygame.BLEND_RGB_ADD)
+            self._surface_cache[key] = surface
+        return surface
+
+    def _scaled(self, image, size):
+        """`image` smooth-scaled to `size` (cached - not a new surface every frame)."""
+        key = ('scaled', id(image), tuple(size))
+        surface = self._surface_cache.get(key)
+        if surface is None:
+            surface = pygame.transform.smoothscale(image, tuple(size))
+            self._surface_cache[key] = surface
+        return surface
+
+    def _text(self, font, text, color):
+        """`text` rendered in `font` and `color` (cached; dropped wholesale when large)."""
+        key = (id(font), text, color)
+        surface = self._text_cache.get(key)
+        if surface is None:
+            if len(self._text_cache) > 256:
+                self._text_cache.clear()  # typed addresses add up
+            surface = font.render(text, True, color)
+            self._text_cache[key] = surface
+        return surface
 
     def _draw_join_screen_button(self, rect, text, text_color, is_hovered, is_clicked):
         """Draw a button on the join screen with main menu styling.
 
         Reuses the same visual style as the selection screen buttons.
         """
-        if self.button_bg_image:
-            scaled_bg = pygame.transform.smoothscale(
-                self.button_bg_image, (rect.width, rect.height)
-            )
-            button_surface = scaled_bg.copy()
-
-            # Base darkening (matching main menu)
-            button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
-
-            # Click flash or hover highlight
-            if is_clicked:
-                button_surface.fill((80, 80, 80, 0), special_flags=pygame.BLEND_RGB_ADD)
-            elif is_hovered:
-                button_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-            self.screen.blit(button_surface, rect)
+        surface = self._button_surface(rect.size, 'click' if is_clicked else
+                                       'hover' if is_hovered else 'normal')
+        if surface is not None:
+            self.screen.blit(surface, rect)
         else:
             if is_clicked:
                 bg_color = (100, 100, 120)
@@ -1015,9 +1297,8 @@ class MultiplayerSetup:
             pygame.draw.rect(self.screen, bg_color, rect, border_radius=10)
             pygame.draw.rect(self.screen, GRAY, rect, 3, border_radius=10)
 
-        button_text = self.button_font.render(text, True, text_color)
-        button_text_rect = button_text.get_rect(center=rect.center)
-        self.screen.blit(button_text, button_text_rect)
+        button_text = self._text(self.button_font, text, text_color)
+        self.screen.blit(button_text, button_text.get_rect(center=rect.center))
 
     def _build_config_from_lobby(self, lobby_state: LobbyState, victory_condition: int,
                                   taxation_level: int, turn_mode: int,

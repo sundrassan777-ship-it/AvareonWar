@@ -564,10 +564,25 @@ class TestJoinerSide:
             client.settimeout(5)
             assert recv_until_eof(client) == b''    # closed gracefully, not reset
             assert not join.reached_host
-            assert join.failure_reason().startswith("Could not reach the host through Steam - "
-                                                    "they may not be hosting right now")
+            # No rich presence "connect" for them: they host no lobby (Phase 4)
+            assert join.host_not_hosting
+            assert join.failure_reason() == "The host is not hosting a game right now"
         finally:
             client.close()
+
+    def test_unknown_presence_keeps_the_cautious_wording(self, make_bridge):
+        """Presence that cannot be read is no proof they are not hosting: the invite's
+        addresses are still worth a try (host_not_hosting False)."""
+        join_bridge, join_fake = make_bridge(JOINER_ID, 'Joiny')
+
+        def unreadable(steam_id, key):
+            raise OSError("presence unavailable")
+        join_fake.get_friend_rich_presence = unreadable
+        join = join_bridge.open_join(NOBODY_ID)
+        wait_until(lambda: join.ended, what='timeout')
+        assert not join.host_not_hosting
+        assert join.failure_reason() == ("Could not reach the host through Steam - they may "
+                                         "not be hosting right now, or their game is closed")
 
     def test_timeout_wording_when_the_friend_is_hosting(self, make_bridge, sdr):
         join_bridge, _ = make_bridge(JOINER_ID, 'Joiny')
@@ -724,7 +739,8 @@ class TestReasons:
         (4001, False, None, "Ann's connection to Steam has a problem - ask them to check their internet connection"),
         (5003, True, None, "Lost the connection to Ann (Steam stopped hearing from them)"),
         (5003, False, True, "Could not reach Ann through Steam (timed out) - check both PCs' internet connections"),
-        (5003, False, False, "Could not reach Ann through Steam - they may not be hosting right now, or their game is closed"),
+        (5003, False, False, "Ann is not hosting a game right now"),       # presence says so
+        (5003, False, None, "Could not reach Ann through Steam - they may not be hosting right now, or their game is closed"),
         (5008, False, None, "Steam could not find a route to Ann - try again, or use Direct IP"),
         (5010, False, None, "Steam connection problem with Ann (code 5010)"),
         (0, True, None, "Lost the connection to Ann"),
@@ -925,7 +941,9 @@ class TestEndToEnd:
         finally:
             client.disconnect()
 
-    def test_steam_failure_then_the_address_works(self, host, make_bridge):
+    def test_steam_failure_then_the_address_works(self, host, make_bridge, sdr):
+        # They host (their presence says so), but Steam cannot reach them
+        sdr.presence[NOBODY_ID] = {'connect': f'+connect steam-{NOBODY_ID}'}
         bridge, _ = make_bridge(JOINER_ID, 'Joiny')
         client = steam_client(bridge)
         try:
@@ -935,7 +953,8 @@ class TestEndToEnd:
         finally:
             client.disconnect()
 
-    def test_steam_and_address_failing_lead_with_steams_reason(self, make_bridge):
+    def test_steam_and_address_failing_lead_with_steams_reason(self, make_bridge, sdr):
+        sdr.presence[NOBODY_ID] = {'connect': f'+connect steam-{NOBODY_ID}'}   # hosting
         bridge, _ = make_bridge(JOINER_ID, 'Joiny')
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         probe.bind(('127.0.0.1', 0))
@@ -945,10 +964,29 @@ class TestEndToEnd:
         assert not client.connect_any([SteamTarget(NOBODY_ID), ('127.0.0.1', dead_port)],
                                       player_name='Joiny')
         steam_part, _, rest = client.disconnect_reason.partition(" (a direct connection to ")
-        assert steam_part == ("Could not reach the host through Steam - they may not be "
-                              "hosting right now, or their game is closed")
+        assert steam_part == ("Could not reach the host through Steam (timed out) - check "
+                              "both PCs' internet connections")
         assert rest == "127.0.0.1 failed too)"
         assert '127.0.0.1' not in steam_part        # never the bridge's own address
+
+    def test_no_lobby_in_their_presence_skips_the_addresses(self, host, make_bridge):
+        """Phase 3 two-PC test 4: the host's game was closed - 15 s of Steam, then 10 s
+        of addresses that could not work. Their rich presence (no "connect") says there
+        is no lobby, so the Steam timeout is the end."""
+        address = ('127.0.0.1', tcp_port(host))    # would even answer - not tried
+        bridge, _ = make_bridge(JOINER_ID, 'Joiny')
+        client = steam_client(bridge)
+        tried = []
+        real_connect = client.connect
+
+        def connect(host_, port=7777, player_name="Player", **kwargs):
+            if '_steam_join' not in kwargs:
+                tried.append((host_, port))
+            return real_connect(host_, port=port, player_name=player_name, **kwargs)
+        client.connect = connect
+        assert not client.connect_any([SteamTarget(NOBODY_ID), address], player_name='Joiny')
+        assert tried == []
+        assert client.disconnect_reason == "The host is not hosting a game right now"
 
     def test_steam_offline_falls_back_to_the_address(self, host, make_bridge):
         bridge, join_fake = make_bridge(JOINER_ID, 'Joiny')

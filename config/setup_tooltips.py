@@ -112,6 +112,30 @@ SETUP_TOOLTIPS = {
         ],
     },
 
+    # Multiplayer lobby: hovering the Steam note after the join address (host only):
+    # host_steam ("or via Steam") while friends can join through Steam, host_steam_off
+    # ("Steam off") when they cannot.
+    'host_steam': {
+        'title': "Joining Through Steam",
+        'entries': [
+            (None, "Your Steam friends can join this lobby without the IP address and "
+                   "without port forwarding: Steam connects you, on any network."),
+            ("How", "Invite them with Invite Friend, or they choose you on the Steam Friends "
+                    "tab of their Join Game screen, or with Join Game on your name in their "
+                    "Steam friends list."),
+        ],
+    },
+    'host_steam_off': {
+        'title': "Joining Through Steam",
+        'entries': [
+            (None, "Friends can only join this lobby with the IP address right now. "
+                   "Joining through Steam needs Steam running and online when the game "
+                   "starts."),
+            (None, "It is also off when the --no-steam-relay launch option is set, or "
+                   "\"steam_relay\": false in config.json."),
+        ],
+    },
+
     # Multiplayer lobby: hovering the greyed "Launch Game" button (host only).
     # One entry per reason in network/lobby.py LobbyState.launch_blocker().
     'launch_players': {

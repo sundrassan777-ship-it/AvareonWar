@@ -371,9 +371,11 @@ class NetworkClient:
             self.disconnect_reason = "Cancelled"
             return False
         steam_reason = join.failure_reason()
-        # "Not hosting" / "game closed" came from the host's own game: connect_any()
-        # stops there, like a refusal - its IP addresses lead to the same stopped server
-        self._host_answered = join.reached_host or join.host_game_refused
+        # "Not hosting" / "game closed" came from the host's own game, or Steam timed out
+        # and the host's rich presence says no lobby: connect_any() stops there, like a
+        # refusal - the host's IP addresses lead to the same game, which hosts nothing
+        self._host_answered = (join.reached_host or join.host_game_refused
+                               or join.host_not_hosting)
         if not join.reached_host:
             self.disconnect_reason = (steam_reason or
                                       f"Could not reach {join.host_name or 'the host'} through Steam")
@@ -420,8 +422,8 @@ class NetworkClient:
 
         Stops early when a host turned us away (CONNECT_REJECT: lobby full, version
         mismatch, ...) - we reached the host, another address would reach the same one.
-        Same when the host's game told Steam it is not hosting (or is closing): its
-        server is stopped.
+        Same when the host's game told Steam it is not hosting (or is closing), or when
+        Steam timed out and the host's rich presence says no lobby: nothing to join there.
 
         Args:
             targets: [SteamTarget or (host, port), ...] in the order to try (from
