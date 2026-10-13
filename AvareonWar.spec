@@ -75,6 +75,10 @@ a = Analysis(
         'sys',
         'miniupnpc',
         'steamworks',
+        # Joining through Steam's relay - imported inside functions only, listed so the
+        # build never ships without them (a missing one would only show as a failed join)
+        'steam_networking',
+        'network.steam_bridge',
         # Campaign missions - dynamically imported via importlib.import_module()
         'tutorial_mission',
         'campaign_mission_2',

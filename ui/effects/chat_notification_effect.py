@@ -25,6 +25,7 @@ BG_ALPHA = 170
 MSG_COLOR = (255, 255, 255)
 TEAM_TAG_COLOR = (100, 200, 255)
 ERROR_MSG_COLOR = (255, 100, 100)  # Red-ish for system error notifications
+NEWS_MSG_COLOR = (240, 210, 130)   # Warm gold for good-news system notifications (join requests)
 
 
 class ChatNotificationEffect:

@@ -22,8 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mp_harness as h  # noqa: E402
-from network.client import (NetworkClient, format_connect_targets,  # noqa: E402
-                            parse_connect_targets, unreachable_reason)
+from network.client import (STEAM_JOIN_HINT, NetworkClient, SteamTarget,  # noqa: E402
+                            format_connect_targets, parse_connect_targets, target_label,
+                            unreachable_reason)
 from network.message_queue import NetworkMessageQueue  # noqa: E402
 from network.protocol import MessageBuffer, NetworkProtocol  # noqa: E402
 from network.server import NetworkServer  # noqa: E402
@@ -288,6 +289,33 @@ class TestRealSockets:
         assert time.monotonic() - started < 3.0
         assert client.disconnect_reason == "No slots available"
 
+    def test_refusal_survives_a_late_connect_request(self, server):
+        """A joiner behind the Steam bridge sends its CONNECT_REQUEST only once Steam has
+        connected its side - after the server refused it at accept time. The server
+        stopped waiting at its first 0.2 s read timeout and closed; the late request
+        then made Windows reset the connection, which threw the CONNECT_REJECT away
+        unread (flaky test_the_hosts_refusal_reaches_the_joiner, 2026-10-13)."""
+        server.reserved_slots = {1, 2, 3}
+        protocol = NetworkProtocol()
+        buffer = MessageBuffer()
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.settimeout(5)
+        try:
+            raw.connect(('127.0.0.1', self._port(server)))
+            time.sleep(0.5)                                     # Steam still connecting
+            raw.sendall(protocol.create_connect_request("Late"))
+            time.sleep(0.2)                                     # the reader comes round later
+            while True:
+                chunk = raw.recv(4096)
+                if not chunk:
+                    break
+                buffer.add_data(chunk)
+            message = protocol.decode_message(buffer.extract_message())
+            assert message['type'] == MessageType.CONNECT_REJECT
+            assert message['data']['reason'] == "No slots available"
+        finally:
+            raw.close()
+
     def test_nobody_can_join_a_running_game(self, server):
         server.set_game_started(True)
         client = NetworkClient()
@@ -329,6 +357,51 @@ class TestRealSockets:
         assert client.disconnect_reason == "No slots available"
 
 
+class _QuietSocket:
+    """A refused peer that sends nothing: every read times out (0.2 s in real life),
+    until `closes_after` reads, when it closes its end."""
+
+    def __init__(self, closes_after=None):
+        self.reads = 0
+        self.closes_after = closes_after
+
+    def settimeout(self, _):
+        pass
+
+    def sendall(self, _):
+        pass
+
+    def shutdown(self, _):
+        pass
+
+    def close(self):
+        pass
+
+    def recv(self, _):
+        self.reads += 1
+        if self.reads == self.closes_after:
+            return b''
+        raise socket.timeout()
+
+
+class TestRefusalWait:
+    """How long a refusal waits for the peer - it runs on the server's only network loop."""
+
+    def test_a_quiet_stranger_is_not_waited_for(self):
+        """A port scanner that never closes must not stall the game: a quiet 0.2 s ends it."""
+        stranger = _QuietSocket()
+        NetworkServer(port=0)._reject_connection(stranger, "Lobby is full",
+                                                 ('203.0.113.5', 50000))
+        assert stranger.reads == 1
+
+    def test_the_steam_bridge_is_waited_for(self):
+        """The bridge forwards the joiner's request late (see
+        test_refusal_survives_a_late_connect_request): wait until it closes."""
+        bridge = _QuietSocket(closes_after=4)
+        NetworkServer(port=0)._reject_connection(bridge, "Lobby is full", ('127.0.0.1', 50001))
+        assert bridge.reads == 4
+
+
 class TestJoinAddresses:
     """Steam invite address lists and the "could not reach the host" reasons."""
 
@@ -350,10 +423,12 @@ class TestJoinAddresses:
     def test_timeout_reason_points_at_the_home_network_for_lan_addresses(self):
         reason = unreachable_reason('192.168.18.5')
         assert 'home network' in reason and 'VPN' in reason
+        assert reason.endswith(STEAM_JOIN_HINT)     # the way round it (Phase 5)
 
     def test_timeout_reason_points_at_port_forwarding_for_public_addresses(self):
         reason = unreachable_reason('212.20.115.148')
         assert 'forward TCP port 7777' in reason
+        assert reason.endswith(STEAM_JOIN_HINT)
 
     def test_every_address_failing_covers_both_cases(self):
         client = NetworkClient()
@@ -367,6 +442,7 @@ class TestJoinAddresses:
         reason = client.disconnect_reason
         assert '192.168.18.5 or 212.20.115.148' in reason
         assert 'same network' in reason.lower() and 'forward TCP port 7777' in reason
+        assert reason.endswith(STEAM_JOIN_HINT)
 
     def test_one_failing_address_keeps_its_own_reason(self):
         client = NetworkClient()
@@ -388,6 +464,43 @@ class TestJoinAddresses:
         server.upnp_manager.status = 'failed'
         server.upnp_manager.public_ip = '212.20.115.148'
         assert server.get_join_addresses() == ['192.168.18.5', '212.20.115.148']
+
+    # --- Joining through Steam's relay ("steam-<SteamID64>" targets) ---
+
+    def test_steam_target_comes_first_in_the_connect_string(self):
+        text = format_connect_targets(['192.168.18.5', '212.20.115.148'], 7777,
+                                      steam_id=76561198886995069)
+        assert text == 'steam-76561198886995069,192.168.18.5:7777,212.20.115.148:7777'
+        assert parse_connect_targets(text) == [SteamTarget(76561198886995069),
+                                               ('192.168.18.5', 7777), ('212.20.115.148', 7777)]
+        assert str(SteamTarget(76561198886995069)) == 'steam-76561198886995069'
+        assert target_label(('1.2.3.4', 7777)) == '1.2.3.4:7777'
+
+    def test_steam_only_invite_parses(self):
+        # What the --sdr-test window and a host with no known address send
+        assert parse_connect_targets('steam-76561198886995069') == [SteamTarget(76561198886995069)]
+        assert parse_connect_targets('STEAM-5, steam-5') == [SteamTarget(5)]
+
+    @pytest.mark.parametrize('text, expected', [
+        ('steam-', [('steam-', 7777)]),               # no SteamID: an (unknown) host name
+        ('steam-abc', [('steam-abc', 7777)]),
+        ('steam-0', [('steam-0', 7777)]),
+        (f'steam-{2 ** 64}', [(f'steam-{2 ** 64}', 7777)]),
+    ])
+    def test_broken_steam_tokens_are_not_steam_targets(self, text, expected):
+        assert parse_connect_targets(text) == expected
+
+    def test_ports_out_of_range_fall_back_to_the_default(self):
+        """The colon form "steam:<id>" read as host "steam" + port <id> crashed older
+        builds with OverflowError - a port outside 1-65535 is now the default port."""
+        assert parse_connect_targets('steam:76561198886995069') == [('steam', 7777)]
+        assert parse_connect_targets('1.2.3.4:0') == [('1.2.3.4', 7777)]
+        assert parse_connect_targets('1.2.3.4:65535') == [('1.2.3.4', 65535)]
+
+    def test_a_port_out_of_range_is_a_reason_not_a_crash(self):
+        client = NetworkClient()
+        assert not client.connect('127.0.0.1', port=76561198886995069)
+        assert client.disconnect_reason == 'Not a valid address: 127.0.0.1:76561198886995069'
 
 
 class TestSenderIdentity:

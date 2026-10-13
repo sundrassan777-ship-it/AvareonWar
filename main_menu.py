@@ -110,6 +110,8 @@ class MainMenu:
         self.show_profile = False
         self.show_achievements = False
         self.result = None  # Return value: 'custom_game', 'quit', etc.
+        # Connect string of a friend's game chosen in Steam (result 'steam_invite_join')
+        self.steam_join_target = None
         self.hovered_option_element = None  # Track hover state in options panel
         self.hovered_profile_element = None  # Track hover state in profile panel
         self.hovered_achievement_element = None  # Track hover state in achievement panel
@@ -529,6 +531,15 @@ class MainMenu:
 
             # Process Steam callbacks in menu (overlay popups, persona updates)
             steam_manager.run_callbacks()
+
+            # A friend's game chosen in Steam (invite accepted / "Join Game" on a friend
+            # - now, or earlier during a game): join it, as main.py does for an invite
+            # that started the game
+            if self.result is None:
+                join = steam_manager.take_join_request()
+                if join is not None:
+                    self.steam_join_target = join.connect
+                    self.result = 'steam_invite_join'
 
             pygame.display.flip()
 

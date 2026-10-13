@@ -4,6 +4,43 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Multiplayer: Join Friends Through Steam
+
+*13 October 2026*
+
+- **Join your Steam friends with no network setup.** Joining now goes through Steam, so it
+  works on any network: no IP address, no port forwarding, no router settings - also when
+  two PCs on the same Wi-Fi cannot reach each other directly.
+- **Join Game → Steam Friends:** the Join Game screen lists your Steam friends who are hosting
+  a lobby right now. Click **Join** next to one. The address box is on the **Direct IP** tab.
+- **"Join Game" in Steam:** in your Steam friends list, choose **Join Game** on a friend who is
+  hosting. If War of Avareon is closed, it starts and joins them; if it is open on a menu, it
+  joins at once. During a game, a message tells you, and the join happens when you return to
+  the main menu.
+- **Steam invites** go through Steam too. You can send them as soon as your lobby opens (no
+  more waiting for the router check), and they no longer bring up Steam's warning about
+  launch options when they start the game.
+- Your Steam friends can see when you are hosting (**Hosting a lobby**). In your lobby, the
+  address line ends with **or via Steam** while friends can join you this way - hover its
+  **(i)** to see how they join.
+- Joining shows a **Connecting** screen with a **Cancel** button, instead of a window that
+  stops responding while it connects.
+- When joining does not work, the game says why straight away instead of after a long wait -
+  for example "Weel is not hosting a game right now", or that a friend's lobby has joining
+  through Steam switched off. If a host's address cannot be reached, it suggests joining
+  through Steam instead. Long messages stay on screen long enough to read.
+- If your connection to the host drops during a game, the message now says what happened,
+  for example that Steam stopped hearing from them.
+- Joining by IP address works as before, and the game still tries the host's address if
+  Steam cannot connect you.
+
+### Fixes
+
+- Pressing **Alt+F4** on the Join Game screen closes the game again, instead of showing a
+  connection error.
+
+---
+
 ## Multiplayer: Easier Joining
 
 *12 October 2026*

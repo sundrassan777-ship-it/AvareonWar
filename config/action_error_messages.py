@@ -177,6 +177,12 @@ ACTION_ERROR_MESSAGES = {
     # {hero} = the hero's name, {territory} = where its Keep stood.
     'hero_slain': "Our Hero, {hero}, has been slain in {territory}!",
 
+    # During a game, the player accepted a Steam invite (or clicked "Join Game" on a
+    # friend in Steam). The game is not left for it: the join starts when the player
+    # is back at the main menu. News, not an error: gold text, no error sound.
+    # {friend} = the host's Steam name ("A friend" if Steam does not know it).
+    'steam_join_pending': "{friend}'s game opens when you return to the main menu.",
+
     # =====================================================================
     # F. RARE SAFETY MESSAGES (practically never shown - only if the game's
     #    data is out of sync). You can leave these alone.

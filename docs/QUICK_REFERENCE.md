@@ -364,6 +364,20 @@ Next Turn
 | MESSAGE_BUFFER_SIZE | 64 KB | Bytes per socket read |
 | HEARTBEAT_INTERVAL | 5.0s | Ping frequency |
 
+**Joining through Steam** (CODE_GUIDE "Steam joining (SDR bridge)"):
+| Setting | Value | Where |
+|---------|-------|-------|
+| Steam's connect timeout | 15 s | `steam_networking.CONNECT_TIMEOUT_MS` (then end reason 5003) |
+| Joiner's wait for Steam + the host's answer | 20 s | `network/client.py` `STEAM_CONNECT_TIMEOUT` |
+| Join attempts per SteamID | 5 per 10 s (then 1001) | `network/steam_bridge.py` `PEER_RATE_MAX` / `PEER_RATE_WINDOW` |
+| Steam end reasons (ours) | 1001 too many attempts, 1002 host's server refused, 1003 not hosting, 1004 game closing | `network/steam_bridge.py` `END_*` |
+| Steam Friends list refresh | 2 s, 3 rows visible | `network/multiplayer_setup.py` `FRIENDS_REFRESH_SECONDS` / `FRIEND_ROWS_VISIBLE` |
+| Host presence check | 1 s | `network/territory_selector.py` `PRESENCE_REFRESH_SECONDS` |
+| Join request dropped after | 10 min | `steam_integration.JOIN_REQUEST_MAX_AGE_SECONDS` |
+| Invite target | `+connect steam-<SteamID64>,lan:7777[,public:7777]` | `format_connect_targets()` |
+| Launch options | `--sdr-test` (diagnostics), `--no-steam-relay`, `--no-steam-join-hook` | `steam_integration.py` |
+| config.json switches | `"steam_relay": false`, `"steam_join_hook": false` | `steam_feature_switches()` |
+
 **Lobby launch requirements:** 2+ players (incl. host), no empty slot between players,
 2+ teams, every player has a starting territory (`LobbyState.launch_blocker()`).
 

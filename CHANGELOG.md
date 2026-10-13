@@ -2,6 +2,64 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
+
+Branch `feature/steam-sdr`, Phases 1-5, each tested on two PCs with the playtest build. Why:
+Direct IP failed for some friends (a home router keeping Wi-Fi devices apart, no UPnP);
+Steam's relay needs no address and no port forwarding. Details and rules: CODE_GUIDE "Steam
+joining (SDR bridge)".
+- **Binding** (Phase 1): `steam_networking.py` - ctypes over Steam's flat API (SDK 1.63, the
+  bundled `steam_api64.dll`): networking sockets and relay setup, rich presence, invites,
+  `ISteamApps::GetLaunchCommandLine`, the join-request callback 337 through an emulated
+  `CCallbackBase` (SteamworksPy has none of these and owns callback dispatch). `--sdr-test`
+  diagnostics window (`steam_sdr_test.py`), kept in shipped builds as a support tool.
+- **Bridge** (Phase 2): `network/steam_bridge.py` - one thread copies the game's TCP stream
+  between Steam connections and 127.0.0.1 sockets; server, client, protocol and multiplayer
+  tests unchanged. Lossless backpressure, graceful closes (SHUT_WR + drain - Windows resets a
+  socket closed with unread data), the host's listen socket kept between lobbies (refuses
+  with 1003 "not hosting"), 5 joins per 10 s per SteamID, failure wording per end reason.
+  Client: `SteamTarget`, `connect_steam()`, `connect_any()` tries Steam first. Server:
+  loopback peers exempt from the per-IP limit.
+- **Invites and join requests** (Phase 3): invites carry `+connect steam-<id>,ip:port,...`
+  and no longer wait for UPnP while friends can join through Steam; a "Connecting..." screen
+  with Cancel (`connect_with_progress()`, worker thread - the window used to freeze); the
+  start-up target read from Steam's launch command line first; join requests (337) taken by
+  the main menu, with a gold toast in a game (`steam_join_pending`); kill switches
+  `--no-steam-relay` / `--no-steam-join-hook` (+ config keys); `AvareonWar.spec` hidden
+  imports for the two Steam modules. Fixes: Alt+F4 on the Join Game address screen was tried
+  as a host named "quit"; long error reasons stay up 3-12 s. From the two-PC rounds: every multiplayer screen pumps
+  `steam_manager.run_callbacks()` (without it a friend's join never reached the host - all
+  timed out after 15 s), a pump-stall warning; the joiner stops at the host's own "not
+  hosting" / "game closed" (no 10 s of address attempts); refusals over Steam could be lost
+  (the server stopped waiting at a quiet 0.2 s - it now waits for the bridge, up to 1.6 s);
+  a listener closed with a waiting client reset it.
+- **Steam Friends list and host presence** (Phase 4): the host's lobby sets rich presence
+  (`connect` = the invite string, `status`, `steam_display`) while open and clears it however
+  it ends; the Join Game screen's "Steam Friends" tab (default with Steam) lists hosting
+  friends (2 s refresh, Join, scrolling), "Direct IP" is the old box; the lobby's address line
+  ends with "or via Steam" / "Steam off" + tooltips; a Steam timeout while the host's
+  presence shows no lobby ends the attempt ("X is not hosting a game right now"). Follow-up:
+  the multiplayer menu and Join Game screen act on join requests (they waited for the main
+  menu); a second request for a host just joined is dropped.
+- **Docs and polish** (Phase 5): CODE_GUIDE "Steam joining (SDR bridge)", QUICK_REFERENCE,
+  GAME_MECHANICS, ARCHITECTURE, TESTING_PLAN section G, CLAUDE.md, PATCHNOTES;
+  `docs/steam/rich_presence.vdf` (upload in Steamworks: Community → Rich Presence);
+  "could not reach" reasons end with a pointer to joining through Steam
+  (`STEAM_JOIN_HINT`), and so does the lobby's "Join IP:" tooltip; "Found N Steam friends" is
+  logged when the count changes only.
+- Steamworks app setting switched on: "Enable using ISteamApps::GetLaunchCommandLine()" (no
+  launch-arguments warning when an invite starts the game).
+- After Phase 5 (a two-PC round where nobody could join: the host's `--no-steam-relay` from
+  an earlier test was still set): the start-up log names the switch ("switched off by the
+  launch option --no-steam-relay" / `"steam_relay": false in config.json`); a join from
+  Steam whose host offers no Steam target now says "Weel's lobby has joining through Steam
+  switched off" instead of advising the Steam Friends tab the player came from
+  (`network.client.steam_off_reason()`).
+- Tests: `tests/test_steam_networking.py`, `tests/test_steam_bridge.py`,
+  `tests/test_steam_join.py`, `tests/test_steam_presence.py`, updates in
+  `tests/test_mp_transport.py`. Full suite: 1768 passed (+ the 3 known
+  `TestDominationVictory` failures).
+
 ## 2026-10-12 - Joining over several addresses, Steam re-invites, human opponent for Conquest
 
 Prompted by a failed same-Wi-Fi test: the host log showed the server listening, UPnP

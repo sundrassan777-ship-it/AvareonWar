@@ -99,9 +99,10 @@ SETUP_TOOLTIPS = {
                              "network (not a guest Wi-Fi), that the router does not keep "
                              "Wi-Fi devices apart, and that no VPN is on."),
             ("Over the internet", "Your router did not open the game port automatically "
-                                  "(UPnP). Forward TCP port 7777 to this PC in your router "
-                                  "settings; players then join with your public IP. Steam "
-                                  "invites include both addresses."),
+                                  "(UPnP). Steam friends can still join you through Steam "
+                                  "(the note after the address). Anyone else needs TCP port "
+                                  "7777 forwarded to this PC in your router settings, then "
+                                  "joins with your public IP."),
         ],
     },
     'host_ip_internet': {
@@ -109,6 +110,30 @@ SETUP_TOOLTIPS = {
         'entries': [
             (None, "Your router opened the game port, so players anywhere can join with "
                    "this address. Steam invites include it."),
+        ],
+    },
+
+    # Multiplayer lobby: hovering the Steam note after the join address (host only):
+    # host_steam ("or via Steam") while friends can join through Steam, host_steam_off
+    # ("Steam off") when they cannot.
+    'host_steam': {
+        'title': "Joining Through Steam",
+        'entries': [
+            (None, "Your Steam friends can join this lobby without the IP address and "
+                   "without port forwarding: Steam connects you, on any network."),
+            ("How", "Invite them with Invite Friend, or they choose you on the Steam Friends "
+                    "tab of their Join Game screen, or with Join Game on your name in their "
+                    "Steam friends list."),
+        ],
+    },
+    'host_steam_off': {
+        'title': "Joining Through Steam",
+        'entries': [
+            (None, "Friends can only join this lobby with the IP address right now. "
+                   "Joining through Steam needs Steam running and online when the game "
+                   "starts."),
+            (None, "It is also off when the --no-steam-relay launch option is set, or "
+                   "\"steam_relay\": false in config.json."),
         ],
     },
 

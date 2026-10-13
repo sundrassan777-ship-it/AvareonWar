@@ -730,8 +730,16 @@ switched off for launch - see Disconnect Handling.)
 
 **Joining a Game:**
 1. Main Menu → Multiplayer → Join
-2. Enter host's IP address
+2. **Steam Friends** tab (shown first when Steam runs): friends hosting a lobby, each with a
+   Join button - through Steam, no address or port forwarding needed. **Direct IP** tab: enter
+   the host's IP address
 3. Wait in lobby for host to launch
+
+**Other ways in through Steam:** accept the host's invite (Invite Friend in their lobby), or use
+Steam's "Join Game" on a hosting friend in the Steam friends list. Either starts the game if it
+is closed; if it is open, the main menu, the multiplayer menu or the Join Game screen joins at
+once (during a game: a message, and the join waits for the main menu). The host's lobby shows
+"or via Steam" after its address while friends can join this way ("Steam off" when not).
 
 ### Lobby System
 
