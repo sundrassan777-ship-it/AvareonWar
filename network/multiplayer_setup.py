@@ -285,6 +285,8 @@ class MultiplayerSetup:
             self.render()
             draw_custom_cursor(self.screen)
             pygame.display.flip()
+            # Steam callbacks every frame (see steam_manager.run_callbacks)
+            steam_manager.run_callbacks()
             clock.tick(menu_frame_cap())
 
         return None
@@ -976,6 +978,8 @@ class MultiplayerSetup:
 
             draw_custom_cursor(self.screen)
             pygame.display.flip()
+            # Steam callbacks every frame (see steam_manager.run_callbacks)
+            steam_manager.run_callbacks()
             clock.tick(menu_frame_cap())
 
         return None
@@ -1175,4 +1179,6 @@ class MultiplayerSetup:
 
             draw_custom_cursor(self.screen)
             pygame.display.flip()
+            # Steam callbacks every frame (see steam_manager.run_callbacks)
+            steam_manager.run_callbacks()
             clock.tick(menu_frame_cap())

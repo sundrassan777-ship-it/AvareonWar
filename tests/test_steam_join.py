@@ -29,7 +29,8 @@ import pygame  # noqa: E402
 
 from network.client import NetworkClient, SteamTarget  # noqa: E402
 from steam_integration import (  # noqa: E402
-    JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS, JOIN_REQUEST_MAX_AGE_SECONDS, SteamManager,
+    JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS, JOIN_REQUEST_LAUNCH_GRACE_SECONDS,
+    JOIN_REQUEST_MAX_AGE_SECONDS, SteamManager,
     connect_target_from_args, connect_target_from_command_line, same_join_host)
 from steam_networking import JoinRequest, steam_net  # noqa: E402
 
@@ -165,6 +166,36 @@ class TestJoinRequests:
         manager._launch_time -= JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS + 5
         pending(f'steam-{HOST_ID}')
         assert manager.take_join_request() is not None
+
+    def test_a_reinvite_after_the_start_up_join_ended_is_joined(self, launched, pending):
+        # Two-PC test 2026-10-13: started by an invite (12:30:50), joined (12:31:05), left
+        # the lobby; the host's re-invite at 12:32:02 was dropped as "the invite this
+        # game was launched with" by the old fixed 2-minute window
+        manager = launched(['game.exe', '+connect', f'steam-{HOST_ID},192.168.18.5:7777'])
+        manager.launch_join_finished()
+        manager._launch_time -= 72
+        manager._launch_join_done -= 57
+        pending(f'steam-{HOST_ID},192.168.18.5:7777,212.20.115.148:7777')
+        assert manager.peek_join_request() is not None          # the in-game toast
+        assert manager.take_join_request() is not None          # the main menu joins it
+
+    def test_the_launch_invite_again_just_after_the_join_is_ignored(self, launched, pending):
+        manager = launched(['game.exe', '+connect', f'steam-{HOST_ID}'])
+        manager.launch_join_finished()
+        manager._launch_join_done -= JOIN_REQUEST_LAUNCH_GRACE_SECONDS - 2   # within the grace
+        pending(f'steam-{HOST_ID}')
+        assert manager.take_join_request() is None
+
+    def test_only_the_start_up_join_ends_the_window(self, launched):
+        manager = launched(['game.exe', '+connect', f'steam-{HOST_ID}'])
+        manager.launch_join_finished()
+        manager._launch_join_done -= 30
+        first = manager._launch_join_done
+        manager.launch_join_finished()                  # a later join from the main menu
+        assert manager._launch_join_done == first
+        plain = launched(['game.exe'])                  # no invite at launch: nothing to end
+        plain.launch_join_finished()
+        assert plain._launch_join_done is None
 
     def test_another_host_right_after_launch_is_joined(self, launched, pending):
         manager = launched(['game.exe', '+connect', f'steam-{HOST_ID}'])
@@ -425,6 +456,103 @@ class TestJoinScreen:
         monkeypatch.setattr(setup, '_show_error', errors.append)
         assert setup._run_join_setup() is None
         assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Every screen of the multiplayer flow pumps Steam
+# ---------------------------------------------------------------------------
+
+def _stub_connection():
+    """Enough of NetworkServer / NetworkClient for the lobby and the loading screen."""
+    from network.message_queue import NetworkMessageQueue
+    from network.protocol import NetworkProtocol
+    sent = []
+    return types.SimpleNamespace(protocol=NetworkProtocol(), message_queue=NetworkMessageQueue(),
+                                 send_message=sent.append, broadcast_message=sent.append, sent=sent)
+
+
+class TestEveryScreenPumpsSteam:
+    """
+    A friend's Steam join reaches the host only while its main thread runs
+    SteamAPI_RunCallbacks. Two-PC test 2026-10-13: the lobby did not, so every join
+    through Steam timed out after 15 s (the friend got in by Direct IP instead).
+    """
+
+    @pytest.fixture
+    def pumps(self, monkeypatch):
+        """
+        Counts steam_manager.run_callbacks() calls; pumps.then(count) runs after each.
+        A screen that never pumps would never leave its loop: after 5 s pumps.on_stuck()
+        (default Alt+F4) ends it, so the test fails on the count instead of hanging.
+        """
+        from steam_integration import steam_manager
+        record = types.SimpleNamespace(
+            count=0, then=None,
+            on_stuck=lambda: pygame.event.post(pygame.event.Event(pygame.QUIT)))
+
+        def pump():
+            record.count += 1
+            if record.then is not None:
+                record.then(record.count)
+        monkeypatch.setattr(steam_manager, 'run_callbacks', pump)
+        backstop = threading.Timer(5.0, lambda: record.on_stuck())
+        backstop.start()
+        yield record
+        backstop.cancel()
+        pygame.event.clear()
+
+    @staticmethod
+    def _quit_after(pumps_wanted):
+        """Alt+F4 after that many pumps: the screen's next frame leaves its loop."""
+        def then(count):
+            if count == pumps_wanted:
+                pygame.event.post(pygame.event.Event(pygame.QUIT))
+        return then
+
+    @pytest.mark.parametrize('is_host', [True, False])
+    def test_the_lobby(self, display, pumps, is_host):
+        from network.territory_selector import TerritorySelector
+        lobby = TerritorySelector(display, _stub_connection(), is_host=is_host,
+                                  local_player_index=0 if is_host else 1)
+        pygame.event.clear()
+        pumps.then = self._quit_after(3)
+        assert lobby.run() == 'quit'
+        assert pumps.count == 3
+
+    def test_the_loading_screen(self, display, pumps, monkeypatch):
+        from loading_screen import LoadingScreen
+        game = types.SimpleNamespace(local_player_index=0, campaign_map=None)
+        screen = LoadingScreen(display, game, {'num_players': 2, 'player_is_ai': [False, False]},
+                               network_connection=_stub_connection())
+        monkeypatch.setattr(screen, '_build_task_list',
+                            lambda: [('one', lambda: None), ('two', lambda: None)])
+        # Stuck: end the wait (Alt+F4 here would quit pygame for the other tests)
+        pumps.on_stuck = lambda: setattr(screen, 'result', 'stuck')
+        seen = []
+
+        def then(count):
+            seen.append(screen.loading_complete)
+            if count == 4:
+                screen.result = 'cancelled'               # as Escape while waiting
+        pumps.then = then
+        pygame.event.clear()
+        assert screen.run() == 'cancelled'
+        assert seen == [False, False, True, True]         # after each task, then while waiting
+
+    def test_the_multiplayer_menu(self, setup, pumps):
+        pumps.then = self._quit_after(2)
+        assert setup.run() == 'quit'
+        assert pumps.count == 2
+
+    def test_the_join_address_screen(self, setup, pumps):
+        pumps.then = self._quit_after(2)
+        assert setup._get_host_ip() == 'quit'
+        assert pumps.count == 2
+
+    def test_the_error_screen(self, setup, pumps):
+        pumps.then = self._quit_after(2)
+        setup._show_error("Could not join the game")
+        assert pumps.count == 2
 
 
 # ---------------------------------------------------------------------------

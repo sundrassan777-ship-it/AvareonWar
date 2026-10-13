@@ -28,6 +28,7 @@ from music_manager import music_manager as _music_manager, MUSIC_END_EVENT as _M
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
+from steam_integration import steam_manager
 from ui.additional_options_overlay import AdditionalOptionsOverlay
 from ui.setup_tooltip import SetupTooltips
 from ui.setup_frames import SetupFrames
@@ -607,6 +608,10 @@ class TerritorySelector:
 
             # Process network messages
             self._process_network_messages()
+
+            # Steam callbacks every frame: a friend joining through Steam reaches the
+            # host's lobby only through this pump (without it their join timed out)
+            steam_manager.run_callbacks()
 
             # Check if cancelled (Return to Main Menu clicked)
             if self.cancelled:

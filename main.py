@@ -17619,6 +17619,9 @@ if __name__ == "__main__":
             client = NetworkClient()
             player_name = settings.get_player_name()
             connected = MultiplayerSetup(screen).connect_with_progress(client, targets, player_name)
+            # From now on the host inviting again is a new invite, not the start-up one
+            # repeated (only the first call counts: the join of the start-up invite)
+            steam_manager.launch_join_finished()
 
             if connected == 'quit':
                 # Alt+F4 while connecting - exit the entire app

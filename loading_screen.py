@@ -26,6 +26,7 @@ from global_sound import get_game_sound_tasks
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
+from steam_integration import steam_manager
 
 logger = get_logger(__name__)
 
@@ -402,6 +403,9 @@ class LoadingScreen:
                 logger.error(f"Loading task '{label}' failed: {e}")
                 # Continue loading remaining tasks even if one fails
 
+            # Steam callbacks between tasks too (players joined through Steam are
+            # carried by them - see steam_manager.run_callbacks)
+            steam_manager.run_callbacks()
             self.clock.tick(menu_frame_cap())
 
         # Loading complete
@@ -426,6 +430,8 @@ class LoadingScreen:
             if self.result is None:
                 self._update_wait_state()
 
+            # Steam callbacks every frame while waiting (see steam_manager.run_callbacks)
+            steam_manager.run_callbacks()
             self._draw()
             self.clock.tick(menu_frame_cap(30))
 

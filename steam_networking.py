@@ -36,6 +36,11 @@ Facts this module relies on (Steamworks SDK 1.63, Win64 - see docs/CODE_GUIDE.md
   socket exists. Steam queues them and runs them on whichever thread calls RunCallbacks
   (our run_callbacks(), or SteamAPI_RunCallbacks on the main thread). The handler only
   appends to a locked queue, so either thread is fine.
+- A friend's incoming connection request (Steam's P2P rendezvous) reaches this PC only
+  while the MAIN thread runs SteamAPI_RunCallbacks (steam_manager.run_callbacks()) - our
+  run_callbacks() alone is not enough (two-PC test, 2026-10-13). So every screen shown
+  while hosting or joining calls steam_manager.run_callbacks() each frame; the bridge
+  logs a warning when that pump stops for long (note_main_pump()).
 - Callback 337 is a classic Steam callback (CCallbackBase object + SteamAPI_RegisterCallback).
   SteamworksPy owns callback dispatch, so manual dispatch is not an option; we emulate the
   16-byte C++ object (vtable pointer, uint8 flags, int id) from Python. It runs inside
@@ -419,6 +424,11 @@ class SteamNetworking:
         self._events = deque()
         self._events_lock = threading.Lock()
 
+        # When the main thread last ran SteamAPI_RunCallbacks (steam_manager.run_callbacks();
+        # 0.0 = not yet). A friend's connection request reaches this PC only through that
+        # pump - the bridge warns when it stops for long while we host or carry a connection.
+        self.main_pump_time = 0.0
+
         # Join requests (callback 337): the newest pending one + a short history
         self._join_lock = threading.Lock()
         self._join_pending = None
@@ -698,6 +708,18 @@ class SteamNetworking:
         """
         if self.relay_enabled:
             self._api.SteamAPI_ISteamNetworkingSockets_RunCallbacks(self._sockets)
+
+    def note_main_pump(self):
+        """
+        The main thread just ran SteamAPI_RunCallbacks (steam_manager.run_callbacks()).
+
+        That pump - not our run_callbacks() - is what delivers a friend's incoming
+        connection request (Steam's P2P rendezvous) to this PC. Measured 2026-10-13 on
+        two PCs: while the lobby screen did not pump, a friend's Steam join waited
+        unseen on the host and timed out after 15 s; both waiting requests surfaced at
+        once when the host reached the main menu, which pumps.
+        """
+        self.main_pump_time = time.monotonic()
 
     # ------------------------------------------------------------------
     # Sockets (the bridge's API)

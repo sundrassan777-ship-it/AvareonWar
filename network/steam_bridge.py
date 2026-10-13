@@ -28,6 +28,10 @@ Rules (see CODE_GUIDE.md "Steam joining (SDR bridge)"):
 - The host's Steam listen socket stays open from the first hosting until the game exits:
   CloseListenSocket drops every connection accepted on it at once (no lingering), and
   between lobbies an open one lets us tell a joiner "not hosting" straight away.
+- A friend's connection request reaches the host only while its MAIN thread runs
+  SteamAPI_RunCallbacks (steam_manager.run_callbacks()); this thread's RunCallbacks only
+  hands over what that delivered. Every screen shown while hosting or joining pumps it
+  each frame; _check_main_pump() logs a screen that does not.
 """
 
 import select
@@ -84,6 +88,11 @@ CLOSE_DRAIN_SECONDS = 1.0      # time a closing loopback gets to take / hand bac
 FLUSH_TO_STEAM_SECONDS = 10.0  # time a closing pair gets to hand its last piece to Steam
 LOCAL_CONNECT_TIMEOUT = 2.0    # host: connecting to our own game server
 STOP_HOSTING_WAIT = 1.5        # stop_hosting(): wait for joined peers to finish
+# Warn when the main thread has not run Steam's callbacks (steam_manager.run_callbacks())
+# for this long while we host or carry a connection: a friend's Steam join waiting that
+# long has timed out. Shorter stalls only delay a join - a slow PC spends ~7 s building
+# the game before its loading screen pumps, which must not warn on every game start.
+MAIN_PUMP_WARN_SECONDS = sn.CONNECT_TIMEOUT_MS / 1000
 _RECEIVE_BATCH = 32            # Steam messages fetched per call
 _DRAIN_READS_PER_PASS = 16     # closing loopback: reads per pass while we wait for its EOF
 
@@ -254,6 +263,7 @@ class SteamBridge:
         self._server_port = 0             # host: TCP port of our NetworkServer
         self._attempts = {}               # host: SteamID -> [monotonic times] (rate limit)
         self._labels = {}                 # host: our loopback port -> "Steam <id> (<name>)"
+        self._pump_stalled_from = None    # last main pump before a stall we warned about
 
     # ------------------------------------------------------------------
     # State
@@ -450,8 +460,20 @@ class SteamBridge:
             pair.listen_port = listener.getsockname()[1]
             self._add(pair)
             self._ensure_thread()
-        logger.info(f"Joining Steam host {pair.label()} (local port {pair.listen_port})")
+        logger.info(f"Joining Steam host {pair.label()} (local port {pair.listen_port}, "
+                    f"{self._relay_text()})")
         return SteamJoin(self, pair)
+
+    def _relay_text(self):
+        """Steam's relay network state for the log: a join started before it is ready
+        spends part of its 15 s waiting for it."""
+        try:
+            available, _ = self._api.relay_status()
+        except Exception:
+            return "relay state unknown"
+        if available == sn.AVAILABILITY_CURRENT:
+            return "relay ready"
+        return f"relay {sn.AVAILABILITY_NAMES.get(available, available)}"
 
     def _abandon(self, pair):
         """
@@ -528,8 +550,34 @@ class SteamBridge:
                         self._close_steam(pair, sn.END_APP_GENERIC, 'Bridge error', linger=True)
                         self._close_socket(pair)
                         self._finish(pair)
+                self._check_main_pump(now)
                 readable = self._wanted_readable()
             self._wait(readable)
+
+    def _check_main_pump(self, now):
+        """
+        Log when the main thread stops running Steam's callbacks while we host or carry a
+        connection, and when it resumes (call with the lock held). Friends' incoming Steam
+        joins reach this PC only through that pump (steam_networking.note_main_pump), so
+        a screen without steam_manager.run_callbacks() shows up here, not as a mystery
+        timeout on the friend's PC.
+        """
+        last = getattr(self._api, 'main_pump_time', 0.0) or 0.0
+        if not last or not (self._hosting or self._active):
+            self._pump_stalled_from = None   # not pumped yet / nothing that needs it
+            return
+        age = now - last
+        if age >= MAIN_PUMP_WARN_SECONDS:
+            if self._pump_stalled_from is None:
+                self._pump_stalled_from = last
+                doing = "hosting" if self._hosting else "connected"
+                logger.warning(f"Steam callbacks have not run for {age:.0f} s while {doing} "
+                               f"through Steam - friends' Steam joins wait unseen until they do "
+                               f"(a screen without steam_manager.run_callbacks()?)")
+        elif self._pump_stalled_from is not None:
+            logger.info(f"Steam callbacks running again after "
+                        f"{last - self._pump_stalled_from:.1f} s")
+            self._pump_stalled_from = None
 
     def _wanted_readable(self):
         """Loopback sockets / listeners the next pass would read (call with the lock held)."""

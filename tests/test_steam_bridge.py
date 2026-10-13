@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import steam_networking as sn  # noqa: E402
+import network.steam_bridge as steam_bridge_module  # noqa: E402
 from network.client import NetworkClient, SteamTarget  # noqa: E402
 from network.server import NetworkServer  # noqa: E402
 from network.steam_bridge import (  # noqa: E402
@@ -553,6 +554,19 @@ class TestJoinerSide:
         assert join.failure_reason() == ("Could not reach Ghost through Steam (timed out) - "
                                          "check both PCs' internet connections")
 
+    def test_the_join_log_says_whether_the_relay_was_ready(self, make_bridge, caplog):
+        # A join started right after launch may spend part of its 15 s on the relay
+        caplog.set_level(logging.INFO, logger='network.steam_bridge')
+        join_bridge, join_fake = make_bridge(JOINER_ID, 'Joiny')
+        join_bridge.open_join(NOBODY_ID).close()
+        join_fake.relay_status = lambda: (sn.AVAILABILITY_CURRENT, '')
+        join_bridge.open_join(NOBODY_ID).close()
+        join_fake.relay_status = lambda: (3, 'Attempting')
+        join_bridge.open_join(NOBODY_ID).close()
+        assert "relay state unknown)" in caplog.text            # fake without the call
+        assert "relay ready)" in caplog.text
+        assert "relay Attempting)" in caplog.text
+
     def test_giving_up_stops_the_attempt_at_once(self, make_bridge):
         join_bridge, join_fake = make_bridge(JOINER_ID, 'Joiny')
         join_fake.sdr.connect_timeout = 30          # Steam would keep trying
@@ -624,6 +638,33 @@ class TestHostSide:
             time.sleep(0.05)
         wait_until(lambda: second.reached_host, what='the second join got through')
         assert len(calls) == 2 and not first.reached_host
+
+    def test_a_stalled_main_pump_is_logged(self, make_bridge, local_server, caplog, monkeypatch):
+        # Two-PC test 2026-10-13: the lobby did not run Steam's main callbacks, so friends'
+        # Steam joins waited unseen on the host. The log must point at that next time.
+        caplog.set_level(logging.INFO, logger='network.steam_bridge')
+        monkeypatch.setattr(steam_bridge_module, 'MAIN_PUMP_WARN_SECONDS', 0.2)
+        host_bridge, host_fake = make_bridge(HOST_ID, 'Hosty')
+        host_fake.main_pump_time = time.monotonic()
+        host_bridge.start_hosting(local_server.getsockname()[1])
+        wait_until(lambda: "Steam callbacks have not run" in caplog.text, what='stall warning')
+        time.sleep(0.1)
+        assert caplog.text.count("Steam callbacks have not run") == 1      # once per stall
+        assert "while hosting through Steam" in caplog.text
+        host_fake.main_pump_time = time.monotonic()                        # pumping again
+        wait_until(lambda: "Steam callbacks running again after" in caplog.text, what='recovery')
+
+    def test_no_pump_warning_when_nothing_needs_the_pump(self, make_bridge, local_server,
+                                                         caplog, monkeypatch):
+        caplog.set_level(logging.INFO, logger='network.steam_bridge')
+        monkeypatch.setattr(steam_bridge_module, 'MAIN_PUMP_WARN_SECONDS', 0.2)
+        host_bridge, host_fake = make_bridge(HOST_ID, 'Hosty')
+        host_bridge.start_hosting(local_server.getsockname()[1])
+        time.sleep(0.4)                     # never pumped yet (FakeSteam has no pump time)
+        host_bridge.stop_hosting()
+        host_fake.main_pump_time = time.monotonic() - 10
+        time.sleep(0.4)                     # stale pump, but not hosting and nothing carried
+        assert "Steam callbacks" not in caplog.text
 
     def test_status_callbacks_run_on_the_bridge_thread(self, linked):
         assert linked['host_fake'].callback_threads == {'steam-bridge'}

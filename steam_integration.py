@@ -53,9 +53,14 @@ SDR_TEST_FLAG = '--sdr-test'
 # Join requests (Steam callback 337: the player accepted an invite or chose "Join Game"
 # on a friend while our game runs). The main menu acts on them; in a game or another
 # screen they wait for the main menu (in a game, with a toast).
-# A request for the same host as the invite this game was launched with, within this
-# many seconds of the launch, is that invite again - not a second join.
+# A request for the same host as the invite this game was launched with is that invite
+# again - not a second join - if it arrived while the start-up join was still running,
+# or within the grace seconds after it ended. One that arrives later is the host
+# inviting again (two-PC test 2026-10-13: re-invites after the player left the host's
+# lobby were dropped by the old fixed 2-minute window). The 2 minutes remain the cap
+# for a start-up join that never reports its end.
 JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS = 120
+JOIN_REQUEST_LAUNCH_GRACE_SECONDS = 5
 # A request older than this is dropped: the host's lobby is most likely gone by now
 JOIN_REQUEST_MAX_AGE_SECONDS = 600
 
@@ -146,6 +151,8 @@ class SteamManager:
         # The "+connect" target this launch came with, and when (join request dedupe)
         self._launch_connect_target = ''
         self._launch_time = time.monotonic()
+        # When joining that target ended (connected, failed or cancelled); None = not yet
+        self._launch_join_done = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -404,7 +411,28 @@ class SteamManager:
             logger.info(f"Steam invite detected ({source}): will auto-connect to {target}")
         self._launch_connect_target = target
         self._launch_time = time.monotonic()
+        self._launch_join_done = None
         return target
+
+    def launch_join_finished(self):
+        """
+        The join of the start-up "+connect" target has ended (connected, failed or
+        cancelled): a request for that host arriving from now on (after a short grace) is
+        the host inviting again, not the start-up invite a second time. Only the first
+        call counts - main.py calls it after every Steam invite join.
+        """
+        if self._launch_connect_target and self._launch_join_done is None:
+            self._launch_join_done = time.monotonic()
+
+    def _is_launch_invite_again(self, join):
+        """Whether a join request is the invite this game was launched with, again."""
+        if not self._launch_connect_target:
+            return False
+        window_end = self._launch_time + JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS
+        if self._launch_join_done is not None:
+            window_end = min(window_end, self._launch_join_done + JOIN_REQUEST_LAUNCH_GRACE_SECONDS)
+        return (join.received < window_end
+                and same_join_host(join.connect, self._launch_connect_target))
 
     def _join_request_problem(self, join, now=None):
         """Why a join request is not acted on (a short text for the log), None if it is."""
@@ -413,9 +441,7 @@ class SteamManager:
             return "it carries no game to join"
         if now - join.received > JOIN_REQUEST_MAX_AGE_SECONDS:
             return f"older than {JOIN_REQUEST_MAX_AGE_SECONDS // 60} minutes"
-        if (self._launch_connect_target
-                and join.received - self._launch_time < JOIN_REQUEST_LAUNCH_DEDUPE_SECONDS
-                and same_join_host(join.connect, self._launch_connect_target)):
+        if self._is_launch_invite_again(join):
             return "it is the invite this game was launched with"
         return None
 
@@ -532,12 +558,22 @@ class SteamManager:
     # ------------------------------------------------------------------
 
     def run_callbacks(self):
-        """Process pending Steam callbacks.  Call once per frame from the game loop."""
+        """
+        Process pending Steam callbacks. Call once per frame from EVERY screen loop -
+        a screen shown while hosting or joining that skips it keeps friends' Steam
+        joins from reaching this PC (steam_networking.note_main_pump()).
+        """
         if not self._initialized:
             return
 
         try:
             self._steamworks.run_callbacks()
+        except Exception:
+            pass
+        try:
+            # Recorded for the Steam bridge's "pump stopped" warning
+            from steam_networking import steam_net
+            steam_net.note_main_pump()
         except Exception:
             pass
 
