@@ -13,7 +13,7 @@ from collections import namedtuple
 from typing import Optional, Tuple, Dict, List
 
 from network.server import NetworkServer
-from network.client import NetworkClient, SteamTarget, parse_connect_targets
+from network.client import NetworkClient, SteamTarget, parse_connect_targets, steam_off_reason
 from network.protocol import NetworkProtocol
 from network.lobby import LobbyState, LobbySlot, SLOT_EMPTY, SLOT_HUMAN, SLOT_AI
 from network_config import MessageType
@@ -556,7 +556,9 @@ class MultiplayerSetup:
         if not host_ip:
             return None
         if isinstance(host_ip, FriendJoin):
-            logger.info(f"Joining {host_ip.name} through Steam ('{host_ip.connect}')")
+            # A Steam friend (the list or a join request); the targets show whether their
+            # lobby offers Steam ("steam-<id>") or only addresses
+            logger.info(f"Joining {host_ip.name}'s game ('{host_ip.connect}')")
             connect = host_ip.connect
             targets, join_label = parse_connect_targets(connect), f"{host_ip.name}'s game"
         else:
@@ -580,6 +582,9 @@ class MultiplayerSetup:
         if not connected:
             # Say why (lobby full, version mismatch, nobody hosting, ...)
             reason = client.disconnect_reason
+            if isinstance(host_ip, FriendJoin) and not any(isinstance(t, SteamTarget) for t in targets):
+                # A Steam friend whose lobby has Steam joining off - not "use Steam"
+                reason = steam_off_reason(reason, host_ip.name)
             self._show_error(f"Could not join {join_label}" + (f": {reason}" if reason else ""))
             return None
 

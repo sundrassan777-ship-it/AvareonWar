@@ -17602,7 +17602,8 @@ if __name__ == "__main__":
             # Connect string: "ip:port", "steam-<id>", or several comma-separated - invites
             # carry the host's SteamID, LAN and public address and we try each, Steam
             # first (network.client)
-            from network.client import NetworkClient, parse_connect_targets, target_label
+            from network.client import (NetworkClient, SteamTarget, parse_connect_targets,
+                                        steam_off_reason, target_label)
             from network.multiplayer_setup import run_client_lobby
             targets = parse_connect_targets(connect_target)
             target_text = ", ".join(target_label(t) for t in targets)
@@ -17632,12 +17633,15 @@ if __name__ == "__main__":
                 music_manager.start_menu_music()
                 continue
             if not connected:
-                logger.warning(f"Steam invite: failed to connect to {target_text}: "
-                               f"{client.disconnect_reason}")
+                reason = client.disconnect_reason
+                if not any(isinstance(t, SteamTarget) for t in targets):
+                    # The host's lobby had Steam joining off: say so - "join through
+                    # Steam" would only send the player back to Steam
+                    reason = steam_off_reason(reason)
+                logger.warning(f"Steam invite: failed to connect to {target_text}: {reason}")
                 # Say why (lobby full, version mismatch, ...), then the main menu
                 MultiplayerSetup(screen)._show_error(
-                    "Could not join the game" +
-                    (f": {client.disconnect_reason}" if client.disconnect_reason else ""))
+                    "Could not join the game" + (f": {reason}" if reason else ""))
                 music_manager.start_menu_music()
                 continue
 

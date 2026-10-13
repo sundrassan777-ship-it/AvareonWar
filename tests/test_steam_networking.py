@@ -309,6 +309,20 @@ class TestKillSwitches:
         assert steam_feature_switches(['game.exe'], _Settings(steam_join_hook=False)) == (False, True)
         assert steam_feature_switches(['game.exe'], _Settings(steam_relay=False)) == (True, False)
 
+    def test_the_log_names_the_switch(self, caplog):
+        """Two-PC round 2026-10-13: a leftover --no-steam-relay turned Steam joining off and
+        the log could not say whether the launch option or config.json did it."""
+        import logging
+        from steam_integration import steam_feature_switches
+        with caplog.at_level(logging.INFO):
+            steam_feature_switches(['game.exe', '--no-steam-relay'], _Settings())
+            steam_feature_switches(['game.exe'], _Settings(steam_join_hook=False))
+            steam_feature_switches(['game.exe'], _Settings())          # all on: no line
+        lines = [r.getMessage() for r in caplog.records if 'switched off by' in r.getMessage()]
+        assert lines == [
+            "Joining through Steam (relay) switched off by the launch option --no-steam-relay",
+            'Steam join requests switched off by "steam_join_hook": false in config.json']
+
     @pytest.mark.parametrize('argv', [
         ['game.exe'],                   # regular play (joining through Steam needs it)
         ['game.exe', '--sdr-test'],     # the diagnostics tool

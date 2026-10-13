@@ -46,6 +46,12 @@ joining (SDR bridge)".
   logged when the count changes only.
 - Steamworks app setting switched on: "Enable using ISteamApps::GetLaunchCommandLine()" (no
   launch-arguments warning when an invite starts the game).
+- After Phase 5 (a two-PC round where nobody could join: the host's `--no-steam-relay` from
+  an earlier test was still set): the start-up log names the switch ("switched off by the
+  launch option --no-steam-relay" / `"steam_relay": false in config.json`); a join from
+  Steam whose host offers no Steam target now says "Weel's lobby has joining through Steam
+  switched off" instead of advising the Steam Friends tab the player came from
+  (`network.client.steam_off_reason()`).
 - Tests: `tests/test_steam_networking.py`, `tests/test_steam_bridge.py`,
   `tests/test_steam_join.py`, `tests/test_steam_presence.py`, updates in
   `tests/test_mp_transport.py`. Full suite: 1768 passed (+ the 3 known

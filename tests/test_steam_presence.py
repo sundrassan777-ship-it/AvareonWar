@@ -486,6 +486,57 @@ class TestJoiningAFriend:
         assert errors == ["Could not join Weel's game: Weel is not hosting a game right now"]
 
 
+class TestFriendWithSteamOff:
+    """
+    Two-PC round 2026-10-13: the host's leftover --no-steam-relay ("Steam off" in its
+    lobby) - the friend joined from the Steam Friends tab with addresses only, they timed
+    out, and the error told them to "pick the host on the Steam Friends tab" - where they
+    had come from. Now it says the host's lobby has joining through Steam off.
+    """
+
+    def test_unreachable_addresses_name_the_cause(self):
+        from network.client import STEAM_JOIN_HINT, steam_off_reason, unreachable_reason
+        reason = steam_off_reason(unreachable_reason('192.168.18.5'), 'Weel')
+        assert reason.startswith("Weel's lobby has joining through Steam switched off")
+        assert STEAM_JOIN_HINT not in reason
+        assert 'home network' in reason                   # the address details stay
+        assert steam_off_reason(unreachable_reason('10.0.0.2')).startswith("The host's lobby")
+
+    def test_other_reasons_stay(self):
+        from network.client import steam_off_reason
+        assert steam_off_reason("Lobby is full", 'Weel') == "Lobby is full"
+        assert steam_off_reason("", 'Weel') == ""
+
+    def test_the_join_screen_says_so(self, setup, monkeypatch):
+        from network.client import STEAM_JOIN_HINT, unreachable_reason
+        errors = []
+        monkeypatch.setattr(setup, '_get_host_ip',
+                            lambda: FriendJoin('Weel', '192.168.18.5:7777'))   # no steam- target
+
+        def unreachable(client, targets, player_name):
+            client.disconnect_reason = unreachable_reason('192.168.18.5')
+            return False
+        monkeypatch.setattr(setup, 'connect_with_progress', unreachable)
+        monkeypatch.setattr(setup, '_show_error', errors.append)
+        assert setup._run_join_setup() is None
+        assert errors[0].startswith("Could not join Weel's game: Weel's lobby has joining "
+                                    "through Steam switched off")
+        assert STEAM_JOIN_HINT not in errors[0]
+
+    def test_a_typed_address_keeps_the_steam_hint(self, setup, monkeypatch):
+        from network.client import STEAM_JOIN_HINT, unreachable_reason
+        errors = []
+        monkeypatch.setattr(setup, '_get_host_ip', lambda: '192.168.18.5')
+
+        def unreachable(client, targets, player_name):
+            client.disconnect_reason = unreachable_reason('192.168.18.5')
+            return False
+        monkeypatch.setattr(setup, 'connect_with_progress', unreachable)
+        monkeypatch.setattr(setup, '_show_error', errors.append)
+        setup._run_join_setup()
+        assert errors[0].endswith(STEAM_JOIN_HINT)
+
+
 class TestHostingFriendsList:
 
     def test_read_again_every_two_seconds(self):

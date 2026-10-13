@@ -151,6 +151,23 @@ def unreachable_reason(host: str) -> str:
             f"game. {STEAM_JOIN_HINT}")
 
 
+def steam_off_reason(reason: str, host_name: str = '') -> str:
+    """
+    The reason for a join that came from Steam (the Steam Friends tab, an invite, "Join
+    Game") but carried no Steam target: the host's lobby has joining through Steam off, so
+    only its addresses were tried. When they could not be reached, say that instead of
+    STEAM_JOIN_HINT - it sent the player back to the Steam Friends tab they came from
+    (two-PC round 2026-10-13: the host's leftover --no-steam-relay). Any other reason (the
+    host refused, ...) is returned as it is.
+    """
+    if not reason or not reason.endswith(STEAM_JOIN_HINT):
+        return reason
+    who = host_name or "The host"
+    return (f"{who}'s lobby has joining through Steam switched off (\"Steam off\" next to "
+            f"their address), so only their address was tried. "
+            f"{reason[:-len(STEAM_JOIN_HINT)].rstrip()}")
+
+
 class NetworkClient:
     """
     Network client for joining multiplayer games.

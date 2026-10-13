@@ -106,6 +106,19 @@ def steam_feature_switches(argv=None, settings_obj=None):
 
     join_hook = NO_JOIN_HOOK_FLAG not in argv and setting_on('steam_join_hook')
     relay = NO_RELAY_FLAG not in argv and setting_on('steam_relay')
+
+    # Say which switch did it: a launch option left over from testing turned joining
+    # through Steam off for a whole two-PC round (2026-10-13), and the log could not say
+    # whether it was the launch option or config.json
+    for feature, flag, key, on in (("Joining through Steam (relay)", NO_RELAY_FLAG, 'steam_relay', relay),
+                                   ("Steam join requests", NO_JOIN_HOOK_FLAG, 'steam_join_hook', join_hook)):
+        if not on:
+            sources = []
+            if flag in argv:
+                sources.append(f"the launch option {flag}")
+            if not setting_on(key):
+                sources.append(f'"{key}": false in config.json')
+            logger.info(f"{feature} switched off by {' and '.join(sources)}")
     return join_hook, relay
 
 
