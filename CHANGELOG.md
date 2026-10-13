@@ -20,11 +20,14 @@ joining (SDR bridge)".
   with 1003 "not hosting"), 5 joins per 10 s per SteamID, failure wording per end reason.
   Client: `SteamTarget`, `connect_steam()`, `connect_any()` tries Steam first. Server:
   loopback peers exempt from the per-IP limit.
-- **Invites and join requests** (Phase 3): invites carry `+connect steam-<id>,ip:port,...`;
-  a "Connecting..." screen with Cancel (`connect_with_progress()`); the start-up target read
-  from Steam's launch command line first; join requests (337) taken by the main menu, with a
-  gold toast in a game; kill switches `--no-steam-relay` / `--no-steam-join-hook` (+ config
-  keys). From the two-PC rounds: every multiplayer screen pumps
+- **Invites and join requests** (Phase 3): invites carry `+connect steam-<id>,ip:port,...`
+  and no longer wait for UPnP while friends can join through Steam; a "Connecting..." screen
+  with Cancel (`connect_with_progress()`, worker thread - the window used to freeze); the
+  start-up target read from Steam's launch command line first; join requests (337) taken by
+  the main menu, with a gold toast in a game (`steam_join_pending`); kill switches
+  `--no-steam-relay` / `--no-steam-join-hook` (+ config keys); `AvareonWar.spec` hidden
+  imports for the two Steam modules. Fixes: Alt+F4 on the Join Game address screen was tried
+  as a host named "quit"; long error reasons stay up 3-12 s. From the two-PC rounds: every multiplayer screen pumps
   `steam_manager.run_callbacks()` (without it a friend's join never reached the host - all
   timed out after 15 s), a pump-stall warning; the joiner stops at the host's own "not
   hosting" / "game closed" (no 10 s of address attempts); refusals over Steam could be lost
