@@ -49,10 +49,6 @@ NO_RELAY_FLAG = '--no-steam-relay'
 
 # The Steam networking diagnostics launch option (steam_sdr_test.py, started from main.py)
 SDR_TEST_FLAG = '--sdr-test'
-# Temporary safety gate: until the two-PC spike has confirmed the ctypes binding on real
-# Steam, only --sdr-test binds steam_networking - regular play stays exactly as before.
-# Set to False once the Steam bridge (multiplayer over SDR) starts using the binding.
-NETWORKING_ONLY_FOR_SDR_TEST = True
 
 
 def steam_feature_switches(argv=None, settings_obj=None):
@@ -198,11 +194,10 @@ class SteamManager:
         Bind steam_networking to the initialised DLL, honouring the kill switches
         (steam_feature_switches). Never fails Steam initialisation: without it,
         multiplayer simply stays TCP-only.
+
+        (Until the two-PC test of 2026-10-13 confirmed the binding on real Steam, only
+        --sdr-test bound it; regular play now does too - joining through Steam needs it.)
         """
-        import sys
-        if NETWORKING_ONLY_FOR_SDR_TEST and SDR_TEST_FLAG not in sys.argv:
-            logger.info("Steam networking not bound (only --sdr-test uses it for now)")
-            return
         try:
             from steam_networking import steam_net
             join_hook, relay = steam_feature_switches()
@@ -212,7 +207,14 @@ class SteamManager:
 
     def shutdown(self):
         """Shut down Steamworks SDK.  Safe to call even if not initialized."""
-        # Steam networking first: it unregisters the callbacks Steam would otherwise call
+        # The Steam bridge first: it closes its Steam connections (lingering, so a last
+        # "Server closing" still goes out) while the networking interface is alive
+        try:
+            from network.steam_bridge import steam_bridge
+            steam_bridge.stop()
+        except Exception as e:
+            logger.warning(f"Steam bridge shutdown error: {e}")
+        # Steam networking next: it unregisters the callbacks Steam would otherwise call
         # into Python during/after SteamShutdown (crash on exit)
         try:
             from steam_networking import steam_net

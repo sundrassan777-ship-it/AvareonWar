@@ -403,6 +403,7 @@ class SteamNetworking:
         self._user = None                 # ISteamUser*
         self._steam_utils = None          # ISteamUtils*
         self.relay_enabled = False        # SDR usable (switch on + init succeeded)
+        self.relay_switched_off = False   # the player turned SDR off (--no-steam-relay)
         self.join_hook_enabled = False    # callback 337 registered and layout-checked
 
         # Connection status events, filled by the status callback (any thread)
@@ -471,6 +472,8 @@ class SteamNetworking:
         if relay:
             self.relay_enabled = self._init_relay()
         else:
+            # Remembered so a join attempt can say "switched off" rather than "failed"
+            self.relay_switched_off = True
             logger.info("Steam relay switched off (--no-steam-relay / steam_relay: false)")
         if join_hook:
             self.join_hook_enabled = self._register_join_hook()

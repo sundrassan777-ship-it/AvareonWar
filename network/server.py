@@ -260,6 +260,17 @@ class NetworkServer:
         # UPnP port forwarding manager (created on demand via setup_upnp())
         self.upnp_manager = None
 
+        # Joining through Steam's relay (setup_steam()): the Steam bridge hands each Steam
+        # peer to us as a 127.0.0.1 connection. None = the game's bridge; tests set their own.
+        self.steam_bridge = None
+        self._steam_hosting = False
+
+    def _get_steam_bridge(self):
+        if self.steam_bridge is not None:
+            return self.steam_bridge
+        from network.steam_bridge import steam_bridge
+        return steam_bridge
+
     def start(self) -> bool:
         """
         Start the server and listen for connections.
@@ -314,6 +325,15 @@ class NetworkServer:
                 except OSError:
                     pass
             self.clients.clear()
+
+        # Stop taking Steam peers. After the client sockets above: the bridge still
+        # forwards the "Server closing" it read from them before closing over Steam.
+        if self._steam_hosting:
+            self._steam_hosting = False
+            try:
+                self._get_steam_bridge().stop_hosting()
+            except Exception as e:
+                logger.warning(f"Steam hosting did not stop cleanly: {e}")
 
         # Close server socket
         if self.socket:
@@ -380,25 +400,34 @@ class NetworkServer:
             client_socket.settimeout(_FAREWELL_SEND_TIMEOUT)
 
             # Phase 6A: Rate limit connections per IP
-            # Prevents a single IP from flooding the server with connection attempts
+            # Prevents a single IP from flooding the server with connection attempts.
+            # Not for 127.0.0.1: every Steam peer arrives from there through the Steam
+            # bridge, which limits attempts per SteamID itself (and only this PC can
+            # connect from loopback)
             client_ip = client_address[0]
-            now = time.monotonic()
-            attempts = self._connection_attempts.get(client_ip, [])
-            # Remove expired attempts outside the rate limit window
-            attempts = [t for t in attempts if now - t < self._rate_limit_window]
-            if len(attempts) >= self._rate_limit_max:
-                logger.warning(f"Rate limited connection from {client_ip} "
-                               f"({len(attempts)} attempts in {self._rate_limit_window}s)")
-                self._reject_connection(client_socket, "Too many connection attempts")
-                return
-            attempts.append(now)
-            self._connection_attempts[client_ip] = attempts
+            if client_ip not in ('127.0.0.1', '::1'):
+                now = time.monotonic()
+                attempts = self._connection_attempts.get(client_ip, [])
+                # Remove expired attempts outside the rate limit window
+                attempts = [t for t in attempts if now - t < self._rate_limit_window]
+                if len(attempts) >= self._rate_limit_max:
+                    logger.warning(f"Rate limited connection from {client_ip} "
+                                   f"({len(attempts)} attempts in {self._rate_limit_window}s)")
+                    self._reject_connection(client_socket, "Too many connection attempts")
+                    return
+                attempts.append(now)
+                self._connection_attempts[client_ip] = attempts
+
+            # "Steam 7656... (Name) (local port N)" for Steam peers, else the address
+            peer = client_address
+            if self._steam_hosting:
+                peer = self._get_steam_bridge().peer_label(client_address) or client_address
 
             if self.game_started and not RECONNECT_ENABLED:
                 # Nobody can join a running game (rejoining is switched off). Accepting
                 # used to hand a stranger a free slot whose messages were relayed to
                 # every player.
-                logger.warning(f"Rejected connection from {client_address} - game in progress")
+                logger.warning(f"Rejected connection from {peer} - game in progress")
                 self._reject_connection(client_socket, "The game has already started")
                 return
 
@@ -433,11 +462,11 @@ class NetworkServer:
             if reject_reason:
                 # Outside the lock: the reject waits briefly for the peer (see
                 # _reject_connection) and must not hold up the lobby meanwhile
-                logger.warning(f"Rejected connection from {client_address} - {reject_reason}")
+                logger.warning(f"Rejected connection from {peer} - {reject_reason}")
                 self._reject_connection(client_socket, reject_reason)
                 return
 
-            logger.info(f"Client connected from {client_address} as Player {player_index + 1}")
+            logger.info(f"Client connected from {peer} as Player {player_index + 1}")
 
             # Update message queue state (at least one client connected)
             self.message_queue.set_connected(True)
@@ -1278,6 +1307,32 @@ class NetworkServer:
         self.upnp_manager = UPnPManager()
         self.upnp_manager.setup_async(self.port, local_ip)
         logger.info(f"UPnP setup started for port {self.port}")
+
+    def setup_steam(self) -> bool:
+        """
+        Let players join through Steam's relay network as well (network/steam_bridge.py):
+        no port forwarding, works where Direct IP is blocked. Direct IP keeps working.
+        Call after start(). A no-op without Steam or with --no-steam-relay.
+
+        Returns:
+            True if Steam peers can join
+        """
+        if self.socket is None:
+            return False
+        # The real port (a test server binds port 0)
+        port = self.socket.getsockname()[1]
+        try:
+            self._steam_hosting = self._get_steam_bridge().start_hosting(port)
+        except Exception as e:
+            logger.warning(f"Steam hosting unavailable: {e}")
+            self._steam_hosting = False
+        return self._steam_hosting
+
+    def steam_host_id(self) -> int:
+        """Our SteamID64 while Steam peers can join ("steam-<id>" invite target), else 0."""
+        if not self._steam_hosting:
+            return 0
+        return self._get_steam_bridge().host_steam_id()
 
     def get_display_ip(self) -> str:
         """Get best IP to show user (public if UPnP succeeded, else local)."""

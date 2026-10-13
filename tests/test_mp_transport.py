@@ -22,8 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mp_harness as h  # noqa: E402
-from network.client import (NetworkClient, format_connect_targets,  # noqa: E402
-                            parse_connect_targets, unreachable_reason)
+from network.client import (NetworkClient, SteamTarget,  # noqa: E402
+                            format_connect_targets, parse_connect_targets, target_label,
+                            unreachable_reason)
 from network.message_queue import NetworkMessageQueue  # noqa: E402
 from network.protocol import MessageBuffer, NetworkProtocol  # noqa: E402
 from network.server import NetworkServer  # noqa: E402
@@ -388,6 +389,43 @@ class TestJoinAddresses:
         server.upnp_manager.status = 'failed'
         server.upnp_manager.public_ip = '212.20.115.148'
         assert server.get_join_addresses() == ['192.168.18.5', '212.20.115.148']
+
+    # --- Joining through Steam's relay ("steam-<SteamID64>" targets) ---
+
+    def test_steam_target_comes_first_in_the_connect_string(self):
+        text = format_connect_targets(['192.168.18.5', '212.20.115.148'], 7777,
+                                      steam_id=76561198886995069)
+        assert text == 'steam-76561198886995069,192.168.18.5:7777,212.20.115.148:7777'
+        assert parse_connect_targets(text) == [SteamTarget(76561198886995069),
+                                               ('192.168.18.5', 7777), ('212.20.115.148', 7777)]
+        assert str(SteamTarget(76561198886995069)) == 'steam-76561198886995069'
+        assert target_label(('1.2.3.4', 7777)) == '1.2.3.4:7777'
+
+    def test_steam_only_invite_parses(self):
+        # What the --sdr-test window and a host with no known address send
+        assert parse_connect_targets('steam-76561198886995069') == [SteamTarget(76561198886995069)]
+        assert parse_connect_targets('STEAM-5, steam-5') == [SteamTarget(5)]
+
+    @pytest.mark.parametrize('text, expected', [
+        ('steam-', [('steam-', 7777)]),               # no SteamID: an (unknown) host name
+        ('steam-abc', [('steam-abc', 7777)]),
+        ('steam-0', [('steam-0', 7777)]),
+        (f'steam-{2 ** 64}', [(f'steam-{2 ** 64}', 7777)]),
+    ])
+    def test_broken_steam_tokens_are_not_steam_targets(self, text, expected):
+        assert parse_connect_targets(text) == expected
+
+    def test_ports_out_of_range_fall_back_to_the_default(self):
+        """The colon form "steam:<id>" read as host "steam" + port <id> crashed older
+        builds with OverflowError - a port outside 1-65535 is now the default port."""
+        assert parse_connect_targets('steam:76561198886995069') == [('steam', 7777)]
+        assert parse_connect_targets('1.2.3.4:0') == [('1.2.3.4', 7777)]
+        assert parse_connect_targets('1.2.3.4:65535') == [('1.2.3.4', 65535)]
+
+    def test_a_port_out_of_range_is_a_reason_not_a_crash(self):
+        client = NetworkClient()
+        assert not client.connect('127.0.0.1', port=76561198886995069)
+        assert client.disconnect_reason == 'Not a valid address: 127.0.0.1:76561198886995069'
 
 
 class TestSenderIdentity:

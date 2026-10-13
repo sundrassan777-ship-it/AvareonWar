@@ -404,6 +404,9 @@ class MultiplayerSetup:
         # Automatically maps port on router for internet play if UPnP available
         server.setup_upnp()
 
+        # Joining through Steam's relay too (no port forwarding needed; no-op without Steam)
+        server.setup_steam()
+
         # Get local IP for initial display (updated with public IP when UPnP completes)
         local_ip = server.get_local_ip()
         logger.info(f"Server started! IP: {local_ip}")

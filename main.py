@@ -17577,12 +17577,13 @@ if __name__ == "__main__":
             connect_target = _steam_connect_target
             _steam_connect_target = None  # Clear so subsequent loops go to main menu
 
-            # Connect string: "ip:port", or several comma-separated - invites carry the
-            # host's LAN and public address and we try each (network.client)
-            from network.client import NetworkClient, parse_connect_targets
+            # Connect string: "ip:port", "steam-<id>", or several comma-separated - invites
+            # carry the host's SteamID, LAN and public address and we try each, Steam
+            # first (network.client)
+            from network.client import NetworkClient, parse_connect_targets, target_label
             from network.multiplayer_setup import run_client_lobby
             targets = parse_connect_targets(connect_target)
-            target_text = ", ".join(f"{h}:{p}" for h, p in targets)
+            target_text = ", ".join(target_label(t) for t in targets)
 
             logger.info(f"Steam invite: connecting to {target_text}")
 

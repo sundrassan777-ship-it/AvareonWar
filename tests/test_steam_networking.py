@@ -298,19 +298,32 @@ class TestKillSwitches:
         assert steam_feature_switches(['game.exe'], _Settings(steam_join_hook=False)) == (False, True)
         assert steam_feature_switches(['game.exe'], _Settings(steam_relay=False)) == (True, False)
 
-    @pytest.mark.parametrize('argv, binds', [
-        (['game.exe'], False),                  # regular play: binding untouched for now
-        (['game.exe', '--sdr-test'], True),     # the diagnostics tool binds it
+    @pytest.mark.parametrize('argv', [
+        ['game.exe'],                   # regular play (joining through Steam needs it)
+        ['game.exe', '--sdr-test'],     # the diagnostics tool
     ])
-    def test_binding_is_gated_to_the_diagnostics_tool(self, monkeypatch, argv, binds):
+    def test_binding_happens_in_regular_play_too(self, monkeypatch, argv):
+        # The Phase 1 gate (only --sdr-test bound it) is gone since the two-PC test
+        import settings_manager
         import steam_integration
         from steam_networking import steam_net
         calls = []
+        monkeypatch.setattr(settings_manager, 'settings', _Settings())  # not this PC's config.json
         monkeypatch.setattr(sys, 'argv', argv)
-        monkeypatch.setattr(steam_integration, 'NETWORKING_ONLY_FOR_SDR_TEST', True)
         monkeypatch.setattr(steam_net, 'init', lambda **kw: calls.append(kw) or True)
         steam_integration.SteamManager()._init_networking()
-        assert bool(calls) == binds
+        assert calls == [{'join_hook': True, 'relay': True}]
+
+    def test_kill_switch_reaches_the_binding(self, monkeypatch):
+        import settings_manager
+        import steam_integration
+        from steam_networking import steam_net
+        calls = []
+        monkeypatch.setattr(settings_manager, 'settings', _Settings())
+        monkeypatch.setattr(sys, 'argv', ['game.exe', '--no-steam-relay'])
+        monkeypatch.setattr(steam_net, 'init', lambda **kw: calls.append(kw) or True)
+        steam_integration.SteamManager()._init_networking()
+        assert calls == [{'join_hook': True, 'relay': False}]
 
     def test_settings_know_the_keys(self):
         # Unknown keys are deleted on load (settings_manager validation) - they must be known

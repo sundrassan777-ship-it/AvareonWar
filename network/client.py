@@ -9,6 +9,7 @@ import select
 import socket
 import threading
 import time
+from collections import namedtuple
 from typing import Optional
 
 import sys
@@ -40,27 +41,72 @@ _MAX_READS_PER_LOOP = 16
 _FAREWELL_SEND_TIMEOUT = 1.0  # seconds
 
 
-def format_connect_targets(hosts, port: int = DEFAULT_PORT) -> str:
+# Joining through Steam: time for Steam to reach the host (its own limit is 15 s) and for
+# the host to answer our CONNECT_REQUEST
+STEAM_CONNECT_TIMEOUT = 20.0  # seconds
+
+# Connect-string token of a host reached through Steam's relay: "steam-<SteamID64>".
+# No colon on purpose: older builds read "steam:<id>" as host "steam" + a huge port and
+# crashed (OverflowError); "steam-<id>" is just an unknown host name to them.
+STEAM_TARGET_PREFIX = "steam-"
+
+
+class SteamTarget(namedtuple('SteamTarget', ['steam_id'])):
+    """A host to join through Steam's relay network (connect token "steam-<SteamID64>")."""
+
+    def __str__(self):
+        return f"{STEAM_TARGET_PREFIX}{self.steam_id}"
+
+
+def target_label(target) -> str:
+    """A connect target for logs and messages: "steam-<id>" or "host:port"."""
+    if isinstance(target, SteamTarget):
+        return str(target)
+    return f"{target[0]}:{target[1]}"
+
+
+def format_connect_targets(hosts, port: int = DEFAULT_PORT, steam_id: int = 0) -> str:
     """
-    The address part of a Steam invite: "ip1:port,ip2:port" (no spaces, so Steam keeps
-    it one launch argument). parse_connect_targets() reads it back.
+    The address part of a Steam invite: "steam-<id>,ip1:port,ip2:port" (no spaces, so
+    Steam keeps it one launch argument). The Steam target comes first - it works on any
+    network; the addresses are the fallback. parse_connect_targets() reads it back.
     """
-    return ",".join(f"{host}:{port}" for host in hosts if host)
+    parts = [f"{STEAM_TARGET_PREFIX}{steam_id}"] if steam_id else []
+    parts += [f"{host}:{port}" for host in hosts if host]
+    return ",".join(parts)
+
+
+def _parse_steam_target(part: str):
+    """SteamTarget for a "steam-<SteamID64>" token, else None."""
+    if not part.lower().startswith(STEAM_TARGET_PREFIX):
+        return None
+    digits = part[len(STEAM_TARGET_PREFIX):].strip()
+    if not digits.isdigit():
+        return None
+    steam_id = int(digits)
+    return SteamTarget(steam_id) if 0 < steam_id < 2 ** 64 else None
 
 
 def parse_connect_targets(text: str):
     """
-    Read the address list of a "+connect" launch argument: "ip:port", or several
-    comma-separated (Steam invites carry the host's LAN and public address). A
-    missing or broken port means DEFAULT_PORT.
+    Read the target list of a "+connect" launch argument: "ip:port", "steam-<id>", or
+    several comma-separated (Steam invites carry the host's SteamID, LAN and public
+    address). A missing, broken or out-of-range port means DEFAULT_PORT.
 
     Returns:
-        [(host, port), ...] in the given order, duplicates dropped
+        [SteamTarget(id) or (host, port), ...] in the given order, duplicates dropped.
+        Tell them apart with isinstance(target, SteamTarget); a (host, port) is a plain
+        tuple, as before.
     """
     targets = []
     for part in (text or "").split(","):
         part = part.strip()
         if not part:
+            continue
+        steam_target = _parse_steam_target(part)
+        if steam_target is not None:
+            if steam_target not in targets:
+                targets.append(steam_target)
             continue
         host, port = part, DEFAULT_PORT
         if ":" in part:
@@ -69,6 +115,8 @@ def parse_connect_targets(text: str):
                 port = int(port_str)
             except ValueError:
                 port = DEFAULT_PORT
+            if not 1 <= port <= 65535:
+                port = DEFAULT_PORT  # a huge port crashed socket.connect (OverflowError)
         host = host.strip()
         if host and (host, port) not in targets:
             targets.append((host, port))
@@ -130,6 +178,11 @@ class NetworkClient:
         self.disconnect_reason = ""  # Reason for disconnection
         self._host_answered = False  # Last connect() reached a host (see connect_any)
 
+        # Joining through Steam (connect_steam): the bridge (None = the game's; tests set
+        # their own) and the current join, whose reason beats our "Host disconnected"
+        self.steam_bridge = None
+        self._steam_join = None
+
         # Reconnection support
         self.reconnect_password = ""  # Password for reconnection (received on connect)
         self.player_name = ""  # Store name for reconnection
@@ -149,7 +202,8 @@ class NetworkClient:
             MessageType.RECONNECT_REJECT: self._handle_reconnect_reject,
         }
 
-    def connect(self, host: str, port: int = DEFAULT_PORT, player_name: str = "Player") -> bool:
+    def connect(self, host: str, port: int = DEFAULT_PORT, player_name: str = "Player",
+                accept_timeout: float = 5.0, _steam_join=None) -> bool:
         """
         Connect to a host server.
 
@@ -157,6 +211,9 @@ class NetworkClient:
             host: Host IP address or hostname
             port: Port number
             player_name: Player name to send in connection request
+            accept_timeout: seconds to wait for the host's answer once connected
+                (connect_steam() waits longer: Steam may still be finding the host)
+            _steam_join: connect_steam()'s join (its reason replaces ours if the link drops)
 
         Returns:
             True if connection successful, False otherwise
@@ -168,6 +225,7 @@ class NetworkClient:
         # Whether a game host took the TCP connection (connect_any() stops trying other
         # addresses once one reached the host, even if it then refused us)
         self._host_answered = False
+        self._steam_join = _steam_join
 
         try:
             # Create socket
@@ -204,7 +262,7 @@ class NetworkClient:
             self.network_thread.start()
 
             # Wait for connection acceptance (with timeout)
-            timeout = 5.0
+            timeout = accept_timeout
             # C6: Use monotonic clock -- immune to NTP sync / daylight saving shifts
             start_time = time.monotonic()
             while self.player_index is None:
@@ -245,6 +303,76 @@ class NetworkClient:
             self.disconnect_reason = f"Connection error: {e}"
             self.disconnect()
             return False
+        except (OverflowError, ValueError) as e:
+            # A broken address (port out of range, ...) - say so instead of crashing
+            logger.error(f"Invalid address {host}:{port}: {e}")
+            self.disconnect_reason = f"Not a valid address: {host}:{port}"
+            self.disconnect()
+            return False
+
+    def connect_steam(self, steam_id: int, player_name: str = "Player",
+                      timeout: float = STEAM_CONNECT_TIMEOUT) -> bool:
+        """
+        Join a host through Steam's relay network (network/steam_bridge.py): no port
+        forwarding, works where the two PCs cannot reach each other directly.
+
+        The bridge gives us a 127.0.0.1 port that leads to the host over Steam, so the
+        rest is an ordinary connect(). Failure reasons name Steam and the host, never
+        the 127.0.0.1 address.
+
+        Args:
+            steam_id: the host's SteamID64
+            player_name: Player name to send in connection request
+            timeout: seconds for Steam to reach the host plus the host's answer
+
+        Returns:
+            True if connected; otherwise disconnect_reason says why
+        """
+        from network.steam_bridge import SteamJoinError
+        with self._state_lock:
+            self.disconnected = False
+        self._host_answered = False
+        bridge = self._get_steam_bridge()
+        try:
+            join = bridge.open_join(steam_id)
+        except SteamJoinError as e:
+            logger.warning(f"Cannot join steam-{steam_id} through Steam: {e}")
+            self.disconnect_reason = str(e)
+            return False
+
+        if self.connect('127.0.0.1', port=join.local_port, player_name=player_name,
+                        accept_timeout=timeout, _steam_join=join):
+            logger.info(f"Joined steam-{steam_id} through Steam")
+            return True
+
+        # Failed. Whose reason counts: the host's refusal ("Lobby is full") if Steam got
+        # through, otherwise Steam's
+        host_reason = self.disconnect_reason
+        join.close()
+        steam_reason = join.failure_reason()
+        self._host_answered = join.reached_host
+        if not join.reached_host:
+            self.disconnect_reason = (steam_reason or
+                                      f"Could not reach {join.host_name or 'the host'} through Steam")
+        elif steam_reason and (not host_reason or self._is_link_reason(host_reason)):
+            self.disconnect_reason = steam_reason
+        logger.warning(f"Joining steam-{steam_id} failed: {self.disconnect_reason}")
+        return False
+
+    def _get_steam_bridge(self):
+        if self.steam_bridge is not None:
+            return self.steam_bridge
+        from network.steam_bridge import steam_bridge
+        return steam_bridge
+
+    @staticmethod
+    def _is_link_reason(reason: str) -> bool:
+        """
+        A reason that only says the connection to our end dropped. Through Steam that
+        connection is the local bridge, so the bridge's own reason says more.
+        """
+        return reason in ("Host disconnected", "Connection timeout", "The host did not answer") \
+            or reason.startswith("Connection error")
 
     def connect_any(self, targets, player_name: str = "Player") -> bool:
         """
@@ -256,34 +384,55 @@ class NetworkClient:
         mismatch, ...) - we reached the host, another address would reach the same one.
 
         Args:
-            targets: [(host, port), ...] in the order to try
+            targets: [SteamTarget or (host, port), ...] in the order to try (from
+                parse_connect_targets: the Steam target first - it works on any network)
             player_name: Player name to send in connection request
 
         Returns:
             True if connected; otherwise disconnect_reason holds the most useful reason
-            (a host's refusal, else the first address's failure)
+            (a host's refusal, else Steam's reason, else the addresses' failure)
         """
-        failed = []  # (host, reason) of every address that did not answer
-        for host, port in targets:
-            if self.connect(host, port=port, player_name=player_name):
+        steam_failures = []  # reasons of Steam attempts that did not reach the host
+        failed = []          # (host, reason) of every address that did not answer
+        for target in targets:
+            if isinstance(target, SteamTarget):
+                connected = self.connect_steam(target.steam_id, player_name=player_name)
+            else:
+                connected = self.connect(target[0], port=target[1], player_name=player_name)
+            if connected:
                 return True
             if self._host_answered:
                 return False  # the host refused us - its reason is the one to show
-            failed.append((host, self.disconnect_reason))
-            logger.info(f"Could not reach {host}:{port}, trying the next address")
+            if isinstance(target, SteamTarget):
+                steam_failures.append(self.disconnect_reason)
+                logger.info(f"Could not reach {target} through Steam, trying the next address")
+            else:
+                failed.append((target[0], self.disconnect_reason))
+                logger.info(f"Could not reach {target_label(target)}, trying the next address")
 
-        if not failed:
+        if not failed and not steam_failures:
             self.disconnect_reason = "No address to connect to"
-        elif len(failed) == 1:
-            self.disconnect_reason = failed[0][1]
-        else:
+            return False
+        if len(failed) == 1:
+            address_reason = failed[0][1]
+        elif failed:
             # Which address should have worked depends on where this PC is - cover both
             hosts = " or ".join(host for host, _ in failed)
-            self.disconnect_reason = (
+            address_reason = (
                 f"Could not reach the host at {hosts}. On the same network: check both PCs "
                 f"use the same Wi-Fi (not a guest one), the router does not keep devices "
                 f"apart, and no VPN is on. Over the internet: the host's router must "
                 f"forward TCP port {DEFAULT_PORT}")
+        else:
+            address_reason = ""
+        if steam_failures:
+            # Steam is the way that works on any network, so its reason leads
+            self.disconnect_reason = steam_failures[0]
+            if failed:
+                hosts = " or ".join(host for host, _ in failed)
+                self.disconnect_reason += f" (a direct connection to {hosts} failed too)"
+        else:
+            self.disconnect_reason = address_reason
         return False
 
     def disconnect(self):
@@ -546,6 +695,11 @@ class NetworkClient:
         The FIRST reason wins. After a CONNECT_REJECT the host also closes its end, and
         the follow-up read error used to overwrite "Lobby is full" with a socket error.
         """
+        # Through Steam, "Host disconnected" only means the local bridge closed; the
+        # bridge knows the real reason ("Lost the connection to X", ...)
+        join = self._steam_join
+        if join is not None and self._is_link_reason(reason):
+            reason = join.failure_reason() or reason
         # H7: Lock around shared state writes -- called from network thread
         with self._state_lock:
             if not self.disconnected:
