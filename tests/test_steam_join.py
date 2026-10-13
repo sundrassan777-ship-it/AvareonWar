@@ -458,6 +458,81 @@ class TestJoinScreen:
         assert errors == []
 
 
+@pytest.fixture
+def backstop():
+    """Alt+F4 after 5 s, so a screen that never returns fails its test instead of hanging."""
+    timer = threading.Timer(5.0, lambda: pygame.event.post(pygame.event.Event(pygame.QUIT)))
+    timer.start()
+    yield
+    timer.cancel()
+    pygame.event.clear()
+
+
+class TestJoinRequestsOnMultiplayerScreens:
+    """
+    A join request reaching the multiplayer menu or the Join Game screen is joined from
+    there (two-PC test 2026-10-13: "Join Game" pressed twice on the multiplayer menu did
+    nothing until the player went back to the main menu).
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_launch_target(self, monkeypatch):
+        from steam_integration import steam_manager
+        monkeypatch.setattr(steam_manager, '_launch_connect_target', '')
+
+    def test_the_join_screen_joins_it(self, setup, pending, names, backstop):
+        from network.multiplayer_setup import FriendJoin
+        pending(f'steam-{HOST_ID},192.168.18.5:7777', friend=HOST_ID)
+        assert setup._get_host_ip() == FriendJoin('Weel', f'steam-{HOST_ID},192.168.18.5:7777')
+        assert steam_net.peek_join_request() is None             # taken
+
+    def test_the_multiplayer_menu_joins_it(self, setup, pending, names, backstop, monkeypatch):
+        pending(f'steam-{HOST_ID},192.168.18.5:7777', friend=HOST_ID)
+        tried, errors = [], []
+
+        def fail(client, targets, player_name):
+            tried.append(targets)
+            client.disconnect_reason = "Weel is not hosting a game right now"
+            return False
+
+        def error(message):
+            errors.append(message)
+            pygame.event.post(pygame.event.Event(pygame.QUIT))  # then leave the menu
+        monkeypatch.setattr(setup, 'connect_with_progress', fail)
+        monkeypatch.setattr(setup, '_show_error', error)
+        monkeypatch.setattr(setup, '_get_host_ip', lambda: pytest.fail("Join Game screen shown"))
+        assert setup.run() == 'quit'
+        assert tried == [[SteamTarget(HOST_ID), ('192.168.18.5', 7777)]]
+        assert errors == ["Could not join Weel's game: Weel is not hosting a game right now"]
+
+
+class TestDuplicateJoinRequests:
+    """A second request for the host just joined (Join Game pressed twice) is dropped -
+    the next menu would otherwise join them again, up to 10 minutes later."""
+
+    def test_a_request_for_the_joined_host_is_dropped(self, pending):
+        from steam_integration import steam_manager
+        pending(f'steam-{HOST_ID},192.168.18.5:7777,212.20.115.148:7777')
+        steam_manager.drop_join_requests_for(f'steam-{HOST_ID},192.168.18.5:7777')
+        assert steam_net.peek_join_request() is None
+
+    def test_a_request_for_another_host_stays(self, pending):
+        from steam_integration import steam_manager
+        pending(f'steam-{OTHER_ID}')
+        steam_manager.drop_join_requests_for(f'steam-{HOST_ID}')
+        assert steam_net.peek_join_request().connect == f'steam-{OTHER_ID}'
+
+    def test_joining_drops_the_second_press(self, setup, pending, monkeypatch):
+        import network.multiplayer_setup as multiplayer_setup
+        from network.multiplayer_setup import FriendJoin
+        # The second press arrives while the first one connects
+        monkeypatch.setattr(setup, 'connect_with_progress',
+                            lambda client, targets, name: bool(pending(f'steam-{HOST_ID}')))
+        monkeypatch.setattr(multiplayer_setup, 'run_client_lobby', lambda screen, client: None)
+        assert setup._run_join_setup(FriendJoin('Weel', f'steam-{HOST_ID},192.168.18.5:7777')) is None
+        assert steam_net.peek_join_request() is None
+
+
 # ---------------------------------------------------------------------------
 # Every screen of the multiplayer flow pumps Steam
 # ---------------------------------------------------------------------------

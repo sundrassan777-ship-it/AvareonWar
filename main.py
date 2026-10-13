@@ -17642,6 +17642,8 @@ if __name__ == "__main__":
                 continue
 
             logger.info(f"Steam invite: connected to {client.server_address}")
+            # A second request for this host (Join Game pressed twice) is already done
+            steam_manager.drop_join_requests_for(connect_target)
             lobby_result = run_client_lobby(screen, client)
 
             if lobby_result == 'quit':

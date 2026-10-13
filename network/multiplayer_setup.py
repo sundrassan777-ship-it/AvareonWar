@@ -236,6 +236,10 @@ class MultiplayerSetup:
         self._surface_cache = {}
         self._text_cache = {}
 
+        # A Steam join request the menu took (FriendJoin), joined instead of showing the
+        # Join Game screen
+        self._pending_join = None
+
         # Hover and click state tracking (for main menu style button effects)
         self.hovered_button = None
         self.clicked_button = None
@@ -327,8 +331,10 @@ class MultiplayerSetup:
                     self.result = None
                     self.phase = 'select'
             elif self.result == 'join':
-                # Launch join setup flow
-                result = self._run_join_setup()
+                # Launch join setup flow (straight to the friend a Steam join request
+                # names, if the menu took one)
+                pending, self._pending_join = self._pending_join, None
+                result = self._run_join_setup(pending)
                 if result:
                     return result
                 else:
@@ -342,9 +348,22 @@ class MultiplayerSetup:
             pygame.display.flip()
             # Steam callbacks every frame (see steam_manager.run_callbacks)
             steam_manager.run_callbacks()
+            # A Steam join request (invite accepted / "Join Game" on a friend) is joined
+            # from here too, not only from the main menu (two-PC test 2026-10-13: Join
+            # Game pressed twice on this screen did nothing until the main menu)
+            if self.result is None:
+                join = steam_manager.take_join_request()
+                if join is not None:
+                    self._pending_join = self._friend_join_from_request(join)
+                    self.result = 'join'
             clock.tick(menu_frame_cap())
 
         return None
+
+    @staticmethod
+    def _friend_join_from_request(join):
+        """A Steam join request as the Join Game screen's FriendJoin (host's name, targets)."""
+        return FriendJoin(steam_manager.join_request_host_name(join) or "your friend", join.connect)
 
     def handle_click(self, pos):
         """Handle mouse click with flash effect (matching main menu)."""
@@ -516,16 +535,20 @@ class MultiplayerSetup:
 
         return ('host', server, config)
 
-    def _run_join_setup(self) -> Optional[Tuple]:
+    def _run_join_setup(self, choice=None) -> Optional[Tuple]:
         """
         Run join setup flow.
+
+        Args:
+            choice: a FriendJoin to join straight away (a Steam join request the menu
+                took); None shows the Join Game screen
 
         Returns:
             Tuple of ('client', client, config) or None if cancelled
         """
         # Show the Join Game screen: an address typed on the Direct IP tab, or a friend
-        # picked on the Steam Friends tab (FriendJoin)
-        host_ip = self._get_host_ip()
+        # picked on the Steam Friends tab / named by a Steam join request (FriendJoin)
+        host_ip = choice if choice is not None else self._get_host_ip()
         if host_ip == 'quit':
             # Alt+F4 on the IP screen. It used to be tried as a host name ("quit")
             # and showed a connection error instead of closing the game.
@@ -533,9 +556,11 @@ class MultiplayerSetup:
         if not host_ip:
             return None
         if isinstance(host_ip, FriendJoin):
-            logger.info(f"Joining {host_ip.name} from the Steam Friends list ('{host_ip.connect}')")
-            targets, join_label = parse_connect_targets(host_ip.connect), f"{host_ip.name}'s game"
+            logger.info(f"Joining {host_ip.name} through Steam ('{host_ip.connect}')")
+            connect = host_ip.connect
+            targets, join_label = parse_connect_targets(connect), f"{host_ip.name}'s game"
         else:
+            connect = host_ip
             targets, join_label = parse_connect_targets(host_ip), host_ip
 
         # Connect to server
@@ -559,6 +584,8 @@ class MultiplayerSetup:
             return None
 
         logger.info(f"Connected to server at {join_label}")
+        # A second request for this host (Join Game pressed twice) is already done
+        steam_manager.drop_join_requests_for(connect)
 
         # Lobby (shared with Steam-invite joins in main.py)
         logger.info("Connected! Starting territory selection...")
@@ -911,7 +938,8 @@ class MultiplayerSetup:
 
         Returns:
             The typed address (str), a FriendJoin for a friend picked on the Steam
-            Friends tab, None if cancelled, or 'quit' (Alt+F4)
+            Friends tab or named by a Steam join request arriving meanwhile, None if
+            cancelled, or 'quit' (Alt+F4)
         """
         # Initialize clipboard support for Ctrl+V paste
         try:
@@ -1048,6 +1076,11 @@ class MultiplayerSetup:
             pygame.display.flip()
             # Steam callbacks every frame (see steam_manager.run_callbacks)
             steam_manager.run_callbacks()
+            # A Steam join request (invite accepted / "Join Game" on a friend in Steam)
+            # is joined from here at once, like a friend picked in the list
+            join = steam_manager.take_join_request()
+            if join is not None:
+                return self._friend_join_from_request(join)
             clock.tick(menu_frame_cap())
 
     @staticmethod

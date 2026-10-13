@@ -665,6 +665,16 @@ class SteamNetworking:
         with self._join_lock:
             return self._join_pending
 
+    def take_join_request_if(self, wanted):
+        """take_join_request(), only when wanted(request) is true - one step, so a newer
+        request that arrives meanwhile is never the one taken."""
+        with self._join_lock:
+            join = self._join_pending
+            if join is None or not wanted(join):
+                return None
+            self._join_pending = None
+            return join
+
     def join_history(self):
         """Recent join requests, oldest first (diagnostics)."""
         with self._join_lock:

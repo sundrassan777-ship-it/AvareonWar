@@ -548,6 +548,21 @@ class SteamManager:
         logger.info(f"Steam join request: joining '{join.connect}'")
         return join
 
+    def drop_join_requests_for(self, connect):
+        """
+        A join to `connect`'s host just went through: a join request for that same host
+        still waiting is dropped (Steam's "Join Game" pressed twice, an invite accepted
+        again) - the next menu would otherwise join them a second time, up to
+        JOIN_REQUEST_MAX_AGE_SECONDS later (two-PC test 2026-10-13: two presses).
+        """
+        try:
+            from steam_networking import steam_net
+            join = steam_net.take_join_request_if(lambda j: same_join_host(j.connect, connect))
+        except Exception:
+            return
+        if join is not None:
+            logger.info(f"Steam join request '{join.connect}' dropped: already joined that host")
+
     def friend_name(self, steam_id):
         """A Steam friend's name, '' if unknown or Steam is unavailable."""
         if not steam_id:
