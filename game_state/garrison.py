@@ -683,6 +683,31 @@ class GarrisonMixin:
             'level': 0
         }
 
+    @staticmethod
+    def next_free_unit_id(units):
+        """
+        The lowest unit id that none of `units` uses - the id for a unit joining that
+        garrison. Every unit of one garrison needs its own id: orders, the army panel's
+        selection and hero-ability picks all name units by id.
+
+        Simultaneous-mode arrivals used len(units), which repeats an id whenever the
+        garrison lost a unit that round: [Archer #0, Cavalry #1], #0 marches out and a
+        newcomer becomes the second #1. Every order naming both twins was then refused by
+        the host (FFA test game 2026-10-14: 35 orders, and the reinforcements sent in
+        behind them overflowed the army cap). Same "lowest free" rule training uses.
+
+        Args:
+            units: the garrison's unit dicts
+
+        Returns:
+            int: the lowest non-negative integer not used as an id in `units`
+        """
+        used = {unit.get('id') for unit in units}
+        next_id = 0
+        while next_id in used:
+            next_id += 1
+        return next_id
+
     def _create_default_units(self, total_count, unmoved_count):
         """
         Helper to create default Swordsman units with correct statuses.

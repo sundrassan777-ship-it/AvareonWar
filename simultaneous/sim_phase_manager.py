@@ -950,9 +950,12 @@ class SimPhaseManager:
             extracted_units = getattr(anim, 'units', []) or []
             units_created = 0
             if extracted_units:
-                # Reuse actual unit dicts (preserves xp/level), reassign IDs and status
+                # Reuse actual unit dicts (preserves xp/level), reassign IDs and status.
+                # The id is the lowest one free HERE: len(units) repeated an id whenever
+                # this garrison had lost a unit this round, and orders naming the twins
+                # were refused (see GarrisonMixin.next_free_unit_id)
                 for unit in extracted_units:
-                    unit['id'] = len(units)
+                    unit['id'] = self.gs.next_free_unit_id(units)
                     unit['status'] = 'moved'
                     unit['order'] = None
                     units.append(unit)
@@ -961,7 +964,7 @@ class SimPhaseManager:
                 # Fallback: create unit objects based on composition
                 for unit_type, count in composition.items():
                     for _ in range(count):
-                        new_id = len(units)
+                        new_id = self.gs.next_free_unit_id(units)
                         units.append({
                             'id': new_id,
                             'type': unit_type,
@@ -976,7 +979,7 @@ class SimPhaseManager:
                 remaining = army_count - units_created
                 sim_log.sync(f"WARNING: Creating {remaining} default Swordsmen (composition incomplete)")
                 for _ in range(remaining):
-                    new_id = len(units)
+                    new_id = self.gs.next_free_unit_id(units)
                     units.append({
                         'id': new_id,
                         'type': 'Swordsman',

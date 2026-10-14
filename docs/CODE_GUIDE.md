@@ -3298,6 +3298,21 @@ collapsed or sliding. Use `Game.is_point_over_sidebar()` / `get_sidebar_layout()
 **Right:** Modify the units list, then call `self._sync_garrison_counts(territory, player_index)` to reconcile counts.
 The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' → unmoved, 'moved' → moved) and corrects any desync.
 
+### ❌ Numbering a unit that joins a garrison by `len(units)` or from 0
+**Wrong:** `unit['id'] = len(units)` / `for i, unit in enumerate(arriving): unit['id'] = i` when the units are
+appended to a garrison that already holds units.
+**Right:** `unit['id'] = self.next_free_unit_id(units)` (`GarrisonMixin`, lowest free id; `self.gs.` from the
+simultaneous code) - computed against the garrison the unit joins, including units added a moment ago.
+Every unit of one garrison needs its own id: orders (`unit_ids`), the army panel's selection and
+hero-ability picks name units by id. `len(units)` repeats an id once the garrison has lost a unit:
+the FFA test game of 2026-10-14 had `[Cavalry #1, Archer #1]` in Leimarch, and every order naming both
+twins (the army panel selects all ready units when it opens) was refused by the host for 9 rounds -
+35 orders, every player. A brand-new garrison still gets 0..n-1. Sites: simultaneous
+`SimPhaseManager._process_arrivals()`, sequential `_process_arrivals()` ally reinforcement; training,
+summons and Royal Charisma / Valorous Charge already use "lowest free". Still `len()`-based, but only
+reachable when a unit list is missing: the `add_garrison(units=None)` fallback. Tests:
+`tests/test_unit_ids.py`.
+
 ### ❌ Using print() for output
 **Wrong:** `print(f"Battle resolved: {winner}")`
 **Right:** `logger.info(f"Battle resolved: {winner}")` using `from utils.logger import get_logger`

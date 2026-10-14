@@ -159,6 +159,7 @@ AvareonWar/
 - [tests/test_battle_reports.py](tests/test_battle_reports.py) - Battle Report capture rules (tie path, Keep-only defence, Champion of the People, hero-ability guard)
 - [tests/test_sim_ai_budget.py](tests/test_sim_ai_budget.py) - Simultaneous AI keeps only the purchases it can pay for, in its priority order (the Hero it wanted is trained that round), a Hero and a Castle upgrade of one Keep kept apart, the "Hero Training Cost" territory bonus lowers the Hero price
 - [tests/test_team_battles.py](tests/test_team_battles.py) - Allies fighting together (both turn modes): a joint defence keeps the territory with its owner, each ally keeps their own survivors (defending allies fall first, attacking allies share by army size), defending losses never on the attackers, a team's full strength at a Keep, the owner's Battle Report, kill credit per ally, a losing ally's Scavenge the Fallen
+- [tests/test_unit_ids.py](tests/test_unit_ids.py) - Every unit of a garrison has its own id: simultaneous arrivals and sequential ally reinforcement take the lowest free id (`next_free_unit_id`), the FFA game's Leimarch round 9 repro, whole army moves next round (every PC), the AI never names a unit twice
 - [tests/test_keep_battles.py](tests/test_keep_battles.py) - Several attackers at one Keep fight each other first (weaker attacker fights, winner takes the Keep, report names the assaulting attacker, XP / kill credit, seeded dice tie), team games (defending team's leader is not an attacker, allied attackers are one side)
 - [tests/test_battle_report_popup.py](tests/test_battle_report_popup.py) - Popup text/geometry and the report-only battle interface
 - [tests/test_battle_report_integration.py](tests/test_battle_report_integration.py) - Battle Report wiring against a real `Game`
@@ -377,6 +378,7 @@ These rules were derived from ~100+ bugs found across 8 audit rounds. **Follow s
 #### Army/Garrison System
 - **Always use `get_territory_total_armies(territory)`** — never read `self.armies[territory]` directly. The legacy counter can be stale; the garrison system is authoritative.
 - **Use `territory_garrisons[t] = {}` not `del territory_garrisons[t]`** to clear garrisons — matches the system's convention and avoids KeyError on subsequent access.
+- **A unit joining a garrison takes `next_free_unit_id(units)`** (lowest free id in that garrison) — never `len(units)` or 0..n-1 when appending to existing units. Duplicate ids made the host refuse every order naming the twins (FFA game 2026-10-14, see CODE_GUIDE "Common Mistakes").
 
 #### AI System
 - **Route through `game_state.execute_*()` methods** — never duplicate game logic inline in AI code. The AI should call the same methods humans use.

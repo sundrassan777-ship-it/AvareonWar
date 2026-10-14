@@ -3238,10 +3238,15 @@ class MilitaryMixin:
                     comp_key = (territory, winner)
                     arriving_units = moving_units.get(comp_key, [])
                     units = []
+                    # The ally may already stand here, and add_garrison() below appends to
+                    # that garrison: new ids must be free among its units too. Numbering
+                    # from 0 repeated their ids (see GarrisonMixin.next_free_unit_id)
+                    existing_units = list((self.territory_garrisons.get(territory, {})
+                                           .get(winner) or {}).get('units', []))
                     if arriving_units:
                         # Reuse actual unit dicts (preserves xp/level), reassign IDs and status
-                        for i, unit in enumerate(arriving_units[:winner_armies]):
-                            unit['id'] = i
+                        for unit in arriving_units[:winner_armies]:
+                            unit['id'] = self.next_free_unit_id(existing_units + units)
                             unit['status'] = 'moved'
                             unit['order'] = None
                             units.append(unit)
@@ -3252,15 +3257,17 @@ class MilitaryMixin:
                                 if count_added >= winner_armies:
                                     break
                                 # Phase 2E: Use _make_unit() factory
-                                units.append(self._make_unit(unit_type, count_added))
+                                units.append(self._make_unit(
+                                    unit_type, self.next_free_unit_id(existing_units + units)))
                                 count_added += 1
                             if count_added >= winner_armies:
                                 break
                     else:
                         # Fallback: create default Swordsmen
-                        for i in range(winner_armies):
+                        for _ in range(winner_armies):
                             # Phase 2E: Use _make_unit() factory
-                            units.append(self._make_unit('Swordsman', i))
+                            units.append(self._make_unit(
+                                'Swordsman', self.next_free_unit_id(existing_units + units)))
 
                     # Add ally garrison (ownership stays with current_owner)
                     # Use actual unit count to ensure consistency

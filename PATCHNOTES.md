@@ -4,6 +4,20 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Army, Battle and Computer Player Fixes
+
+*14 October 2026*
+
+### Fixes
+
+- **Armies that stopped obeying orders.** After a unit left an army and another unit joined it
+  in the same round, clicking one unit in the army panel could highlight two, and moving the
+  whole army did nothing - round after round. Units joining an army now always get their own
+  place in it, so whole armies move again. Computer players were affected too and no longer
+  lose their moves this way.
+
+---
+
 ## Multiplayer: Join Friends Through Steam
 
 *13 October 2026*

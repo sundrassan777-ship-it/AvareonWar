@@ -2,6 +2,20 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-14 - Fixes from the FFA test game (game 67546468)
+
+Branch `fix/ffa-game-findings`. The owner's simultaneous FFA (3 humans + Easy AI, 42 rounds)
+was audited host vs clients from the three PCs' logs; each phase fixes verified findings.
+- **Unique unit ids** (Phase 1): simultaneous-mode arrivals numbered a newcomer `len(units)`,
+  so a garrison that had lost a unit that round got two units with one id (Leimarch round 9:
+  `[Cavalry #1, Archer #1]`). Nothing renumbers, so every order naming both twins - the army
+  panel selects all ready units when it opens, "Select All" too - was refused by the host:
+  35 orders over the game, every player and the AI; the reinforcements sent in behind those
+  refused orders then overflowed the army cap (36 units deleted). New
+  `GarrisonMixin.next_free_unit_id()` (lowest free id, the rule training already used) at
+  the arrival sites and in sequential mode's ally reinforcement (numbered from 0 into an
+  existing garrison). Tests: `tests/test_unit_ids.py` (each scenario fails on the old code).
+
 ## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
 
 Branch `feature/steam-sdr`, Phases 1-5, each tested on two PCs with the playtest build. Why:
