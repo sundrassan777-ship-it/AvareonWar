@@ -14661,8 +14661,12 @@ class Game:
                     if full_index is not None and self.game_state.cancel_movement_order(full_index):
                         # MULTIPLAYER: Notify remote players about cancelled order.
                         # Sent only on success, with the per-player index (the receiver
-                        # maps it back through get_full_order_index()).
-                        if self.multiplayer_mode:
+                        # maps it back through get_full_order_index()). Not in
+                        # simultaneous mode: planned moves stay on this PC until Ready
+                        # (_sim_queue_local_movement_orders), so no other PC holds one to
+                        # cancel - every such message failed there ("cancel order failed",
+                        # 16 times in the FFA test game of 2026-10-14).
+                        if self.multiplayer_mode and self.sim_state is None:
                             self._send_action_to_remote(MessageType.ORDER_REMOVE, {
                                 'player_order_index': button[2],
                                 'player_index': self.local_player_index
@@ -14681,8 +14685,9 @@ class Game:
                 # Cancel only the orders the sidebar shows — other players' orders
                 # (e.g. AI orders in the same planning phase) must survive
                 self.game_state.cancel_all_orders(player=self.order_sidebar_player)
-                # MULTIPLAYER: Notify remote players about cancel-all
-                if self.multiplayer_mode:
+                # MULTIPLAYER: Notify remote players about cancel-all (sequential only:
+                # simultaneous planned moves never left this PC, see the cancel above)
+                if self.multiplayer_mode and self.sim_state is None:
                     self._send_action_to_remote(MessageType.ORDER_REMOVE, {
                         'cancel_all': True,
                         'player_index': self.local_player_index
@@ -14768,7 +14773,14 @@ class Game:
                             resolver = getattr(battle, 'resolver', None)
                             local_player = self.get_local_player()
                             if resolver is not None and resolver != local_player:
-                                logger.error(f"[BATTLE] Player {local_player} cannot click - resolver is player {resolver}")
+                                # Not the resolver: say who is (the click used to do
+                                # nothing visible and log an ERROR - Blue clicked 13
+                                # times in 6 s in the FFA test game of 2026-10-14). The
+                                # click still falls through, as before.
+                                logger.debug(f"[BATTLE] Player {local_player} cannot click - resolver is player {resolver}")
+                                self.show_action_error(
+                                    'battle_other_resolver',
+                                    player=self.game_state.get_player_name(resolver, include_title=False))
                                 return False  # Not the resolver, can't click
 
                         self.selected_battle_index = i

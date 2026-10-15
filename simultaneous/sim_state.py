@@ -76,6 +76,9 @@ class SimultaneousGameState:
         self.round_number = 1
         # Round whose "--- Round N ---" Action Log marker was already written
         self._logged_round = None
+        # (round, player) whose "Timer expired ... awaiting network ready" was logged
+        # (update_timers() would otherwise log it every frame)
+        self._timer_expiry_logged = set()
 
         # Simultaneous mode phase
         # 'planning' - All players can queue orders
@@ -476,7 +479,13 @@ class SimultaneousGameState:
             if self.player_timers[player_id] <= 0:
                 self.player_timers[player_id] = 0
                 if not self._may_auto_ready(player_id):
-                    sim_log.state(f"Timer expired for remote player {player_id} - awaiting network ready")
+                    # Logged once per player and round: this runs every frame until the
+                    # player's ready arrives (648 identical lines over the 3 PCs in the
+                    # FFA test game of 2026-10-14)
+                    expiry = (self.round_number, player_id)
+                    if expiry not in self._timer_expiry_logged:
+                        self._timer_expiry_logged.add(expiry)
+                        sim_log.state(f"Timer expired for remote player {player_id} - awaiting network ready")
                     continue
                 self.mark_ready(player_id)  # Auto-ready when timer expires
 

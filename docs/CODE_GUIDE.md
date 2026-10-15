@@ -2214,7 +2214,13 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
 Every action that modifies game state must send a network message. Pattern:
 1. After `game_state.action()` succeeds, call `_send_action_to_remote(MessageType.XXX, {...})`
 2. For sim mode: queue order via `sim_state.add_order()` instead (sent via SIM_PLAYER_READY)
-3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish/construction)
+3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish/construction).
+   **Exception - planned moves in simultaneous mode:** the sidebar's Cancel Order / CANCEL
+   ALL send nothing there (`handle_order_sidebar_click()`). A simultaneous move stays on the
+   planning PC until Ready (`_sim_queue_local_movement_orders()`), so no other PC holds one
+   to cancel - every such message failed on arrival ("cancel order failed", FFA test game
+   2026-10-14). Sequential mode still sends it (also never applied there - moves reach the
+   other PCs only in `EXECUTE_ORDERS`' snapshot - but that flow was left untouched)
 4. Sequential mode: the turn owner's `EXECUTE_ORDERS` / `TURN_END` carry its state snapshot
    and correct anything the per-action messages missed (see "Sequential multiplayer: the
    turn owner is the truth")
@@ -2766,6 +2772,18 @@ never on an AI planning thread. Humans are never auto-readied in multiplayer
 `SIM_PLAYER_READY` (`_sim_send_local_ready()`); the host sends `SIM_READY_STATE` whenever its
 ready set changes (`_sim_broadcast_ready_state()`, compared every frame); clients set only
 OTHER players' flags from it and ignore other rounds.
+
+**A battle has one resolver** (`battle.resolver`): only that PC opens the battle window from
+the crossed swords (`handle_battle_marker_click()`). Anyone else gets the
+`'battle_other_resolver'` notice ("{player} is resolving this battle."; repeats merge into
+one) and the click falls through as before - it used to do nothing visible and log an ERROR.
+
+**Per-frame checks log once:** `sim_state.update_timers()` logs "Timer expired for remote
+player N - awaiting network ready" once per (round, player) (`_timer_expiry_logged`), and
+`get_unit_composition()` warns `[TOOLTIP MISMATCH]` once per (territory, unit-list count,
+counter count) (`_reported_composition_mismatches`). Both run every frame and used to log
+every frame (648 and 125 identical lines in the FFA test game of 2026-10-14). A new check
+that runs every frame and does not repair what it finds → log it once the same way.
 
 **Per-frame work** lives in `Game._update_simultaneous()` (deferred execution, timers, ready
 broadcast, AI resolvers / choosers, AFK rules, new-round AI planning) - `Game.run()` and the

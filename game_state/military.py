@@ -108,12 +108,22 @@ class MilitaryMixin:
         # VALIDATION: Check if unit count matches garrison counts
         unit_list_count = len(all_units)
         if unit_list_count != total_garrison_count:
-            logger.warning(f"[TOOLTIP MISMATCH] {territory}: "
-                  f"Unit list has {unit_list_count} units but garrison counts show {total_garrison_count}")
+            # Warned once per territory and counts: this runs every frame while a tooltip
+            # or the bottom panel shows the territory, and nothing here repairs the counts
+            # (125 identical lines on one PC in the FFA test game of 2026-10-14). The set
+            # is created on first use, so any object using this mixin has it.
+            mismatch = (territory, unit_list_count, total_garrison_count)
+            reported = self.__dict__.setdefault('_reported_composition_mismatches', set())
+            first_report = mismatch not in reported
+            if first_report:
+                reported.add(mismatch)
+                logger.warning(f"[TOOLTIP MISMATCH] {territory}: "
+                      f"Unit list has {unit_list_count} units but garrison counts show {total_garrison_count}")
 
             # Fix the mismatch by truncating unit list to match garrison count
             if unit_list_count > total_garrison_count:
-                logger.warning(f"[TOOLTIP MISMATCH] Truncating unit list from {unit_list_count} to {total_garrison_count}")
+                if first_report:
+                    logger.warning(f"[TOOLTIP MISMATCH] Truncating unit list from {unit_list_count} to {total_garrison_count}")
                 all_units = all_units[:total_garrison_count]
 
         composition = {}

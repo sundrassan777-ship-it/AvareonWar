@@ -43,6 +43,9 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   stopped them from training units and upgrading their Keep. Now they train Heroes in a free
   Keep, research what they can, and move their armies up to the front first, then attack
   from there.
+- **Simultaneous turns: battles someone else resolves.** Clicking the crossed swords of a
+  battle that another player resolves now tells you who is resolving it, instead of doing
+  nothing.
 
 ---
 

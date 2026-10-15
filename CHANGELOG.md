@@ -68,6 +68,19 @@ was audited host vs clients from the three PCs' logs; each phase fixes verified 
   neutral), now 1-unit staging moves. Tests: `tests/test_ai_legal_plans.py` +
   `test_sim_ai_budget.py` (10 of the new tests fail on the old code; the others guard
   unchanged behaviour).
+- **Small fixes** (Phase 6, simultaneous mode): the sidebar's Cancel Order / CANCEL ALL no
+  longer send `ORDER_REMOVE` - planned moves stay on the planning PC until Ready, so all 16
+  deliveries in the test game failed ("cancel order failed"); sequential mode unchanged (its
+  move cancels are not applied on the receivers either - moves travel in `EXECUTE_ORDERS`'
+  snapshot - left for the owner to decide). Clicking a battle another player resolves shows
+  `'battle_other_resolver'` ("{player} is resolving this battle.") instead of nothing + an
+  ERROR log (Blue: 18 clicks). `get_unit_composition()`'s `[TOOLTIP MISMATCH]` (125 lines on
+  Green's PC) and `update_timers()`' "Timer expired for remote player" (648 lines over the 3
+  PCs) are logged once per mismatch / per player and round instead of every frame. Found and
+  left alone: `handle_right_click()`'s "CASE 2" sends `MOVEMENT_ORDER` in both modes, but
+  `select_army()` - the only way into it - is never called (dead code). Tests:
+  `tests/test_sim_polish.py` (6 of 10 fail on the old code; the others guard unchanged
+  behaviour).
 
 ## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
 

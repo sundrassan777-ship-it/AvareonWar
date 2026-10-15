@@ -84,6 +84,11 @@ ACTION_ERROR_MESSAGES = {
     # battles are being resolved.
     'wrong_phase': "Cannot do that while battles are resolving!",
 
+    # Simultaneous mode: clicking the crossed swords of a battle another player
+    # resolves (one player per battle presses FIGHT; the others see the result
+    # when they do). {player} = that player's name.
+    'battle_other_resolver': "{player} is resolving this battle.",
+
     # =====================================================================
     # C. HERO ABILITIES - shared messages (shown after clicking an ability and
     #    then a target territory; targeting stays on so you can pick again)
