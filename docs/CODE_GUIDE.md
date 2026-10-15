@@ -1794,6 +1794,16 @@ common enemy unit the AI used to try training unit type `None`.
 - Stored in `precomputed_reachability` dict before the scoring loop
 - Avoids redundant O(n) BFS calls inside the O(n) territory loop (was O(n^2+) overall)
 
+**Targets 2 steps away = staging moves:** `select_attack_targets()` still scores an
+enemy/neutral territory 2 steps away through a friendly territory, but the move it returns
+goes **into that friendly territory** (`staging_territory`, candidate tuple index 4), never
+to the target. No army may attack 2 steps away (`find_2hop_path()`: a Captain's long move
+only goes into own/allied land), so those orders were always refused - all 18 dropped AI
+moves of the FFA test game of 2026-10-14. The unit count and the mission per-target cap
+are still worked out for the real target. Every move the planner returns is to a
+neighbour (`tests/test_ai_legal_plans.py`). A full staging territory: sequential refuses
+the order (army limit), the simultaneous host shortens it (`_fit_moves_to_room()`).
+
 #### When to Modify
 
 ✅ **Change attack behavior:**
@@ -1824,6 +1834,14 @@ common enemy unit the AI used to try training unit type `None`.
 **Dynamic building types (M14):**
 - `select_building_action()` iterates `game_state.building_types.keys()` instead of hardcoded list
 - New building types added to `game_state.building_types` are automatically considered
+
+**Research picks follow the game's rules:** `TechResearcher.select_research_action()` (the
+only research picker - 3 callers) skips `requires_castle` techs while
+`game_state.player_has_castle(player)` is False, the same check `start_research()` makes.
+"Unlocked" is not enough: the AI picked Supply and Demand 9 rounds running without a Castle
+(FFA test game 2026-10-14), and in simultaneous mode its gold stayed reserved for it. The
+Castle upgrade planner reads `player_tech_available` itself, so locked Castle techs still
+push the AI to build a Castle. A new research rule in `start_research()` → mirror it here.
 
 #### When to Modify
 
@@ -1863,6 +1881,15 @@ common enemy unit the AI used to try training unit type `None`.
 - `hero_training_queue` is `{territory_name: {plot_index: (hero_type, training_time)}}` — keyed by territory, NOT player
 - `_count_training_heroes()` and `_get_training_hero_types()` iterate all queue entries filtered by territory owner
 - `_find_keep_for_training()` checks if territory already in queue (not player in queue)
+
+**Hero Keep = the Keep rules of `start_hero_training()`:** `_find_keep_for_training()` skips
+a Keep that is training a Hero, upgrading to a Castle (`is_upgrading_to_castle()`) or
+housing a Hero (`keep_has_hero()`) - steps 4, 5 and 5b of `start_hero_training()`. It used
+to check only "training" and returned the first Keep, Darius's home, in 25 rounds of the
+FFA test game of 2026-10-14 (another Keep was free in 16 of them); in simultaneous mode the
+Hero's gold was held back each time, which dropped unit training and that Keep's Castle
+upgrade. With no Keep free, no Hero is planned at all.
+A new Keep rule in `start_hero_training()` → mirror it here.
 
 #### When to Modify
 
@@ -2187,7 +2214,14 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
 Every action that modifies game state must send a network message. Pattern:
 1. After `game_state.action()` succeeds, call `_send_action_to_remote(MessageType.XXX, {...})`
 2. For sim mode: queue order via `sim_state.add_order()` instead (sent via SIM_PLAYER_READY)
-3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish/construction)
+3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish/construction).
+   **Exception - planned moves:** the sidebar's Cancel Order / CANCEL ALL send nothing, in
+   either turn mode (`handle_order_sidebar_click()`). No other PC ever holds a planned
+   move: a simultaneous one stays on the planning PC until Ready
+   (`_sim_queue_local_movement_orders()`), a sequential one reaches the other PCs only in
+   `EXECUTE_ORDERS`' snapshot as it starts to execute (cleared after execution, so `TURN_END`
+   carries none). Every such message failed on arrival ("cancel order failed", FFA test game
+   2026-10-14). The receiving handler stays for older versions
 4. Sequential mode: the turn owner's `EXECUTE_ORDERS` / `TURN_END` carry its state snapshot
    and correct anything the per-action messages missed (see "Sequential multiplayer: the
    turn owner is the truth")
@@ -2473,6 +2507,44 @@ Rules:
   `picked_units` (`_last_decisive_strike_removed` / `_last_valorous_charge_moved` →
   `pre_selected_units`, matched by `HeroMixin._match_pre_selected_units()`, which uses a
   same-owner same-type stand-in when a picked unit is missing).
+- **An ability that takes units out of a garrison uses `GarrisonMixin._take_unit()`**
+  (Decisive Strike, Royal Charisma, Valorous Charge). It lowers `unmoved` for 'ready' AND
+  'ordered' units (`moved` only for 'moved'), and takes the unit out of its live
+  MovementOrder - new `unit_ids` list (a move made from the army panel shares the panel's
+  selection list), `army_count` recounted, the move cancelled through
+  `cancel_movement_order()` when empty or when a two-hop move lost its Captain. The old
+  loops lowered `moved` for queued units: the victim's banner kept the old strength, and
+  the simultaneous host refused the whole move that still named a dead unit (FFA game
+  2026-10-14, Green's round 28). Runs on every PC with the shipped picks, so the victim's
+  own PC fixes its own planned moves. Tests: `tests/test_ability_queued_units.py`.
+- **A simultaneous round's battles read the round's frozen `BattleContext`**, never live
+  heroes / territorial bonuses (see below).
+
+**Simultaneous battle context (order-independent results):** every PC sets a round's
+battles up from the same state, then resolves ITS OWN battles first and replays the others
+- so with live values a battle that killed a hero or changed a bonus territory's owner
+changed the next one's result depending on who pressed FIGHT first (FFA test game
+2026-10-14: 10 of 100 battles differed on a client; round 36, Neil Hévilneu slain at Daomea,
+Red's Aelatania army 24.4 strong on the host / 20.6 on Blue). `_setup_battles_for_ui()`
+calls `gs.capture_battle_context()` once per round, before any battle, and stores the
+`BattleContext` (game_state/__init__.py: each player's heroes as a frozenset + a copy of
+`calculate_player_territorial_bonuses()`) on every `Battle` (`battle.battle_context`). The
+battle path reads it through an optional `battle_context=None` argument (None = live, as
+before):
+- `calculate_army_effective_strength()` - Vanquish the Enemy + the territorial unit bonuses;
+  passed by `_calculate_battle_strengths()`, `_resolve_keep_battle()` (Keep phase 1),
+  `_fight_for_the_keep()` and the battle window's bars
+  (`EnhancedBattleInterface._calculate_effective_strengths()` - they show what the fight uses);
+- `destroy_buildings()` from `_update_battle_results()` - Pillage, Champion of the People;
+- Scavenge the Fallen in `_update_battle_results()` - leaving out a hero slain in THIS
+  battle (`_battle_hero_deaths`; the Keep falls before the check, as it always did).
+Stay live on purpose: Safe Haven (it needs its hero's live Keep - a frozen "Darius alive"
+would crash `get_safe_haven_territories()`), everything in the battle's own territory, the
+techs (they change only between rounds). The passives' hero names are one list each on
+`HeroMixin` (`VANQUISH_HEROES`, `SCAVENGE_HEROES`, `PILLAGE_HEROES`, `CHAMPION_HEROES`),
+shared by the live `player_has_*` checks and the context. **A new battle-time effect that
+reads heroes or bonuses** → read it from `battle.battle_context` when set. Sequential battles
+carry no context (unchanged). Tests: `tests/test_battle_context.py`.
 
 **Held messages:** a result can arrive while this PC's own copy of the move is still
 animating, so the battle does not exist here yet. `_handle_remote_battle_resolve()` then
@@ -2480,7 +2552,10 @@ calls `_hold_network_message()`; that message **and every later one** wait in
 `_held_network_messages` (order kept) until `_battles_may_still_appear()` is False
 (no animations / pending arrivals / sim execution), then `_release_held_network_messages()`
 replays them; after `_NETWORK_HOLD_LIMIT` (15 s) they are applied anyway
-(`allow_hold=False`). The test harness counts held messages as "busy".
+(`allow_hold=False`). The test harness counts held messages as "busy". `SIM_ALLIANCE_CHOICE`
+is held the same way: its marker comes from our own arrivals, and applied earlier it changed
+the territory's owner before them (and before this PC froze the round's battle context); a
+client's choice reaching a PC whose arrivals were not done was refused (no marker yet).
 
 **Cheats are single-player only:** `KeyboardHandler._handle_cheat_code()` checks
 `game_instance.multiplayer_mode` / `network_connection` and `game_state.network_mode`;
@@ -2676,8 +2751,9 @@ host-only: the server drops them from clients (`_HOST_ONLY_TYPES`).
 
 **Execution start (`_sim_start_execution_phase()`, host):** crossing conflicts →
 `SimPhaseManager.begin_authoritative_execution()` validates every order (incl. remote ones:
-adjacency, garrison, exact units via `_claim_movement_units()`) and applies all NON-movement
-orders → `SIM_ALL_READY{snapshot, movement_orders, forced_defenders}` → the host starts the
+adjacency, garrison, exact units via `_claim_movement_units()`), applies all NON-movement
+orders and fits the moves (`_finalize_movement_orders()`, see "Orders" below) →
+`SIM_ALL_READY{snapshot, movement_orders, forced_defenders}` → the host starts the
 movement. Clients (`_sim_apply_all_ready()`) apply the snapshot and run exactly those
 movements, so every PC detects the same arrivals and battles. Clients never execute orders
 themselves any more (they used to run the raw merged list, incl. orders the host rejected).
@@ -2685,8 +2761,23 @@ themselves any more (they used to run the raw merged list, incl. orders the host
 **Round end:** only the host runs `complete_round()` (guarded in `sim_state`; clients that
 call it are ignored). Its callback sends `SIM_ROUND_COMPLETE` with the new round's snapshot;
 `_sim_apply_round_complete()` closes any open battle window, drops leftover battles /
-markers, runs the client's Action-Log bookkeeping, `start_planning_phase()`, then applies the
-snapshot.
+markers, runs the client's bookkeeping (feeds its game log; sets `last_completed_buildings`
+like the host), `start_planning_phase()`, then applies the snapshot.
+- **The client waits for its own moves first:** the SIM_ROUND_COMPLETE branch of
+  `_apply_network_message()` holds the message while `_battles_may_still_appear()` (the same
+  hold TURN_END uses). In a round without battles the host ends the round ~0.5 s after
+  SIM_ALL_READY; when both reached a client together it skipped the round's arrivals - no
+  Battle Report for a territory lost undefended (those are made per PC in
+  `_process_arrivals()`, never sent) and Action Log lines from the state before the moves
+  (FFA test game 2026-10-14: Blue lost Daomea and Ahtep without reports, 8 races in 42 rounds).
+- **Action Log lines travel:** `complete_round()` records the lines it writes before and after
+  `start_planning_phase()`'s "--- Round N ---" marker (`sim_state.round_end_messages` /
+  `round_start_messages`, the marker itself excluded) and the host sends them as SIM_ROUND_COMPLETE
+  `round_end_messages` / `round_start_messages`. The client drops its bookkeeping's lines, adds
+  the host's round-end lines, its own marker, then the new-round lines - so it sees "X trained
+  in Y", "... is ready!", "... no longer silenced", "Training paused" for its own empire (only
+  the host runs those). The Action Log's viewer filter keeps other players' lines private. A host
+  without the fields: the client keeps its own lines. Tests: `tests/test_round_end_client.py`.
 
 **When the round may end:** every host-side "anything left?" check goes through
 `Game._sim_round_may_end()` - resolving phase, no battle, no alliance marker, **and no battle
@@ -2713,6 +2804,18 @@ never on an AI planning thread. Humans are never auto-readied in multiplayer
 `SIM_PLAYER_READY` (`_sim_send_local_ready()`); the host sends `SIM_READY_STATE` whenever its
 ready set changes (`_sim_broadcast_ready_state()`, compared every frame); clients set only
 OTHER players' flags from it and ignore other rounds.
+
+**A battle has one resolver** (`battle.resolver`): only that PC opens the battle window from
+the crossed swords (`handle_battle_marker_click()`). Anyone else gets the
+`'battle_other_resolver'` notice ("{player} is resolving this battle."; repeats merge into
+one) and the click falls through as before - it used to do nothing visible and log an ERROR.
+
+**Per-frame checks log once:** `sim_state.update_timers()` logs "Timer expired for remote
+player N - awaiting network ready" once per (round, player) (`_timer_expiry_logged`), and
+`get_unit_composition()` warns `[TOOLTIP MISMATCH]` once per (territory, unit-list count,
+counter count) (`_reported_composition_mismatches`). Both run every frame and used to log
+every frame (648 and 125 identical lines in the FFA test game of 2026-10-14). A new check
+that runs every frame and does not repair what it finds → log it once the same way.
 
 **Per-frame work** lives in `Game._update_simultaneous()` (deferred execution, timers, ready
 broadcast, AI resolvers / choosers, AFK rules, new-round AI planning) - `Game.run()` and the
@@ -2750,9 +2853,34 @@ at the end of `complete_round()` on the host and after SIM_ROUND_COMPLETE on cli
 never run `complete_round()` - since Phase 4 their logs and saved replays had no rounds).
 
 **Orders:** `_merge_orders()` drops only EXACT duplicates (same units, same route) - an army
-split into two orders along one route keeps both halves. `_claim_movement_units()` rejects
-orders whose units are missing / not ready / already used by an earlier order, and sets
-`army_count` to the unit list's length (excess units used to appear as default Swordsmen).
+split into two orders along one route keeps both halves. `_claim_movement_units()` keeps the
+listed units that are there, ready and not used by an earlier order (each once), refuses an
+order only when none are left, and sets `unit_ids` / `army_count` to what it keeps (excess
+units used to appear as default Swordsmen). It used to refuse the whole order for one missing
+unit; `_validate_movement_order()`'s unmoved-count check now applies only to orders WITHOUT a
+unit list. Every refusal logs its reason (`sim_log.detail`; build/train refusals via
+`_refuse()`, except the clicker's own already-applied orders).
+
+**Fitting the moves (`_finalize_movement_orders()`, single-player + host):** runs AFTER the
+round's non-movement orders (the AI's hero abilities among them) and before any army moves -
+`_execute_orders()` before `_execute_movement_orders()`, `begin_authoritative_execution()`
+before it returns (so SIM_ALL_READY ships the fitted list). (1) Each move keeps only its units
+still there and ready (an ability could take some after validation; arrivals then invented
+Swordsmen). (2) `_fit_moves_to_room()`: a destination of the mover's side (owner or ally) may
+end with at most `MAX_ARMIES_PER_TERRITORY` = current - moves out + friendly moves in; the
+latest friendly moves in are shortened (their last-listed units stay home), repeated until
+stable because units kept home can crowd their own territory. Planning allows a
+reinforcement when a move OUT makes the room; when that move fails (refused, shortened, forced
+to defend) the army cap used to delete the excess on arrival - FFA test game 2026-10-14, 36
+units. Moves into enemy/neutral land are untouched. `_enforce_army_limits()` stays as the
+safety net. `on_movement_finalized(orders)` then reports to `main.py`.
+
+**Telling the player:** `Game._report_shortened_moves(accepted, forced_defenders)` compares the
+local player's submitted moves (`sim_state.player_orders[local]`, intact until round end) with
+the accepted ones (same route, unit subset) → red notice without the error sound + own Action
+Log line (`'move_shortened'` / `'move_refused'` in `config/action_error_messages.py`); forced
+defences are skipped (own popup). Single-player / host via `_sim_report_own_moves()` (the
+callback), clients in `_sim_apply_all_ready()`. Tests: `tests/test_move_fitting.py`.
 
 Tests: `tests/test_mp_simultaneous.py`, `tests/test_mp_sim_flow.py`.
 
@@ -3297,6 +3425,21 @@ collapsed or sliding. Use `Game.is_point_over_sidebar()` / `get_sidebar_layout()
 **Wrong:** `garrison['unmoved'] -= 1` (count diverges from actual units)
 **Right:** Modify the units list, then call `self._sync_garrison_counts(territory, player_index)` to reconcile counts.
 The `_sync_garrison_counts()` method scans units by status ('ready'/'ordered' → unmoved, 'moved' → moved) and corrects any desync.
+
+### ❌ Numbering a unit that joins a garrison by `len(units)` or from 0
+**Wrong:** `unit['id'] = len(units)` / `for i, unit in enumerate(arriving): unit['id'] = i` when the units are
+appended to a garrison that already holds units.
+**Right:** `unit['id'] = self.next_free_unit_id(units)` (`GarrisonMixin`, lowest free id; `self.gs.` from the
+simultaneous code) - computed against the garrison the unit joins, including units added a moment ago.
+Every unit of one garrison needs its own id: orders (`unit_ids`), the army panel's selection and
+hero-ability picks name units by id. `len(units)` repeats an id once the garrison has lost a unit:
+the FFA test game of 2026-10-14 had `[Cavalry #1, Archer #1]` in Leimarch, and every order naming both
+twins (the army panel selects all ready units when it opens) was refused by the host for 9 rounds -
+35 orders, every player. A brand-new garrison still gets 0..n-1. Sites: simultaneous
+`SimPhaseManager._process_arrivals()`, sequential `_process_arrivals()` ally reinforcement; training,
+summons and Royal Charisma / Valorous Charge already use "lowest free". Still `len()`-based, but only
+reachable when a unit list is missing: the `add_garrison(units=None)` fallback. Tests:
+`tests/test_unit_ids.py`.
 
 ### ❌ Using print() for output
 **Wrong:** `print(f"Battle resolved: {winner}")`

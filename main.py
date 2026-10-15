@@ -874,6 +874,10 @@ class Game:
             import ai_player  # For AI decision logic
             self.sim_state = SimultaneousGameState(self.game_state)
             self.sim_state.phase_manager = SimPhaseManager(self.sim_state)
+            # Tell the local player which of their moves set off shortened or not at all
+            # (single-player and the host fit the moves themselves; a client learns the
+            # result from SIM_ALL_READY - see _sim_apply_all_ready)
+            self.sim_state.phase_manager.on_movement_finalized = self._sim_report_own_moves
             # The AI plans on the host only (or in single-player). Clients used to plan
             # for the AI slots too, with their own random choices; the host's orders are
             # the ones that count and reach clients in its execution snapshot.
@@ -2296,6 +2300,14 @@ class Game:
                     self.game_state.current_player = original_player
 
         elif msg_type == MessageType.SIM_ALLIANCE_CHOICE:
+            # The choice is for a marker this PC's own arrivals create: while our armies
+            # are still marching it waits, like a battle result. Applied earlier, the
+            # territory changed hands before our arrivals (and before the round's battle
+            # context was frozen here - another PC froze it without the change); a
+            # client's choice reaching a lagging PC was refused (no marker yet).
+            if allow_hold and self._battles_may_still_appear():
+                self._hold_network_message(message)
+                return
             # Territory ownership assignment from alliance arrival (from the chooser)
             territory = data.get('territory')
             new_owner = data.get('new_owner')
@@ -2341,6 +2353,16 @@ class Game:
         elif msg_type == MessageType.SIM_ROUND_COMPLETE:
             # Round finished, start new planning phase (client receives this)
             if self.sim_state is not None and self.local_player_index != 0:
+                # Wait until this PC's own copy of the round's moves has played out (the
+                # same hold as TURN_END). In a round without battles the host finishes
+                # ~0.5 s after SIM_ALL_READY, and this message could arrive while our
+                # armies were still marching: the arrivals were then skipped - no Battle
+                # Report for a territory lost undefended (FFA test game 2026-10-14, Blue
+                # lost Daomea and Ahtep without one) and Action Log lines from the state
+                # before the moves (a "completed" Keep the host had cancelled).
+                if allow_hold and self._battles_may_still_appear():
+                    self._hold_network_message(message)
+                    return
                 self._sim_apply_round_complete(data)
 
         else:
@@ -2886,17 +2908,21 @@ class Game:
         for orders in self.sim_state.player_orders.values():
             orders.clear()
 
-        # This PC's own round-end bookkeeping - for its Action Log (income lines,
-        # finished buildings and research). Every value it produces is replaced by the
-        # host's snapshot below. (Training is NOT run here: the host's snapshot already
-        # holds the new units, and finishing it twice would duplicate them.)
+        # This PC's own round-end bookkeeping - it feeds this PC's game log (buildings,
+        # research). Every value it produces is replaced by the host's snapshot below.
+        # (Training is NOT run here: the host's snapshot already holds the new units, and
+        # finishing it twice would duplicate them.)
+        messages_before_rerun = len(gs.messages)
         original_player = gs.current_player
         try:
             for player_id in range(gs.num_players):
                 if player_id not in self.sim_state.eliminated_players:
                     gs.collect_income(player_id)
                     gs.current_player = player_id
-                    gs.finish_constructions()
+                    # Like the host's complete_round(): the XP ticks skip buildings that
+                    # just finished (left unset, they were counted - "+20 XP to 38" where
+                    # the host awarded 36)
+                    gs.last_completed_buildings = gs.finish_constructions()
                     gs.finish_research()
                     gs.finish_castle_upgrades()
                     gs._tick_building_xp()
@@ -2904,10 +2930,25 @@ class Game:
         finally:
             gs.current_player = original_player
 
+        # Action Log: the host's own lines of this round end replace this PC's copy, which
+        # never had training, heroes, abilities ready or silence over in it (only the host
+        # runs those) and could differ. A host without these fields: keep our copy.
+        round_end_lines = data.get('round_end_messages')
+        round_start_lines = data.get('round_start_messages')
+        if isinstance(round_end_lines, list) and isinstance(round_start_lines, list):
+            del gs.messages[messages_before_rerun:]
+            gs.messages.extend(str(line) for line in round_end_lines)
+            logger.debug(f"[NETWORK] Round {round_number}: {len(round_end_lines)} + "
+                         f"{len(round_start_lines)} Action Log lines from the host")
+        else:
+            round_start_lines = []
+
         # New planning phase BEFORE the snapshot: start_planning_phase() resets 'moved'
         # units to 'ready', and the snapshot's statuses (new units 'moved') must win
         self.sim_state.round_number = round_number
         self.sim_state.start_planning_phase()
+        # The new round's own lines (units / heroes trained) follow its marker, as on the host
+        gs.messages.extend(str(line) for line in round_start_lines)
 
         snapshot = data.get('snapshot')
         if snapshot:
@@ -2952,6 +2993,10 @@ class Game:
             # UI acts for it). The host's snapshot carries the HOST's.
             self.game_state.current_player = self.get_local_player()
 
+        # Which of our moves the host shortened or refused (it fits every move to the
+        # units still there and to the room at its destination)
+        self._report_shortened_moves(movement_orders, data.get('forced_defenders') or [])
+
         self.sim_state.merged_orders = movement_orders
         self.sim_state.sim_phase = 'executing'
         # Reset phase_manager state for this execution (animation completion callback)
@@ -2986,6 +3031,11 @@ class Game:
             # sim_state round data (not part of GameState)
             'eliminated_players': list(self.sim_state.eliminated_players) if self.sim_state else [],
             'overflow_territories': dict(self.sim_state.overflow_territories) if self.sim_state else {},
+            # The round end's Action Log lines (units / heroes trained, abilities ready,
+            # silence over, income, buildings ...) - the clients show them in place of
+            # their own approximate copy (_sim_apply_round_complete)
+            'round_end_messages': list(self.sim_state.round_end_messages) if self.sim_state else [],
+            'round_start_messages': list(self.sim_state.round_start_messages) if self.sim_state else [],
         })
 
     def _sim_send_timer_update(self):
@@ -5608,6 +5658,69 @@ class Game:
                 continue
             self.chat_notification_effect.add_system_notification(
                 format_action_error('hero_slain', hero=event[1], territory=event[2]))
+
+    def _sim_report_own_moves(self, accepted_orders):
+        """SimPhaseManager.on_movement_finalized (single-player and the multiplayer host):
+        report the local player's shortened / refused moves. Forced defences come from
+        this round's crossing-conflict check (they have their own popup)."""
+        pm = self.sim_state.phase_manager if self.sim_state is not None else None
+        forced = pm.conflict_resolver.get_forced_defenders() if pm is not None else []
+        self._report_shortened_moves(accepted_orders, forced)
+
+    def _report_shortened_moves(self, accepted_orders, forced_defenders):
+        """
+        Simultaneous mode: tell the local player which of their submitted moves set off
+        with fewer units than planned, or not at all. The host (or single-player) fits
+        every move to the units still there - a hero ability may have taken some after
+        Ready - and to the room at its destination (reinforcements that would overflow
+        stay home). Before, such moves vanished without a word (FFA test game
+        2026-10-14: 35 refused moves nobody was told about).
+
+        A red notice without the denial sound (news, like 'hero_slain') plus a line in
+        the player's own Action Log. Moves stopped by a crossing army ("forced to
+        defend") are skipped - they get their own popup.
+
+        Args:
+            accepted_orders: the round's movement orders as they set off
+            forced_defenders: [{'player_id', 'territory', 'intended_target', ...}]
+        """
+        if self.sim_state is None:
+            return
+        local = self.get_local_player()
+        if local is None:
+            return
+        submitted = [o for o in self.sim_state.player_orders.get(local, [])
+                     if o.get('type') == 'movement']
+        if not submitted:
+            return
+        forced_routes = {(fd.get('territory'), fd.get('intended_target'))
+                         for fd in forced_defenders if fd.get('player_id') == local}
+        pool = [o for o in accepted_orders if o.get('player_id') == local]
+
+        from config.action_error_messages import format_action_error
+        for order in submitted:
+            route = (order.get('from_territory'), order.get('to_territory'))
+            planned_ids = order.get('unit_ids') or []
+            planned = len(planned_ids) or order.get('army_count', 0)
+            # Its accepted copy: same route, and only units this order named
+            match = next((a for a in pool
+                          if (a.get('from_territory'), a.get('to_territory')) == route
+                          and (not planned_ids
+                               or set(a.get('unit_ids') or []) <= set(planned_ids))), None)
+            if match is not None:
+                pool.remove(match)
+                sent = match.get('army_count', 0)
+                if sent >= planned:
+                    continue
+                code, values = 'move_shortened', {'sent': sent, 'planned': planned}
+            elif route in forced_routes:
+                continue
+            else:
+                code, values = 'move_refused', {}
+            text = format_action_error(code, source=route[0], target=route[1], **values)
+            self.game_state.add_player_message(local, text)
+            if self.chat_notification_effect:
+                self.chat_notification_effect.add_system_notification(text)
 
     def _notify_steam_join_request(self):
         """
@@ -14553,15 +14666,15 @@ class Game:
                     self.trigger_click_flash('sidebar_cancel_order', getattr(order, 'order_id', None))
                     full_index = next((i for i, o in enumerate(self.game_state.movement_orders)
                                        if o is order), None)
-                    if full_index is not None and self.game_state.cancel_movement_order(full_index):
-                        # MULTIPLAYER: Notify remote players about cancelled order.
-                        # Sent only on success, with the per-player index (the receiver
-                        # maps it back through get_full_order_index()).
-                        if self.multiplayer_mode:
-                            self._send_action_to_remote(MessageType.ORDER_REMOVE, {
-                                'player_order_index': button[2],
-                                'player_index': self.local_player_index
-                            })
+                    # No ORDER_REMOVE to the other PCs (either turn mode): no other PC
+                    # holds a planned move. Simultaneous moves stay on this PC until Ready
+                    # (_sim_queue_local_movement_orders); sequential moves reach the other
+                    # PCs only in EXECUTE_ORDERS' snapshot, as they start to execute.
+                    # Every such message failed on arrival ("cancel order failed", 16 in
+                    # the FFA test game of 2026-10-14). The receiving handler stays, for
+                    # older versions that still send it.
+                    if full_index is not None:
+                        self.game_state.cancel_movement_order(full_index)
                     return True
 
         # Check cancel all button (only if expanded)
@@ -14576,12 +14689,8 @@ class Game:
                 # Cancel only the orders the sidebar shows — other players' orders
                 # (e.g. AI orders in the same planning phase) must survive
                 self.game_state.cancel_all_orders(player=self.order_sidebar_player)
-                # MULTIPLAYER: Notify remote players about cancel-all
-                if self.multiplayer_mode:
-                    self._send_action_to_remote(MessageType.ORDER_REMOVE, {
-                        'cancel_all': True,
-                        'player_index': self.local_player_index
-                    })
+                # No ORDER_REMOVE to the other PCs: none holds a planned move (see the
+                # single cancel above)
                 return True
 
         # Action Log filter chips
@@ -14663,7 +14772,14 @@ class Game:
                             resolver = getattr(battle, 'resolver', None)
                             local_player = self.get_local_player()
                             if resolver is not None and resolver != local_player:
-                                logger.error(f"[BATTLE] Player {local_player} cannot click - resolver is player {resolver}")
+                                # Not the resolver: say who is (the click used to do
+                                # nothing visible and log an ERROR - Blue clicked 13
+                                # times in 6 s in the FFA test game of 2026-10-14). The
+                                # click still falls through, as before.
+                                logger.debug(f"[BATTLE] Player {local_player} cannot click - resolver is player {resolver}")
+                                self.show_action_error(
+                                    'battle_other_resolver',
+                                    player=self.game_state.get_player_name(resolver, include_title=False))
                                 return False  # Not the resolver, can't click
 
                         self.selected_battle_index = i

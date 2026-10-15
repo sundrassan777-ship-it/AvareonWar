@@ -19,6 +19,13 @@ logger = get_logger(__name__)
 class HeroMixin:
     """Mixin providing hero management methods for GameState."""
 
+    # The heroes behind each passive that battles read - one list per passive, shared by
+    # the live checks below (player_has_*) and a simultaneous round's frozen BattleContext
+    VANQUISH_HEROES = ('Neil Hévilneu', 'Serthus Diarcess')      # Vanquish the Enemy
+    SCAVENGE_HEROES = ('Darius Brennhen', 'Regnus Aevencourne')  # Scavenge the Fallen, Safe Haven
+    PILLAGE_HEROES = ('Vearen Asford',)                          # Pillage
+    CHAMPION_HEROES = ('Seledra Rennervail',)                    # Champion of the People
+
     def _ability_refusal(self, code, **fmt):
         """
         Record why a hero ability was refused and return the usual (False, text) result.
@@ -1072,16 +1079,11 @@ class HeroMixin:
             [garrison_owner, unit['id'], unit['type']] for garrison_owner, unit in units_to_remove
         ]
 
-        # Remove the selected units from their respective garrisons
+        # Remove the selected units from their respective garrisons. _take_unit() keeps
+        # the counters right for queued ('ordered') units and takes each unit out of the
+        # move it was planned in (a move naming a dead unit was refused whole)
         for garrison_owner, unit in units_to_remove:
-            garrison = all_garrisons[garrison_owner]
-            garrison['units'].remove(unit)
-
-            # Update garrison counters based on unit status
-            if unit['status'] == 'ready':
-                garrison['unmoved'] = max(0, garrison['unmoved'] - 1)
-            else:
-                garrison['moved'] = max(0, garrison['moved'] - 1)
+            self._take_unit(all_garrisons[garrison_owner], unit)
 
         # Sync to legacy system
         self.sync_legacy_garrison_data(target_territory)
@@ -1195,14 +1197,9 @@ class HeroMixin:
 
         # Move units from origin garrison to target garrison
         for unit in units_to_transfer:
-            # Remove from origin garrison
-            origin_units.remove(unit)
-
-            # Update origin garrison counters
-            if unit['status'] == 'ready':
-                origin_garrison['unmoved'] = max(0, origin_garrison['unmoved'] - 1)
-            else:
-                origin_garrison['moved'] = max(0, origin_garrison['moved'] - 1)
+            # Remove from origin garrison (counters right for queued units too, and the
+            # unit leaves any move the caster had planned for it)
+            self._take_unit(origin_garrison, unit)
 
             # Find next available ID in target garrison
             existing_ids = [u['id'] for u in target_garrison['units']]
@@ -1343,16 +1340,10 @@ class HeroMixin:
             for garrison_owner, unit in stolen_units
         ]
 
-        # Remove stolen units from their respective garrisons
+        # Remove stolen units from their respective garrisons (counters right for queued
+        # units too, and each unit leaves the move its owner had planned for it)
         for garrison_owner, unit in stolen_units:
-            garrison = all_garrisons[garrison_owner]
-            garrison['units'].remove(unit)
-
-            # Update garrison counters
-            if unit['status'] == 'ready':
-                garrison['unmoved'] = max(0, garrison['unmoved'] - 1)
-            else:
-                garrison['moved'] = max(0, garrison['moved'] - 1)
+            self._take_unit(all_garrisons[garrison_owner], unit)
 
         # Check if Narn's Keep has Haste effect
         haste_affected_territories = self.get_haste_affected_territories(owner)
@@ -1506,7 +1497,7 @@ class HeroMixin:
         """
         if player_index not in self.heroes:
             return False
-        return 'Seledra Rennervail' in self.heroes[player_index]
+        return any(hero in self.heroes[player_index] for hero in self.CHAMPION_HEROES)
 
     def player_has_asford(self, player_index):
         """
@@ -1520,7 +1511,7 @@ class HeroMixin:
         """
         if player_index not in self.heroes:
             return False
-        return 'Vearen Asford' in self.heroes[player_index]
+        return any(hero in self.heroes[player_index] for hero in self.PILLAGE_HEROES)
 
     def player_has_nextroy(self, player_index):
         """
@@ -1650,7 +1641,7 @@ class HeroMixin:
         """
         if player_index not in self.heroes:
             return False
-        return 'Darius Brennhen' in self.heroes[player_index] or 'Regnus Aevencourne' in self.heroes[player_index]
+        return any(hero in self.heroes[player_index] for hero in self.SCAVENGE_HEROES)
 
     def player_has_silvyr(self, player_index):
         """
@@ -1679,7 +1670,7 @@ class HeroMixin:
         """
         if player_index not in self.heroes:
             return False
-        return 'Neil Hévilneu' in self.heroes[player_index] or 'Serthus Diarcess' in self.heroes[player_index]
+        return any(hero in self.heroes[player_index] for hero in self.VANQUISH_HEROES)
 
     def player_has_nithieln(self, player_index):
         """

@@ -166,7 +166,11 @@ class Battle:
         self.original_garrison = 0  # Original garrison size (before Keep bonus)
         self.army_compositions = {}  # {player_index: {unit_type: count}}
         self.allied_defenders = []  # List of player indices who are allied defenders (not owner)
-    
+        # Simultaneous mode: the round's frozen heroes + territorial bonuses this battle is
+        # fought with (BattleContext, set by SimPhaseManager._setup_battles_for_ui).
+        # None = live values (sequential mode, and any battle built elsewhere).
+        self.battle_context = None
+
     def add_army(self, player, count, composition=None):
         """Add an army to this battle"""
         if player in self.armies:
@@ -188,6 +192,40 @@ class Battle:
     def get_player_count(self):
         """Get number of different players involved"""
         return len(self.armies)
+
+
+class BattleContext:
+    """
+    What a simultaneous round's battles are fought with, frozen once when the round's
+    battles are set up (MilitaryMixin.capture_battle_context()): each player's heroes and
+    territorial bonuses.
+
+    Every PC sets the battles up from the same state, then resolves its own battles first
+    and replays the others. With live values, a battle that killed a hero (Vanquish the
+    Enemy, Scavenge the Fallen, Pillage, Champion of the People) or changed a bonus
+    territory's owner changed the next battle's numbers, so the results depended on who
+    pressed FIGHT first: 10 of 100 battles in the FFA test game of 2026-10-14 came out
+    differently on a client (Neil Hévilneu slain at Daomea: Aelatania 24.4 vs 20.6).
+
+    Stays live: everything in the battle's own territory (its Keep, garrisons, a hero
+    slain in this very battle), Safe Haven (it needs its hero's Keep) and the techs
+    (they only change between rounds).
+    """
+
+    def __init__(self, heroes, territorial_bonuses):
+        self.heroes = heroes                            # {player: frozenset(hero names)}
+        self.territorial_bonuses = territorial_bonuses  # {player: {bonus_type: percent}}
+
+    def has_hero(self, player, hero_names, slain=()):
+        """Whether `player` had one of `hero_names` when the round's battles began,
+        leaving out the heroes in `slain` (killed in the battle being resolved)."""
+        owned = self.heroes.get(player, frozenset())
+        return any(name in owned and name not in slain for name in hero_names)
+
+    def bonuses(self, player):
+        """`player`'s territorial bonuses when the round's battles began ({} for neutral)."""
+        return self.territorial_bonuses.get(player, {})
+
 
 class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryMixin, VictoryMixin):
     # Constants

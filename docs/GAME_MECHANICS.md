@@ -416,6 +416,10 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
 - Execute in Orders Phase
 - Can cancel before executing
 - Visual arrows show planned moves
+- A unit that a hero ability kills, steals or moves away (Decisive Strike, Royal Charisma,
+  Valorous Charge) leaves the move it was planned in; the rest of the move goes on. A move
+  left with no units is cancelled, and so is a Captain's two-territory move whose Captain
+  was taken.
 
 **Building Orders:**
 - One building per turn max
@@ -999,6 +1003,40 @@ When two players order armies to attack each other's territory (A→B while B→
 - **Equal strength** → Dice roll determines attacker
 - Defender receives popup notification
 
+### When a Planned Move Changes Before It Starts
+
+Moves are planned at the same time, so things can change after you press Ready:
+- **Lost units:** if some of a move's units are gone when the round starts (e.g. an enemy's
+  Decisive Strike), the move goes with the units that are left. It only fails if none are left.
+- **No room:** a territory of your own side can hold at most 15 armies when the moves end.
+  You may send reinforcements into a territory because another of your armies is leaving it;
+  if that army does not leave after all (stopped by a crossing army, or it lost its units),
+  the reinforcements that no longer fit stay home instead of arriving. The latest
+  reinforcement gives way first. (Attacks into enemy or neutral land are not limited here;
+  after a battle the winner keeps at most 15.)
+- You are told when a move set off with fewer armies than planned, or not at all (also in
+  your Action Log).
+
+### A Round's Battles Are Fought As the Round Stood
+
+All battles of a round are fought with the Heroes and territory bonuses each player had
+when the round's battles began - whichever battle is fought first:
+- **Hero passives:** a Hero slain in one battle of the round still counts in the round's
+  other battles - Vanquish the Enemy (Neil Hévilneu / Serthus Diarcess: +20% strength),
+  Scavenge the Fallen, Pillage and Champion of the People. In the battle that slays him
+  (his Keep falls) he no longer counts, as before.
+- **Territory bonuses:** a bonus territory (e.g. +10% Swordsman strength) lost or won in one
+  battle counts for its old owner in the round's other battles; the new owner gets it from
+  the next round on.
+- **Stay as they are:** Safe Haven (the retreat needs the Hero's Keep, so a slain Darius
+  saves no unit), everything in the battle's own territory, and technologies (they only
+  change between rounds).
+
+(Before 2026-10-15 each battle read the Heroes and bonuses at the moment it was fought, so
+results depended on which battle was fought first - and every player fights their own
+battles first on their own computer: 10 of 100 battles in a 4-player test game came out
+differently for one player. Sequential turns are unchanged.)
+
 ### Alliance Arrivals
 
 When multiple allied armies capture the same territory:
@@ -1063,7 +1101,11 @@ Units spawning from Barracks in simultaneous mode:
   open, so a round can never stall.
 - **The round ends when everything is settled** - every battle fought, every alliance
   choice made, and every battle report closed (a battle's result is shared when its report
-  is closed).
+  is closed). Every player's game first finishes playing out the round's moves, so a
+  territory you lost undefended always gets its Battle Report.
+- **Round news for everyone:** units and heroes finished, abilities ready again, silence
+  over and the like appear in every player's Action Log at the start of the round, not
+  only the host's.
 - **AI battles and choices** are always made on the host's PC (2-second delay, so the grey
   marker is visible), and the results reach every player.
 - **Leaving:** a player who disconnects is replaced by a **Medium AI** for the rest of the

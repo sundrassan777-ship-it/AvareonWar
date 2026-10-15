@@ -4,6 +4,57 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Army, Battle and Computer Player Fixes
+
+*14 October 2026*
+
+### Fixes
+
+- **Armies that stopped obeying orders.** After a unit left an army and another unit joined it
+  in the same round, clicking one unit in the army panel could highlight two, and moving the
+  whole army did nothing - round after round. Units joining an army now always get their own
+  place in it, so whole armies move again. Computer players were affected too and no longer
+  lose their moves this way.
+- **Decisive Strike, Royal Charisma and Valorous Charge on armies with planned moves.** When
+  these abilities took units from an army you had already given orders to, your army banner
+  kept showing its old strength, and the whole planned move could fail because it still
+  counted the lost units. Now the banner shows what is left, the lost units simply leave the
+  move, and the rest of the army still marches. A move with no units left is cancelled, and
+  so is a Captain's two-territory move whose Captain was taken.
+- **Simultaneous turns: armies no longer vanish when a planned move falls through.** If you
+  sent reinforcements into a territory because another army was leaving it, and that army
+  then did not leave (for example it was forced to defend), the reinforcements that did not
+  fit were destroyed when they arrived. Now they stay home.
+- **Simultaneous turns: a move that lost some units still goes.** If some units of a planned
+  move are gone when the round starts (for example to a Decisive Strike after you pressed
+  Ready), the rest of the army still marches, instead of the whole move being dropped.
+- **You are told when a move changed.** When a planned move sets off with fewer armies than
+  you sent, or cannot set off at all, a message says so (also in your Action Log).
+- **Multiplayer: Battle Reports for territories lost without a fight.** In a round without
+  battles, a joined player could lose an undefended territory without getting its Battle
+  Report, and their Action Log could even claim a building there was finished. Fixed.
+- **Multiplayer: your round news in the Action Log.** Players who joined a game (not the
+  host) now see their own news at the start of each round too: units and heroes finished,
+  abilities ready again, silence over, training paused.
+- **Computer players no longer waste their turns.** They kept trying to train a new Hero in a
+  Keep where one of their Heroes already lived, kept trying to research Castle technologies
+  without having a Castle, and kept ordering attacks on territories two steps away, which no
+  army can reach in one turn. In simultaneous games the gold set aside for that Hero also
+  stopped them from training units and upgrading their Keep. Now they train Heroes in a free
+  Keep, research what they can, and move their armies up to the front first, then attack
+  from there.
+- **Simultaneous turns: battles someone else resolves.** Clicking the crossed swords of a
+  battle that another player resolves now tells you who is resolving it, instead of doing
+  nothing.
+- **Simultaneous turns: a round's battles no longer depend on which is fought first.** All
+  battles of a round are now fought with the Heroes and territory bonuses everyone had when
+  the round's battles began. A Hero slain or a bonus territory lost in one battle no longer
+  changes the round's other battles - before, the same battle could come out differently for
+  different players, depending on who pressed Fight first. Heroes slain in a battle still
+  stop counting from the next round on.
+
+---
+
 ## Multiplayer: Join Friends Through Steam
 
 *13 October 2026*

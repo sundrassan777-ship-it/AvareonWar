@@ -278,7 +278,9 @@ class AttackPlanner:
             cache: Optional TurnCache with pre-computed values for performance
 
         Returns:
-            list: [(from_territory, to_territory, army_count), ...]
+            list: [(from_territory, to_territory, army_count), ...] - every move is to
+            an adjacent territory: for a target 2 steps away, to_territory is the
+            friendly territory between (a staging move), never the target itself
         """
         player_index = self.ai_player.player_index
         attacks = []
@@ -318,19 +320,24 @@ class AttackPlanner:
                 # Check if target is directly adjacent OR reachable through 1 friendly hop
                 is_adjacent = map_data.are_adjacent(territory, target_territory)
 
-                # Also allow attacks through 1 friendly intermediate territory
-                # This enables attacking enemies that are adjacent to our allied neighbors
-                can_reach_through_ally = False
+                # Also consider enemies 2 steps away, through 1 friendly territory.
+                # No army may attack 2 steps away (find_2hop_path(): even a Captain's
+                # long move only goes into own/allied land), so such a target is
+                # answered with a STAGING move into that friendly territory; the
+                # attack itself can follow next turn from there. These orders used to
+                # name the target and were refused - all 18 of the AI's dropped moves
+                # in the FFA test game of 2026-10-14.
+                staging_territory = None
                 if not is_adjacent and path_distance <= 2:
                     # Check if any friendly neighbor is adjacent to the target
                     for neighbor in map_data.get_neighbors(territory):
                         neighbor_owner = game_state.territory_owners.get(neighbor, -1)
                         if self.ai_player.is_friendly_territory(neighbor_owner, game_state):
                             if map_data.are_adjacent(neighbor, target_territory):
-                                can_reach_through_ally = True
+                                staging_territory = neighbor
                                 break
 
-                if not is_adjacent and not can_reach_through_ally:
+                if not is_adjacent and staging_territory is None:
                     continue  # Target not reachable in 1-2 hops
 
                 # Score this attack
@@ -346,7 +353,10 @@ class AttackPlanner:
 
                 # Lower threshold to allow more attacks (was 30.0)
                 if score > 20.0:
-                    attack_candidates.append((territory, target_territory, available_army, score))
+                    # staging_territory: None for an adjacent target, else the friendly
+                    # territory the army moves into this turn (see above)
+                    attack_candidates.append((territory, target_territory, available_army, score,
+                                              staging_territory))
 
         if not attack_candidates:
             return []
@@ -371,7 +381,10 @@ class AttackPlanner:
         units_per_target = {}  # {target_territory: units_planned}
 
         for i in range(min(max_attacks, len(attack_candidates))):
-            from_terr, to_terr, army_count, score = attack_candidates[i]
+            candidate = attack_candidates[i]
+            # Index access: the candidate tuple grew a 5th field (staging territory)
+            from_terr, to_terr, army_count = candidate[0], candidate[1], candidate[2]
+            staging_territory = candidate[4]
 
             # Calculate armies remaining in this territory
             already_allocated = armies_allocated.get(from_terr, 0)
@@ -429,7 +442,14 @@ class AttackPlanner:
                 attack_with = min(attack_with, room)
             units_per_target[to_terr] = units_per_target.get(to_terr, 0) + attack_with
 
-            attacks.append((from_terr, to_terr, attack_with))
+            # The count and the cap above are worked out for the real target; a target
+            # 2 steps away gets the staging move into the friendly territory between
+            if staging_territory is not None:
+                logger.debug(f"AI P{player_index}: {to_terr} is 2 steps from {from_terr} - "
+                             f"staging {attack_with} units in {staging_territory}")
+                attacks.append((from_terr, staging_territory, attack_with))
+            else:
+                attacks.append((from_terr, to_terr, attack_with))
 
             # Track allocated armies
             armies_allocated[from_terr] = already_allocated + attack_with

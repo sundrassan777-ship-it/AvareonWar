@@ -108,12 +108,22 @@ class MilitaryMixin:
         # VALIDATION: Check if unit count matches garrison counts
         unit_list_count = len(all_units)
         if unit_list_count != total_garrison_count:
-            logger.warning(f"[TOOLTIP MISMATCH] {territory}: "
-                  f"Unit list has {unit_list_count} units but garrison counts show {total_garrison_count}")
+            # Warned once per territory and counts: this runs every frame while a tooltip
+            # or the bottom panel shows the territory, and nothing here repairs the counts
+            # (125 identical lines on one PC in the FFA test game of 2026-10-14). The set
+            # is created on first use, so any object using this mixin has it.
+            mismatch = (territory, unit_list_count, total_garrison_count)
+            reported = self.__dict__.setdefault('_reported_composition_mismatches', set())
+            first_report = mismatch not in reported
+            if first_report:
+                reported.add(mismatch)
+                logger.warning(f"[TOOLTIP MISMATCH] {territory}: "
+                      f"Unit list has {unit_list_count} units but garrison counts show {total_garrison_count}")
 
             # Fix the mismatch by truncating unit list to match garrison count
             if unit_list_count > total_garrison_count:
-                logger.warning(f"[TOOLTIP MISMATCH] Truncating unit list from {unit_list_count} to {total_garrison_count}")
+                if first_report:
+                    logger.warning(f"[TOOLTIP MISMATCH] Truncating unit list from {unit_list_count} to {total_garrison_count}")
                 all_units = all_units[:total_garrison_count]
 
         composition = {}
@@ -239,7 +249,8 @@ class MilitaryMixin:
         
         return effectiveness
 
-    def calculate_army_effective_strength(self, composition, enemy_composition, player=None, territory=None, is_keep_phase1=False, unit_avg_levels=None):
+    def calculate_army_effective_strength(self, composition, enemy_composition, player=None, territory=None, is_keep_phase1=False, unit_avg_levels=None,
+                                          battle_context=None):
         """
         Calculate the total effective strength of an army against an enemy.
 
@@ -250,6 +261,9 @@ class MilitaryMixin:
             territory: Optional territory name for location-based bonuses
             is_keep_phase1: Optional flag indicating this is Phase 1 of a Keep battle
             unit_avg_levels: Optional dict {unit_type: avg_level} for veterancy bonus
+            battle_context: Optional BattleContext - a simultaneous round's battle reads
+                Vanquish the Enemy and the territorial bonuses from it (frozen when the
+                round's battles were set up); None = the live values
 
         Returns: float representing total effective strength
         """
@@ -295,13 +309,22 @@ class MilitaryMixin:
                     base_multiplier += 0.20
 
             # Vanquish the Enemy (Neil Hévilneu): +20% strength for Swordsmen, Pikemen, Archers, and Cavalry
+            # (a simultaneous round's battle: the hero as the round's battles began)
             if (unit_type in ['Swordsman', 'Pikeman', 'Archer', 'Cavalry'] and player is not None):
-                if self.player_has_hevilneu(player):
+                if battle_context is not None:
+                    has_vanquish = battle_context.has_hero(player, self.VANQUISH_HEROES)
+                else:
+                    has_vanquish = self.player_has_hevilneu(player)
+                if has_vanquish:
                     base_multiplier += 0.20
 
             # Territorial unit strength bonuses: +10% per bonus territory
+            # (a simultaneous round's battle: the bonuses as the round's battles began)
             if player is not None:
-                territorial_bonuses = self.calculate_player_territorial_bonuses(player)
+                if battle_context is not None:
+                    territorial_bonuses = battle_context.bonuses(player)
+                else:
+                    territorial_bonuses = self.calculate_player_territorial_bonuses(player)
                 if unit_type == 'Pikeman' and 'pikeman_str' in territorial_bonuses:
                     base_multiplier += territorial_bonuses['pikeman_str'] / 100.0
                 elif unit_type == 'Archer' and 'archer_str' in territorial_bonuses:
@@ -505,7 +528,7 @@ class MilitaryMixin:
 
         return total_casualties_applied
 
-    def destroy_buildings(self, territory, previous_owner=None, new_owner=None):
+    def destroy_buildings(self, territory, previous_owner=None, new_owner=None, battle_context=None):
         """
         Destroy all buildings (completed and under construction) in a territory.
 
@@ -516,7 +539,15 @@ class MilitaryMixin:
             territory: Territory name
             previous_owner: Previous owner index (for hero handling)
             new_owner: New owner index (for Champion of the People ability)
+            battle_context: Optional BattleContext - a simultaneous round's battle reads
+                new_owner's Pillage / Champion heroes from it (as the round's battles
+                began); None = the live heroes (every other caller)
         """
+        def new_owner_has(hero_names, live_check):
+            if battle_context is not None:
+                return battle_context.has_hero(new_owner, hero_names)
+            return live_check(new_owner)
+
         # Check for Pillage ability BEFORE destroying buildings
         # Pillage: Award gold if new_owner has Vearen Asford and is destroying an enemy Keep
         keep_existed = False
@@ -533,12 +564,13 @@ class MilitaryMixin:
         # 4. New owner has Vearen Asford active
         if keep_existed and previous_owner is not None and previous_owner >= 0:
             if new_owner is not None and new_owner >= 0 and new_owner != previous_owner:
-                if self.player_has_asford(new_owner):
+                if new_owner_has(self.PILLAGE_HEROES, self.player_has_asford):
                     self.player_gold[new_owner] += 200
                     self.add_message(f"  Pillage! Vearen Asford plunders 200 Gold from the ruins!")
 
         # Check if Champion of the People is active (new owner has Seledra)
-        champion_active = new_owner is not None and new_owner >= 0 and self.player_has_seledra(new_owner)
+        champion_active = (new_owner is not None and new_owner >= 0
+                           and new_owner_has(self.CHAMPION_HEROES, self.player_has_seledra))
 
         # Kill heroes and cancel hero training before destroying buildings
         if previous_owner is not None and territory in self.buildings:
@@ -1530,6 +1562,22 @@ class MilitaryMixin:
     # PHASE 6: EXTRACTED BATTLE RESOLUTION METHODS
     # ========================================
     
+    def capture_battle_context(self):
+        """
+        Freeze what a simultaneous round's battles are fought with: each player's heroes
+        and territorial bonuses, as they stand now (see BattleContext). Called once per
+        round when its battles are set up (SimPhaseManager._setup_battles_for_ui) - the
+        same moment and the same state on every PC, before any battle is resolved.
+        """
+        from game_state import BattleContext
+        players = range(self.num_players)
+        heroes = {player: frozenset(self.heroes.get(player, {})) for player in players}
+        # Copies: the cached dicts are rebuilt (not edited) when ownership changes, but a
+        # copy keeps the frozen values independent of the cache either way
+        bonuses = {player: dict(self.calculate_player_territorial_bonuses(player))
+                   for player in players}
+        return BattleContext(heroes, bonuses)
+
     def _calculate_battle_strengths(self, battle, player_armies):
         """
         Calculate effective strength for each player in battle.
@@ -1565,7 +1613,8 @@ class MilitaryMixin:
             avg_levels = self.get_unit_avg_levels(territory, player) if territory else None
             effective_strength = self.calculate_army_effective_strength(
                 player_composition, enemy_composition, player=player, territory=territory,
-                unit_avg_levels=avg_levels
+                unit_avg_levels=avg_levels,
+                battle_context=getattr(battle, 'battle_context', None)
             )
             player_effective_strengths[player] = effective_strength
             
@@ -1684,13 +1733,15 @@ class MilitaryMixin:
             attacker_avg_levels = self.get_unit_avg_levels(territory, attacker)
             defender_avg_levels = self.get_unit_avg_levels(territory, defender)
             # Calculate EFFECTIVE strengths (counters apply, with conditional bonuses!)
+            # A simultaneous round's battle: heroes / bonuses as the round's battles began
+            battle_context = getattr(battle, 'battle_context', None)
             attacker_strength = self.calculate_army_effective_strength(
                 attacker_comp, garrison_actual, player=attacker, territory=territory, is_keep_phase1=True,
-                unit_avg_levels=attacker_avg_levels
+                unit_avg_levels=attacker_avg_levels, battle_context=battle_context
             )
             garrison_strength = self.calculate_army_effective_strength(
                 garrison_actual, attacker_comp, player=defender, territory=territory, is_keep_phase1=False,
-                unit_avg_levels=defender_avg_levels
+                unit_avg_levels=defender_avg_levels, battle_context=battle_context
             )
 
             comp_str_attacker = self._format_unit_composition(attacker_comp)
@@ -1906,7 +1957,8 @@ class MilitaryMixin:
                         enemy_composition[unit_type] = enemy_composition.get(unit_type, 0) + count
             strengths[player] = self.calculate_army_effective_strength(
                 player_compositions.get(player, {}), enemy_composition, player=player,
-                territory=territory, unit_avg_levels=self.get_unit_avg_levels(territory, player))
+                territory=territory, unit_avg_levels=self.get_unit_avg_levels(territory, player),
+                battle_context=getattr(battle, 'battle_context', None))
             self.add_message(f"    {label(player)}: "
                              f"{self._format_unit_composition(player_compositions.get(player, {}))} "
                              f"(Effective Strength: {strengths[player]:.1f})")
@@ -2310,10 +2362,15 @@ class MilitaryMixin:
                         battle._keep_had_hero = True
                         break
 
+        # A simultaneous round's battle reads its heroes from the round's frozen context
+        # (Pillage, Champion of the People, Scavenge the Fallen); None = live
+        battle_context = getattr(battle, 'battle_context', None)
+
         # Destroy buildings if territory changes hands
         # Champion of the People: Pass winner as new_owner to preserve Farms/Mines
         if not defensive_win:
-            self.destroy_buildings(territory, battle.original_owner, new_owner=new_owner)
+            self.destroy_buildings(territory, battle.original_owner, new_owner=new_owner,
+                                   battle_context=battle_context)
 
         # Safe Haven & Scavenge the Fallen: Check abilities for losing players - every
         # player of every losing side
@@ -2335,8 +2392,18 @@ class MilitaryMixin:
 
                 # Only trigger if loser had armies (actual battle, not empty territory capture)
                 if had_army > 0:
-                    # Scavenge the Fallen: Grant gold to losing player with Darius Brennhen
-                    if self.player_has_darius_brennhen(loser_player):
+                    # Scavenge the Fallen: Grant gold to losing player with Darius Brennhen.
+                    # A simultaneous round's battle: Darius as the round's battles began -
+                    # except one slain in this very battle's Keep (destroy_buildings above
+                    # kills him before this check, as it always did)
+                    if battle_context is not None:
+                        slain_here = [event[1] for event in self._battle_hero_deaths
+                                      if event[0] == loser_player]
+                        has_scavenge = battle_context.has_hero(
+                            loser_player, self.SCAVENGE_HEROES, slain=slain_here)
+                    else:
+                        has_scavenge = self.player_has_darius_brennhen(loser_player)
+                    if has_scavenge:
                         scavenge_gold = 30
                         self.player_gold[loser_player] += scavenge_gold
                         self.add_message(f"  Scavenge the Fallen: Player {loser_player + 1} gains {scavenge_gold} Gold from the battle!")
@@ -3238,10 +3305,15 @@ class MilitaryMixin:
                     comp_key = (territory, winner)
                     arriving_units = moving_units.get(comp_key, [])
                     units = []
+                    # The ally may already stand here, and add_garrison() below appends to
+                    # that garrison: new ids must be free among its units too. Numbering
+                    # from 0 repeated their ids (see GarrisonMixin.next_free_unit_id)
+                    existing_units = list((self.territory_garrisons.get(territory, {})
+                                           .get(winner) or {}).get('units', []))
                     if arriving_units:
                         # Reuse actual unit dicts (preserves xp/level), reassign IDs and status
-                        for i, unit in enumerate(arriving_units[:winner_armies]):
-                            unit['id'] = i
+                        for unit in arriving_units[:winner_armies]:
+                            unit['id'] = self.next_free_unit_id(existing_units + units)
                             unit['status'] = 'moved'
                             unit['order'] = None
                             units.append(unit)
@@ -3252,15 +3324,17 @@ class MilitaryMixin:
                                 if count_added >= winner_armies:
                                     break
                                 # Phase 2E: Use _make_unit() factory
-                                units.append(self._make_unit(unit_type, count_added))
+                                units.append(self._make_unit(
+                                    unit_type, self.next_free_unit_id(existing_units + units)))
                                 count_added += 1
                             if count_added >= winner_armies:
                                 break
                     else:
                         # Fallback: create default Swordsmen
-                        for i in range(winner_armies):
+                        for _ in range(winner_armies):
                             # Phase 2E: Use _make_unit() factory
-                            units.append(self._make_unit('Swordsman', i))
+                            units.append(self._make_unit(
+                                'Swordsman', self.next_free_unit_id(existing_units + units)))
 
                     # Add ally garrison (ownership stays with current_owner)
                     # Use actual unit count to ensure consistency

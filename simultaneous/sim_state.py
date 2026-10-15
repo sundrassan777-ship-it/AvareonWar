@@ -76,6 +76,9 @@ class SimultaneousGameState:
         self.round_number = 1
         # Round whose "--- Round N ---" Action Log marker was already written
         self._logged_round = None
+        # (round, player) whose "Timer expired ... awaiting network ready" was logged
+        # (update_timers() would otherwise log it every frame)
+        self._timer_expiry_logged = set()
 
         # Simultaneous mode phase
         # 'planning' - All players can queue orders
@@ -139,6 +142,11 @@ class SimultaneousGameState:
         # Callback for multiplayer host when round completes
         # Set by main.py to broadcast SIM_ROUND_COMPLETE to clients
         self.on_round_complete_callback = None
+
+        # The Action Log lines the last complete_round() wrote before / after the new
+        # round's "--- Round N ---" marker - the host ships them to the clients
+        self.round_end_messages = []
+        self.round_start_messages = []
 
     def _initialize_timers(self):
         """Initialize planning timers for all players based on research levels."""
@@ -471,7 +479,13 @@ class SimultaneousGameState:
             if self.player_timers[player_id] <= 0:
                 self.player_timers[player_id] = 0
                 if not self._may_auto_ready(player_id):
-                    sim_log.state(f"Timer expired for remote player {player_id} - awaiting network ready")
+                    # Logged once per player and round: this runs every frame until the
+                    # player's ready arrives (648 identical lines over the 3 PCs in the
+                    # FFA test game of 2026-10-14)
+                    expiry = (self.round_number, player_id)
+                    if expiry not in self._timer_expiry_logged:
+                        self._timer_expiry_logged.add(expiry)
+                        sim_log.state(f"Timer expired for remote player {player_id} - awaiting network ready")
                     continue
                 self.mark_ready(player_id)  # Auto-ready when timer expires
 
@@ -548,6 +562,12 @@ class SimultaneousGameState:
             sim_log.sync("complete_round() ignored on a client - waiting for SIM_ROUND_COMPLETE")
             return
 
+        # The Action Log lines this round end writes travel to the clients with
+        # SIM_ROUND_COMPLETE (round_end_messages / round_start_messages below): a client
+        # never runs this method, so it never saw "X trained in Y", "... is ready!" or
+        # "... no longer silenced" for its own empire (FFA test game 2026-10-14)
+        messages_at_start = len(self.gs.messages)
+
         # Apply income and finish constructions/research for all players
         # Note: finish_constructions, finish_research use gs.current_player internally,
         # so we temporarily set it for each player
@@ -610,8 +630,11 @@ class SimultaneousGameState:
         # (The game log / sync log / replay records of the round are written at the end,
         # record_round_boundary())
 
-        # Start new planning phase (resets all 'moved' units to 'ready')
+        # Start new planning phase (resets all 'moved' units to 'ready'). Its own lines
+        # (the "--- Round N ---" marker) are not shipped: a client writes them itself
+        messages_before_planning = len(self.gs.messages)
         self.start_planning_phase()
+        messages_after_planning = len(self.gs.messages)
 
         # NOW finish training for all players - units spawn with 'moved' status
         # and won't be reset since start_planning_phase already ran
@@ -630,6 +653,11 @@ class SimultaneousGameState:
             self.gs.current_player = original_player
 
         self.record_round_boundary()
+
+        # This round end's Action Log lines, on either side of the new round's marker
+        # (sent to the clients - see main.py _sim_broadcast_round_complete)
+        self.round_end_messages = list(self.gs.messages[messages_at_start:messages_before_planning])
+        self.round_start_messages = list(self.gs.messages[messages_after_planning:])
 
         # Callback for multiplayer host to broadcast round completion
         if self.is_multiplayer_host and self.on_round_complete_callback:

@@ -825,6 +825,15 @@ class TechResearcher:
             tech = next((t for t in game_state.technologies if t['id'] == tech_id), None)
             if tech is None:
                 continue
+
+            # The game's own Castle rule (start_research()): a Castle tech can't be
+            # started without a Castle. Unlocked is not enough - the AI picked Supply
+            # and Demand 9 rounds running without a Castle in the FFA test game of
+            # 2026-10-14, and in simultaneous mode its gold stayed reserved for it.
+            # (The Castle upgrade planner still sees these techs and pushes for a Castle.)
+            if tech.get('requires_castle', False) and not game_state.player_has_castle(player_index):
+                continue
+
             cost = tech['cost']
 
             # Check affordability

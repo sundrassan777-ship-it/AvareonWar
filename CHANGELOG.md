@@ -2,6 +2,109 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-14 - Fixes from the FFA test game (game 67546468)
+
+Branch `fix/ffa-game-findings`. The owner's simultaneous FFA (3 humans + Easy AI, 42 rounds)
+was audited host vs clients from the three PCs' logs; each phase fixes verified findings.
+- **Unique unit ids** (Phase 1): simultaneous-mode arrivals numbered a newcomer `len(units)`,
+  so a garrison that had lost a unit that round got two units with one id (Leimarch round 9:
+  `[Cavalry #1, Archer #1]`). Nothing renumbers, so every order naming both twins - the army
+  panel selects all ready units when it opens, "Select All" too - was refused by the host:
+  35 orders over the game, every player and the AI; the reinforcements sent in behind those
+  refused orders then overflowed the army cap (36 units deleted). New
+  `GarrisonMixin.next_free_unit_id()` (lowest free id, the rule training already used) at
+  the arrival sites and in sequential mode's ally reinforcement (numbered from 0 into an
+  existing garrison). Tests: `tests/test_unit_ids.py` (each scenario fails on the old code).
+- **Abilities vs queued units** (Phase 2): Decisive Strike, Royal Charisma and Valorous
+  Charge lowered `moved` for every unit that was not 'ready', but queued ('ordered') units
+  count as unmoved - the victim's banner kept its old strength (Green's PC showed 11 armies
+  where 6 were left, round 28), and the struck units stayed in their planned moves, which
+  the simultaneous host then refused whole (Green's move of unit #6; the AI's in round 18).
+  New `GarrisonMixin._take_unit()`: right counter for every status, the unit leaves its
+  MovementOrder (new list - an order made from the army panel shares the selection list),
+  a move left empty or a two-hop move left without its Captain is cancelled. Tests:
+  `tests/test_ability_queued_units.py` (8 of 9 fail on the old code; the 9th guards the
+  unchanged ready/moved counting).
+- **Moves fitted, not refused - armies never deleted by a failed move** (Phase 3):
+  `_claim_movement_units()` shortens a move to its listed units that are there, ready and
+  unused, refusing it only when none are left (Blue's 6-unit attack on an undefended
+  territory lost 3 units to a Decisive Strike after Ready and none marched); the unmoved-count
+  check in `_validate_movement_order()` now only covers orders without a unit list. New
+  `_finalize_movement_orders()` after the round's non-movement orders, in both the
+  single-player and host paths: re-fits moves to the units still there (an AI hero ability
+  among the round's orders made arrivals invent default Swordsmen - reproduced in a test) and
+  `_fit_moves_to_room()` keeps friendly destinations at the army cap by shortening the latest
+  reinforcements, whose units stay home (the cap had deleted 36 units in that game behind
+  refused outgoing moves). The local player gets a notice + Action Log line for each move that
+  set off shortened or not at all (`'move_shortened'` / `'move_refused'`). Every movement
+  refusal and other players' build/train refusals now log a reason. Tests:
+  `tests/test_move_fitting.py` (12 of 13 fail on the old code).
+- **Client round end** (Phase 4): SIM_ROUND_COMPLETE now waits on a client while its own
+  copy of the round's moves still plays out (`_battles_may_still_appear()`, the TURN_END
+  hold). In 8 battle-free rounds of the test game the host's round end overtook a client's
+  arrivals: no Battle Report for territories lost undefended (Blue: Daomea and Ahtep) and
+  Action Log lines from the pre-move state ("Keep completed" for a Keep the host had
+  cancelled). The host also sends the Action Log lines `complete_round()` writes
+  (`round_end_messages` / `round_start_messages`, split around the round marker); clients
+  show them instead of their own bookkeeping's lines - they had never shown units / heroes
+  trained, abilities ready, silence over or training paused for their own empire (588
+  "trained" lines on the host, none on the clients). The client bookkeeping sets
+  `last_completed_buildings` (its XP counts were off). Tests: `tests/test_round_end_client.py`
+  (the race reproduces Blue's round 10 on the old code). Test isolation found on the way:
+  `tests/test_setup_options.py`'s display fixture now restarts the display - a `Game()` from an
+  earlier module leaves the test display fullscreen at 1024x768 and a plain `set_mode` kept
+  that size, so its tooltip test failed whenever a multiplayer-harness module ran right before it.
+- **The AI plans only what the game accepts** (Phase 5, both turn modes, single-player too):
+  `ai_hero._find_keep_for_training()` now skips a Keep upgrading to a Castle or housing a Hero
+  (`start_hero_training()` steps 4/5b) - it returned Darius's home in 25 rounds (another Keep
+  was free in 16), and in simultaneous mode the doomed Hero's gold was held back, dropping
+  unit training (up to 10 a round) and that Keep's Castle upgrade (every round from 23 to 41).
+  `TechResearcher.select_research_action()` skips `requires_castle` techs without a Castle
+  (`player_has_castle()`, the `start_research()` rule) - Supply and Demand was refused rounds
+  34-42. `AttackPlanner.select_attack_targets()` turns a target 2 steps away into a staging
+  move into the friendly territory between (no army may attack 2 steps away - all 18 dropped
+  AI moves); count and mission cap still follow the real target. Measured in Tale II's start
+  position: 3 of the Kerunians' 7 planned attacks were such moves (1 unit each at an empty
+  neutral), now 1-unit staging moves. Tests: `tests/test_ai_legal_plans.py` +
+  `test_sim_ai_budget.py` (10 of the new tests fail on the old code; the others guard
+  unchanged behaviour).
+- **Small fixes** (Phase 6, simultaneous mode): the sidebar's Cancel Order / CANCEL ALL no
+  longer send `ORDER_REMOVE` - planned moves stay on the planning PC until Ready, so all 16
+  deliveries in the test game failed ("cancel order failed"); sequential mode was left as it
+  was (removed in Phase 7 at the owner's request). Clicking a battle another player resolves shows
+  `'battle_other_resolver'` ("{player} is resolving this battle.") instead of nothing + an
+  ERROR log (Blue: 18 clicks). `get_unit_composition()`'s `[TOOLTIP MISMATCH]` (125 lines on
+  Green's PC) and `update_timers()`' "Timer expired for remote player" (648 lines over the 3
+  PCs) are logged once per mismatch / per player and round instead of every frame. Found and
+  left alone: `handle_right_click()`'s "CASE 2" sends `MOVEMENT_ORDER` in both modes, but
+  `select_army()` - the only way into it - is never called (dead code). Tests:
+  `tests/test_sim_polish.py` (6 of 10 fail on the old code; the others guard unchanged
+  behaviour).
+- **A round's battles come out the same in any order** (Phase 7, simultaneous mode): every
+  PC sets a round's battles up from the same state but resolves its own first, and battles
+  read live heroes and territorial bonuses - 10 of 100 battles differed on a client (round
+  36: Neil Hévilneu slain at Daomea, Red's Aelatania army 24.4 strong / 13 survivors on the
+  host, 20.6 / 12 on Blue; Green twice missed Scavenge the Fallen gold). New `BattleContext`
+  (game_state/__init__.py) captured once per round by `MilitaryMixin.capture_battle_context()`
+  in `SimPhaseManager._setup_battles_for_ui()` and stored on each `Battle`; an optional
+  `battle_context=None` argument (None = live, as before) on `calculate_army_effective_strength()`
+  (passed by `_calculate_battle_strengths()`, `_resolve_keep_battle()`, `_fight_for_the_keep()`
+  and the battle window's bars) and `destroy_buildings()` (Pillage, Champion of the People,
+  from `_update_battle_results()` only); Scavenge the Fallen reads it too, leaving out a hero
+  slain in that very battle (as before). Safe Haven, the battle's own territory and techs stay
+  live; sequential battles carry no context. The passives' hero names are one list each on
+  `HeroMixin` (`VANQUISH_HEROES` etc.), now also used by the four `player_has_*` checks
+  (same answers). Found while verifying: `SIM_ALLIANCE_CHOICE` was applied on arrival, so the
+  host's choice could change a territory's owner on a client whose armies were still
+  marching (before its arrivals and before its battle context), and a client's choice
+  reaching a lagging PC was refused - now held like a battle result. Also at the owner's
+  request: the sidebar's move cancels send no `ORDER_REMOVE` in sequential mode either
+  (measured: never applied - sequential moves reach the other PCs only in `EXECUTE_ORDERS`'
+  snapshot). Tests: `tests/test_battle_context.py` (15; 11 fail on the old code - the two-PC
+  test with the game's own "Replayed battle ... differs from the resolver's result"; the
+  other 4 are the orders the old code already got right) + `tests/test_sim_polish.py`
+  (2 sequential cancel tests fail on the Phase 6 code).
+
 ## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
 
 Branch `feature/steam-sdr`, Phases 1-5, each tested on two PCs with the playtest build. Why:

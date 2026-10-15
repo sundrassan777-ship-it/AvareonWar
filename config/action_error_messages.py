@@ -84,6 +84,11 @@ ACTION_ERROR_MESSAGES = {
     # battles are being resolved.
     'wrong_phase': "Cannot do that while battles are resolving!",
 
+    # Simultaneous mode: clicking the crossed swords of a battle another player
+    # resolves (one player per battle presses FIGHT; the others see the result
+    # when they do). {player} = that player's name.
+    'battle_other_resolver': "{player} is resolving this battle.",
+
     # =====================================================================
     # C. HERO ABILITIES - shared messages (shown after clicking an ability and
     #    then a target territory; targeting stays on so you can pick again)
@@ -182,6 +187,19 @@ ACTION_ERROR_MESSAGES = {
     # is back at the main menu. News, not an error: gold text, no error sound.
     # {friend} = the host's Steam name ("A friend" if Steam does not know it).
     'steam_join_pending': "{friend}'s game opens when you return to the main menu.",
+
+    # Simultaneous turns: when the round starts, one of your planned moves set off
+    # with fewer armies than you sent - some of its units were gone (e.g. a Decisive
+    # Strike after you pressed Ready), or there was no room for them all where they
+    # were going (they stay home). News, not an error: red, no error sound; also
+    # written to your Action Log.
+    # {source} / {target} = the move's territories, {sent} / {planned} = armies.
+    'move_shortened': "Your move from {source} to {target} set off with {sent} of {planned} armies.",
+
+    # Simultaneous turns: when the round starts, one of your planned moves could not
+    # set off at all - none of its units were still there, or there was no room for
+    # any of them. (A move stopped by an enemy army crossing it has its own popup.)
+    'move_refused': "Your move from {source} to {target} could not set off.",
 
     # =====================================================================
     # F. RARE SAFETY MESSAGES (practically never shown - only if the game's

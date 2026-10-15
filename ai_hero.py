@@ -152,9 +152,20 @@ class HeroSelector:
                         territory in game_state.hero_training_queue and
                         plot_idx in game_state.hero_training_queue[territory]
                     )
+                    if is_training:
+                        continue
 
-                    if not is_training:
-                        return (territory, plot_idx)
+                    # The same Keep rules start_hero_training() enforces (its steps 4
+                    # and 5b): a Keep upgrading to a Castle, or one a Hero already lives
+                    # in, refuses a new Hero. Checking only "not training" made the AI
+                    # pick its first Keep - Darius's home - in 25 rounds of the FFA test
+                    # game of 2026-10-14; another Keep was free in 16 of them.
+                    if game_state.is_upgrading_to_castle(territory, plot_idx):
+                        continue
+                    if game_state.keep_has_hero(territory, plot_idx, player_index):
+                        continue
+
+                    return (territory, plot_idx)
 
         return None
 
