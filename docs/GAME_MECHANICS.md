@@ -416,6 +416,10 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
 - Execute in Orders Phase
 - Can cancel before executing
 - Visual arrows show planned moves
+- A unit that a hero ability kills, steals or moves away (Decisive Strike, Royal Charisma,
+  Valorous Charge) leaves the move it was planned in; the rest of the move goes on. A move
+  left with no units is cancelled, and so is a Captain's two-territory move whose Captain
+  was taken.
 
 **Building Orders:**
 - One building per turn max

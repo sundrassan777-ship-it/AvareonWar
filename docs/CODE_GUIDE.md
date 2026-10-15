@@ -2473,6 +2473,16 @@ Rules:
   `picked_units` (`_last_decisive_strike_removed` / `_last_valorous_charge_moved` →
   `pre_selected_units`, matched by `HeroMixin._match_pre_selected_units()`, which uses a
   same-owner same-type stand-in when a picked unit is missing).
+- **An ability that takes units out of a garrison uses `GarrisonMixin._take_unit()`**
+  (Decisive Strike, Royal Charisma, Valorous Charge). It lowers `unmoved` for 'ready' AND
+  'ordered' units (`moved` only for 'moved'), and takes the unit out of its live
+  MovementOrder - new `unit_ids` list (a move made from the army panel shares the panel's
+  selection list), `army_count` recounted, the move cancelled through
+  `cancel_movement_order()` when empty or when a two-hop move lost its Captain. The old
+  loops lowered `moved` for queued units: the victim's banner kept the old strength, and
+  the simultaneous host refused the whole move that still named a dead unit (FFA game
+  2026-10-14, Green's round 28). Runs on every PC with the shipped picks, so the victim's
+  own PC fixes its own planned moves. Tests: `tests/test_ability_queued_units.py`.
 
 **Held messages:** a result can arrive while this PC's own copy of the move is still
 animating, so the battle does not exist here yet. `_handle_remote_battle_resolve()` then

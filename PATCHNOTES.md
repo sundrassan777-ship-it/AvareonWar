@@ -15,6 +15,12 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   whole army did nothing - round after round. Units joining an army now always get their own
   place in it, so whole armies move again. Computer players were affected too and no longer
   lose their moves this way.
+- **Decisive Strike, Royal Charisma and Valorous Charge on armies with planned moves.** When
+  these abilities took units from an army you had already given orders to, your army banner
+  kept showing its old strength, and the whole planned move could fail because it still
+  counted the lost units. Now the banner shows what is left, the lost units simply leave the
+  move, and the rest of the army still marches. A move with no units left is cancelled, and
+  so is a Captain's two-territory move whose Captain was taken.
 
 ---
 

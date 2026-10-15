@@ -708,6 +708,59 @@ class GarrisonMixin:
             next_id += 1
         return next_id
 
+    def _take_unit(self, garrison, unit):
+        """
+        Take one unit out of its garrison - a hero ability killing, stealing or moving it
+        (Decisive Strike, Royal Charisma, Valorous Charge).
+
+        Counters: 'ordered' units (in a planned move) count as unmoved, like 'ready' ones
+        (see _sync_garrison_counts). The abilities lowered 'moved' for anything that was
+        not 'ready', so taking out a queued unit left 'unmoved' too high and the army
+        banner, drawn from the counters, kept the old strength. FFA test game 2026-10-14:
+        Green's PC showed 11 armies (3 flags) where 6 units were left.
+
+        Planned moves: the unit also leaves the move it was queued in. A move that still
+        named a dead unit was refused whole by the simultaneous host, its surviving
+        units included. A move left with no units, or a two-hop (Captain) move left
+        without its Captain, is cancelled like a click on Cancel would.
+
+        Args:
+            garrison: the player's garrison dict holding the unit
+            unit: the unit dict to take out (the object in garrison['units'])
+        """
+        units = garrison.get('units', [])
+        for index, candidate in enumerate(units):
+            if candidate is unit:
+                del units[index]
+                break
+        else:
+            units.remove(unit)  # an equal copy (raises ValueError if absent, as before)
+
+        if unit.get('status') == 'moved':
+            garrison['moved'] = max(0, garrison.get('moved', 0) - 1)
+        else:  # 'ready' or 'ordered'
+            garrison['unmoved'] = max(0, garrison.get('unmoved', 0) - 1)
+
+        order = unit.get('order')
+        unit['order'] = None
+        if order is None or not any(o is order for o in self.movement_orders):
+            return  # not in a live planned move (stale reference or no order)
+
+        # A new list, never an in-place edit: a move created from the army panel keeps
+        # the panel's own selection list as its unit_ids
+        remaining = list(order.unit_ids)
+        if unit.get('id') in remaining:
+            remaining.remove(unit.get('id'))
+        order.unit_ids = remaining
+        order.army_count = len(remaining)
+
+        lost_captain = (getattr(order, 'intermediate_territory', None) is not None
+                        and not any(u.get('type') == 'Captain' and u.get('id') in remaining
+                                    for u in units))
+        if not remaining or lost_captain:
+            index = next(i for i, o in enumerate(self.movement_orders) if o is order)
+            self.cancel_movement_order(index)
+
     def _create_default_units(self, total_count, unmoved_count):
         """
         Helper to create default Swordsman units with correct statuses.

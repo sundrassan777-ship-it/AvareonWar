@@ -15,6 +15,16 @@ was audited host vs clients from the three PCs' logs; each phase fixes verified 
   `GarrisonMixin.next_free_unit_id()` (lowest free id, the rule training already used) at
   the arrival sites and in sequential mode's ally reinforcement (numbered from 0 into an
   existing garrison). Tests: `tests/test_unit_ids.py` (each scenario fails on the old code).
+- **Abilities vs queued units** (Phase 2): Decisive Strike, Royal Charisma and Valorous
+  Charge lowered `moved` for every unit that was not 'ready', but queued ('ordered') units
+  count as unmoved - the victim's banner kept its old strength (Green's PC showed 11 armies
+  where 6 were left, round 28), and the struck units stayed in their planned moves, which
+  the simultaneous host then refused whole (Green's move of unit #6; the AI's in round 18).
+  New `GarrisonMixin._take_unit()`: right counter for every status, the unit leaves its
+  MovementOrder (new list - an order made from the army panel shares the selection list),
+  a move left empty or a two-hop move left without its Captain is cancelled. Tests:
+  `tests/test_ability_queued_units.py` (8 of 9 fail on the old code; the 9th guards the
+  unchanged ready/moved counting).
 
 ## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
 

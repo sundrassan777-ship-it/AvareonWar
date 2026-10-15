@@ -1072,16 +1072,11 @@ class HeroMixin:
             [garrison_owner, unit['id'], unit['type']] for garrison_owner, unit in units_to_remove
         ]
 
-        # Remove the selected units from their respective garrisons
+        # Remove the selected units from their respective garrisons. _take_unit() keeps
+        # the counters right for queued ('ordered') units and takes each unit out of the
+        # move it was planned in (a move naming a dead unit was refused whole)
         for garrison_owner, unit in units_to_remove:
-            garrison = all_garrisons[garrison_owner]
-            garrison['units'].remove(unit)
-
-            # Update garrison counters based on unit status
-            if unit['status'] == 'ready':
-                garrison['unmoved'] = max(0, garrison['unmoved'] - 1)
-            else:
-                garrison['moved'] = max(0, garrison['moved'] - 1)
+            self._take_unit(all_garrisons[garrison_owner], unit)
 
         # Sync to legacy system
         self.sync_legacy_garrison_data(target_territory)
@@ -1195,14 +1190,9 @@ class HeroMixin:
 
         # Move units from origin garrison to target garrison
         for unit in units_to_transfer:
-            # Remove from origin garrison
-            origin_units.remove(unit)
-
-            # Update origin garrison counters
-            if unit['status'] == 'ready':
-                origin_garrison['unmoved'] = max(0, origin_garrison['unmoved'] - 1)
-            else:
-                origin_garrison['moved'] = max(0, origin_garrison['moved'] - 1)
+            # Remove from origin garrison (counters right for queued units too, and the
+            # unit leaves any move the caster had planned for it)
+            self._take_unit(origin_garrison, unit)
 
             # Find next available ID in target garrison
             existing_ids = [u['id'] for u in target_garrison['units']]
@@ -1343,16 +1333,10 @@ class HeroMixin:
             for garrison_owner, unit in stolen_units
         ]
 
-        # Remove stolen units from their respective garrisons
+        # Remove stolen units from their respective garrisons (counters right for queued
+        # units too, and each unit leaves the move its owner had planned for it)
         for garrison_owner, unit in stolen_units:
-            garrison = all_garrisons[garrison_owner]
-            garrison['units'].remove(unit)
-
-            # Update garrison counters
-            if unit['status'] == 'ready':
-                garrison['unmoved'] = max(0, garrison['unmoved'] - 1)
-            else:
-                garrison['moved'] = max(0, garrison['moved'] - 1)
+            self._take_unit(all_garrisons[garrison_owner], unit)
 
         # Check if Narn's Keep has Haste effect
         haste_affected_territories = self.get_haste_affected_territories(owner)
