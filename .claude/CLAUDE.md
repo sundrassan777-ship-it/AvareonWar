@@ -189,6 +189,7 @@ AvareonWar/
 - [tests/test_cutscene_volume.py](tests/test_cutscene_volume.py) - Cutscene voice/music follow the master volume (muted game = silent cutscenes)
 - [tests/test_map_top_bar.py](tests/test_map_top_bar.py) - Setup map top bar (Custom Game, lobby host, lobby client): layout at 720p-1440p (inside the strip, no overlaps, labels inside frames, both buttons one width), hover < flash pixel audit, Show Borders glow, Randomize / arrows / name / borders clicks with one sound each, a client's greyed Randomize does nothing, modals clear hover, the host's random starts reach a client
 - [tests/test_random_starts.py](tests/test_random_starts.py) - Random starting positions: both maps x 2-4 players x seeds (distinct, >=4 territories between, no Fortress), gap relaxes only as needed on small maps, Custom Game slots, lobby claim records follow the new picks
+- [tests/test_lobby_chat.py](tests/test_lobby_chat.py) - Multiplayer lobby chat: model (cleaning, 200-line cap, team visibility, unread), network over the harness (host -> clients, client -> host -> other client, team lines shown to the team only, a line for another slot dropped, join / leave / kick lines, one click per burst, a LOBBY_CHAT reaching a running game adds nothing to its chat, run() clears it), the panel (geometry at 720p-1440p, collapsed at start, bookmark / round button / F2, map clicks + hover blocked under it, wheel, keyboard flow incl. Escape not leaving, 100-character cap, modal windows keep their keys, hover < flash audit, unread badge)
 - [tests/test_setup_options.py](tests/test_setup_options.py) - Setup screens: Additional Options window (inside the frame at 720p-1440p, confirm/cancel/Escape, read-only client view, map hover blocked), Starting Gold (typing, clamp, Custom + lobby + network + `initialize_game`), label tooltips, wood/bronze frames and lobby row layout
 - [tests/test_game_logger.py](tests/test_game_logger.py) - Per-game JSON log: round records list their battles / buildings, rounds numbered from 1 in both modes, the unfinished last round written, sequential rounds still counted once player 0 is out
 - [tests/test_upnp.py](tests/test_upnp.py) - UPnP setup without a network (miniupnpc 2.3 raising "Success" = no router found), discovery retry, `is_complete()` only after the public-IP lookup, join-address order
@@ -221,7 +222,7 @@ AvareonWar/
 - [rendering/panel_renderer.py](rendering/panel_renderer.py) - Panel layout
 - [rendering/helpers.py](rendering/helpers.py) (~527 lines) - Drawing utilities
 - [rendering/map_extension.py](rendering/map_extension.py) - Fills the strip past the map's east edge at low zoom (generated edge-stretch fading into fog, or a painted `<background>_east.png`)
-- [rendering/sidebar_widgets.py](rendering/sidebar_widgets.py) - `SidebarWidgets` (`game.sidebar_widgets`): cached drawing kit for the right sidebar (capped text, 9-sliced wood/bronze frames, cards, buttons, chips, ribbons, tech arrows, scrollbars, clip helpers)
+- [rendering/sidebar_widgets.py](rendering/sidebar_widgets.py) - `SidebarWidgets` (`game.sidebar_widgets`): cached drawing kit for the right sidebar (capped text, 9-sliced wood/bronze frames, cards, buttons, chips, ribbons, tech arrows, scrollbars, clip helpers); module functions shared with the lobby chat panel (round toggle, tab badge, panel border, chat line)
 - [rendering/bottom_panel_kit.py](rendering/bottom_panel_kit.py) - `BottomPanelKit` (`game.bottom_panel_kit`): bottom panel sections (`section_rect`), centred headline + gold rule, CampaignBTN buttons with a tinted wooden window, BattleBar timer, T-divider rule, traced tutorial outline; fonts sized by panel height
 - [rendering/action_log_model.py](rendering/action_log_model.py) - Pure Action Log model: message classification, grouping by turn, per-player visibility, filter chips (`FILTERS`), badge categories
 
@@ -239,6 +240,8 @@ AvareonWar/
 - [network/steam_bridge.py](network/steam_bridge.py) - Joining through Steam's relay (no port forwarding): the loopback bridge between Steam connections and the unchanged TCP server / client
 - [network/state_snapshot.py](network/state_snapshot.py) - Whole-game snapshots (`build_snapshot` / `apply_snapshot`) on top of the save serializer, for "this is the true state" messages
 - [network/lobby.py](network/lobby.py) - Multiplayer lobby management
+- [network/lobby_chat.py](network/lobby_chat.py) - Lobby chat model (`LobbyChat`): lines, text cleaning, team visibility, unread count; separate from the game's chat (LOBBY_CHAT message), cleared when the lobby ends
+- [ui/lobby_chat_panel.py](ui/lobby_chat_panel.py) - Lobby chat panel: collapsible right panel with one "Chat" bookmark, built from the in-game sidebar's art and helpers (starts collapsed, unread badge, input field)
 - [network/multiplayer_setup.py](network/multiplayer_setup.py) - Multiplayer configuration UI
 - [network/territory_selector.py](network/territory_selector.py) - Multiplayer territory selection UI
 
@@ -574,6 +577,7 @@ After making code changes, ask yourself:
 - Change Steam invite auto-connect → `main.py` (`steam_invite_join` action, `+connect` launch param - read by `steam_manager.launch_connect_target()`, Steam's launch command line first, argv as fallback)
 - Change Steam player name behavior → `main_menu.py` `_open_profile()` + `_draw_profile_panel()`
 - Multiplayer lobby → `network/lobby.py`; lobby UI / slot seating / launch → `network/territory_selector.py` (slot = the server's player index, never look players up by name; a client's slot update changes only its own colour / team)
+- Lobby chat → model `network/lobby_chat.py`, panel `ui/lobby_chat_panel.py`, send / receive / System lines in `territory_selector.py` (`send_lobby_chat()`, `_receive_lobby_chat()`), keys via `TerritorySelector.handle_key()`. **Keep it separate from the game's chat** (LOBBY_CHAT, never CHAT_MESSAGE; nothing passed to the game; cleared in `run()`'s `finally`). Sidebar look changes go to the shared helpers in `rendering/sidebar_widgets.py`. See "Lobby chat" in CODE_GUIDE.md
 - Modify player level/XP → `player_level.py`
 - Change level formula/XP amounts → `player_level.py` constants
 - Player level profile UI → `main_menu.py` `_draw_profile_panel()`

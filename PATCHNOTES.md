@@ -4,12 +4,18 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
-## Game Setup: Random Starting Positions and a Clearer Map Bar
+## Game Setup: Lobby Chat, Random Starting Positions and a Clearer Map Bar
 
 *15 October 2026*
 
 ### New
 
+- **Chat in the multiplayer lobby.** Talk to the other players before the game starts:
+  open the Chat bookmark at the right edge of the map, or just press Enter and type. Press
+  Tab to write to your team only. A gold number on the bookmark tells you when someone has
+  written, and you hear a soft click. You also see when players join or leave the lobby.
+  The lobby chat is separate from the chat in the game and is cleared once the lobby
+  ends. Escape stops typing without leaving the lobby.
 - **Randomize Starting Positions.** A new button above the map in Custom Game and
   multiplayer setup gives every player, human or computer, a random starting territory.
   Starts are always spread out, with at least 4 territories between any two players, and

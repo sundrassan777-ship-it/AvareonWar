@@ -386,6 +386,15 @@ Next Turn
 Randomize Starting Positions and the map arrows are host-only (clients: greyed button,
 no arrows); Show Borders is per PC (`show_setup_borders` in config.json).
 
+**Lobby chat** (`network/lobby_chat.py`, `ui/lobby_chat_panel.py`):
+| Item | Value |
+|------|-------|
+| Keys | Enter = open + type / send, TAB = all ↔ team, Esc = stop typing (2nd Esc leaves the lobby), F2 = collapse / expand |
+| Line length | 100 characters (`MAX_LENGTH`) |
+| History | last 200 lines (`MAX_ENTRIES`), cleared when the lobby ends |
+| New-message click | at most one per 0.4 s (`CHAT_SOUND_GAP_SECONDS`) |
+| Network | `LOBBY_CHAT` (clients: own slot only, relayed by the server; ignored by the game) |
+
 **Player Slots:**
 | Slot | Index | Options |
 |------|-------|---------|

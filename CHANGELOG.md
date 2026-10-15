@@ -2,6 +2,32 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-15 - Multiplayer lobby chat
+
+Branch `feature/setup-map-top-bar` (with the map top bar below). Owner: a chat in the
+multiplayer lobby for coordinating before the game, as a collapsible right panel like the
+in-game sidebar with a single "Chat" bookmark.
+- **Model + network** (Phase 1): `network/lobby_chat.py` `LobbyChat` (control characters
+  stripped, 100 characters per line, last 200 lines, team lines shown to the team only,
+  unread count). New message type `LOBBY_CHAT` (`protocol.create_lobby_chat()`, validated
+  like CHAT_MESSAGE; clients may send it for their own slot only, relayed by the server).
+  **Separate from the game's chat** (owner): the game drops a LOBBY_CHAT that arrives after
+  launch, and nothing is carried into the game; `TerritorySelector.run()` clears the chat
+  however the lobby ends. "Joined / left the lobby" System lines (incl. the host's kick),
+  a click for someone else's line (one per burst).
+- **Shared sidebar chrome**: the round toggle, the bookmark badge, the bronze panel edge and
+  the chat line moved from `Game` / `UIRenderer` into `rendering/sidebar_widgets.py`
+  (`build_toggle_sprite()`, `draw_tab_badge()`, `draw_panel_border()`,
+  `chat_entry_layout()` / `draw_chat_entry()`); the game delegates (look unchanged).
+- **Panel** (Phase 2): `ui/lobby_chat_panel.py` `LobbyChatPanel` - RightPanel.jpg, ribbon
+  bookmark, round button, slide, unread count, message list, input field; spans the map's
+  height at the right edge, starts collapsed. Enter opens + types / sends (typing goes on),
+  TAB all / team, Escape stops typing and never leaves the lobby mid-sentence, F2 / round
+  button collapse. Clicks, hover and the wheel over it never reach the map; Additional
+  Options and the friend picker keep their keys. `TerritorySelector.handle_key()` /
+  `handle_wheel()` now hold the event loop's key / wheel routing.
+- Tests: `tests/test_lobby_chat.py` (28).
+
 ## 2026-10-15 - Setup screens: map top bar (Randomize Starting Positions, map name, Show Borders)
 
 Branch `feature/setup-map-top-bar`. The strip above the setup map (Custom Game and the

@@ -30,7 +30,7 @@ This guide provides module-specific guidance on when and how to modify different
 19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
-22. [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby) - Additional Options window, map top bar (Randomize Starting Positions, map name, Show Borders), random starts, Starting Gold, label tooltips, framed art
+22. [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby) - Additional Options window, map top bar (Randomize Starting Positions, map name, Show Borders), random starts, lobby chat, Starting Gold, label tooltips, framed art
 
 ---
 
@@ -1094,7 +1094,7 @@ section above.)
 
 | File | Role |
 |---|---|
-| `rendering/sidebar_widgets.py` | `SidebarWidgets` (`game.sidebar_widgets`): fonts / text, 9-sliced frames, cards, buttons, chips, headers, separators, progress bars, scrollbars, bookmark sprites, tech arrows, clip helpers. Everything cached; `invalidate()` is called by `apply_display_settings()` |
+| `rendering/sidebar_widgets.py` | `SidebarWidgets` (`game.sidebar_widgets`): fonts / text, 9-sliced frames, cards, buttons, chips, headers, separators, progress bars, scrollbars, bookmark sprites, tech arrows, clip helpers. Everything cached; `invalidate()` is called by `apply_display_settings()`. Module functions shared with the multiplayer lobby's chat panel: `build_toggle_sprite()` (round button), `draw_tab_badge()`, `draw_panel_border()`, `chat_entry_layout()` / `draw_chat_entry()` (one chat line) — the `Game` / `UIRenderer` methods delegate to them, so change the look there once. `SidebarWidgets` only needs its host to offer `ui_scale`, `font_manager`, `screen`, `mouse_pos`, `clicked_element`, `is_sidebar_animating()` (a `Game`, or `LobbyChatPanel`) |
 | `ui/sidebar_layout.py` | Also `content_geometry()`, `ScrollState`, `compute_tab_rects()` (pure, unit-tested) |
 | `rendering/action_log_model.py` | Pure Python: `classify()`, `ActionLogModel`, `FILTERS`, `BADGE_CATEGORIES` |
 | `rendering/ui_renderer.py` | `_draw_sidebar_tab_buttons()` and one `_draw_<tab>_content()` per tab |
@@ -2191,7 +2191,11 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
   own `timestamp` is the client PC's clock, which can be minutes off - a claim "earlier"
   than the holder's took their territory (`claim_territory()` swaps), and a non-number
   crashed the host's lobby. The claim's `player_name` is not applied (the slot keeps the
-  name the server sanitised at join).
+  name the server sanitised at join). LOBBY_CHAT (lobby chat line): the server keeps it to
+  the sender's own slot (`_SENDER_FIELDS`) and relays it; the host also ignores a line from
+  a slot that is not in the lobby; every PC ignores a line whose index is not a slot and
+  strips control characters (`network/lobby_chat.clean_text()`). The game drops LOBBY_CHAT
+  (a line in flight at launch) - see "Lobby chat".
 - Not checked: what the turn owner does in its own sequential turn (its snapshot is the
   truth by design), cooldowns / silence (timing differs per PC).
 
@@ -2409,9 +2413,9 @@ reason needs a tooltip entry (a test enforces it).
 - Territory claiming with first-come-wins
 - Host-only kick and launch controls
 - Additional Options (shared window, read-only for clients), the map top bar (host-only
-  Randomize Starting Positions + map arrows, Show Borders), label tooltips, framed
-  selectors and the bronze player-block frame: see
-  [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby)
+  Randomize Starting Positions + map arrows, Show Borders), the lobby chat (LOBBY_CHAT,
+  collapsible panel), label tooltips, framed selectors and the bronze player-block frame:
+  see [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby)
 
 **Slot identity = the server's player index.** The host seats a `LOBBY_JOIN` in exactly
 `data['player_index']` (the index the server put in the client's `CONNECT_ACCEPT` and
@@ -4799,6 +4803,55 @@ at 720p / 900p / 1080p / 1440p), left to right:
   slot's **claim record** and claims the new ones, so a client's later claim is judged
   against the new picks) → one `LOBBY_STATE` broadcast. A host map change also clears the
   claim records now (they used to outlive the map).
+
+### Lobby chat (multiplayer lobby only)
+
+A chat for coordinating before the game: a collapsible panel on the right of the lobby map
+with a single "Chat" bookmark, built like the in-game right sidebar.
+
+| File | Role |
+|---|---|
+| `network/lobby_chat.py` | `LobbyChat` model (no pygame): `add_player_line()` / `add_system_line()`, `clean_text()` (control characters out, `MAX_LENGTH` 100), last `MAX_ENTRIES` 200 lines, `is_visible()` / `visible()`, `unread_count()` / `mark_seen()`, `clear()` |
+| `ui/lobby_chat_panel.py` | `LobbyChatPanel`: geometry, slide, art, bookmark, round button, unread badge, message list, input field, `handle_click()` / `handle_key()` / `handle_wheel()` / `contains()`. It is the `SidebarWidgets` host and draws with the shared sidebar helpers (see "Right sidebar: tab content, widget kit and extras") |
+| `network/territory_selector.py` | `lobby_chat` + `chat_panel`; `send_lobby_chat()`, `_receive_lobby_chat()`, the System lines, `handle_key()` / `handle_wheel()` (the event loop's key and wheel routing) |
+
+**Owner rules:**
+- **Separate from the game's chat.** Own message type `LOBBY_CHAT` (never CHAT_MESSAGE);
+  `main.py` drops one that arrives after launch, so a lobby line in flight never lands in
+  game chat. Nothing is carried into the game — **don't pass the history to the game
+  config.**
+- **Ends with the lobby:** `TerritorySelector.run()` clears it in its `finally` (left,
+  closed, launched); a new lobby starts empty.
+- Starts collapsed; gold unread count on the bookmark (others' lines this player can see,
+  not System lines); the panel marks everything seen while it is open.
+- 'all' or 'team' (TAB). Like game chat, team lines reach every PC and are filtered for
+  display: the line keeps the sender's lobby team **as it was when the line arrived on
+  this PC** (from this PC's lobby state, not the message), shown to the sender and to
+  players now on that team.
+- "X joined / left the lobby" System lines are made on each PC from LOBBY_JOIN /
+  LOBBY_LEAVE (own join skipped; the host's `_kick_player()` writes its own, since the
+  server's LOBBY_LEAVE finds the slot already empty).
+- A click (`sound_manager.play_ui_click()`) for someone else's visible line, at most one per
+  `CHAT_SOUND_GAP_SECONDS` (a burst of lines plays one).
+
+**Flow:** `send_lobby_chat()` shows the line here at once, then the host broadcasts it and a
+client sends it to the host (the server relays it to the other clients — LOBBY_CHAT is in
+`_RELAY_MESSAGE_TYPES`). `_receive_lobby_chat()` ignores its own echo.
+
+**Input** (`TerritorySelector.handle_key()` order): Additional Options takes every key while
+open; the friend picker only Escape; then the chat — Enter opens it and starts typing; while
+typing it takes every key (Enter sends and typing goes on, TAB channel, Backspace, Escape
+stops typing and clears the line) — so **Escape never leaves the lobby while typing**; else
+Escape leaves. F2 / the round button collapse, the bookmark opens (as in game). Clicks,
+hover and the wheel over the panel never reach the map (`chat_panel.contains()` in
+`handle_hover()`, `handle_click()` right after the map top bar).
+
+**Geometry:** the map's height (`map_y` .. bottom of the map) at the screen's right edge —
+the map top bar stays free; 250 px panel + 40 px bookmark column (`UIConstants`), one
+bookmark as tall as one of the game's six. Its bookmark is always lit, so its click flash
+is the lit sprite brightened (the kit's `'flash'` look is for an unlit bookmark).
+
+Tests: `tests/test_lobby_chat.py` (model, network over `tests/mp_harness.py`, the panel).
 
 ### Framed art
 

@@ -794,6 +794,19 @@ button tells the host which one is missing):
 (Neutral Armies placement) are sent in `LOBBY_LAUNCH`, so every player starts the
 identical game. A player joins the slot the host's server assigned and keeps it.
 
+**Lobby chat** (multiplayer lobby only):
+- A "Chat" bookmark at the right edge of the lobby map opens a chat panel (it starts
+  collapsed; a gold count on the bookmark shows new messages from other players, and a
+  click sounds when someone writes).
+- **Enter** opens the chat and starts typing, **Enter** sends, **TAB** switches between
+  everyone and your team, **Escape** stops typing (it does not leave the lobby while you
+  type). **F2** or the round button closes the panel.
+- Team messages are seen only by players on the sender's team in the lobby.
+- "Name joined / left the lobby" lines show who came and went.
+- The lobby chat is separate from the in-game chat: it is cleared when the lobby ends
+  (leaving, or the game starting) and nothing of it carries into the game.
+- Up to 100 characters per message; the last 200 messages are kept.
+
 ### Teams & Alliances
 
 **Team Benefits:**
