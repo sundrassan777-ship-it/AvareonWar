@@ -1081,7 +1081,11 @@ Units spawning from Barracks in simultaneous mode:
   open, so a round can never stall.
 - **The round ends when everything is settled** - every battle fought, every alliance
   choice made, and every battle report closed (a battle's result is shared when its report
-  is closed).
+  is closed). Every player's game first finishes playing out the round's moves, so a
+  territory you lost undefended always gets its Battle Report.
+- **Round news for everyone:** units and heroes finished, abilities ready again, silence
+  over and the like appear in every player's Action Log at the start of the round, not
+  only the host's.
 - **AI battles and choices** are always made on the host's PC (2-second delay, so the grey
   marker is visible), and the results reach every player.
 - **Leaving:** a player who disconnects is replaced by a **Medium AI** for the rest of the

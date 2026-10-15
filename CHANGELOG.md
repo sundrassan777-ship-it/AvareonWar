@@ -39,6 +39,21 @@ was audited host vs clients from the three PCs' logs; each phase fixes verified 
   set off shortened or not at all (`'move_shortened'` / `'move_refused'`). Every movement
   refusal and other players' build/train refusals now log a reason. Tests:
   `tests/test_move_fitting.py` (12 of 13 fail on the old code).
+- **Client round end** (Phase 4): SIM_ROUND_COMPLETE now waits on a client while its own
+  copy of the round's moves still plays out (`_battles_may_still_appear()`, the TURN_END
+  hold). In 8 battle-free rounds of the test game the host's round end overtook a client's
+  arrivals: no Battle Report for territories lost undefended (Blue: Daomea and Ahtep) and
+  Action Log lines from the pre-move state ("Keep completed" for a Keep the host had
+  cancelled). The host also sends the Action Log lines `complete_round()` writes
+  (`round_end_messages` / `round_start_messages`, split around the round marker); clients
+  show them instead of their own bookkeeping's lines - they had never shown units / heroes
+  trained, abilities ready, silence over or training paused for their own empire (588
+  "trained" lines on the host, none on the clients). The client bookkeeping sets
+  `last_completed_buildings` (its XP counts were off). Tests: `tests/test_round_end_client.py`
+  (the race reproduces Blue's round 10 on the old code). Test isolation found on the way:
+  `tests/test_setup_options.py`'s display fixture now restarts the display - a `Game()` from an
+  earlier module leaves the test display fullscreen at 1024x768 and a plain `set_mode` kept
+  that size, so its tooltip test failed whenever a multiplayer-harness module ran right before it.
 
 ## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
 

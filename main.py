@@ -2345,6 +2345,16 @@ class Game:
         elif msg_type == MessageType.SIM_ROUND_COMPLETE:
             # Round finished, start new planning phase (client receives this)
             if self.sim_state is not None and self.local_player_index != 0:
+                # Wait until this PC's own copy of the round's moves has played out (the
+                # same hold as TURN_END). In a round without battles the host finishes
+                # ~0.5 s after SIM_ALL_READY, and this message could arrive while our
+                # armies were still marching: the arrivals were then skipped - no Battle
+                # Report for a territory lost undefended (FFA test game 2026-10-14, Blue
+                # lost Daomea and Ahtep without one) and Action Log lines from the state
+                # before the moves (a "completed" Keep the host had cancelled).
+                if allow_hold and self._battles_may_still_appear():
+                    self._hold_network_message(message)
+                    return
                 self._sim_apply_round_complete(data)
 
         else:
@@ -2890,17 +2900,21 @@ class Game:
         for orders in self.sim_state.player_orders.values():
             orders.clear()
 
-        # This PC's own round-end bookkeeping - for its Action Log (income lines,
-        # finished buildings and research). Every value it produces is replaced by the
-        # host's snapshot below. (Training is NOT run here: the host's snapshot already
-        # holds the new units, and finishing it twice would duplicate them.)
+        # This PC's own round-end bookkeeping - it feeds this PC's game log (buildings,
+        # research). Every value it produces is replaced by the host's snapshot below.
+        # (Training is NOT run here: the host's snapshot already holds the new units, and
+        # finishing it twice would duplicate them.)
+        messages_before_rerun = len(gs.messages)
         original_player = gs.current_player
         try:
             for player_id in range(gs.num_players):
                 if player_id not in self.sim_state.eliminated_players:
                     gs.collect_income(player_id)
                     gs.current_player = player_id
-                    gs.finish_constructions()
+                    # Like the host's complete_round(): the XP ticks skip buildings that
+                    # just finished (left unset, they were counted - "+20 XP to 38" where
+                    # the host awarded 36)
+                    gs.last_completed_buildings = gs.finish_constructions()
                     gs.finish_research()
                     gs.finish_castle_upgrades()
                     gs._tick_building_xp()
@@ -2908,10 +2922,25 @@ class Game:
         finally:
             gs.current_player = original_player
 
+        # Action Log: the host's own lines of this round end replace this PC's copy, which
+        # never had training, heroes, abilities ready or silence over in it (only the host
+        # runs those) and could differ. A host without these fields: keep our copy.
+        round_end_lines = data.get('round_end_messages')
+        round_start_lines = data.get('round_start_messages')
+        if isinstance(round_end_lines, list) and isinstance(round_start_lines, list):
+            del gs.messages[messages_before_rerun:]
+            gs.messages.extend(str(line) for line in round_end_lines)
+            logger.debug(f"[NETWORK] Round {round_number}: {len(round_end_lines)} + "
+                         f"{len(round_start_lines)} Action Log lines from the host")
+        else:
+            round_start_lines = []
+
         # New planning phase BEFORE the snapshot: start_planning_phase() resets 'moved'
         # units to 'ready', and the snapshot's statuses (new units 'moved') must win
         self.sim_state.round_number = round_number
         self.sim_state.start_planning_phase()
+        # The new round's own lines (units / heroes trained) follow its marker, as on the host
+        gs.messages.extend(str(line) for line in round_start_lines)
 
         snapshot = data.get('snapshot')
         if snapshot:
@@ -2994,6 +3023,11 @@ class Game:
             # sim_state round data (not part of GameState)
             'eliminated_players': list(self.sim_state.eliminated_players) if self.sim_state else [],
             'overflow_territories': dict(self.sim_state.overflow_territories) if self.sim_state else {},
+            # The round end's Action Log lines (units / heroes trained, abilities ready,
+            # silence over, income, buildings ...) - the clients show them in place of
+            # their own approximate copy (_sim_apply_round_complete)
+            'round_end_messages': list(self.sim_state.round_end_messages) if self.sim_state else [],
+            'round_start_messages': list(self.sim_state.round_start_messages) if self.sim_state else [],
         })
 
     def _sim_send_timer_update(self):

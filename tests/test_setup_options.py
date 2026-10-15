@@ -25,6 +25,12 @@ RESOLUTIONS = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)]
 def pygame_display():
     import pygame
     pygame.init()
+    # Start from a fresh display: a Game() made by an earlier test module (e.g. the
+    # multiplayer harness) leaves the test display in fullscreen at 1024x768, and a plain
+    # set_mode((1600, 900)) then keeps that size - the tooltip test failed whenever such a
+    # module ran right before this one (found 2026-10-15)
+    pygame.display.quit()
+    pygame.display.init()
     pygame.display.set_mode((1600, 900))
     yield pygame
     pygame.quit()

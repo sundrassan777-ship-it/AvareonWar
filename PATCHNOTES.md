@@ -30,6 +30,12 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   Ready), the rest of the army still marches, instead of the whole move being dropped.
 - **You are told when a move changed.** When a planned move sets off with fewer armies than
   you sent, or cannot set off at all, a message says so (also in your Action Log).
+- **Multiplayer: Battle Reports for territories lost without a fight.** In a round without
+  battles, a joined player could lose an undefended territory without getting its Battle
+  Report, and their Action Log could even claim a building there was finished. Fixed.
+- **Multiplayer: your round news in the Action Log.** Players who joined a game (not the
+  host) now see their own news at the start of each round too: units and heroes finished,
+  abilities ready again, silence over, training paused.
 
 ---
 

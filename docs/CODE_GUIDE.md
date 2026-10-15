@@ -2696,8 +2696,23 @@ themselves any more (they used to run the raw merged list, incl. orders the host
 **Round end:** only the host runs `complete_round()` (guarded in `sim_state`; clients that
 call it are ignored). Its callback sends `SIM_ROUND_COMPLETE` with the new round's snapshot;
 `_sim_apply_round_complete()` closes any open battle window, drops leftover battles /
-markers, runs the client's Action-Log bookkeeping, `start_planning_phase()`, then applies the
-snapshot.
+markers, runs the client's bookkeeping (feeds its game log; sets `last_completed_buildings`
+like the host), `start_planning_phase()`, then applies the snapshot.
+- **The client waits for its own moves first:** the SIM_ROUND_COMPLETE branch of
+  `_apply_network_message()` holds the message while `_battles_may_still_appear()` (the same
+  hold TURN_END uses). In a round without battles the host ends the round ~0.5 s after
+  SIM_ALL_READY; when both reached a client together it skipped the round's arrivals - no
+  Battle Report for a territory lost undefended (those are made per PC in
+  `_process_arrivals()`, never sent) and Action Log lines from the state before the moves
+  (FFA test game 2026-10-14: Blue lost Daomea and Ahtep without reports, 8 races in 42 rounds).
+- **Action Log lines travel:** `complete_round()` records the lines it writes before and after
+  `start_planning_phase()`'s "--- Round N ---" marker (`sim_state.round_end_messages` /
+  `round_start_messages`, the marker itself excluded) and the host sends them as SIM_ROUND_COMPLETE
+  `round_end_messages` / `round_start_messages`. The client drops its bookkeeping's lines, adds
+  the host's round-end lines, its own marker, then the new-round lines - so it sees "X trained
+  in Y", "... is ready!", "... no longer silenced", "Training paused" for its own empire (only
+  the host runs those). The Action Log's viewer filter keeps other players' lines private. A host
+  without the fields: the client keeps its own lines. Tests: `tests/test_round_end_client.py`.
 
 **When the round may end:** every host-side "anything left?" check goes through
 `Game._sim_round_may_end()` - resolving phase, no battle, no alliance marker, **and no battle
