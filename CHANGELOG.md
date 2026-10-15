@@ -25,6 +25,20 @@ was audited host vs clients from the three PCs' logs; each phase fixes verified 
   a move left empty or a two-hop move left without its Captain is cancelled. Tests:
   `tests/test_ability_queued_units.py` (8 of 9 fail on the old code; the 9th guards the
   unchanged ready/moved counting).
+- **Moves fitted, not refused - armies never deleted by a failed move** (Phase 3):
+  `_claim_movement_units()` shortens a move to its listed units that are there, ready and
+  unused, refusing it only when none are left (Blue's 6-unit attack on an undefended
+  territory lost 3 units to a Decisive Strike after Ready and none marched); the unmoved-count
+  check in `_validate_movement_order()` now only covers orders without a unit list. New
+  `_finalize_movement_orders()` after the round's non-movement orders, in both the
+  single-player and host paths: re-fits moves to the units still there (an AI hero ability
+  among the round's orders made arrivals invent default Swordsmen - reproduced in a test) and
+  `_fit_moves_to_room()` keeps friendly destinations at the army cap by shortening the latest
+  reinforcements, whose units stay home (the cap had deleted 36 units in that game behind
+  refused outgoing moves). The local player gets a notice + Action Log line for each move that
+  set off shortened or not at all (`'move_shortened'` / `'move_refused'`). Every movement
+  refusal and other players' build/train refusals now log a reason. Tests:
+  `tests/test_move_fitting.py` (12 of 13 fail on the old code).
 
 ## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
 

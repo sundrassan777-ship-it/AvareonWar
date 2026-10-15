@@ -67,6 +67,12 @@ class SimPhaseManager:
         self.execution_complete = False
         self.animations_complete = False
 
+        # Called with the round's final movement orders once they are fitted to the
+        # state they set off from (_finalize_movement_orders) - single-player and the
+        # multiplayer host. main.py uses it to tell the local player which of their
+        # moves went shortened or not at all (clients do it from SIM_ALL_READY).
+        self.on_movement_finalized = None
+
     def begin_execution(self, player_orders: Dict[int, List[dict]]):
         """
         Begin the execution phase with all player orders.
@@ -165,7 +171,9 @@ class SimPhaseManager:
         movement_orders = [o for o in valid_orders if o.get('type') == 'movement']
         self._execute_orders([o for o in valid_orders if o.get('type') != 'movement'],
                              start_movement=False)
-        return movement_orders
+        # The moves as they will really set off, after the round's other orders (hero
+        # abilities among them) - SIM_ALL_READY ships exactly these
+        return self._finalize_movement_orders(movement_orders)
 
     def _merge_orders(self, player_orders: Dict[int, List[dict]]) -> List[dict]:
         """
@@ -251,8 +259,8 @@ class SimPhaseManager:
                 continue
             if (order.get('type') == 'movement'
                     and not self._claim_movement_units(order, claimed_ids, claimed_counts)):
-                sim_log.detail(f"Movement order rejected - its units are missing, not ready or "
-                               f"already used by another order: {order}")
+                sim_log.detail(f"Movement order rejected - none of its units can go (missing, "
+                               f"not ready or used by another order): {order}")
                 continue
             valid.append(order)
 
@@ -265,6 +273,12 @@ class SimPhaseManager:
 
         Executing an order whose units were gone still took its army_count off the
         garrison and made the missing units up as default Swordsmen at the destination.
+
+        An order naming units is shortened to the ones it may take (each once) and
+        refused only when none are left. It used to be refused whole when one unit was
+        missing: FFA test game 2026-10-14, a Decisive Strike killed 3 of the 6 units Blue
+        had sent at an undefended territory (after Blue pressed Ready) and none marched.
+        `order` is the merged copy, so the player's own submitted order is untouched.
         """
         player_id = order.get('player_id')
         from_territory = order.get('from_territory')
@@ -276,14 +290,22 @@ class SimPhaseManager:
         if unit_ids:
             ready_ids = {u.get('id') for u in garrison.get('units', [])
                          if u.get('status', 'ready') == 'ready'}
-            if (len(set(unit_ids)) != len(unit_ids)
-                    or any(uid not in ready_ids or uid in taken for uid in unit_ids)):
+            kept = []
+            for uid in unit_ids:
+                if uid in ready_ids and uid not in taken and uid not in kept:
+                    kept.append(uid)
+            if not kept:
                 return False
-            if order.get('army_count') != len(unit_ids):
+            if len(kept) != len(unit_ids):
+                sim_log.detail(f"Movement order shortened to the units it may take: "
+                               f"{unit_ids} -> {kept} (P{player_id} {from_territory} -> "
+                               f"{order.get('to_territory')})")
+                order['unit_ids'] = kept
+            if order.get('army_count') != len(kept):
                 # The units decide: a larger count would invent units on arrival
-                sim_log.detail(f"army_count {order.get('army_count')} -> {len(unit_ids)} (unit list)")
-                order['army_count'] = len(unit_ids)
-            taken.update(unit_ids)
+                sim_log.detail(f"army_count {order.get('army_count')} -> {len(kept)} (unit list)")
+                order['army_count'] = len(kept)
+            taken.update(kept)
             return True
 
         # Count-only order (no unit list): enough unmoved units must be left
@@ -331,8 +353,13 @@ class SimPhaseManager:
         player_id = order.get('player_id')
         army_count = order.get('army_count', 0)
 
+        # Every refusal below says why in the sim log (several were silent, which hid the
+        # AI's two-hop attacks in the FFA test game of 2026-10-14)
+        route = f"P{player_id} {from_territory} -> {to_territory}"
+
         # Check territories exist
         if not from_territory or not to_territory:
+            sim_log.detail(f"Movement rejected - territory missing: {route}")
             return False
 
         # Check adjacency (or Captain 2-hop through allied territory)
@@ -342,9 +369,12 @@ class SimPhaseManager:
             if self.gs.army_has_captain(from_territory, player_id):
                 intermediate = self.gs.find_2hop_path(from_territory, to_territory, player_id)
                 if intermediate is None:
+                    sim_log.detail(f"Movement rejected - not adjacent, and no two-hop path to "
+                                   f"own/allied land: {route}")
                     return False
                 # Valid 2-hop path — continue validation
             else:
+                sim_log.detail(f"Movement rejected - not adjacent (no Captain): {route}")
                 return False
 
         # Garrison check for EVERY player's order. (Remote players' orders used to skip
@@ -355,7 +385,11 @@ class SimPhaseManager:
         player_garrison = garrison.get(player_id, {})
         unmoved = player_garrison.get('unmoved', 0)
 
-        if army_count > unmoved:
+        # Only for orders without a unit list: an order naming its units is checked unit
+        # by unit and shortened to the ones still there (_claim_movement_units). This
+        # count check refused it whole - Blue's attack in the FFA test game, 3 of 6 units
+        # lost to a Decisive Strike after Blue pressed Ready, never marched.
+        if not order.get('unit_ids') and army_count > unmoved:
             sim_log.detail(f"Movement validation failed: P{player_id} has {unmoved} unmoved, wants {army_count}")
             return False
 
@@ -370,9 +404,23 @@ class SimPhaseManager:
         # (will be marked as overflow)
         # But don't allow moving TO a territory that's already at 2x limit
         if dest_total >= self.gs.MAX_ARMIES_PER_TERRITORY * 2:
+            sim_log.detail(f"Movement rejected - destination holds {dest_total}: {route}")
             return False
 
         return True
+
+    def _refuse(self, order: dict, reason: str) -> bool:
+        """
+        Log why a build / train order is refused, and return False.
+
+        Not logged for the clicker's own orders: those were applied (and paid) at the
+        click and are skipped at execution, so their gold / plot checks fail by design -
+        logging them buried the real refusals (FFA test game 2026-10-14).
+        """
+        if not self._executed_at_click(order.get('player_id')):
+            sim_log.detail(f"{str(order.get('type', 'order')).capitalize()} order rejected - "
+                           f"{reason}: {order}")
+        return False
 
     def _validate_build_order(self, order: dict) -> bool:
         """Validate a build order."""
@@ -383,17 +431,17 @@ class SimPhaseManager:
 
         # Check player owns territory
         if self.gs.territory_owners.get(territory) != player_id:
-            return False
+            return self._refuse(order, "territory not owned")
 
         # Check player has gold
         cost = self.gs.building_types.get(building_type, {}).get('cost', 0)
         if self.gs.player_gold[player_id] < cost:
-            return False
+            return self._refuse(order, f"needs {cost} gold, has {self.gs.player_gold[player_id]}")
 
         # Check plot is empty
         buildings = self.gs.buildings.get(territory, {})
         if plot_index in buildings and buildings[plot_index]:
-            return False
+            return self._refuse(order, "plot taken")
 
         return True
 
@@ -405,12 +453,12 @@ class SimPhaseManager:
 
         # Check player owns territory
         if self.gs.territory_owners.get(territory) != player_id:
-            return False
+            return self._refuse(order, "territory not owned")
 
         # Check player has gold
         cost = self.gs.UNIT_TYPES.get(unit_type, {}).get('cost', 0)
         if self.gs.player_gold[player_id] < cost:
-            return False
+            return self._refuse(order, f"needs {cost} gold, has {self.gs.player_gold[player_id]}")
 
         # Check territory has barracks
         has_barracks = False
@@ -420,7 +468,9 @@ class SimPhaseManager:
                 has_barracks = True
                 break
 
-        return has_barracks
+        if not has_barracks:
+            return self._refuse(order, "no Barracks")
+        return True
 
     def _execute_orders(self, orders: List[dict], start_movement: bool = True):
         """
@@ -472,9 +522,122 @@ class SimPhaseManager:
         for order in train_hero_orders:
             self._apply_train_hero_order(order)
 
-        # Execute movement orders (creates animations)
+        # Execute movement orders (creates animations), fitted first to the state the
+        # orders above left (the multiplayer host does this in begin_authoritative_execution)
         if start_movement:
-            self._execute_movement_orders(movement_orders)
+            self._execute_movement_orders(self._finalize_movement_orders(movement_orders))
+
+    def _finalize_movement_orders(self, orders: List[dict]) -> List[dict]:
+        """
+        The round's validated moves, fitted to the state they really set off from. Runs
+        after the round's other orders (builds, training, hero abilities) and before any
+        army moves - single-player and the multiplayer host.
+
+        1. Units: a move keeps only its listed units that are still there and ready. A
+           hero ability among this round's orders (the AI's) can take units after the
+           moves were validated; arrivals then made the missing ones up as default
+           Swordsmen.
+        2. Room: a territory of the moving player's side may end the move with at most
+           MAX_ARMIES_PER_TERRITORY. Planning lets a reinforcement in when a move out of
+           that territory makes the room (current + in - out); if that move did not go
+           (refused, shortened, forced to defend), the latest reinforcements into it are
+           shortened and those units stay home. The army cap used to delete them on
+           arrival: FFA test game 2026-10-14, 36 units (Red 24, Green 12), each time
+           behind a refused outgoing move. _enforce_army_limits() stays as a safety net.
+
+        Args:
+            orders: validated movement orders (merged copies, edited in place)
+
+        Returns:
+            The moves to execute, in their original order (empty ones dropped)
+        """
+        finalized = []
+        taken_ids = {}      # {(player, territory): ids kept by earlier moves}
+        taken_counts = {}   # {(player, territory): units of earlier count-only moves}
+        for order in orders:
+            player_id = order.get('player_id')
+            source = order.get('from_territory')
+            key = (player_id, source)
+            garrison = self.gs.territory_garrisons.get(source, {}).get(player_id, {})
+            unit_ids = order.get('unit_ids') or []
+            if unit_ids:
+                ready = {u.get('id') for u in garrison.get('units', [])
+                         if u.get('status', 'ready') == 'ready'}
+                kept = [uid for uid in unit_ids
+                        if uid in ready and uid not in taken_ids.get(key, ())]
+                if len(kept) != len(unit_ids):
+                    sim_log.detail(f"Move fitted to the units still there: {unit_ids} -> "
+                                   f"{kept} (P{player_id} {source} -> {order.get('to_territory')})")
+                    order['unit_ids'] = kept
+                order['army_count'] = len(kept)
+                taken_ids.setdefault(key, set()).update(kept)
+            else:
+                # Count-only move: never more than the unmoved units left
+                left = (garrison.get('unmoved', 0) - taken_counts.get(key, 0)
+                        - len(taken_ids.get(key, ())))
+                if order.get('army_count', 0) > left:
+                    sim_log.detail(f"Move fitted to the units still there: "
+                                   f"{order.get('army_count')} -> {max(0, left)} "
+                                   f"(P{player_id} {source} -> {order.get('to_territory')})")
+                    order['army_count'] = max(0, left)
+                taken_counts[key] = taken_counts.get(key, 0) + order['army_count']
+            if order.get('army_count', 0) > 0:
+                finalized.append(order)
+
+        self._fit_moves_to_room(finalized)
+        finalized = [order for order in finalized if order.get('army_count', 0) > 0]
+
+        if self.on_movement_finalized is not None:
+            try:
+                self.on_movement_finalized(finalized)
+            except Exception as e:  # the UI notice must never stop the round
+                logger.warning(f"[SIM] on_movement_finalized failed: {e}", exc_info=True)
+        return finalized
+
+    def _fit_moves_to_room(self, orders: List[dict]):
+        """
+        Step 2 of _finalize_movement_orders(): shorten reinforcements so no territory of
+        the moving player's side ends the move above MAX_ARMIES_PER_TERRITORY. The latest
+        incoming moves give way first; the units they drop stay at home. Moves into enemy
+        or neutral land are not touched (a battle decides those, and the cap after it).
+
+        Shortening a move keeps more units at its source, which can push that source
+        over in turn, so this repeats until nothing changes (counts only go down).
+        """
+        limit = self.gs.MAX_ARMIES_PER_TERRITORY
+
+        def friendly(player, territory_owner):
+            return player == territory_owner or self.gs.are_allies(player, territory_owner)
+
+        changed = True
+        while changed:
+            changed = False
+            for destination in dict.fromkeys(o.get('to_territory') for o in orders):
+                owner = self.gs.territory_owners.get(destination, -1)
+                if owner is None or owner < 0:
+                    continue
+                incoming = [o for o in orders if o.get('to_territory') == destination
+                            and o.get('army_count', 0) > 0 and friendly(o.get('player_id'), owner)]
+                if not incoming:
+                    continue
+                leaving = sum(o.get('army_count', 0) for o in orders
+                              if o.get('from_territory') == destination)
+                projected = (self.gs.get_territory_total_armies(destination) - leaving
+                             + sum(o.get('army_count', 0) for o in incoming))
+                excess = projected - limit
+                for order in reversed(incoming):
+                    if excess <= 0:
+                        break
+                    cut = min(excess, order['army_count'])
+                    if order.get('unit_ids'):
+                        # The last-listed units stay home
+                        order['unit_ids'] = order['unit_ids'][:len(order['unit_ids']) - cut]
+                    order['army_count'] -= cut
+                    excess -= cut
+                    changed = True
+                    sim_log.detail(f"No room in {destination}: {cut} unit(s) of "
+                                   f"P{order.get('player_id')}'s move from "
+                                   f"{order.get('from_territory')} stay home")
 
     def _apply_build_order(self, order: dict):
         """Apply a build order to game state."""

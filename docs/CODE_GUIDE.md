@@ -2686,8 +2686,9 @@ host-only: the server drops them from clients (`_HOST_ONLY_TYPES`).
 
 **Execution start (`_sim_start_execution_phase()`, host):** crossing conflicts →
 `SimPhaseManager.begin_authoritative_execution()` validates every order (incl. remote ones:
-adjacency, garrison, exact units via `_claim_movement_units()`) and applies all NON-movement
-orders → `SIM_ALL_READY{snapshot, movement_orders, forced_defenders}` → the host starts the
+adjacency, garrison, exact units via `_claim_movement_units()`), applies all NON-movement
+orders and fits the moves (`_finalize_movement_orders()`, see "Orders" below) →
+`SIM_ALL_READY{snapshot, movement_orders, forced_defenders}` → the host starts the
 movement. Clients (`_sim_apply_all_ready()`) apply the snapshot and run exactly those
 movements, so every PC detects the same arrivals and battles. Clients never execute orders
 themselves any more (they used to run the raw merged list, incl. orders the host rejected).
@@ -2760,9 +2761,34 @@ at the end of `complete_round()` on the host and after SIM_ROUND_COMPLETE on cli
 never run `complete_round()` - since Phase 4 their logs and saved replays had no rounds).
 
 **Orders:** `_merge_orders()` drops only EXACT duplicates (same units, same route) - an army
-split into two orders along one route keeps both halves. `_claim_movement_units()` rejects
-orders whose units are missing / not ready / already used by an earlier order, and sets
-`army_count` to the unit list's length (excess units used to appear as default Swordsmen).
+split into two orders along one route keeps both halves. `_claim_movement_units()` keeps the
+listed units that are there, ready and not used by an earlier order (each once), refuses an
+order only when none are left, and sets `unit_ids` / `army_count` to what it keeps (excess
+units used to appear as default Swordsmen). It used to refuse the whole order for one missing
+unit; `_validate_movement_order()`'s unmoved-count check now applies only to orders WITHOUT a
+unit list. Every refusal logs its reason (`sim_log.detail`; build/train refusals via
+`_refuse()`, except the clicker's own already-applied orders).
+
+**Fitting the moves (`_finalize_movement_orders()`, single-player + host):** runs AFTER the
+round's non-movement orders (the AI's hero abilities among them) and before any army moves -
+`_execute_orders()` before `_execute_movement_orders()`, `begin_authoritative_execution()`
+before it returns (so SIM_ALL_READY ships the fitted list). (1) Each move keeps only its units
+still there and ready (an ability could take some after validation; arrivals then invented
+Swordsmen). (2) `_fit_moves_to_room()`: a destination of the mover's side (owner or ally) may
+end with at most `MAX_ARMIES_PER_TERRITORY` = current - moves out + friendly moves in; the
+latest friendly moves in are shortened (their last-listed units stay home), repeated until
+stable because units kept home can crowd their own territory. Planning allows a
+reinforcement when a move OUT makes the room; when that move fails (refused, shortened, forced
+to defend) the army cap used to delete the excess on arrival - FFA test game 2026-10-14, 36
+units. Moves into enemy/neutral land are untouched. `_enforce_army_limits()` stays as the
+safety net. `on_movement_finalized(orders)` then reports to `main.py`.
+
+**Telling the player:** `Game._report_shortened_moves(accepted, forced_defenders)` compares the
+local player's submitted moves (`sim_state.player_orders[local]`, intact until round end) with
+the accepted ones (same route, unit subset) → red notice without the error sound + own Action
+Log line (`'move_shortened'` / `'move_refused'` in `config/action_error_messages.py`); forced
+defences are skipped (own popup). Single-player / host via `_sim_report_own_moves()` (the
+callback), clients in `_sim_apply_all_ready()`. Tests: `tests/test_move_fitting.py`.
 
 Tests: `tests/test_mp_simultaneous.py`, `tests/test_mp_sim_flow.py`.
 

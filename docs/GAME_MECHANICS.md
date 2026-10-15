@@ -1003,6 +1003,20 @@ When two players order armies to attack each other's territory (A→B while B→
 - **Equal strength** → Dice roll determines attacker
 - Defender receives popup notification
 
+### When a Planned Move Changes Before It Starts
+
+Moves are planned at the same time, so things can change after you press Ready:
+- **Lost units:** if some of a move's units are gone when the round starts (e.g. an enemy's
+  Decisive Strike), the move goes with the units that are left. It only fails if none are left.
+- **No room:** a territory of your own side can hold at most 15 armies when the moves end.
+  You may send reinforcements into a territory because another of your armies is leaving it;
+  if that army does not leave after all (stopped by a crossing army, or it lost its units),
+  the reinforcements that no longer fit stay home instead of arriving. The latest
+  reinforcement gives way first. (Attacks into enemy or neutral land are not limited here;
+  after a battle the winner keeps at most 15.)
+- You are told when a move set off with fewer armies than planned, or not at all (also in
+  your Action Log).
+
 ### Alliance Arrivals
 
 When multiple allied armies capture the same territory:

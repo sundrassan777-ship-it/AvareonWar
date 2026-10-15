@@ -874,6 +874,10 @@ class Game:
             import ai_player  # For AI decision logic
             self.sim_state = SimultaneousGameState(self.game_state)
             self.sim_state.phase_manager = SimPhaseManager(self.sim_state)
+            # Tell the local player which of their moves set off shortened or not at all
+            # (single-player and the host fit the moves themselves; a client learns the
+            # result from SIM_ALL_READY - see _sim_apply_all_ready)
+            self.sim_state.phase_manager.on_movement_finalized = self._sim_report_own_moves
             # The AI plans on the host only (or in single-player). Clients used to plan
             # for the AI slots too, with their own random choices; the host's orders are
             # the ones that count and reach clients in its execution snapshot.
@@ -2951,6 +2955,10 @@ class Game:
             # Simultaneous mode: current_player is per PC - always the local player (the
             # UI acts for it). The host's snapshot carries the HOST's.
             self.game_state.current_player = self.get_local_player()
+
+        # Which of our moves the host shortened or refused (it fits every move to the
+        # units still there and to the room at its destination)
+        self._report_shortened_moves(movement_orders, data.get('forced_defenders') or [])
 
         self.sim_state.merged_orders = movement_orders
         self.sim_state.sim_phase = 'executing'
@@ -5608,6 +5616,69 @@ class Game:
                 continue
             self.chat_notification_effect.add_system_notification(
                 format_action_error('hero_slain', hero=event[1], territory=event[2]))
+
+    def _sim_report_own_moves(self, accepted_orders):
+        """SimPhaseManager.on_movement_finalized (single-player and the multiplayer host):
+        report the local player's shortened / refused moves. Forced defences come from
+        this round's crossing-conflict check (they have their own popup)."""
+        pm = self.sim_state.phase_manager if self.sim_state is not None else None
+        forced = pm.conflict_resolver.get_forced_defenders() if pm is not None else []
+        self._report_shortened_moves(accepted_orders, forced)
+
+    def _report_shortened_moves(self, accepted_orders, forced_defenders):
+        """
+        Simultaneous mode: tell the local player which of their submitted moves set off
+        with fewer units than planned, or not at all. The host (or single-player) fits
+        every move to the units still there - a hero ability may have taken some after
+        Ready - and to the room at its destination (reinforcements that would overflow
+        stay home). Before, such moves vanished without a word (FFA test game
+        2026-10-14: 35 refused moves nobody was told about).
+
+        A red notice without the denial sound (news, like 'hero_slain') plus a line in
+        the player's own Action Log. Moves stopped by a crossing army ("forced to
+        defend") are skipped - they get their own popup.
+
+        Args:
+            accepted_orders: the round's movement orders as they set off
+            forced_defenders: [{'player_id', 'territory', 'intended_target', ...}]
+        """
+        if self.sim_state is None:
+            return
+        local = self.get_local_player()
+        if local is None:
+            return
+        submitted = [o for o in self.sim_state.player_orders.get(local, [])
+                     if o.get('type') == 'movement']
+        if not submitted:
+            return
+        forced_routes = {(fd.get('territory'), fd.get('intended_target'))
+                         for fd in forced_defenders if fd.get('player_id') == local}
+        pool = [o for o in accepted_orders if o.get('player_id') == local]
+
+        from config.action_error_messages import format_action_error
+        for order in submitted:
+            route = (order.get('from_territory'), order.get('to_territory'))
+            planned_ids = order.get('unit_ids') or []
+            planned = len(planned_ids) or order.get('army_count', 0)
+            # Its accepted copy: same route, and only units this order named
+            match = next((a for a in pool
+                          if (a.get('from_territory'), a.get('to_territory')) == route
+                          and (not planned_ids
+                               or set(a.get('unit_ids') or []) <= set(planned_ids))), None)
+            if match is not None:
+                pool.remove(match)
+                sent = match.get('army_count', 0)
+                if sent >= planned:
+                    continue
+                code, values = 'move_shortened', {'sent': sent, 'planned': planned}
+            elif route in forced_routes:
+                continue
+            else:
+                code, values = 'move_refused', {}
+            text = format_action_error(code, source=route[0], target=route[1], **values)
+            self.game_state.add_player_message(local, text)
+            if self.chat_notification_effect:
+                self.chat_notification_effect.add_system_notification(text)
 
     def _notify_steam_join_request(self):
         """

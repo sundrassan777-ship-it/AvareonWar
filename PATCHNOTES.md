@@ -21,6 +21,15 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   counted the lost units. Now the banner shows what is left, the lost units simply leave the
   move, and the rest of the army still marches. A move with no units left is cancelled, and
   so is a Captain's two-territory move whose Captain was taken.
+- **Simultaneous turns: armies no longer vanish when a planned move falls through.** If you
+  sent reinforcements into a territory because another army was leaving it, and that army
+  then did not leave (for example it was forced to defend), the reinforcements that did not
+  fit were destroyed when they arrived. Now they stay home.
+- **Simultaneous turns: a move that lost some units still goes.** If some units of a planned
+  move are gone when the round starts (for example to a Decisive Strike after you pressed
+  Ready), the rest of the army still marches, instead of the whole move being dropped.
+- **You are told when a move changed.** When a planned move sets off with fewer armies than
+  you sent, or cannot set off at all, a message says so (also in your Action Log).
 
 ---
 

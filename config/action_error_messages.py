@@ -183,6 +183,19 @@ ACTION_ERROR_MESSAGES = {
     # {friend} = the host's Steam name ("A friend" if Steam does not know it).
     'steam_join_pending': "{friend}'s game opens when you return to the main menu.",
 
+    # Simultaneous turns: when the round starts, one of your planned moves set off
+    # with fewer armies than you sent - some of its units were gone (e.g. a Decisive
+    # Strike after you pressed Ready), or there was no room for them all where they
+    # were going (they stay home). News, not an error: red, no error sound; also
+    # written to your Action Log.
+    # {source} / {target} = the move's territories, {sent} / {planned} = armies.
+    'move_shortened': "Your move from {source} to {target} set off with {sent} of {planned} armies.",
+
+    # Simultaneous turns: when the round starts, one of your planned moves could not
+    # set off at all - none of its units were still there, or there was no room for
+    # any of them. (A move stopped by an enemy army crossing it has its own popup.)
+    'move_refused': "Your move from {source} to {target} could not set off.",
+
     # =====================================================================
     # F. RARE SAFETY MESSAGES (practically never shown - only if the game's
     #    data is out of sync). You can leave these alone.
