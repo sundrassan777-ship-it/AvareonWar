@@ -92,6 +92,31 @@ class TestHeroesAndCastleUpgrades:
         hero = ('train_hero', {'hero_type': HERO, 'territory': HOME, 'keep_plot': 0})
         assert ai._fit_actions_to_gold(1, [hero]) == []
 
+    def test_no_gold_held_back_for_a_hero_at_a_keep_a_hero_lives_in(self, monkeypatch):
+        """FFA test game of 2026-10-14, rounds 23-41: Darius lived in the AI's Keep, yet
+        the AI planned its next Hero there each round. The round refused that Hero, but its
+        gold had been held back first, and the Castle upgrade of that Keep was dropped
+        ("a Hero trains there this round"). Now no Hero is planned and the upgrade goes."""
+        gs, sim, ai = setup(gold=420)            # a Hero (400) or the upgrade (150)
+        gs.heroes[1]['Darius Brennhen'] = {'keep_territory': HOME, 'keep_plot': 0,
+                                           'status': 'active'}
+        gs.hero_ownership[1].add('Darius Brennhen')
+        player = ai.ai_players[1]
+        upgrade = ('upgrade_castle', {'territory': HOME, 'plot': 0})
+
+        def plan(game_state):
+            # The AI's real Hero planning (its abilities left out: chance-based), then
+            # the Castle upgrade it planned in those rounds
+            heroes = [action for action in player.hero_manager.plan_hero_actions(game_state)
+                      if action[0] == 'train_hero']
+            player.actions_taken = heroes + [upgrade]
+
+        monkeypatch.setattr(player, '_plan_turn_actions', plan)
+        ai._make_ai_decisions(1)
+        sim.phase_manager._execute_orders(list(sim.player_orders[1]), start_movement=False)
+        assert gs.is_upgrading_to_castle(HOME, 0)
+        assert gs.player_gold[1] == 420 - gs.CASTLE_UPGRADE_COST
+
 
 class TestHeroPrice:
 

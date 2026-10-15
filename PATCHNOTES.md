@@ -36,6 +36,13 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 - **Multiplayer: your round news in the Action Log.** Players who joined a game (not the
   host) now see their own news at the start of each round too: units and heroes finished,
   abilities ready again, silence over, training paused.
+- **Computer players no longer waste their turns.** They kept trying to train a new Hero in a
+  Keep where one of their Heroes already lived, kept trying to research Castle technologies
+  without having a Castle, and kept ordering attacks on territories two steps away, which no
+  army can reach in one turn. In simultaneous games the gold set aside for that Hero also
+  stopped them from training units and upgrading their Keep. Now they train Heroes in a free
+  Keep, research what they can, and move their armies up to the front first, then attack
+  from there.
 
 ---
 

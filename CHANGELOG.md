@@ -54,6 +54,20 @@ was audited host vs clients from the three PCs' logs; each phase fixes verified 
   `tests/test_setup_options.py`'s display fixture now restarts the display - a `Game()` from an
   earlier module leaves the test display fullscreen at 1024x768 and a plain `set_mode` kept
   that size, so its tooltip test failed whenever a multiplayer-harness module ran right before it.
+- **The AI plans only what the game accepts** (Phase 5, both turn modes, single-player too):
+  `ai_hero._find_keep_for_training()` now skips a Keep upgrading to a Castle or housing a Hero
+  (`start_hero_training()` steps 4/5b) - it returned Darius's home in 25 rounds (another Keep
+  was free in 16), and in simultaneous mode the doomed Hero's gold was held back, dropping
+  unit training (up to 10 a round) and that Keep's Castle upgrade (every round from 23 to 41).
+  `TechResearcher.select_research_action()` skips `requires_castle` techs without a Castle
+  (`player_has_castle()`, the `start_research()` rule) - Supply and Demand was refused rounds
+  34-42. `AttackPlanner.select_attack_targets()` turns a target 2 steps away into a staging
+  move into the friendly territory between (no army may attack 2 steps away - all 18 dropped
+  AI moves); count and mission cap still follow the real target. Measured in Tale II's start
+  position: 3 of the Kerunians' 7 planned attacks were such moves (1 unit each at an empty
+  neutral), now 1-unit staging moves. Tests: `tests/test_ai_legal_plans.py` +
+  `test_sim_ai_budget.py` (10 of the new tests fail on the old code; the others guard
+  unchanged behaviour).
 
 ## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
 

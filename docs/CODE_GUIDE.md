@@ -1794,6 +1794,16 @@ common enemy unit the AI used to try training unit type `None`.
 - Stored in `precomputed_reachability` dict before the scoring loop
 - Avoids redundant O(n) BFS calls inside the O(n) territory loop (was O(n^2+) overall)
 
+**Targets 2 steps away = staging moves:** `select_attack_targets()` still scores an
+enemy/neutral territory 2 steps away through a friendly territory, but the move it returns
+goes **into that friendly territory** (`staging_territory`, candidate tuple index 4), never
+to the target. No army may attack 2 steps away (`find_2hop_path()`: a Captain's long move
+only goes into own/allied land), so those orders were always refused - all 18 dropped AI
+moves of the FFA test game of 2026-10-14. The unit count and the mission per-target cap
+are still worked out for the real target. Every move the planner returns is to a
+neighbour (`tests/test_ai_legal_plans.py`). A full staging territory: sequential refuses
+the order (army limit), the simultaneous host shortens it (`_fit_moves_to_room()`).
+
 #### When to Modify
 
 ✅ **Change attack behavior:**
@@ -1824,6 +1834,14 @@ common enemy unit the AI used to try training unit type `None`.
 **Dynamic building types (M14):**
 - `select_building_action()` iterates `game_state.building_types.keys()` instead of hardcoded list
 - New building types added to `game_state.building_types` are automatically considered
+
+**Research picks follow the game's rules:** `TechResearcher.select_research_action()` (the
+only research picker - 3 callers) skips `requires_castle` techs while
+`game_state.player_has_castle(player)` is False, the same check `start_research()` makes.
+"Unlocked" is not enough: the AI picked Supply and Demand 9 rounds running without a Castle
+(FFA test game 2026-10-14), and in simultaneous mode its gold stayed reserved for it. The
+Castle upgrade planner reads `player_tech_available` itself, so locked Castle techs still
+push the AI to build a Castle. A new research rule in `start_research()` → mirror it here.
 
 #### When to Modify
 
@@ -1863,6 +1881,15 @@ common enemy unit the AI used to try training unit type `None`.
 - `hero_training_queue` is `{territory_name: {plot_index: (hero_type, training_time)}}` — keyed by territory, NOT player
 - `_count_training_heroes()` and `_get_training_hero_types()` iterate all queue entries filtered by territory owner
 - `_find_keep_for_training()` checks if territory already in queue (not player in queue)
+
+**Hero Keep = the Keep rules of `start_hero_training()`:** `_find_keep_for_training()` skips
+a Keep that is training a Hero, upgrading to a Castle (`is_upgrading_to_castle()`) or
+housing a Hero (`keep_has_hero()`) - steps 4, 5 and 5b of `start_hero_training()`. It used
+to check only "training" and returned the first Keep, Darius's home, in 25 rounds of the
+FFA test game of 2026-10-14 (another Keep was free in 16 of them); in simultaneous mode the
+Hero's gold was held back each time, which dropped unit training and that Keep's Castle
+upgrade. With no Keep free, no Hero is planned at all.
+A new Keep rule in `start_hero_training()` → mirror it here.
 
 #### When to Modify
 
