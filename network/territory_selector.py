@@ -34,6 +34,7 @@ from ui.setup_tooltip import SetupTooltips
 from ui.setup_frames import SetupFrames
 from ui.map_top_bar import MapTopBar
 from network.lobby_chat import LobbyChat, CHANNELS as CHAT_CHANNELS, clean_text as clean_chat_text
+from ui.lobby_chat_panel import LobbyChatPanel
 
 logger = get_logger(__name__)
 
@@ -270,6 +271,10 @@ class TerritorySelector:
         # the lobby ends. Sent as LOBBY_CHAT; drawn by the collapsible chat panel.
         self.lobby_chat = LobbyChat()
         self._chat_sound_at = float('-inf')   # Last new-message sound (time.monotonic())
+        # Collapsible chat panel on the right of the map, like the in-game sidebar with
+        # one "Chat" bookmark (ui/lobby_chat_panel.py). Placed in _initialize_map.
+        self.chat_panel = LobbyChatPanel(screen, self.lobby_chat, self.send_lobby_chat,
+                                         lambda: (self.local_player_index, self._local_team()))
 
         # Countdown state (for launch countdown)
         self.countdown_active = False
@@ -425,6 +430,8 @@ class TerritorySelector:
 
         # Map top bar: the wood strip above the map, across the map panel
         self.map_top_bar.set_geometry(self.left_panel_width, available_width, self.map_y)
+        # Lobby chat panel: the map's height, at the right edge of the screen
+        self.chat_panel.set_geometry(self.width, self.map_y, self.scaled_map_height)
 
     def change_map(self, direction):
         """Cycle to next/previous map. Only host can call this.
@@ -494,6 +501,11 @@ class TerritorySelector:
         return True
 
     # ------------------------------------------------------------------ lobby chat
+
+    def _local_team(self):
+        """This PC's player's lobby team (who reads its team chat lines)."""
+        slot = self.lobby_state.get_slot(self.local_player_index)
+        return slot.team if slot is not None else None
 
     def _slot_chat_identity(self, slot_idx):
         """(name, colour, team) of a slot for a chat line, as this PC sees it now."""
@@ -739,16 +751,8 @@ class TerritorySelector:
                     _music_manager.handle_music_end_event()
 
                 if event.type == pygame.KEYDOWN:
-                    if self.overlay_open and not self._show_friend_picker:
-                        # Every key goes to the window while it shows (Starting Gold
-                        # typing; Escape closes an open list / the field, then the window)
-                        self.options_overlay.handle_key(event)
-                    elif event.key == pygame.K_ESCAPE:
-                        # Close friend picker first, otherwise exit selector
-                        if self._show_friend_picker:
-                            self._show_friend_picker = False
-                        else:
-                            return None
+                    if self.handle_key(event) == 'leave':
+                        return None
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
@@ -760,8 +764,7 @@ class TerritorySelector:
 
                 # MOUSEWHEEL event (SDL2 — preferred over button 4/5)
                 if hasattr(pygame, 'MOUSEWHEEL') and event.type == pygame.MOUSEWHEEL:
-                    if self._show_friend_picker:
-                        self._friend_scroll_offset = max(0, self._friend_scroll_offset - event.y)
+                    self.handle_wheel(pygame.mouse.get_pos(), event.y)
 
                 if event.type == pygame.MOUSEMOTION:
                     self.handle_hover(event.pos)
@@ -809,6 +812,37 @@ class TerritorySelector:
 
         return None
 
+    def handle_key(self, event):
+        """KEYDOWN in the lobby. Returns 'leave' when the player leaves (Escape).
+
+        Order: the Additional Options window takes every key while open; the friend
+        picker only Escape (closes it); then the chat (Enter opens it and starts typing,
+        and while typing it takes every key - Escape then only stops typing, so it never
+        throws a player out of the lobby mid-sentence); else Escape leaves the lobby.
+        """
+        if self.overlay_open and not self._show_friend_picker:
+            # Every key goes to the window while it shows (Starting Gold typing;
+            # Escape closes an open list / the field, then the window)
+            self.options_overlay.handle_key(event)
+            return None
+        if self._show_friend_picker:
+            if event.key == pygame.K_ESCAPE:
+                self._show_friend_picker = False
+            return None
+        if self.chat_panel.handle_key(event):
+            return None
+        if event.key == pygame.K_ESCAPE:
+            return 'leave'
+        return None
+
+    def handle_wheel(self, pos, wheel_y):
+        """MOUSEWHEEL: the friend picker's list while it is open, else the chat panel
+        when the pointer is over it."""
+        if self._show_friend_picker:
+            self._friend_scroll_offset = max(0, self._friend_scroll_offset - wheel_y)
+        elif not self.overlay_open:
+            self.chat_panel.handle_wheel(pos, wheel_y)
+
     def get_player_territories(self) -> Dict[int, str]:
         """Get mapping of player index -> territory for active players."""
         return self.lobby_state.get_player_territories()
@@ -831,6 +865,11 @@ class TerritorySelector:
 
         # Map top bar: Randomize + map arrows / name (host), Show Borders (everyone)
         if self._on_map_top_bar_click(pos):
+            return
+
+        # Lobby chat panel (bookmark, round button, input field, list): a click on it
+        # never reaches the map underneath. Elsewhere it just stops typing.
+        if self.chat_panel.handle_click(pos):
             return
 
         # Check if host clicked on the IP address to copy to clipboard
@@ -1286,13 +1325,23 @@ class TerritorySelector:
         if self._show_friend_picker:
             self.hovered_territory = None
             self.map_top_bar.clear_hover()
+            self.chat_panel.update_hover((-1, -1))
             return
 
         # Block normal hover while overlay is open
         if self.overlay_open:
             self.hovered_territory = None
             self.map_top_bar.clear_hover()
+            self.chat_panel.update_hover((-1, -1))
             self.options_overlay.update_hover(pos, self.screen.get_size())
+            return
+
+        # Lobby chat panel: its own hover; the map under it does not light up
+        self.chat_panel.update_hover(pos)
+        if self.chat_panel.contains(pos):
+            self.hovered_territory = None
+            self.map_top_bar.clear_hover()
+            self._ip_hovered = False
             return
 
         # Track hover over clickable IP address (host only)
@@ -1740,6 +1789,9 @@ class TerritorySelector:
         # Draw dropdown menus (on top of everything)
         self._draw_dropdown_menus()
         self._draw_slot_dropdown_menus()
+
+        # Lobby chat panel over the map's right side (under tooltips and modal windows)
+        self.chat_panel.draw()
 
         # Draw countdown overlay if active
         if self.countdown_active and self.countdown_seconds > 0:
