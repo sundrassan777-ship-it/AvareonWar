@@ -266,6 +266,16 @@ def clamp_starting_gold(value):
         return STARTING_GOLD_DEFAULT
     return max(STARTING_GOLD_MIN, min(value, STARTING_GOLD_MAX))
 
+
+# "Randomize Starting Positions" button (setup screens' map top bar): every two random
+# starts have at least this many territories on the shortest route between them (so an
+# army needs this + 1 moves to reach the other start). map_data.pick_starting_territories()
+# relaxes the gap one step at a time only when no spread of that size fits the map.
+RANDOM_START_MIN_TERRITORIES_BETWEEN = 4
+# Random tries per gap size before relaxing it (one try on Avareon with 4 players and the
+# full gap succeeds ~82% of the time, so 200 never runs out in practice)
+RANDOM_START_ATTEMPTS = 200
+
 # ===========================================
 # CAMERA SETTINGS
 # ===========================================

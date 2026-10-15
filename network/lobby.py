@@ -336,6 +336,27 @@ class LobbyState:
         )
         return True
 
+    def assign_starting_territories(self, assignments: Dict[int, str]) -> None:
+        """
+        Host's "Randomize Starting Positions": every active slot's starting territory
+        is cleared, then each slot in `assignments` claims its new one.
+
+        Goes through the claim records (not just slot.territory) so a client's claim
+        arriving afterwards is judged against the new picks: a territory another
+        player now holds is refused, switching their own territory still works.
+
+        Args:
+            assignments: {slot index: territory} (map_data.pick_starting_territories())
+        """
+        for slot in self.slots:
+            if slot.is_active() and slot.territory:
+                self._release_territory(slot.territory)
+                slot.territory = ""
+        now = time.time()
+        for slot_idx, territory in assignments.items():
+            if territory:
+                self.claim_territory(slot_idx, territory, now)
+
     def _release_territory(self, territory: str) -> None:
         """Release a territory claim."""
         if territory in self._territory_claims:

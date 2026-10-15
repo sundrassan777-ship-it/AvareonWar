@@ -231,6 +231,24 @@ class SetupConfig:
         else:
             self.player_slots[slot_idx]['territory'] = territory
 
+    def randomize_starting_territories(self, rng=None):
+        """Randomize Starting Positions: clear every slot's starting territory, then
+        give each active slot a random one, spread out by
+        map_data.pick_starting_territories() (at least RANDOM_START_MIN_TERRITORIES_BETWEEN
+        territories between any two, never a Fortress). Pressing again draws anew.
+
+        Returns:
+            {slot index: territory} of the new picks.
+        """
+        for slot in self.player_slots:
+            slot['territory'] = None
+        active = [i for i, slot in enumerate(self.player_slots) if slot['active']]
+        picks = map_data.pick_starting_territories(len(active), rng=rng)
+        assigned = dict(zip(active, picks))
+        for slot_idx, territory in assigned.items():
+            self.player_slots[slot_idx]['territory'] = territory
+        return assigned
+
     def get_player_territory(self, active_player_idx):
         """Get territory for active player (by active index, not slot index)"""
         active_count = 0

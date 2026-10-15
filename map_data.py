@@ -604,6 +604,82 @@ def get_neighbors(territory):
     return neighbors
 
 # ============================================================================
+# Random Starting Positions (setup screens' "Randomize Starting Positions")
+# ============================================================================
+
+def _hop_distances(start):
+    """Moves (adjacency steps) from `start` to every territory it can reach (BFS)."""
+    distances = {start: 0}
+    frontier = [start]
+    while frontier:
+        next_frontier = []
+        for territory in frontier:
+            for neighbor in get_neighbors(territory):
+                if neighbor not in distances:
+                    distances[neighbor] = distances[territory] + 1
+                    next_frontier.append(neighbor)
+        frontier = next_frontier
+    return distances
+
+def pick_starting_territories(count, min_between=None, rng=None, attempts=None):
+    """Random starting territories for `count` players, spread over the current map.
+
+    Every two picks have at least `min_between` territories on the shortest route
+    between them (= min_between + 1 moves apart; RANDOM_START_MIN_TERRITORIES_BETWEEN by
+    default). Fortress territories are never picked: a Keep cannot be built in them, so
+    a player starting there could not train Heroes at home. Territories with no route
+    to each other count as far apart.
+
+    Random greedy tries (shuffle, take each territory that keeps the gap) up to
+    `attempts` times per gap size. If no spread of that size fits (small map, many
+    players), the gap shrinks one step at a time - a gap of 0 only asks for different
+    territories, so the result always has `count` entries unless the map has fewer
+    candidates than players.
+
+    Args:
+        count: How many territories to pick (one per active player).
+        min_between: Territories required between any two picks (None = the constant).
+        rng: random.Random-like object with shuffle() (None = the random module);
+            tests pass a seeded one.
+        attempts: Tries per gap size (None = RANDOM_START_ATTEMPTS).
+
+    Returns:
+        List of distinct territory names (in pick order).
+    """
+    from config.constants import RANDOM_START_MIN_TERRITORIES_BETWEEN, RANDOM_START_ATTEMPTS
+    if min_between is None:
+        min_between = RANDOM_START_MIN_TERRITORIES_BETWEEN
+    if attempts is None:
+        attempts = RANDOM_START_ATTEMPTS
+    rng = rng or random
+
+    # Clickable territories of the loaded map (the setup screens draw TERRITORY_POLYGONS)
+    candidates = [t for t in TERRITORY_POLYGONS
+                  if is_territory_enabled(t) and not is_fortress_territory(t)]
+    count = max(0, min(int(count), len(candidates)))
+    if count == 0:
+        return []
+
+    hops = {t: _hop_distances(t) for t in candidates}
+    far = float('inf')
+    for gap in range(max(0, int(min_between)), -1, -1):
+        need = gap + 1   # Moves apart: `gap` territories between two picks
+        for _ in range(max(1, int(attempts))):
+            pool = list(candidates)
+            rng.shuffle(pool)
+            picked = []
+            for territory in pool:
+                if all(hops[other].get(territory, far) >= need for other in picked):
+                    picked.append(territory)
+                    if len(picked) == count:
+                        if gap < min_between:
+                            logger.info(f"Random starts: no spread with {min_between} territories "
+                                        f"between {count} players fits; used {gap}")
+                        return picked
+    # Unreachable: a gap of 0 always succeeds on its first try
+    return candidates[:count]
+
+# ============================================================================
 # Tutorial & Campaign Mission Systems
 # ============================================================================
 
