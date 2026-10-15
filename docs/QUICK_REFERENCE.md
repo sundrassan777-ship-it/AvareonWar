@@ -50,6 +50,9 @@
 **Building Types:** 6
 **Unit Types:** 5
 **Starting Gold:** 100 (Custom / multiplayer: 0–10,000 via Additional Options)
+**Random starts** (setup's Randomize Starting Positions): ≥4 territories between any two
+starts (5 moves), never a Fortress (`RANDOM_START_MIN_TERRITORIES_BETWEEN` in
+`config/constants.py`; `map_data.pick_starting_territories()`)
 **Turn Structure:** 4 phases
 
 ---
@@ -380,6 +383,8 @@ Next Turn
 
 **Lobby launch requirements:** 2+ players (incl. host), no empty slot between players,
 2+ teams, every player has a starting territory (`LobbyState.launch_blocker()`).
+Randomize Starting Positions and the map arrows are host-only (clients: greyed button,
+no arrows); Show Borders is per PC (`show_setup_borders` in config.json).
 
 **Player Slots:**
 | Slot | Index | Options |

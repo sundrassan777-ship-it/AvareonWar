@@ -4,6 +4,30 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Game Setup: Random Starting Positions and a Clearer Map Bar
+
+*15 October 2026*
+
+### New
+
+- **Randomize Starting Positions.** A new button above the map in Custom Game and
+  multiplayer setup gives every player, human or computer, a random starting territory.
+  Starts are always spread out, with at least 4 territories between any two players, and
+  nobody starts in a Fortress. Not happy with the draw? Press it again, or change any start
+  by hand. In multiplayer only the host can use it, and everyone sees the new starts
+  immediately.
+
+### Improvements
+
+- **Map name easier to read.** The map's name now sits on a gold bar instead of straight on
+  the wood, with new round arrow buttons on either side for changing the map.
+- **Show Borders is now a button.** The small checkbox is gone: Show Borders is a button
+  that glows while borders are shown.
+- All buttons above the map light up when you point at them, flash when clicked and play a
+  click sound.
+
+---
+
 ## Army, Battle and Computer Player Fixes
 
 *14 October 2026*

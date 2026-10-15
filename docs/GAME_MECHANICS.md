@@ -34,6 +34,19 @@ Turn Structure:
 - Can only move to adjacent territories
 - Defined in map_data.py ADJACENCY dict
 
+**Starting territories (Custom Game and multiplayer setup):**
+- Click a territory on the setup map to make it a player's start (their capital in
+  Capital Assault).
+- **Randomize Starting Positions** (top left of the setup map) clears every start and gives
+  each active player, human or AI, a random territory: at least **4 territories between any
+  two starts** (5 moves apart) and **never a Fortress** (no Keep can be built there). If a
+  map cannot fit that spacing for everyone, the gap shrinks only as much as needed. Press it
+  again for a new draw; any start can still be changed by hand afterwards. In multiplayer
+  only the host can use it (clients see it greyed) and every player sees the new starts at
+  once.
+- **Show Borders** (top right of the setup map) outlines every territory; the button glows
+  while it is on. It only changes your own view and is remembered for the next game.
+
 ---
 
 ## ⚔️ Army System
@@ -765,6 +778,8 @@ once (during a game: a message, and the join waits for the main menu). The host'
 - First-come-first-served: the claim that reaches the host first wins - a territory someone
   already holds cannot be taken by clicking it
 - Host can reassign territories
+- Host can give everyone a random start with **Randomize Starting Positions** (see
+  Territory System → Starting territories); clients see the button greyed
 - All players must select before launch
 
 **Launch requirements** (`LobbyState.launch_blocker()`; hovering the greyed Launch Game
