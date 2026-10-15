@@ -46,6 +46,12 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 - **Simultaneous turns: battles someone else resolves.** Clicking the crossed swords of a
   battle that another player resolves now tells you who is resolving it, instead of doing
   nothing.
+- **Simultaneous turns: a round's battles no longer depend on which is fought first.** All
+  battles of a round are now fought with the Heroes and territory bonuses everyone had when
+  the round's battles began. A Hero slain or a bonus territory lost in one battle no longer
+  changes the round's other battles - before, the same battle could come out differently for
+  different players, depending on who pressed Fight first. Heroes slain in a battle still
+  stop counting from the next round on.
 
 ---
 

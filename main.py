@@ -2300,6 +2300,14 @@ class Game:
                     self.game_state.current_player = original_player
 
         elif msg_type == MessageType.SIM_ALLIANCE_CHOICE:
+            # The choice is for a marker this PC's own arrivals create: while our armies
+            # are still marching it waits, like a battle result. Applied earlier, the
+            # territory changed hands before our arrivals (and before the round's battle
+            # context was frozen here - another PC froze it without the change); a
+            # client's choice reaching a lagging PC was refused (no marker yet).
+            if allow_hold and self._battles_may_still_appear():
+                self._hold_network_message(message)
+                return
             # Territory ownership assignment from alliance arrival (from the chooser)
             territory = data.get('territory')
             new_owner = data.get('new_owner')
@@ -14658,19 +14666,15 @@ class Game:
                     self.trigger_click_flash('sidebar_cancel_order', getattr(order, 'order_id', None))
                     full_index = next((i for i, o in enumerate(self.game_state.movement_orders)
                                        if o is order), None)
-                    if full_index is not None and self.game_state.cancel_movement_order(full_index):
-                        # MULTIPLAYER: Notify remote players about cancelled order.
-                        # Sent only on success, with the per-player index (the receiver
-                        # maps it back through get_full_order_index()). Not in
-                        # simultaneous mode: planned moves stay on this PC until Ready
-                        # (_sim_queue_local_movement_orders), so no other PC holds one to
-                        # cancel - every such message failed there ("cancel order failed",
-                        # 16 times in the FFA test game of 2026-10-14).
-                        if self.multiplayer_mode and self.sim_state is None:
-                            self._send_action_to_remote(MessageType.ORDER_REMOVE, {
-                                'player_order_index': button[2],
-                                'player_index': self.local_player_index
-                            })
+                    # No ORDER_REMOVE to the other PCs (either turn mode): no other PC
+                    # holds a planned move. Simultaneous moves stay on this PC until Ready
+                    # (_sim_queue_local_movement_orders); sequential moves reach the other
+                    # PCs only in EXECUTE_ORDERS' snapshot, as they start to execute.
+                    # Every such message failed on arrival ("cancel order failed", 16 in
+                    # the FFA test game of 2026-10-14). The receiving handler stays, for
+                    # older versions that still send it.
+                    if full_index is not None:
+                        self.game_state.cancel_movement_order(full_index)
                     return True
 
         # Check cancel all button (only if expanded)
@@ -14685,13 +14689,8 @@ class Game:
                 # Cancel only the orders the sidebar shows — other players' orders
                 # (e.g. AI orders in the same planning phase) must survive
                 self.game_state.cancel_all_orders(player=self.order_sidebar_player)
-                # MULTIPLAYER: Notify remote players about cancel-all (sequential only:
-                # simultaneous planned moves never left this PC, see the cancel above)
-                if self.multiplayer_mode and self.sim_state is None:
-                    self._send_action_to_remote(MessageType.ORDER_REMOVE, {
-                        'cancel_all': True,
-                        'player_index': self.local_player_index
-                    })
+                # No ORDER_REMOVE to the other PCs: none holds a planned move (see the
+                # single cancel above)
                 return True
 
         # Action Log filter chips

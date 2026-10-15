@@ -19,6 +19,13 @@ logger = get_logger(__name__)
 class HeroMixin:
     """Mixin providing hero management methods for GameState."""
 
+    # The heroes behind each passive that battles read - one list per passive, shared by
+    # the live checks below (player_has_*) and a simultaneous round's frozen BattleContext
+    VANQUISH_HEROES = ('Neil Hévilneu', 'Serthus Diarcess')      # Vanquish the Enemy
+    SCAVENGE_HEROES = ('Darius Brennhen', 'Regnus Aevencourne')  # Scavenge the Fallen, Safe Haven
+    PILLAGE_HEROES = ('Vearen Asford',)                          # Pillage
+    CHAMPION_HEROES = ('Seledra Rennervail',)                    # Champion of the People
+
     def _ability_refusal(self, code, **fmt):
         """
         Record why a hero ability was refused and return the usual (False, text) result.
@@ -1490,7 +1497,7 @@ class HeroMixin:
         """
         if player_index not in self.heroes:
             return False
-        return 'Seledra Rennervail' in self.heroes[player_index]
+        return any(hero in self.heroes[player_index] for hero in self.CHAMPION_HEROES)
 
     def player_has_asford(self, player_index):
         """
@@ -1504,7 +1511,7 @@ class HeroMixin:
         """
         if player_index not in self.heroes:
             return False
-        return 'Vearen Asford' in self.heroes[player_index]
+        return any(hero in self.heroes[player_index] for hero in self.PILLAGE_HEROES)
 
     def player_has_nextroy(self, player_index):
         """
@@ -1634,7 +1641,7 @@ class HeroMixin:
         """
         if player_index not in self.heroes:
             return False
-        return 'Darius Brennhen' in self.heroes[player_index] or 'Regnus Aevencourne' in self.heroes[player_index]
+        return any(hero in self.heroes[player_index] for hero in self.SCAVENGE_HEROES)
 
     def player_has_silvyr(self, player_index):
         """
@@ -1663,7 +1670,7 @@ class HeroMixin:
         """
         if player_index not in self.heroes:
             return False
-        return 'Neil Hévilneu' in self.heroes[player_index] or 'Serthus Diarcess' in self.heroes[player_index]
+        return any(hero in self.heroes[player_index] for hero in self.VANQUISH_HEROES)
 
     def player_has_nithieln(self, player_index):
         """

@@ -1592,6 +1592,13 @@ class SimPhaseManager:
         battles_to_setup = list(self.pending_battles)
         self.pending_battles.clear()
 
+        # The round's heroes and territorial bonuses, frozen once for all its battles:
+        # every PC gets here from the same state, before any battle is resolved, but then
+        # resolves its own battles first - with live values a battle that killed a hero
+        # or changed a bonus territory's owner changed the next one's result, so the
+        # outcome depended on the order (FFA test game 2026-10-14, see BattleContext)
+        battle_context = self.gs.capture_battle_context() if battles_to_setup else None
+
         for battle_data in battles_to_setup:
             territory = battle_data['territory']
             players = battle_data['players']
@@ -1643,6 +1650,7 @@ class SimPhaseManager:
             # Create a Battle object with team leaders
             battle = Battle(territory)
             battle.original_owner = self.gs.territory_owners.get(territory, -1)
+            battle.battle_context = battle_context
 
             # Add team armies to battle (under team leader)
             for team_leader, count in team_armies.items():

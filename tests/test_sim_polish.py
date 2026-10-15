@@ -3,9 +3,10 @@
 Small fixes from the FFA test game of 2026-10-14 (simultaneous, 3 PCs):
 
 - Cancelling a planned move (the sidebar's Cancel Order / CANCEL ALL) sent ORDER_REMOVE
-  to the other PCs. Simultaneous planned moves stay on the planning PC until Ready, so
-  nobody else holds one: all 16 deliveries failed ("cancel order failed"). No longer sent
-  in simultaneous mode; sequential mode is unchanged.
+  to the other PCs. No other PC ever holds a planned move - simultaneous moves stay on
+  the planning PC until Ready, sequential ones travel only in EXECUTE_ORDERS' snapshot as
+  they start to execute - so all 16 deliveries failed ("cancel order failed"). No longer
+  sent in either turn mode.
 - Clicking the crossed swords of a battle another player resolves did nothing visible and
   logged an ERROR (Blue clicked 13 times in 6 s). Now a notice says who resolves it.
 - Two checks that run every frame logged the same line every frame: the territory
@@ -34,7 +35,7 @@ import simultaneous.sim_state as sim_state_module  # noqa: E402
 
 
 # ============================================================================
-# NO ORDER_REMOVE FOR SIMULTANEOUS PLANNED MOVES
+# NO ORDER_REMOVE FOR PLANNED MOVES (BOTH TURN MODES)
 # ============================================================================
 
 def _planned_move(session, player):
@@ -71,7 +72,7 @@ def _order_removes_sent(session, player):
             if entry[0] == 'c2s' and entry[1] == player and entry[2] == MessageType.ORDER_REMOVE]
 
 
-class TestNoCancelMessagesInSimultaneous:
+class TestNoCancelMessages:
 
     def test_cancelling_a_planned_move_sends_nothing(self, make_session):
         session = make_session(num_players=2, turn_mode='simultaneous')
@@ -100,14 +101,40 @@ class TestNoCancelMessagesInSimultaneous:
         host_orders = session.game(0).sim_state.player_orders.get(1, [])
         assert [o for o in host_orders if o.get('type') == 'movement'] == []
 
-    def test_sequential_cancels_are_still_sent(self, make_session):
-        """Sequential mode is left as it was."""
+    def test_sequential_cancels_send_nothing_either(self, make_session):
+        """Sequential moves reach the other PCs only in EXECUTE_ORDERS' snapshot, so the
+        message failed there too (measured: "cancel order failed" on the host)."""
         session = make_session(num_players=2, turn_mode='sequential')
         h.set_turn(session, 1)
         client, order = _planned_move(session, 1)
         _click_cancel(client, order)
         session.run_until_quiet()
-        assert len(_order_removes_sent(session, 1)) == 1
+        assert client.game_state.movement_orders == []
+        assert _order_removes_sent(session, 1) == []
+
+    def test_sequential_cancel_all_sends_nothing(self, make_session):
+        session = make_session(num_players=2, turn_mode='sequential')
+        h.set_turn(session, 1)
+        client, _order = _planned_move(session, 1)
+        _click_cancel_all(client, 1)
+        session.run_until_quiet()
+        assert client.game_state.movement_orders == []
+        assert _order_removes_sent(session, 1) == []
+
+    def test_sequential_a_cancelled_move_does_not_run_anywhere(self, make_session):
+        """The turn's moves travel in EXECUTE_ORDERS' snapshot: a cancelled one is not in
+        it, so no PC moves the army."""
+        session = make_session(num_players=2, turn_mode='sequential')
+        h.set_turn(session, 1)
+        client, order = _planned_move(session, 1)
+        source, target = order.from_territory, order.to_territory
+        _click_cancel(client, order)
+        h.click_end_turn(client)
+        session.run_until_quiet()
+        for index in (0, 1):
+            gs = session.gs(index)
+            assert len(gs.territory_garrisons[source][1]['units']) == 2
+            assert not (gs.territory_garrisons.get(target, {}).get(1) or {}).get('units')
 
 
 # ============================================================================

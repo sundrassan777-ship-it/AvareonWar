@@ -1357,6 +1357,9 @@ class EnhancedBattleInterface:
     def _calculate_effective_strengths(self):
         """Calculate effective strengths for display on panels."""
         battle = self.game_state.pending_battles[self.battle_index]
+        # A simultaneous round's battle is fought with the round's frozen heroes and
+        # territorial bonuses (BattleContext) - the bars show the same numbers; None = live
+        battle_context = getattr(battle, 'battle_context', None)
 
         # Use game_state's calculation method if available
         if hasattr(self.game_state, 'calculate_army_effective_strength'):
@@ -1368,7 +1371,8 @@ class EnhancedBattleInterface:
                     self.defender_composition,
                     self.attacker_player,
                     self.territory,
-                    unit_avg_levels=atk_avg_levels
+                    unit_avg_levels=atk_avg_levels,
+                    battle_context=battle_context
                 )
             else:
                 self.attacker_strength = 0.0
@@ -1382,7 +1386,8 @@ class EnhancedBattleInterface:
                     self.attacker_composition,
                     def_player,
                     self.territory,
-                    unit_avg_levels=def_avg_levels
+                    unit_avg_levels=def_avg_levels,
+                    battle_context=battle_context
                 )
                 self.defender_strength = base_strength + (self.keep_bonus if self.has_keep else 0)
             else:

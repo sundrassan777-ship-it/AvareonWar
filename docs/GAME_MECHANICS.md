@@ -1017,6 +1017,26 @@ Moves are planned at the same time, so things can change after you press Ready:
 - You are told when a move set off with fewer armies than planned, or not at all (also in
   your Action Log).
 
+### A Round's Battles Are Fought As the Round Stood
+
+All battles of a round are fought with the Heroes and territory bonuses each player had
+when the round's battles began - whichever battle is fought first:
+- **Hero passives:** a Hero slain in one battle of the round still counts in the round's
+  other battles - Vanquish the Enemy (Neil Hévilneu / Serthus Diarcess: +20% strength),
+  Scavenge the Fallen, Pillage and Champion of the People. In the battle that slays him
+  (his Keep falls) he no longer counts, as before.
+- **Territory bonuses:** a bonus territory (e.g. +10% Swordsman strength) lost or won in one
+  battle counts for its old owner in the round's other battles; the new owner gets it from
+  the next round on.
+- **Stay as they are:** Safe Haven (the retreat needs the Hero's Keep, so a slain Darius
+  saves no unit), everything in the battle's own territory, and technologies (they only
+  change between rounds).
+
+(Before 2026-10-15 each battle read the Heroes and bonuses at the moment it was fought, so
+results depended on which battle was fought first - and every player fights their own
+battles first on their own computer: 10 of 100 battles in a 4-player test game came out
+differently for one player. Sequential turns are unchanged.)
+
 ### Alliance Arrivals
 
 When multiple allied armies capture the same territory:

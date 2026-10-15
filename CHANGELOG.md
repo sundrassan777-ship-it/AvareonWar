@@ -70,9 +70,8 @@ was audited host vs clients from the three PCs' logs; each phase fixes verified 
   unchanged behaviour).
 - **Small fixes** (Phase 6, simultaneous mode): the sidebar's Cancel Order / CANCEL ALL no
   longer send `ORDER_REMOVE` - planned moves stay on the planning PC until Ready, so all 16
-  deliveries in the test game failed ("cancel order failed"); sequential mode unchanged (its
-  move cancels are not applied on the receivers either - moves travel in `EXECUTE_ORDERS`'
-  snapshot - left for the owner to decide). Clicking a battle another player resolves shows
+  deliveries in the test game failed ("cancel order failed"); sequential mode was left as it
+  was (removed in Phase 7 at the owner's request). Clicking a battle another player resolves shows
   `'battle_other_resolver'` ("{player} is resolving this battle.") instead of nothing + an
   ERROR log (Blue: 18 clicks). `get_unit_composition()`'s `[TOOLTIP MISMATCH]` (125 lines on
   Green's PC) and `update_timers()`' "Timer expired for remote player" (648 lines over the 3
@@ -81,6 +80,30 @@ was audited host vs clients from the three PCs' logs; each phase fixes verified 
   `select_army()` - the only way into it - is never called (dead code). Tests:
   `tests/test_sim_polish.py` (6 of 10 fail on the old code; the others guard unchanged
   behaviour).
+- **A round's battles come out the same in any order** (Phase 7, simultaneous mode): every
+  PC sets a round's battles up from the same state but resolves its own first, and battles
+  read live heroes and territorial bonuses - 10 of 100 battles differed on a client (round
+  36: Neil Hévilneu slain at Daomea, Red's Aelatania army 24.4 strong / 13 survivors on the
+  host, 20.6 / 12 on Blue; Green twice missed Scavenge the Fallen gold). New `BattleContext`
+  (game_state/__init__.py) captured once per round by `MilitaryMixin.capture_battle_context()`
+  in `SimPhaseManager._setup_battles_for_ui()` and stored on each `Battle`; an optional
+  `battle_context=None` argument (None = live, as before) on `calculate_army_effective_strength()`
+  (passed by `_calculate_battle_strengths()`, `_resolve_keep_battle()`, `_fight_for_the_keep()`
+  and the battle window's bars) and `destroy_buildings()` (Pillage, Champion of the People,
+  from `_update_battle_results()` only); Scavenge the Fallen reads it too, leaving out a hero
+  slain in that very battle (as before). Safe Haven, the battle's own territory and techs stay
+  live; sequential battles carry no context. The passives' hero names are one list each on
+  `HeroMixin` (`VANQUISH_HEROES` etc.), now also used by the four `player_has_*` checks
+  (same answers). Found while verifying: `SIM_ALLIANCE_CHOICE` was applied on arrival, so the
+  host's choice could change a territory's owner on a client whose armies were still
+  marching (before its arrivals and before its battle context), and a client's choice
+  reaching a lagging PC was refused - now held like a battle result. Also at the owner's
+  request: the sidebar's move cancels send no `ORDER_REMOVE` in sequential mode either
+  (measured: never applied - sequential moves reach the other PCs only in `EXECUTE_ORDERS`'
+  snapshot). Tests: `tests/test_battle_context.py` (15; 11 fail on the old code - the two-PC
+  test with the game's own "Replayed battle ... differs from the resolver's result"; the
+  other 4 are the orders the old code already got right) + `tests/test_sim_polish.py`
+  (2 sequential cancel tests fail on the Phase 6 code).
 
 ## 2026-10-13 - Joining through Steam (Steam Datagram Relay)
 

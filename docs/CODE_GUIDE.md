@@ -2215,12 +2215,13 @@ Every action that modifies game state must send a network message. Pattern:
 1. After `game_state.action()` succeeds, call `_send_action_to_remote(MessageType.XXX, {...})`
 2. For sim mode: queue order via `sim_state.add_order()` instead (sent via SIM_PLAYER_READY)
 3. For cancels: use `ORDER_REMOVE` with `cancel_type` field (training/castle_upgrade/hero_training/research/demolish/construction).
-   **Exception - planned moves in simultaneous mode:** the sidebar's Cancel Order / CANCEL
-   ALL send nothing there (`handle_order_sidebar_click()`). A simultaneous move stays on the
-   planning PC until Ready (`_sim_queue_local_movement_orders()`), so no other PC holds one
-   to cancel - every such message failed on arrival ("cancel order failed", FFA test game
-   2026-10-14). Sequential mode still sends it (also never applied there - moves reach the
-   other PCs only in `EXECUTE_ORDERS`' snapshot - but that flow was left untouched)
+   **Exception - planned moves:** the sidebar's Cancel Order / CANCEL ALL send nothing, in
+   either turn mode (`handle_order_sidebar_click()`). No other PC ever holds a planned
+   move: a simultaneous one stays on the planning PC until Ready
+   (`_sim_queue_local_movement_orders()`), a sequential one reaches the other PCs only in
+   `EXECUTE_ORDERS`' snapshot as it starts to execute (cleared after execution, so `TURN_END`
+   carries none). Every such message failed on arrival ("cancel order failed", FFA test game
+   2026-10-14). The receiving handler stays for older versions
 4. Sequential mode: the turn owner's `EXECUTE_ORDERS` / `TURN_END` carry its state snapshot
    and correct anything the per-action messages missed (see "Sequential multiplayer: the
    turn owner is the truth")
@@ -2516,6 +2517,34 @@ Rules:
   the simultaneous host refused the whole move that still named a dead unit (FFA game
   2026-10-14, Green's round 28). Runs on every PC with the shipped picks, so the victim's
   own PC fixes its own planned moves. Tests: `tests/test_ability_queued_units.py`.
+- **A simultaneous round's battles read the round's frozen `BattleContext`**, never live
+  heroes / territorial bonuses (see below).
+
+**Simultaneous battle context (order-independent results):** every PC sets a round's
+battles up from the same state, then resolves ITS OWN battles first and replays the others
+- so with live values a battle that killed a hero or changed a bonus territory's owner
+changed the next one's result depending on who pressed FIGHT first (FFA test game
+2026-10-14: 10 of 100 battles differed on a client; round 36, Neil Hévilneu slain at Daomea,
+Red's Aelatania army 24.4 strong on the host / 20.6 on Blue). `_setup_battles_for_ui()`
+calls `gs.capture_battle_context()` once per round, before any battle, and stores the
+`BattleContext` (game_state/__init__.py: each player's heroes as a frozenset + a copy of
+`calculate_player_territorial_bonuses()`) on every `Battle` (`battle.battle_context`). The
+battle path reads it through an optional `battle_context=None` argument (None = live, as
+before):
+- `calculate_army_effective_strength()` - Vanquish the Enemy + the territorial unit bonuses;
+  passed by `_calculate_battle_strengths()`, `_resolve_keep_battle()` (Keep phase 1),
+  `_fight_for_the_keep()` and the battle window's bars
+  (`EnhancedBattleInterface._calculate_effective_strengths()` - they show what the fight uses);
+- `destroy_buildings()` from `_update_battle_results()` - Pillage, Champion of the People;
+- Scavenge the Fallen in `_update_battle_results()` - leaving out a hero slain in THIS
+  battle (`_battle_hero_deaths`; the Keep falls before the check, as it always did).
+Stay live on purpose: Safe Haven (it needs its hero's live Keep - a frozen "Darius alive"
+would crash `get_safe_haven_territories()`), everything in the battle's own territory, the
+techs (they change only between rounds). The passives' hero names are one list each on
+`HeroMixin` (`VANQUISH_HEROES`, `SCAVENGE_HEROES`, `PILLAGE_HEROES`, `CHAMPION_HEROES`),
+shared by the live `player_has_*` checks and the context. **A new battle-time effect that
+reads heroes or bonuses** → read it from `battle.battle_context` when set. Sequential battles
+carry no context (unchanged). Tests: `tests/test_battle_context.py`.
 
 **Held messages:** a result can arrive while this PC's own copy of the move is still
 animating, so the battle does not exist here yet. `_handle_remote_battle_resolve()` then
@@ -2523,7 +2552,10 @@ calls `_hold_network_message()`; that message **and every later one** wait in
 `_held_network_messages` (order kept) until `_battles_may_still_appear()` is False
 (no animations / pending arrivals / sim execution), then `_release_held_network_messages()`
 replays them; after `_NETWORK_HOLD_LIMIT` (15 s) they are applied anyway
-(`allow_hold=False`). The test harness counts held messages as "busy".
+(`allow_hold=False`). The test harness counts held messages as "busy". `SIM_ALLIANCE_CHOICE`
+is held the same way: its marker comes from our own arrivals, and applied earlier it changed
+the territory's owner before them (and before this PC froze the round's battle context); a
+client's choice reaching a PC whose arrivals were not done was refused (no marker yet).
 
 **Cheats are single-player only:** `KeyboardHandler._handle_cheat_code()` checks
 `game_instance.multiplayer_mode` / `network_connection` and `game_state.network_mode`;
