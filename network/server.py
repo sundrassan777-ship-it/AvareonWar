@@ -69,6 +69,8 @@ _RELAY_MESSAGE_TYPES = frozenset({
     # Both modes
     MessageType.CHAT_MESSAGE,
     MessageType.SIM_HERO_ABILITY,
+    # Lobby: a client's lobby chat line reaches the other clients this way
+    MessageType.LOBBY_CHAT,
     MessageType.GOLD_TRANSFER,
     # Simultaneous mode
     MessageType.SIM_ALLIANCE_CHOICE,
@@ -108,6 +110,7 @@ _CLIENT_MESSAGE_TYPES = frozenset({
     MessageType.LOBBY_SLOT_UPDATE,
     MessageType.TERRITORY_SELECT,
     MessageType.GAME_READY,
+    MessageType.LOBBY_CHAT,
     # Game
     MessageType.CHAT_MESSAGE,
     MessageType.MOVEMENT_ORDER,
@@ -134,6 +137,7 @@ _SENDER_FIELDS = {
     MessageType.LOBBY_SLOT_UPDATE: 'player_index',
     MessageType.TERRITORY_SELECT: 'player_index',
     MessageType.GAME_READY: 'player_index',
+    MessageType.LOBBY_CHAT: 'player_index',
     MessageType.CHAT_MESSAGE: 'player_index',
     MessageType.MOVEMENT_ORDER: 'player_index',
     MessageType.BUILDING_ORDER: 'player_index',

@@ -71,7 +71,8 @@ from rendering.map_renderer import MapRenderer
 from rendering.ui_renderer import UIRenderer
 from rendering.panel_renderer import PanelRenderer
 from rendering.map_extension import MapEastExtension, east_extension_override_path
-from rendering.sidebar_widgets import SidebarWidgets
+from rendering.sidebar_widgets import (SidebarWidgets, build_toggle_sprite, draw_panel_border,
+                                       draw_tab_badge)
 from rendering.bottom_panel_kit import (BottomPanelKit, TINT_END_TURN, TINT_END_TURN_HIGHLIGHT,
                                         TINT_SELECT_ARMY, TINT_SELECT_ALL, TINT_DESELECT_ALL,
                                         TINT_DEMOLISH, TINT_CONFISCATE,
@@ -2031,6 +2032,11 @@ class Game:
             if message:
                 logger.debug(f"[NETWORK] Received {channel} chat from Player {player_index + 1}: {message}")
                 self.game_state.add_chat_message(player_index, message, channel)
+
+        elif msg_type == MessageType.LOBBY_CHAT:
+            # A lobby chat line still in flight when the game launched: the lobby chat is
+            # separate from the game's chat (owner) and ends with the lobby - dropped
+            logger.debug("[NETWORK] Dropped a lobby chat line that arrived after launch")
 
         elif msg_type == MessageType.DISCONNECT:
             # Remote player disconnected (legacy 1v1 message)
@@ -7370,22 +7376,11 @@ class Game:
 
         The gap lines up with the active bookmark's rect (sidebar_tab_buttons, filled by
         the tab renderer this frame), so the lit tab reads as part of the panel.
+        (Drawn by rendering/sidebar_widgets.draw_panel_border(), shared with the lobby chat.)
         """
-        color = (138, 98, 50)
-        width = 3
-        pygame.draw.line(self.screen, color, rect.topleft, (rect.right - 1, rect.top), width)
-        pygame.draw.line(self.screen, color, (rect.left, rect.bottom - 2), (rect.right - 1, rect.bottom - 2), width)
-        pygame.draw.line(self.screen, color, (rect.right - 2, rect.top), (rect.right - 2, rect.bottom - 1), width)
         active = (self.sidebar_tab_buttons or {}).get(self.game_state.active_sidebar_tab)
-        x = rect.left + 1
-        if active is not None and self.game_state.sidebar_expanded:
-            # Left edge in two pieces around the active tab
-            if active.top > rect.top:
-                pygame.draw.line(self.screen, color, (x, rect.top), (x, active.top), width)
-            if active.bottom < rect.bottom:
-                pygame.draw.line(self.screen, color, (x, active.bottom - 1), (x, rect.bottom - 1), width)
-        else:
-            pygame.draw.line(self.screen, color, (x, rect.top), (x, rect.bottom - 1), width)
+        draw_panel_border(self.screen, rect,
+                          active if self.game_state.sidebar_expanded else None)
 
     def _draw_sidebar_toggle_button(self, layout):
         """Round collapse / expand button, in the tab column just above the bookmarks.
@@ -7428,35 +7423,8 @@ class Game:
         if sprite is not None:
             return sprite
 
-        sprite = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
-        radius = diameter // 2
-        # Solid underlay: CircleBorder's centre is partly see-through (it frames plot
-        # icons), so without this the map or the dark fog would show through the button.
-        pygame.draw.circle(sprite, (52, 38, 20), (radius, radius), radius)        # dark bronze rim
-        pygame.draw.circle(sprite, (168, 132, 58), (radius, radius), radius - 3)  # gold face
-        if self.circle_border is not None:
-            sprite.blit(pygame.transform.smoothscale(self.circle_border, (diameter, diameter)), (0, 0))
-
-        if state in ('hover', 'click'):
-            # Brighten the disc only (BLEND_RGB_ADD leaves alpha — the round shape — intact)
-            boost = 70 if state == 'click' else 35
-            sprite.fill((boost, boost, boost), special_flags=pygame.BLEND_RGB_ADD)
-        elif state == 'locked':
-            # Disabled look: darken (BLEND_RGBA_MULT keeps the transparent corners transparent)
-            sprite.fill((150, 150, 150, 255), special_flags=pygame.BLEND_RGBA_MULT)
-
-        # Two dark chevrons pointing the way the panel will move
-        chevron_color = (52, 42, 30) if state == 'locked' else (48, 30, 12)
-        direction = 1 if expanded else -1       # +1 points right, -1 points left
-        half_h = max(3, diameter // 6)
-        arm = half_h
-        center = diameter / 2.0
-        for offset in (-arm * 0.55, arm * 0.55):
-            tip_x = center + offset + direction * arm / 2.0
-            back_x = tip_x - direction * arm
-            pygame.draw.lines(sprite, chevron_color, False,
-                              [(back_x, center - half_h), (tip_x, center), (back_x, center + half_h)], 3)
-
+        # Shared with the multiplayer lobby's chat panel (rendering/sidebar_widgets.py)
+        sprite = build_toggle_sprite(diameter, expanded, state, self.circle_border)
         self._sidebar_toggle_sprites[key] = sprite
         return sprite
 
@@ -7481,17 +7449,10 @@ class Game:
         """Count badge on a bookmark's outer edge near its top, clear of the label.
 
         A circle for one digit, a pill for more ("99+" caps it). Shared by the Action
-        Queue order badge (red) and the unread badges (gold).
+        Queue order badge (red) and the unread badges (gold) - and, through
+        rendering/sidebar_widgets.draw_tab_badge(), the lobby chat's bookmark.
         """
-        label = str(count) if count < 100 else "99+"
-        text = self.sidebar_widgets.text(label, 'small_bold', text_color)
-        radius = 10
-        width = max(2 * radius, text.get_width() + 10)
-        rect = pygame.Rect(0, 0, width, 2 * radius)
-        rect.center = (tab_rect.x, tab_rect.y + 12)
-        pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
-        pygame.draw.rect(self.screen, rim, rect, 2, border_radius=radius)
-        self.screen.blit(text, text.get_rect(center=rect.center))
+        draw_tab_badge(self.screen, self.sidebar_widgets, tab_rect, count, fill, rim, text_color)
 
     def _sidebar_unread_totals(self):
         """Countable items per badge tab: {'chat': n, 'action_log': n}.

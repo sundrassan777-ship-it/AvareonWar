@@ -405,6 +405,24 @@ class NetworkProtocol:
             "channel": channel
         })
 
+    def create_lobby_chat(self, player_index: int, message: str,
+                          channel: str = "all") -> bytes:
+        """A multiplayer lobby chat line (network/lobby_chat.py) - its own type, so the
+        game never mistakes a lobby line still in flight at launch for game chat.
+
+        Args:
+            player_index: Sender's slot index (0-3)
+            message: Text (truncated to MAX_CHAT_LENGTH)
+            channel: 'all' for everyone, 'team' for the sender's lobby team
+        """
+        if len(message) > self.MAX_CHAT_LENGTH:
+            message = message[:self.MAX_CHAT_LENGTH]
+        return self.encode_message(MessageType.LOBBY_CHAT, {
+            "player_index": player_index,
+            "message": message,
+            "channel": channel
+        })
+
     def create_movement_order(self, from_territory: str, to_territory: str,
                              army_count: int, unit_ids: List[int]) -> bytes:
         """Create a movement order message"""
@@ -643,10 +661,11 @@ class NetworkProtocol:
                     logger.warning(f"Invalid ai_difficulty {diff}")
                     return False
 
-            elif msg_type == MessageType.CHAT_MESSAGE:
+            elif msg_type in (MessageType.CHAT_MESSAGE, MessageType.LOBBY_CHAT):
+                # Game chat and lobby chat: same fields, same limits
                 pi = data.get('player_index')
                 if pi is not None and not _valid_player_index(pi):
-                    logger.warning(f"Invalid player_index {pi} in CHAT_MESSAGE")
+                    logger.warning(f"Invalid player_index {pi} in {msg_type}")
                     return False
                 msg_text = data.get('message', '')
                 if not _valid_string(msg_text, self.MAX_CHAT_LENGTH):

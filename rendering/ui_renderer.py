@@ -30,6 +30,7 @@ from collections import OrderedDict
 from config.constants import *
 from ui.scaler import UIConstants
 from ui.sidebar_layout import compute_tab_rects
+from rendering.sidebar_widgets import chat_entry_layout, draw_chat_entry
 from utils.logger import get_logger
 import map_data
 
@@ -2326,16 +2327,14 @@ class UIRenderer:
         visible = gs.get_visible_chat_messages(viewer)
         old_total = state['total']
         y = state['total']
-        name_h = w.font('small_bold').get_linesize()
-        body_h = w.font('body').get_linesize()
         for message in visible[state['visible']:]:
             # Format: (timestamp, player_id, message[, channel]) - index access (old saves: 3-tuple)
             timestamp, player_id, text = message[0], message[1], message[2]
             channel = message[3] if len(message) > 3 else 'all'
-            lines = w.wrap(text, 'body', width - 6)
-            height = 6 + name_h + body_h * len(lines)
+            # Wrapped lines + height: shared with the lobby chat (rendering/sidebar_widgets.py)
+            lines, height = chat_entry_layout(w, text, width)
             state['items'].append((height, {'time': timestamp, 'player': player_id, 'team': channel == 'team',
-                                            'lines': lines, 'name_h': name_h, 'body_h': body_h}))
+                                            'lines': lines}))
             state['ys'].append(y)
             y += height
         grew = 0 if state['visible'] == 0 else max(0, y - old_total)
@@ -2343,27 +2342,14 @@ class UIRenderer:
         return state['items'], state['ys'], state['total'], grew
 
     def _draw_chat_item(self, spec, x, y, width):
-        """One chat message: '[time] [TEAM] Name:' line, then the wrapped text."""
+        """One chat message: '[time] [TEAM] Name:' line, then the wrapped text
+        (rendering/sidebar_widgets.draw_chat_entry(), shared with the lobby chat)."""
         game = self.game
         gs = game.game_state
-        w = game.sidebar_widgets
-        screen = game.screen
-        y += 6
-        time_surf = w.text(f"[{spec['time']}]", 'small', (150, 140, 128))
-        screen.blit(time_surf, (x, y))
-        nx = x + time_surf.get_width() + 5
-        if spec['team']:
-            team = w.text("[TEAM]", 'small_bold', (110, 210, 110))
-            screen.blit(team, (nx, y))
-            nx += team.get_width() + 5
         # chat_sender_*: "System" for the game's own lines (disconnect notices)
-        name = w.text(w.fit_text(f"{gs.chat_sender_name(spec['player'])}:", 'small_bold', x + width - nx),
-                      'small_bold', gs.chat_sender_color(spec['player']))
-        screen.blit(name, (nx, y))
-        ly = y + spec['name_h']
-        for line in spec['lines']:
-            screen.blit(w.text(line, 'body', (226, 216, 196)), (x + 6, ly))
-            ly += spec['body_h']
+        draw_chat_entry(game.sidebar_widgets, game.screen, x, y, width, spec['time'],
+                        gs.chat_sender_name(spec['player']), gs.chat_sender_color(spec['player']),
+                        spec['lines'], spec['team'])
 
     def _draw_chat_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """

@@ -33,8 +33,13 @@ from ui.additional_options_overlay import AdditionalOptionsOverlay
 from ui.setup_tooltip import SetupTooltips
 from ui.setup_frames import SetupFrames
 from ui.map_top_bar import MapTopBar
+from network.lobby_chat import LobbyChat, CHANNELS as CHAT_CHANNELS, clean_text as clean_chat_text
 
 logger = get_logger(__name__)
+
+# Lobby chat: at most one new-message sound per this many seconds (a burst of lines plays
+# one click, not a rattle)
+CHAT_SOUND_GAP_SECONDS = 0.4
 
 # A friend's Invite button stays "Invited" this long, then it can be clicked again
 INVITE_COOLDOWN_SECONDS = 30
@@ -261,6 +266,11 @@ class TerritorySelector:
         # Show Borders toggle (persisted in settings; the top bar's button glows while on)
         self.show_borders = settings.get('show_setup_borders', False)
 
+        # Lobby chat (network/lobby_chat.py): separate from the game's chat, cleared when
+        # the lobby ends. Sent as LOBBY_CHAT; drawn by the collapsible chat panel.
+        self.lobby_chat = LobbyChat()
+        self._chat_sound_at = float('-inf')   # Last new-message sound (time.monotonic())
+
         # Countdown state (for launch countdown)
         self.countdown_active = False
         self.countdown_seconds = 0
@@ -483,6 +493,78 @@ class TerritorySelector:
             self.randomize_starting_positions()
         return True
 
+    # ------------------------------------------------------------------ lobby chat
+
+    def _slot_chat_identity(self, slot_idx):
+        """(name, colour, team) of a slot for a chat line, as this PC sees it now."""
+        slot = self.lobby_state.get_slot(slot_idx)
+        if slot is None:
+            return f"Player {slot_idx + 1}", PLAYER_COLORS[0], None
+        name = slot.player_name or f"Player {slot_idx + 1}"
+        color = PLAYER_COLORS[slot.color] if 0 <= slot.color < len(PLAYER_COLORS) else PLAYER_COLORS[0]
+        return name, color, slot.team
+
+    def _add_lobby_chat_line(self, slot_idx, text, channel):
+        """Put a player's line into this PC's lobby chat (team = the sender's team now)."""
+        name, color, team = self._slot_chat_identity(slot_idx)
+        entry = self.lobby_chat.add_player_line(slot_idx, name, color, text, channel, team)
+        if entry is not None and slot_idx != self.local_player_index:
+            # Someone else wrote: a click (owner), at most one per CHAT_SOUND_GAP_SECONDS,
+            # and only if this player can read the line
+            now = time.monotonic()
+            _, _, my_team = self._slot_chat_identity(self.local_player_index)
+            if (now - self._chat_sound_at >= CHAT_SOUND_GAP_SECONDS
+                    and self.lobby_chat.is_visible(entry, self.local_player_index, my_team)):
+                self._chat_sound_at = now
+                sound_manager.play_ui_click()
+        return entry
+
+    def send_lobby_chat(self, text, channel='all'):
+        """Our own lobby chat line: shown here at once and sent to everyone (the host
+        broadcasts it; a client sends it to the host, whose server relays it to the other
+        clients). Returns True if a line went out (empty text is not sent)."""
+        text = clean_chat_text(text)
+        if not text:
+            return False
+        if channel not in CHAT_CHANNELS:
+            channel = 'all'
+        self._add_lobby_chat_line(self.local_player_index, text, channel)
+        message = self.protocol.create_lobby_chat(self.local_player_index, text, channel)
+        if self.is_host:
+            self.network_connection.broadcast_message(message)
+        else:
+            self.network_connection.send_message(message)
+        return True
+
+    def _receive_lobby_chat(self, msg, data):
+        """A LOBBY_CHAT line from another PC. The server already made sure a client's
+        line names its own slot (_SENDER_FIELDS); the host also checks that the slot is
+        in the lobby. A line naming us (our own echo) is ignored."""
+        slot_idx = data.get('player_index')
+        if type(slot_idx) is not int or not 0 <= slot_idx < len(self.lobby_state.slots):
+            logger.warning(f"Lobby chat: ignored a line from slot {slot_idx!r}")
+            return
+        sender = msg.get('from_player_index')
+        if isinstance(sender, int) and sender != slot_idx:
+            logger.warning(f"Lobby chat: ignored a line for slot {slot_idx} sent by player {sender}")
+            return
+        if slot_idx == self.local_player_index:
+            return
+        slot = self.lobby_state.get_slot(slot_idx)
+        if self.is_host and (slot is None or not slot.is_active()):
+            logger.warning(f"Lobby chat: ignored a line from empty slot {slot_idx}")
+            return
+        channel = data.get('channel', 'all')
+        self._add_lobby_chat_line(slot_idx, data.get('message', ''),
+                                  channel if channel in CHAT_CHANNELS else 'all')
+
+    def _chat_player_left(self, slot_idx):
+        """Name of an occupied slot (for "X left the lobby"), read BEFORE it is cleared."""
+        slot = self.lobby_state.get_slot(slot_idx) if isinstance(slot_idx, int) else None
+        if slot is None or not slot.is_active() or not slot.is_human():
+            return None
+        return slot.player_name or f"Player {slot_idx + 1}"
+
     def _calculate_ui_layout(self):
         """Calculate positions for left panel UI elements.
 
@@ -606,6 +688,9 @@ class TerritorySelector:
             # Friends must stop seeing a lobby to join the moment it closes: launched,
             # Return to Main Menu, Alt+F4 or an error (host only)
             self._clear_hosting_presence()
+            # The lobby chat ends with the lobby, however it ends (owner: never carried
+            # into the game)
+            self.lobby_chat.clear()
 
     def _update_hosting_presence(self, now=None):
         """
@@ -1040,8 +1125,10 @@ class TerritorySelector:
         # Use server's kick_player method to send message AND disconnect the client
         self.network_connection.kick_player(slot_idx, "Kicked by host")
 
-        # Remove player from lobby (this also clears their territory)
-        self.lobby_state.remove_player(slot_idx)
+        # Remove player from lobby (this also clears their territory). The server's
+        # LOBBY_LEAVE for them finds the slot empty, so the chat notice is written here.
+        if self.lobby_state.remove_player(slot_idx):
+            self.lobby_chat.add_system_line(f"{player_name or f'Player {slot_idx + 1}'} left the lobby")
 
         # Sync host's local UI to reflect the removal (clear territory display)
         self._sync_from_lobby_state()
@@ -1459,6 +1546,8 @@ class TerritorySelector:
                         slot.player_name = player_name
                         self._sync_from_lobby_state()
                         logger.info(f"Player {player_name} joined slot {server_assigned_index + 1}")
+                        # Lobby chat notice (made on each PC, never sent)
+                        self.lobby_chat.add_system_line(f"{slot.player_name} joined the lobby")
 
                         # Send full lobby state to the new client so they see everything
                         self._broadcast_lobby_state()
@@ -1471,20 +1560,30 @@ class TerritorySelector:
                             slot.player_name = player_name
                         self._sync_from_lobby_state()
                         logger.info(f"Player {player_name} joined slot {server_assigned_index + 1}")
+                        if server_assigned_index != self.local_player_index:
+                            # Lobby chat notice for someone else joining (not our own join)
+                            self.lobby_chat.add_system_line(f"{player_name} joined the lobby")
 
             elif msg_type == MessageType.LOBBY_LEAVE:
                 # Player left. The server tells the other clients AND the host's lobby
                 # (the host used to never hear it and kept a ghost player).
                 player_index = data.get('player_index')
                 if isinstance(player_index, int) and 0 < player_index < self.num_players:
+                    leaver = self._chat_player_left(player_index)   # Before the slot is cleared
                     if self.lobby_state.remove_player(player_index):
                         logger.info(f"Player left slot {player_index + 1}")
+                        if leaver:
+                            self.lobby_chat.add_system_line(f"{leaver} left the lobby")
                     if self.selected_slot_for_territory == player_index and self.is_host:
                         self.selected_slot_for_territory = self.local_player_index
                     self._sync_from_lobby_state()
                     if self.is_host:
                         # Everyone gets the authoritative state (freed territory included)
                         self._broadcast_lobby_state()
+
+            elif msg_type == MessageType.LOBBY_CHAT:
+                # A lobby chat line from another PC (network/lobby_chat.py)
+                self._receive_lobby_chat(msg, data)
 
             elif msg_type == MessageType.LOBBY_KICK:
                 # Client received kick notification
