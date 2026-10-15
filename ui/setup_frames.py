@@ -53,6 +53,15 @@ class SetupFrames:
         """Where text / arrows may start inside a selector: beam + a little air."""
         return self.beam(height) + max(4, int(round(6 * self.scale)))
 
+    def button_beam(self, height):
+        """Wooden beam thickness for a wood_button() `height` px tall: a little thinner
+        than a selector's, so two lines of label fit inside (map top bar)."""
+        return max(4, int(round(height * 0.16)))
+
+    def button_inset(self, height):
+        """Where a wood_button()'s label may start: beam + a little air."""
+        return self.button_beam(height) + max(4, int(round(6 * self.scale)))
+
     def dropdown_box(self, size, fill, state='normal'):
         """Wood-framed selector box. state: 'normal' | 'hover' | 'open' | 'disabled'."""
         size = (int(size[0]), int(size[1]))
@@ -88,7 +97,7 @@ class SetupFrames:
         surf = self._cache.get(key)
         if surf is None:
             image, insets = self._art('wood')
-            beam = self.beam(size[1])
+            beam = self.button_beam(size[1])
             frame = render_nine_slice(image, insets, size, beam)
             frame.fill(WOOD_TINT, special_flags=pygame.BLEND_RGBA_MULT)
             surf = pygame.Surface(size, pygame.SRCALPHA)

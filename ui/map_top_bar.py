@@ -4,11 +4,13 @@ Map top bar of the game setup screens (Custom Game + multiplayer lobby).
 
 The wooden strip above the setup map holds, left to right:
 
-    [Randomize Starting Positions]     (<) [ MAP NAME ] (>)     [Show Borders]
+    [Randomize         ]
+    [Starting Positions]     (<) [ MAP NAME ] (>)     [Show Borders]
 
-- Randomize Starting Positions: a wood button (ResourceSlot beams). The screen gives
-  every active player a random start (map_data.pick_starting_territories()). In the
-  lobby only the host may press it; clients see it greyed with a tooltip saying so.
+- Randomize Starting Positions: a wood button (ResourceSlot beams), its label on two
+  lines so it is as wide as Show Borders (owner request). The screen gives every
+  active player a random start (map_data.pick_starting_territories()). In the lobby
+  only the host may press it; clients see it greyed with a tooltip saying so.
 - The map name sits on TextBar.png (gold bar, dark window) so it reads on the wood;
   the round medallion arrows (and a click on the name) change the map. Clients and
   single-map installs get the name bar without arrows.
@@ -35,11 +37,15 @@ logger = get_logger(__name__)
 FLASH_MS = 120      # Click flash length (the Additional Options window's)
 
 RANDOMIZE_LABEL = "Randomize Starting Positions"
-# Shorter label for when the full one would drop below MIN_LABEL_PX (owner: OK at 720p).
-# The tooltip still names the whole action.
+# Normally on two lines: both buttons then share one width (the widest line) and one
+# font size, close to Show Borders' own width (owner: the one-line button was too wide)
+RANDOMIZE_LINES = ("Randomize", "Starting Positions")
+# Fallbacks for a strip too low for two lines (no supported resolution): one line, then
+# this shorter text below MIN_LABEL_PX (owner: OK). The tooltip names the whole action.
 RANDOMIZE_LABEL_SHORT = "Randomize Starts"
 BORDERS_LABEL = "Show Borders"
 MIN_LABEL_PX = 12
+MIN_TWO_LINE_PX = 10   # Two-line labels may be this small (720p)
 
 # Returned by handle_click() for a click on a control that is shown but may not be used
 # here (a client's greyed Randomize, a client's map name): the click is used up, nothing
@@ -153,16 +159,54 @@ class MapTopBar:
 
     # ------------------------------------------------------------------ layout
 
+    def _line_gap(self, px):
+        """Space between two label lines (between their ink, not their line boxes)."""
+        return max(1, int(round(px * 0.15)))
+
+    def _ink(self, px, text):
+        """Bounding rect of the visible glyphs of `text` in its rendered surface. Labels
+        are placed by their ink: Cinzel's line box has a lot of empty room above and
+        below its capitals, and two lines only fit the button stacked by ink."""
+        return self._render_text(FONT_SEMIBOLD, px, text, LABEL_COLOR).get_bounding_rect()
+
+    def _lines_height(self, lines, px):
+        return sum(self._ink(px, t).h for t in lines) + self._line_gap(px) * (len(lines) - 1)
+
+    def _fit_labels(self, text_h, inset, room, band):
+        """(Randomize label lines, font px) for both buttons.
+
+        Two lines at the biggest size up to ~20% of the strip that fits the button's
+        height (`text_h`) and the `room` beside the selector, never below
+        MIN_TWO_LINE_PX. A strip too low for two lines falls back to one line: the full
+        label, then RANDOMIZE_LABEL_SHORT below MIN_LABEL_PX.
+        """
+        def width(lines, px):
+            font = self._font(FONT_SEMIBOLD, px)
+            return max(font.size(t)[0] for t in tuple(lines) + (BORDERS_LABEL,)) + 2 * inset
+
+        px0 = max(MIN_TWO_LINE_PX, int(round(band * 0.2)))
+        tries = [(RANDOMIZE_LINES, px) for px in range(px0, MIN_TWO_LINE_PX - 1, -1)]
+        px0 = max(MIN_LABEL_PX, int(round(band * 0.25)))
+        tries += [((RANDOMIZE_LABEL,), px) for px in range(px0, MIN_LABEL_PX - 1, -1)]
+        tries += [((RANDOMIZE_LABEL_SHORT,), px) for px in range(px0, 8, -1)]
+        for lines, px in tries:
+            if self._lines_height(lines, px) <= text_h and width(lines, px) <= room:
+                return tuple(lines), px
+        logger.warning(f"Map top bar: buttons do not fit beside the map selector "
+                       f"({self.area[1]} px wide panel, {band} px strip)")
+        return tuple(tries[-1][0]), tries[-1][1]
+
     def layout(self):
         """Every rect of the bar (cached until the geometry / permissions change).
 
-        Sizes follow the strip's height; the label font shrinks until the buttons clear
-        the centred map selector (below MIN_LABEL_PX the Randomize label switches to
-        RANDOMIZE_LABEL_SHORT - expected at 720p only).
+        Sizes follow the strip's height. The two buttons share one width and one font
+        size; Randomize's label is on two lines (see _fit_labels()). The centre selector
+        is centred on the map panel.
 
         Returns a dict: rects 'randomize', 'borders', 'name' (the whole TextBar),
         'name_window' (its dark window), 'prev' / 'next' (None without arrows), plus
-        'label' (Randomize text used), 'label_px', 'name_px'.
+        'label_lines' (Randomize's label, one tuple entry per line), 'label_px',
+        'name_px'.
         """
         key = (self.area, self.band_h, self.can_change_map, tuple(self.map_names))
         if self._layout is not None and self._layout_key == key:
@@ -170,14 +214,16 @@ class MapTopBar:
 
         area_x, area_w = self.area
         band = max(24, self.band_h)
-        h = max(22, int(round(band * 0.6)))       # Button height
         cy = int(round(band * 0.38))              # Centre line, inside the visible wood
-        margin = max(8, int(round(h * 0.35)))     # From the map panel's edges
-        gap = max(6, int(round(h * 0.3)))         # Between a button and the selector
-        d = int(round(h * 0.9))                   # Medallion diameter
+        h = max(24, int(round(band * 0.68)))      # Button height: room for two label lines
+        margin = max(8, int(round(band * 0.21)))  # From the map panel's edges
+        gap = max(6, int(round(band * 0.18)))     # Between a button and the selector
+        d = int(round(band * 0.54))               # Medallion diameter
         arrow_gap = max(2, int(round(d * 0.12)))  # Medallion to the bar's spear tip
-        nb = int(round(h * 1.25))                 # Name bar height
-        inset = self.frames.content_inset(h)
+        nb = int(round(band * 0.75))              # Name bar height
+        inset = self.frames.button_inset(h)
+        # Label room inside the beams, 1 px of air above and below
+        text_h = h - 2 * self.frames.button_beam(h) - 2
 
         art = _textbar()
         art_w, art_h = art.get_size() if art else (1438, 170)
@@ -191,37 +237,25 @@ class MapTopBar:
         centre_w = bar_w + (2 * (d + arrow_gap) if self.can_change_map else 0)
         room = (area_w - centre_w) // 2 - margin - gap   # Widest a side button may be
 
-        # Biggest label that fits: full text first, the short one only below MIN_LABEL_PX
-        label_px0 = max(MIN_LABEL_PX, int(round(h * 0.42)))
-        tries = [(RANDOMIZE_LABEL, px) for px in range(label_px0, MIN_LABEL_PX - 1, -1)]
-        tries += [(RANDOMIZE_LABEL_SHORT, px) for px in range(label_px0, 8, -1)]
-        label, label_px = tries[-1]
-        for text, px in tries:
-            font = self._font(FONT_SEMIBOLD, px)
-            if max(font.size(text)[0], font.size(BORDERS_LABEL)[0]) + 2 * inset <= room:
-                label, label_px = text, px
-                break
-        else:
-            logger.warning(f"Map top bar: buttons do not clear the map selector in a "
-                           f"{area_w} px wide panel")
+        # Both buttons: one font size, one width (the widest label line)
+        lines, label_px = self._fit_labels(text_h, inset, room, band)
         font = self._font(FONT_SEMIBOLD, label_px)
-        rand_w = font.size(label)[0] + 2 * inset
-        borders_w = font.size(BORDERS_LABEL)[0] + 2 * inset
+        button_w = max(font.size(t)[0] for t in lines + (BORDERS_LABEL,)) + 2 * inset
 
         top = cy - h // 2
         centre_x = area_x + area_w // 2
         name = pygame.Rect(centre_x - bar_w // 2, cy - nb // 2, bar_w, nb)
         wl, wt, wr, wb = TEXTBAR_WINDOW
         out = {
-            'randomize': pygame.Rect(area_x + margin, top, rand_w, h),
-            'borders': pygame.Rect(area_x + area_w - margin - borders_w, top, borders_w, h),
+            'randomize': pygame.Rect(area_x + margin, top, button_w, h),
+            'borders': pygame.Rect(area_x + area_w - margin - button_w, top, button_w, h),
             'name': name,
             'name_window': pygame.Rect(name.x + int(round(wl * k)), name.y + int(round(wt * k)),
                                        bar_w - int(round(wl * k)) - int(round((art_w - wr) * k)),
                                        int(round((wb - wt) * k))),
             'prev': None,
             'next': None,
-            'label': label,
+            'label_lines': lines,
             'label_px': label_px,
             'name_px': name_px,
         }
@@ -284,9 +318,9 @@ class MapTopBar:
 
     # ------------------------------------------------------------------ sprites
 
-    def _button(self, rect, label, px, state, lit):
-        """Wood button with its label (cached per look)."""
-        key = ('button', rect.size, label, px, state, lit)
+    def _button(self, rect, lines, px, state, lit):
+        """Wood button with its label, one or more centred lines (cached per look)."""
+        key = ('button', rect.size, tuple(lines), px, state, lit)
         surf = self._sprites.get(key)
         if surf is None:
             surf = self.frames.wood_button(rect.size, state, lit).copy()
@@ -294,9 +328,14 @@ class MapTopBar:
                 color = LABEL_COLOR_DISABLED
             else:
                 color = LABEL_COLOR_LIT if lit else LABEL_COLOR
-            text = self._render_text(FONT_SEMIBOLD, px, label, color)
-            # +1: Cinzel's capitals sit a touch high in their line box
-            surf.blit(text, text.get_rect(center=(rect.w // 2, rect.h // 2 + 1)))
+            # Lines stacked by their ink (see _ink()), the block centred in the button
+            inks = [self._ink(px, line) for line in lines]
+            gap = self._line_gap(px)
+            y = (rect.h - (sum(ink.h for ink in inks) + gap * (len(lines) - 1))) // 2
+            for line, ink in zip(lines, inks):
+                text = self._render_text(FONT_SEMIBOLD, px, line, color)
+                surf.blit(text, ((rect.w - ink.w) // 2 - ink.x, y - ink.y))
+                y += ink.h + gap
             self._sprites[key] = surf
         return surf
 
@@ -411,10 +450,10 @@ class MapTopBar:
         """Draw the bar. `borders_on`: Show Borders glows while True."""
         lay = self.layout()
         px = lay['label_px']
-        for element, label, lit in (('randomize', lay['label'], False),
-                                    ('borders', BORDERS_LABEL, bool(borders_on))):
+        for element, lines, lit in (('randomize', lay['label_lines'], False),
+                                    ('borders', (BORDERS_LABEL,), bool(borders_on))):
             rect = lay[element]
-            screen.blit(self._button(rect, label, px, self.state(element), lit), rect.topleft)
+            screen.blit(self._button(rect, lines, px, self.state(element), lit), rect.topleft)
 
         # Map name on the TextBar; it only reacts when a click changes the map
         name_rect = lay['name']

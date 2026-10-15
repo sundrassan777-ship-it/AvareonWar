@@ -5,7 +5,8 @@ Map top bar of the setup screens (ui/map_top_bar.py), shared by the Custom Game 
 
 - layout at 720p-1440p: every control inside the wood strip above the map and inside the
   map panel, no overlaps, labels inside their wood frames, the longest map name inside
-  the TextBar's dark window; the short Randomize label only when the full one cannot fit
+  the TextBar's dark window; Randomize on two lines so both buttons share one width
+  (one-line / short label only for a strip too low for two lines)
 - feedback: every usable control is brighter on hover and brighter still on its click
   flash; a client's greyed Randomize and map name do not react; Show Borders glows on
 - clicks: Randomize fills every active slot (lobby host: one LOBBY_STATE that reaches
@@ -132,8 +133,8 @@ def _draw(pygame_display, bar, borders_on=False, size=(1600, 900)):
 @pytest.mark.parametrize("size", RESOLUTIONS)
 def test_layout_fits_the_strip_at_every_resolution(pygame_display, size):
     import pygame
-    from ui.map_top_bar import (FONT_BOLD, FONT_SEMIBOLD, BORDERS_LABEL, MIN_LABEL_PX,
-                                RANDOMIZE_LABEL, RANDOMIZE_LABEL_SHORT)
+    from ui.map_top_bar import (FONT_BOLD, FONT_SEMIBOLD, BORDERS_LABEL, MIN_TWO_LINE_PX,
+                                RANDOMIZE_LINES)
     for name, bar, band, area_x, area_w in _screens(pygame_display, size):
         lay = bar.layout()
         panel = pygame.Rect(area_x, 0, area_w, band)
@@ -150,14 +151,17 @@ def test_layout_fits_the_strip_at_every_resolution(pygame_display, size):
         xs = [lay[c].x for c in CONTROLS if lay.get(c) is not None]
         assert xs == sorted(xs), (name, size)
 
-        # Labels clear the wood beams; readable size or the short label
-        beam = bar.frames.beam(lay['randomize'].h)
+        # Randomize on two lines at every supported resolution, never below the minimum
+        assert lay['label_lines'] == RANDOMIZE_LINES, (name, size)
+        assert lay['label_px'] >= MIN_TWO_LINE_PX
+        # Every label line clears the wood beams, sideways and (both lines) vertically
+        h = lay['randomize'].h
+        beam = bar.frames.button_beam(h)
         font = pygame.font.Font(FONT_SEMIBOLD, lay['label_px'])
-        for control, label in (('randomize', lay['label']), ('borders', BORDERS_LABEL)):
-            assert font.size(label)[0] + 2 * beam < lay[control].w, (name, size, control)
-        assert lay['label'] in (RANDOMIZE_LABEL, RANDOMIZE_LABEL_SHORT)
-        if lay['label'] == RANDOMIZE_LABEL:
-            assert lay['label_px'] >= MIN_LABEL_PX
+        for control, lines in (('randomize', lay['label_lines']), ('borders', (BORDERS_LABEL,))):
+            for line in lines:
+                assert font.size(line)[0] + 2 * beam < lay[control].w, (name, size, control, line)
+            assert bar._lines_height(lines, lay['label_px']) <= h - 2 * beam - 2, (name, size, control)
 
         # Every map name fits the TextBar's dark window
         window = lay['name_window']
@@ -169,20 +173,31 @@ def test_layout_fits_the_strip_at_every_resolution(pygame_display, size):
             assert text.get_bounding_rect().h <= window.h, (name, size, map_name)
 
 
-@pytest.mark.parametrize("size", RESOLUTIONS[1:])
-def test_full_randomize_label_above_720p(pygame_display, size):
-    from ui.map_top_bar import RANDOMIZE_LABEL
+@pytest.mark.parametrize("size", RESOLUTIONS)
+def test_both_buttons_share_one_width(pygame_display, size):
+    """Owner: the one-line Randomize button was very wide - both buttons are now as wide
+    as the widest label line, about Show Borders' own width."""
+    import pygame
+    from ui.map_top_bar import FONT_SEMIBOLD, RANDOMIZE_LABEL
     for name, bar, *_ in _screens(pygame_display, size):
-        assert bar.layout()['label'] == RANDOMIZE_LABEL, (name, size)
+        lay = bar.layout()
+        assert lay['randomize'].size == lay['borders'].size, (name, size)
+        one_line = pygame.font.Font(FONT_SEMIBOLD, lay['label_px']).size(RANDOMIZE_LABEL)[0]
+        assert lay['randomize'].w < one_line, (name, size)
 
 
-def test_short_label_only_when_the_full_one_cannot_fit(pygame_display):
-    from ui.map_top_bar import MapTopBar, MIN_LABEL_PX, RANDOMIZE_LABEL_SHORT
-    bar = MapTopBar(0.8)
-    bar.set_geometry(0, 700, 48)   # Narrower than any real map panel
+def test_one_line_fallbacks_for_a_low_strip(pygame_display):
+    """A strip too low for two lines (no supported resolution): the full label on one
+    line, and the short one only when even that cannot fit at MIN_LABEL_PX."""
+    from ui.map_top_bar import (MapTopBar, MIN_LABEL_PX, RANDOMIZE_LABEL,
+                                RANDOMIZE_LABEL_SHORT)
+    bar = MapTopBar(1.0)
+    bar.set_geometry(0, 1040, 30)
     lay = bar.layout()
-    assert lay['label'] == RANDOMIZE_LABEL_SHORT
-    assert lay['label_px'] >= MIN_LABEL_PX
+    assert lay['label_lines'] == (RANDOMIZE_LABEL,) and lay['label_px'] >= MIN_LABEL_PX
+    bar.set_geometry(0, 640, 30)   # Narrower than any real map panel
+    lay = bar.layout()
+    assert lay['label_lines'] == (RANDOMIZE_LABEL_SHORT,)
     assert lay['randomize'].right < lay['prev'].left
     assert lay['next'].right < lay['borders'].left
 
