@@ -145,6 +145,9 @@ class MessageType(str, enum.Enum):
 
     # Chat
     CHAT_MESSAGE = "CHAT_MESSAGE"
+    # Multiplayer lobby chat (network/lobby_chat.py): separate from the game's chat - the
+    # game ignores it, so a lobby line still in flight at launch never reaches game chat
+    LOBBY_CHAT = "LOBBY_CHAT"
 
     # Error & Sync
     STATE_CHECKSUM = "STATE_CHECKSUM"

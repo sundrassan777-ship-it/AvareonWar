@@ -34,6 +34,7 @@ from display_utils import menu_frame_cap
 from ui.additional_options_overlay import AdditionalOptionsOverlay
 from ui.setup_tooltip import SetupTooltips
 from ui.setup_frames import SetupFrames
+from ui.map_top_bar import MapTopBar, BLOCKED as TOP_BAR_BLOCKED
 
 logger = get_logger(__name__)
 
@@ -231,6 +232,24 @@ class SetupConfig:
         else:
             self.player_slots[slot_idx]['territory'] = territory
 
+    def randomize_starting_territories(self, rng=None):
+        """Randomize Starting Positions: clear every slot's starting territory, then
+        give each active slot a random one, spread out by
+        map_data.pick_starting_territories() (at least RANDOM_START_MIN_TERRITORIES_BETWEEN
+        territories between any two, never a Fortress). Pressing again draws anew.
+
+        Returns:
+            {slot index: territory} of the new picks.
+        """
+        for slot in self.player_slots:
+            slot['territory'] = None
+        active = [i for i, slot in enumerate(self.player_slots) if slot['active']]
+        picks = map_data.pick_starting_territories(len(active), rng=rng)
+        assigned = dict(zip(active, picks))
+        for slot_idx, territory in assigned.items():
+            self.player_slots[slot_idx]['territory'] = territory
+        return assigned
+
     def get_player_territory(self, active_player_idx):
         """Get territory for active player (by active index, not slot index)"""
         active_count = 0
@@ -301,11 +320,13 @@ class MapPreview:
         except (FileNotFoundError, pygame.error, OSError):
             self.bottom_bar_original = None
 
-        # Map selector arrow button rects (populated in _initialize_map)
-        self.arrow_up_rect = None
-        self.arrow_down_rect = None
-        self.map_name_rect = None
-        self.hovered_arrow = None  # 'up' or 'down' or None
+        # Map top bar (shared with the multiplayer lobby, ui/map_top_bar.py): Randomize
+        # Starting Positions, map name + arrows, Show Borders. Placed in _initialize_map.
+        # (self.top_bar is the TopBar.jpg wood strip it sits on.) Scale as ConfigPanel:
+        # the left panel (= this panel's x) over its 560 px width at 1600x900.
+        self.map_top_bar = MapTopBar((bounds.x / 560.0) if bounds.x else 1.0)
+        self.map_top_bar.configure(can_change_map=len(map_data.get_map_ids()) > 1,
+                                   randomize_enabled=True)
 
         # Load and initialize the current map
         self._initialize_map()
@@ -315,9 +336,8 @@ class MapPreview:
         self.click_feedback_territory = None
         self.click_feedback_timer = 0.0
 
-        # Show Borders checkbox (persisted in settings)
+        # Show Borders toggle (persisted in settings; the top bar's button glows while on)
         self.show_borders = settings.get('show_setup_borders', False)
-        self.borders_checkbox_rect = None  # Set in render
 
     def _initialize_map(self):
         """Load map image, scale polygons, and set up bars for the current map."""
@@ -394,34 +414,13 @@ class MapPreview:
                 for x, y in polygon
             ]
 
-        # Load Cinzel font for map name (matching multiplayer style)
-        try:
-            self._map_name_font = pygame.font.Font("assets/fonts/Cinzel-SemiBold.ttf", 20)
-        except (FileNotFoundError, pygame.error, OSError):
-            self._map_name_font = pygame.font.Font(None, 24)
-
-        # Top section: (◄) Name (►) — fixed width based on longest map name
-        arrow_size = 16
-        self._top_arrow_size = arrow_size
-        self._top_row_y = max(bounds.y + 6, 6)
-        gap = 10
-        # Pre-compute fixed layout width using the longest map name
-        longest_name = max((map_data.get_map_display_name(mid) for mid in map_data.get_map_ids()), key=len, default="")
-        self._selector_fixed_width = self._map_name_font.size(longest_name)[0]
-        total_w = arrow_size + gap + self._selector_fixed_width + gap + arrow_size
-        center_x = bounds.x + bounds.width // 2
-        self._selector_start_x = center_x - total_w // 2
-        # Compute fixed arrow rects
-        name_h = self._map_name_font.get_height()
-        left_x = self._selector_start_x
-        right_x = self._selector_start_x + arrow_size + gap + self._selector_fixed_width + gap
-        self.arrow_left_rect = pygame.Rect(left_x - 4, self._top_row_y - 4, arrow_size + 8, name_h + 8)
-        self.arrow_right_rect = pygame.Rect(right_x - 4, self._top_row_y - 4, arrow_size + 8, name_h + 8)
-        self.map_name_rect = pygame.Rect(left_x + arrow_size + gap - 4, self._top_row_y - 4, self._selector_fixed_width + 8, name_h + 8)
+        # Map top bar: the wood strip between the panel's top and the map's top edge
+        self.map_top_bar.set_geometry(bounds.x, bounds.width, self.offset_y - bounds.y)
 
     def change_map(self, direction):
         """Cycle to next/previous map. direction: +1 (down/next) or -1 (up/previous).
-        Reloads map data, rescales polygons, clears all territory selections."""
+        Reloads map data, rescales polygons, clears all territory selections.
+        (The map top bar plays the click sound for the arrow / name it came from.)"""
         map_ids = map_data.get_map_ids()
         if len(map_ids) <= 1:
             return  # Only one map available
@@ -437,8 +436,11 @@ class MapPreview:
         # Reinitialize map display with new map data
         self._initialize_map()
 
-        # Play UI click sound
-        sound_manager.play_ui_click()
+    def toggle_borders(self):
+        """Show Borders on / off, remembered in settings for both setup screens."""
+        self.show_borders = not self.show_borders
+        settings.set('show_setup_borders', self.show_borders)
+        settings.save()
 
     def update(self, dt):
         """Update animations"""
@@ -457,15 +459,8 @@ class MapPreview:
         return None
 
     def update_hover(self, mouse_pos):
-        """Update hover state for territories and map selector arrows"""
-        # Check map selector arrow hover
-        self.hovered_arrow = None
-        if self.arrow_left_rect and self.arrow_left_rect.collidepoint(mouse_pos):
-            self.hovered_arrow = 'left'
-        elif self.arrow_right_rect and self.arrow_right_rect.collidepoint(mouse_pos):
-            self.hovered_arrow = 'right'
-        elif self.map_name_rect and self.map_name_rect.collidepoint(mouse_pos):
-            self.hovered_arrow = 'name'
+        """Update hover state for territories and the map top bar's controls"""
+        self.map_top_bar.update_hover(mouse_pos)
 
         if not self.bounds.collidepoint(mouse_pos):
             self.hovered_territory = None
@@ -475,24 +470,20 @@ class MapPreview:
         self.hovered_territory = self._get_territory_at_screen_pos(mouse_pos)
 
     def handle_click(self, pos):
-        """Handle click on map area — arrows or territory selection."""
-        # Check map selector arrow/name clicks
-        if self.arrow_left_rect and self.arrow_left_rect.collidepoint(pos):
+        """Handle click on map area — the map top bar, else territory selection."""
+        # Map top bar (it plays the click sound + flash for the control it returns)
+        action = self.map_top_bar.handle_click(pos)
+        if action == 'prev':
             self.change_map(-1)
-            return True
-        if self.arrow_right_rect and self.arrow_right_rect.collidepoint(pos):
-            self.change_map(1)
-            return True
-        if self.map_name_rect and self.map_name_rect.collidepoint(pos):
-            self.change_map(1)  # Clicking name cycles forward
-            return True
-        # Check Show Borders checkbox click
-        if self.borders_checkbox_rect and self.borders_checkbox_rect.collidepoint(pos):
-            self.show_borders = not self.show_borders
-            settings.set('show_setup_borders', self.show_borders)
-            settings.save()
-            sound_manager.play_ui_click()
-            return True
+        elif action in ('next', 'name'):
+            self.change_map(1)  # Clicking the name cycles forward
+        elif action == 'borders':
+            self.toggle_borders()
+        elif action == 'randomize':
+            # Every active player gets a random, spread-out start (pressable again)
+            self.config.randomize_starting_territories()
+        if action is not None:
+            return action != TOP_BAR_BLOCKED
         # Fall through to territory selection
         return self.handle_territory_click(pos)
 
@@ -589,26 +580,10 @@ class MapPreview:
         if self.bottom_bar:
             self.screen.blit(self.bottom_bar, self.bottom_bar_rect)
 
-        # Draw map selector arrows and map name (only if multiple maps available)
-        if len(map_data.get_map_ids()) > 1:
-            self._draw_map_selector()
-
-        # Draw "Show Borders" checkbox in top-right of map area
-        font = pygame.font.SysFont(None, 20)
-        cb_label = font.render("Show Borders", True, BRASS_COLOR)
-        cb_size = 14
-        cb_x = self.bounds.x + self.bounds.width - cb_label.get_width() - cb_size - 20
-        cb_y = self.bounds.y + 8
-        # Checkbox square
-        cb_rect = pygame.Rect(cb_x, cb_y, cb_size, cb_size)
-        self.borders_checkbox_rect = pygame.Rect(cb_x - 4, cb_y - 4, cb_label.get_width() + cb_size + 28, cb_size + 8)  # Clickable area includes label
-        pygame.draw.rect(self.screen, BRASS_COLOR, cb_rect, 1)
-        if self.show_borders:
-            # Draw checkmark
-            pygame.draw.line(self.screen, BRASS_COLOR, (cb_rect.left + 2, cb_rect.centery), (cb_rect.centerx, cb_rect.bottom - 2), 2)
-            pygame.draw.line(self.screen, BRASS_COLOR, (cb_rect.centerx, cb_rect.bottom - 2), (cb_rect.right - 2, cb_rect.top + 2), 2)
-        # Label text
-        self.screen.blit(cb_label, (cb_x + cb_size + 6, cb_y - 1))
+        # Map top bar on the wood strip: Randomize Starting Positions, map name + arrows,
+        # Show Borders (glowing while on)
+        self.map_top_bar.draw(self.screen, map_data.get_map_display_name(self.config.selected_map),
+                              self.show_borders)
 
         # Draw hovered territory name
         if self.hovered_territory:
@@ -640,40 +615,6 @@ class MapPreview:
 
         # Blit to screen
         self.screen.blit(overlay, (0, 0))
-
-    def _draw_map_selector(self):
-        """Draw (◄) Map Name (►) at top with fixed-width layout."""
-        s = self._top_arrow_size
-        y = self._top_row_y
-        gap = 10
-        start_x = self._selector_start_x
-        name_h = self._map_name_font.get_height()
-
-        # Left arrow (◄)
-        left_x = start_x
-        left_color = (220, 200, 100) if self.hovered_arrow == 'left' else BRASS_COLOR
-        pygame.draw.polygon(self.screen, left_color, [
-            (left_x, y + name_h // 2),
-            (left_x + s, y + name_h // 2 - s // 2),
-            (left_x + s, y + name_h // 2 + s // 2),
-        ])
-
-        # Map name (centered within the fixed-width name area)
-        display_name = map_data.get_map_display_name(self.config.selected_map)
-        name_color = (220, 200, 100) if self.hovered_arrow == 'name' else BRASS_COLOR
-        name_surface = self._map_name_font.render(display_name, True, name_color)
-        name_area_x = start_x + s + gap
-        name_x = name_area_x + (self._selector_fixed_width - name_surface.get_width()) // 2
-        self.screen.blit(name_surface, (name_x, y))
-
-        # Right arrow (►)
-        right_x = start_x + s + gap + self._selector_fixed_width + gap
-        right_color = (220, 200, 100) if self.hovered_arrow == 'right' else BRASS_COLOR
-        pygame.draw.polygon(self.screen, right_color, [
-            (right_x + s, y + name_h // 2),
-            (right_x, y + name_h // 2 - s // 2),
-            (right_x, y + name_h // 2 + s // 2),
-        ])
 
 
 # ===========================================
@@ -2108,10 +2049,10 @@ class IntegratedSetup:
         # Update hover states
         self.config_panel.update_hover(mouse_pos)
         if self.config_panel.overlay_open:
-            # The Additional Options window is modal: territories (and the map's arrows /
-            # checkbox) under it must not light up
+            # The Additional Options window is modal: territories (and the map top bar's
+            # buttons) under it must not light up
             self.map_preview.hovered_territory = None
-            self.map_preview.hovered_arrow = None
+            self.map_preview.map_top_bar.clear_hover()
         else:
             self.map_preview.update_hover(mouse_pos)
 
@@ -2164,6 +2105,12 @@ class IntegratedSetup:
         # Render components
         self.map_preview.render()
         self.config_panel.render()
+
+        # Map top bar tooltip (Randomize Starting Positions), over everything else. Its
+        # hover is cleared while the Additional Options window is open.
+        tip = self.map_preview.map_top_bar.tooltip_key()
+        if tip and not self.config_panel.overlay_open:
+            self.config_panel.setup_tooltips.draw(self.screen, tip, pygame.mouse.get_pos())
 
     def get_config(self):
         """Convert setup state to config dict for game initialization"""

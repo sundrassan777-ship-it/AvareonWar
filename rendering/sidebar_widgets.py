@@ -29,6 +29,12 @@ until P8).
 Hover / flash convention: an element is "hovered" when the cursor is on it and the
 sidebar is not sliding; it "flashes" while game.clicked_element equals its flash key
 (set by game.trigger_click_flash(type, id) in the click handler).
+
+Panel chrome shared with the multiplayer lobby's chat panel (module functions at the
+end): build_toggle_sprite(), draw_tab_badge(), draw_panel_border(), chat_entry_layout()
+/ draw_chat_entry(). SidebarWidgets itself only needs its host to offer ui_scale,
+font_manager, screen, mouse_pos, clicked_element and is_sidebar_animating() - a Game, or
+ui/lobby_chat_panel.LobbyChatPanel.
 """
 
 from collections import OrderedDict
@@ -815,3 +821,117 @@ def _apply_state(surf, state):
         surf.fill((add, add, add), special_flags=pygame.BLEND_RGB_ADD)
     elif state == 'locked':
         surf.fill((120, 120, 120, 255), special_flags=pygame.BLEND_RGBA_MULT)
+
+
+# ---------------------------------------------------------------------- panel chrome
+# One copy of each piece for the in-game right sidebar (main.py, ui_renderer.py) and the
+# multiplayer lobby's chat panel (ui/lobby_chat_panel.py). They used to be Game /
+# UIRenderer methods, so the lobby (which has no Game) could not draw them.
+
+PANEL_BORDER_COLOR = (138, 98, 50)   # Bronze panel edge
+CHAT_TIME_COLOR = (150, 140, 128)
+CHAT_TEAM_COLOR = (110, 210, 110)
+CHAT_TEXT_COLOR = (226, 216, 196)
+
+
+def build_toggle_sprite(diameter, expanded, state, circle_border=None):
+    """Round collapse / expand button for a sidebar (uncached - callers cache it).
+
+    A gold disc (the CircleBorder art of the map's plot icons) with two dark chevrons
+    pointing the way the panel will move: '>>' (collapse) while expanded, '<<' (expand)
+    while collapsed. state: 'normal' | 'hover' | 'click' | 'locked'.
+    """
+    sprite = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+    radius = diameter // 2
+    # Solid underlay: CircleBorder's centre is partly see-through (it frames plot
+    # icons), so without this the map or the dark fog would show through the button.
+    pygame.draw.circle(sprite, (52, 38, 20), (radius, radius), radius)        # dark bronze rim
+    pygame.draw.circle(sprite, (168, 132, 58), (radius, radius), radius - 3)  # gold face
+    if circle_border is not None:
+        sprite.blit(pygame.transform.smoothscale(circle_border, (diameter, diameter)), (0, 0))
+
+    if state in ('hover', 'click'):
+        # Brighten the disc only (BLEND_RGB_ADD leaves alpha — the round shape — intact)
+        boost = 70 if state == 'click' else 35
+        sprite.fill((boost, boost, boost), special_flags=pygame.BLEND_RGB_ADD)
+    elif state == 'locked':
+        # Disabled look: darken (BLEND_RGBA_MULT keeps the transparent corners transparent)
+        sprite.fill((150, 150, 150, 255), special_flags=pygame.BLEND_RGBA_MULT)
+
+    # Two dark chevrons pointing the way the panel will move
+    chevron_color = (52, 42, 30) if state == 'locked' else (48, 30, 12)
+    direction = 1 if expanded else -1       # +1 points right, -1 points left
+    half_h = max(3, diameter // 6)
+    arm = half_h
+    center = diameter / 2.0
+    for offset in (-arm * 0.55, arm * 0.55):
+        tip_x = center + offset + direction * arm / 2.0
+        back_x = tip_x - direction * arm
+        pygame.draw.lines(sprite, chevron_color, False,
+                          [(back_x, center - half_h), (tip_x, center), (back_x, center + half_h)], 3)
+    return sprite
+
+
+def draw_tab_badge(screen, widgets, tab_rect, count, fill, rim, text_color):
+    """Count badge on a bookmark's outer edge near its top, clear of the label.
+
+    A circle for one digit, a pill for more ("99+" caps it). The in-game Action Queue
+    order badge (red) and the unread badges (gold) use it, and the lobby chat's.
+    """
+    label = str(count) if count < 100 else "99+"
+    text = widgets.text(label, 'small_bold', text_color)
+    radius = 10
+    width = max(2 * radius, text.get_width() + 10)
+    rect = pygame.Rect(0, 0, width, 2 * radius)
+    rect.center = (tab_rect.x, tab_rect.y + 12)
+    pygame.draw.rect(screen, fill, rect, border_radius=radius)
+    pygame.draw.rect(screen, rim, rect, 2, border_radius=radius)
+    screen.blit(text, text.get_rect(center=rect.center))
+
+
+def draw_panel_border(screen, rect, active_tab_rect=None):
+    """Bronze 3 px panel border, open on the left beside `active_tab_rect` (None = a
+    closed left edge), so the lit bookmark visibly merges into the panel."""
+    color = PANEL_BORDER_COLOR
+    width = 3
+    pygame.draw.line(screen, color, rect.topleft, (rect.right - 1, rect.top), width)
+    pygame.draw.line(screen, color, (rect.left, rect.bottom - 2), (rect.right - 1, rect.bottom - 2), width)
+    pygame.draw.line(screen, color, (rect.right - 2, rect.top), (rect.right - 2, rect.bottom - 1), width)
+    x = rect.left + 1
+    if active_tab_rect is not None:
+        # Left edge in two pieces around the active tab
+        if active_tab_rect.top > rect.top:
+            pygame.draw.line(screen, color, (x, rect.top), (x, active_tab_rect.top), width)
+        if active_tab_rect.bottom < rect.bottom:
+            pygame.draw.line(screen, color, (x, active_tab_rect.bottom - 1), (x, rect.bottom - 1), width)
+    else:
+        pygame.draw.line(screen, color, (x, rect.top), (x, rect.bottom - 1), width)
+
+
+def chat_entry_layout(widgets, text, width):
+    """(wrapped lines, height in px) of one chat message in a list `width` px wide."""
+    lines = widgets.wrap(text, 'body', width - 6)
+    name_h = widgets.font('small_bold').get_linesize()
+    body_h = widgets.font('body').get_linesize()
+    return lines, 6 + name_h + body_h * len(lines)
+
+
+def draw_chat_entry(widgets, screen, x, y, width, time_text, name, name_color, lines, team=False):
+    """One chat message: '[time] [TEAM] Name:' on its first line, then the wrapped text
+    (lines from chat_entry_layout()). The in-game Chat tab and the lobby chat use it."""
+    name_h = widgets.font('small_bold').get_linesize()
+    body_h = widgets.font('body').get_linesize()
+    y += 6
+    time_surf = widgets.text(f"[{time_text}]", 'small', CHAT_TIME_COLOR)
+    screen.blit(time_surf, (x, y))
+    nx = x + time_surf.get_width() + 5
+    if team:
+        tag = widgets.text("[TEAM]", 'small_bold', CHAT_TEAM_COLOR)
+        screen.blit(tag, (nx, y))
+        nx += tag.get_width() + 5
+    label = widgets.text(widgets.fit_text(f"{name}:", 'small_bold', x + width - nx), 'small_bold', name_color)
+    screen.blit(label, (nx, y))
+    ly = y + name_h
+    for line in lines:
+        screen.blit(widgets.text(line, 'body', CHAT_TEXT_COLOR), (x + 6, ly))
+        ly += body_h

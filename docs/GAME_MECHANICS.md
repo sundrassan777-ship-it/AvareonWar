@@ -34,6 +34,19 @@ Turn Structure:
 - Can only move to adjacent territories
 - Defined in map_data.py ADJACENCY dict
 
+**Starting territories (Custom Game and multiplayer setup):**
+- Click a territory on the setup map to make it a player's start (their capital in
+  Capital Assault).
+- **Randomize Starting Positions** (top left of the setup map) clears every start and gives
+  each active player, human or AI, a random territory: at least **4 territories between any
+  two starts** (5 moves apart) and **never a Fortress** (no Keep can be built there). If a
+  map cannot fit that spacing for everyone, the gap shrinks only as much as needed. Press it
+  again for a new draw; any start can still be changed by hand afterwards. In multiplayer
+  only the host can use it (clients see it greyed) and every player sees the new starts at
+  once.
+- **Show Borders** (top right of the setup map) outlines every territory; the button glows
+  while it is on. It only changes your own view and is remembered for the next game.
+
 ---
 
 ## ⚔️ Army System
@@ -765,6 +778,8 @@ once (during a game: a message, and the join waits for the main menu). The host'
 - First-come-first-served: the claim that reaches the host first wins - a territory someone
   already holds cannot be taken by clicking it
 - Host can reassign territories
+- Host can give everyone a random start with **Randomize Starting Positions** (see
+  Territory System → Starting territories); clients see the button greyed
 - All players must select before launch
 
 **Launch requirements** (`LobbyState.launch_blocker()`; hovering the greyed Launch Game
@@ -778,6 +793,19 @@ button tells the host which one is missing):
 **Shared game setup:** the host's map, settings, randomized bonuses and the random seed
 (Neutral Armies placement) are sent in `LOBBY_LAUNCH`, so every player starts the
 identical game. A player joins the slot the host's server assigned and keeps it.
+
+**Lobby chat** (multiplayer lobby only):
+- A "Chat" bookmark at the right edge of the lobby map opens a chat panel (it starts
+  collapsed; a gold count on the bookmark shows new messages from other players, and a
+  click sounds when someone writes).
+- **Enter** opens the chat and starts typing, **Enter** sends, **TAB** switches between
+  everyone and your team, **Escape** stops typing (it does not leave the lobby while you
+  type). **F2** or the round button closes the panel.
+- Team messages are seen only by players on the sender's team in the lobby.
+- "Name joined / left the lobby" lines show who came and went.
+- The lobby chat is separate from the in-game chat: it is cleared when the lobby ends
+  (leaving, or the game starting) and nothing of it carries into the game.
+- Up to 100 characters per message; the last 200 messages are kept.
 
 ### Teams & Alliances
 

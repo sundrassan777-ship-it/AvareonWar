@@ -30,7 +30,7 @@ This guide provides module-specific guidance on when and how to modify different
 19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
-22. [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby) - Additional Options window, Starting Gold, label tooltips, framed art
+22. [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby) - Additional Options window, map top bar (Randomize Starting Positions, map name, Show Borders), random starts, lobby chat, Starting Gold, label tooltips, framed art
 
 ---
 
@@ -1094,7 +1094,7 @@ section above.)
 
 | File | Role |
 |---|---|
-| `rendering/sidebar_widgets.py` | `SidebarWidgets` (`game.sidebar_widgets`): fonts / text, 9-sliced frames, cards, buttons, chips, headers, separators, progress bars, scrollbars, bookmark sprites, tech arrows, clip helpers. Everything cached; `invalidate()` is called by `apply_display_settings()` |
+| `rendering/sidebar_widgets.py` | `SidebarWidgets` (`game.sidebar_widgets`): fonts / text, 9-sliced frames, cards, buttons, chips, headers, separators, progress bars, scrollbars, bookmark sprites, tech arrows, clip helpers. Everything cached; `invalidate()` is called by `apply_display_settings()`. Module functions shared with the multiplayer lobby's chat panel: `build_toggle_sprite()` (round button), `draw_tab_badge()`, `draw_panel_border()`, `chat_entry_layout()` / `draw_chat_entry()` (one chat line) — the `Game` / `UIRenderer` methods delegate to them, so change the look there once. `SidebarWidgets` only needs its host to offer `ui_scale`, `font_manager`, `screen`, `mouse_pos`, `clicked_element`, `is_sidebar_animating()` (a `Game`, or `LobbyChatPanel`) |
 | `ui/sidebar_layout.py` | Also `content_geometry()`, `ScrollState`, `compute_tab_rects()` (pure, unit-tested) |
 | `rendering/action_log_model.py` | Pure Python: `classify()`, `ActionLogModel`, `FILTERS`, `BADGE_CATEGORIES` |
 | `rendering/ui_renderer.py` | `_draw_sidebar_tab_buttons()` and one `_draw_<tab>_content()` per tab |
@@ -2191,7 +2191,11 @@ _relay_to_other_clients(raw, from_idx) # Relay client msg to other clients (3+ p
   own `timestamp` is the client PC's clock, which can be minutes off - a claim "earlier"
   than the holder's took their territory (`claim_territory()` swaps), and a non-number
   crashed the host's lobby. The claim's `player_name` is not applied (the slot keeps the
-  name the server sanitised at join).
+  name the server sanitised at join). LOBBY_CHAT (lobby chat line): the server keeps it to
+  the sender's own slot (`_SENDER_FIELDS`) and relays it; the host also ignores a line from
+  a slot that is not in the lobby; every PC ignores a line whose index is not a slot and
+  strips control characters (`network/lobby_chat.clean_text()`). The game drops LOBBY_CHAT
+  (a line in flight at launch) - see "Lobby chat".
 - Not checked: what the turn owner does in its own sequential turn (its snapshot is the
   truth by design), cooldowns / silence (timing differs per PC).
 
@@ -2408,9 +2412,10 @@ reason needs a tooltip entry (a test enforces it).
 - Color and team selection
 - Territory claiming with first-come-wins
 - Host-only kick and launch controls
-- Additional Options (shared window, read-only for clients), label tooltips, framed
-  selectors and the bronze player-block frame: see
-  [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby)
+- Additional Options (shared window, read-only for clients), the map top bar (host-only
+  Randomize Starting Positions + map arrows, Show Borders), the lobby chat (LOBBY_CHAT,
+  collapsible panel), label tooltips, framed selectors and the bronze player-block frame:
+  see [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby)
 
 **Slot identity = the server's player index.** The host seats a `LOBBY_JOIN` in exactly
 `data['player_index']` (the index the server put in the client's `CONNECT_ACCEPT` and
@@ -4666,15 +4671,17 @@ button simply stops responding. Restyling is safe precisely because it only touc
 ## Game Setup Screens (Custom Game + Multiplayer Lobby)
 
 `integrated_setup.py` (Custom Game) and `network/territory_selector.py` (multiplayer
-lobby) share four helpers. **Change the helper, not one screen** — both screens used to
-carry copy-pasted versions of the Additional Options window, which drifted apart.
+lobby) share five helpers. **Change the helper, not one screen** — both screens used to
+carry copy-pasted versions of the Additional Options window (and of the map's arrows /
+name / borders checkbox), which drifted apart.
 
 | Module | What it owns |
 |--------|--------------|
 | `ui/additional_options_overlay.py` | `AdditionalOptionsOverlay`: the modal Additional Options window (rows, layout, input, drawing) |
+| `ui/map_top_bar.py` | `MapTopBar`: the strip above the setup map — Randomize Starting Positions, map name + arrows, Show Borders |
 | `ui/setup_tooltip.py` | `SetupTooltips`: the (i) mark after a label + the multi-line hover box |
 | `config/setup_tooltips.py` | `SETUP_TOOLTIPS`: tooltip wording (owner-edited, like `action_error_messages.py`) |
-| `ui/setup_frames.py` | `SetupFrames`: wood-framed selector boxes (`ResourceSlot.png`) + the bronze `TableBorder.png` frame |
+| `ui/setup_frames.py` | `SetupFrames`: wood-framed selector boxes and buttons (`ResourceSlot.png`) + the bronze `TableBorder.png` frame |
 
 `rendering/sidebar_widgets.render_nine_slice()` is the shared nine-slice behind the
 frames and the window background (the sidebar's `SidebarWidgets.nine_slice()` delegates
@@ -4740,11 +4747,122 @@ a dropdown list is open — the list can cover the labels). The box is drawn aft
 panel, so it may extend over the map. To add one: an entry in `SETUP_TOOLTIPS` and a
 `draw_label_mark()` call next to the label.
 
+### Map top bar (`ui/map_top_bar.py`)
+
+The wood strip above the setup map (its height = the map's top edge: 48 / 60 / 72 / 96 px
+at 720p / 900p / 1080p / 1440p), left to right:
+
+    [Randomize / Starting Positions]   (<) [ MAP NAME ] (>)   [Show Borders]
+
+- **One widget, both screens.** Each screen builds a `MapTopBar` (`self.map_top_bar` — in
+  `MapPreview`, `self.top_bar` is the TopBar.jpg wood it sits on), calls
+  `set_geometry(map_panel_x, map_panel_w, map_top)` from its `_initialize_map()` and
+  `configure(can_change_map, randomize_enabled)` once. The screen only acts on what
+  `handle_click(pos)` returns: `'randomize' | 'prev' | 'next' | 'name' | 'borders'`,
+  `BLOCKED` (a shown control this player may not use — click used up, no sound) or `None`
+  (missed the bar → territory click). The bar itself plays the click sound and the flash,
+  so `change_map()` no longer plays one (it used to: two sounds per click).
+- **Who may do what:** Custom Game — everything. Lobby host — everything. Lobby client —
+  name bar without arrows (its name click is `BLOCKED`), Randomize greyed with the
+  `randomize_starts_host_only` tooltip, Show Borders works (it is this PC's own view,
+  saved as `show_setup_borders` for both screens). Arrows also vanish with one enabled map.
+- **Hover / tooltip:** `update_hover(pos)` (Custom polls it every frame; the lobby on
+  MOUSEMOTION), `clear_hover()` while a modal is open (Additional Options, friend picker),
+  `tooltip_key()` → drawn by the screen's own `SetupTooltips` (lobby: via
+  `hovered_tooltip`; Custom: last in `IntegratedSetup.render()`).
+- **Layout** (`layout()`, cached per geometry / permissions) is sized from the strip
+  height. The two buttons share one font size and one width — the widest label line —
+  with Randomize's label on two lines (`RANDOMIZE_LINES`, owner: the one-line button was
+  too wide). Lines are stacked and centred by their **ink** (`_ink()`, Cinzel's line box
+  has a lot of empty room). A strip too low for two lines falls back to one line, then
+  `RANDOMIZE_LABEL_SHORT` below `MIN_LABEL_PX` (never at 720p–1440p). The centre group is
+  centred on the map panel and its name bar is as wide as the longest map name, so nothing
+  moves when the map changes. `tests/test_map_top_bar.py` checks the layout at all four
+  resolutions for Custom / host / client.
+- **Art:** buttons = `SetupFrames.wood_button()` (below); map name = `TextBar.png`
+  cropped to its body (46, 362, 1438, 170) and 3-sliced (`TEXTBAR_CAP` px spear-tip caps
+  kept whole, middle stretched), name text centred in `TEXTBAR_WINDOW` (measured dark
+  window); arrows = round medallions drawn 4x and scaled down (dark disc, gold rim,
+  faceted chevron, soft gold halo on hover; owner's pick). Hover +28 / flash +62
+  brightness, flash `FLASH_MS` 120 like the Additional Options window.
+
+### Random starting positions
+
+- `map_data.pick_starting_territories(count, min_between=None, rng=None)`: distinct
+  enabled territories, **never a Fortress** (no Keep can be built there), every two at
+  least `RANDOM_START_MIN_TERRITORIES_BETWEEN` (4) territories apart along the shortest
+  route — i.e. **5 moves** (`_hop_distances()`, BFS over `get_neighbors()`; routes through
+  Fortresses count; unconnected territories count as far). Random greedy tries,
+  `RANDOM_START_ATTEMPTS` per gap size; if none fits, the gap shrinks one step at a time
+  (a gap of 0 = just different territories, so it never fails unless the map has fewer
+  candidates than players). One try on Avareon with 4 players and the full gap succeeds
+  ~82% of the time.
+- Custom Game: `SetupConfig.randomize_starting_territories()` clears every slot, fills the
+  active ones. Lobby host: `TerritorySelector.randomize_starting_positions()` →
+  `LobbyState.assign_starting_territories({slot: territory})` (releases every active
+  slot's **claim record** and claims the new ones, so a client's later claim is judged
+  against the new picks) → one `LOBBY_STATE` broadcast. A host map change also clears the
+  claim records now (they used to outlive the map).
+
+### Lobby chat (multiplayer lobby only)
+
+A chat for coordinating before the game: a collapsible panel on the right of the lobby map
+with a single "Chat" bookmark, built like the in-game right sidebar.
+
+| File | Role |
+|---|---|
+| `network/lobby_chat.py` | `LobbyChat` model (no pygame): `add_player_line()` / `add_system_line()`, `clean_text()` (control characters out, `MAX_LENGTH` 100), last `MAX_ENTRIES` 200 lines, `is_visible()` / `visible()`, `unread_count()` / `mark_seen()`, `clear()` |
+| `ui/lobby_chat_panel.py` | `LobbyChatPanel`: geometry, slide, art, bookmark, round button, unread badge, message list, input field, `handle_click()` / `handle_key()` / `handle_wheel()` / `contains()`. It is the `SidebarWidgets` host and draws with the shared sidebar helpers (see "Right sidebar: tab content, widget kit and extras") |
+| `network/territory_selector.py` | `lobby_chat` + `chat_panel`; `send_lobby_chat()`, `_receive_lobby_chat()`, the System lines, `handle_key()` / `handle_wheel()` (the event loop's key and wheel routing) |
+
+**Owner rules:**
+- **Separate from the game's chat.** Own message type `LOBBY_CHAT` (never CHAT_MESSAGE);
+  `main.py` drops one that arrives after launch, so a lobby line in flight never lands in
+  game chat. Nothing is carried into the game — **don't pass the history to the game
+  config.**
+- **Ends with the lobby:** `TerritorySelector.run()` clears it in its `finally` (left,
+  closed, launched); a new lobby starts empty.
+- Starts collapsed; gold unread count on the bookmark (others' lines this player can see,
+  not System lines); the panel marks everything seen while it is open.
+- 'all' or 'team' (TAB). Like game chat, team lines reach every PC and are filtered for
+  display: the line keeps the sender's lobby team **as it was when the line arrived on
+  this PC** (from this PC's lobby state, not the message), shown to the sender and to
+  players now on that team.
+- "X joined / left the lobby" System lines are made on each PC from LOBBY_JOIN /
+  LOBBY_LEAVE (own join skipped; the host's `_kick_player()` writes its own, since the
+  server's LOBBY_LEAVE finds the slot already empty).
+- A click (`sound_manager.play_ui_click()`) for someone else's visible line, at most one per
+  `CHAT_SOUND_GAP_SECONDS` (a burst of lines plays one).
+
+**Flow:** `send_lobby_chat()` shows the line here at once, then the host broadcasts it and a
+client sends it to the host (the server relays it to the other clients — LOBBY_CHAT is in
+`_RELAY_MESSAGE_TYPES`). `_receive_lobby_chat()` ignores its own echo.
+
+**Input** (`TerritorySelector.handle_key()` order): Additional Options takes every key while
+open; the friend picker only Escape; then the chat — Enter opens it and starts typing; while
+typing it takes every key (Enter sends and typing goes on, TAB channel, Backspace, Escape
+stops typing and clears the line) — so **Escape never leaves the lobby while typing**; else
+Escape leaves. F2 / the round button collapse, the bookmark opens (as in game). Clicks,
+hover and the wheel over the panel never reach the map (`chat_panel.contains()` in
+`handle_hover()`, `handle_click()` right after the map top bar).
+
+**Geometry:** the map's height (`map_y` .. bottom of the map) at the screen's right edge —
+the map top bar stays free; 250 px panel + 40 px bookmark column (`UIConstants`), one
+bookmark as tall as one of the game's six. Its bookmark is always lit, so its click flash
+is the lit sprite brightened (the kit's `'flash'` look is for an unlit bookmark).
+
+Tests: `tests/test_lobby_chat.py` (model, network over `tests/mp_harness.py`, the panel).
+
 ### Framed art
 
 - Selectors: `SetupFrames.dropdown_box(size, fill, state)`; `state` is `normal` / `hover`
   / `open` / `disabled`. Text and arrows must start at `content_inset(height)` to clear the
   beams. Beam darkness: `WOOD_TINT` (owner asked for darker than the raw art).
+- Buttons (map top bar): `SetupFrames.wood_button(size, state, lit)`; `state` is `normal` /
+  `hover` / `flash` / `disabled`; `lit=True` fills the inside with a warm glow
+  (`GLOW_CENTRE` → `GLOW_EDGE`) instead of the dark parchment gradient — Show Borders
+  while on. Its beam is a little thinner than a selector's (`button_beam()`, 16% of the
+  height) so two label lines fit; labels start at `button_inset()`.
 - Lobby player block: one `table_frame()` around all rows (`_player_block_rect()`) with
   brass rules between rows. Row positions in `_calculate_ui_layout()` are **derived** from
   the title / host-IP height plus the frame thickness — don't go back to fixed y offsets,

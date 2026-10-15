@@ -2,6 +2,62 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-15 - Multiplayer lobby chat
+
+Branch `feature/setup-map-top-bar` (with the map top bar below). Owner: a chat in the
+multiplayer lobby for coordinating before the game, as a collapsible right panel like the
+in-game sidebar with a single "Chat" bookmark.
+- **Model + network** (Phase 1): `network/lobby_chat.py` `LobbyChat` (control characters
+  stripped, 100 characters per line, last 200 lines, team lines shown to the team only,
+  unread count). New message type `LOBBY_CHAT` (`protocol.create_lobby_chat()`, validated
+  like CHAT_MESSAGE; clients may send it for their own slot only, relayed by the server).
+  **Separate from the game's chat** (owner): the game drops a LOBBY_CHAT that arrives after
+  launch, and nothing is carried into the game; `TerritorySelector.run()` clears the chat
+  however the lobby ends. "Joined / left the lobby" System lines (incl. the host's kick),
+  a click for someone else's line (one per burst).
+- **Shared sidebar chrome**: the round toggle, the bookmark badge, the bronze panel edge and
+  the chat line moved from `Game` / `UIRenderer` into `rendering/sidebar_widgets.py`
+  (`build_toggle_sprite()`, `draw_tab_badge()`, `draw_panel_border()`,
+  `chat_entry_layout()` / `draw_chat_entry()`); the game delegates (look unchanged).
+- **Panel** (Phase 2): `ui/lobby_chat_panel.py` `LobbyChatPanel` - RightPanel.jpg, ribbon
+  bookmark, round button, slide, unread count, message list, input field; spans the map's
+  height at the right edge, starts collapsed. Enter opens + types / sends (typing goes on),
+  TAB all / team, Escape stops typing and never leaves the lobby mid-sentence, F2 / round
+  button collapse. Clicks, hover and the wheel over it never reach the map; Additional
+  Options and the friend picker keep their keys. `TerritorySelector.handle_key()` /
+  `handle_wheel()` now hold the event loop's key / wheel routing.
+- Tests: `tests/test_lobby_chat.py` (28).
+
+## 2026-10-15 - Setup screens: map top bar (Randomize Starting Positions, map name, Show Borders)
+
+Branch `feature/setup-map-top-bar`. The strip above the setup map (Custom Game and the
+multiplayer lobby) is now one shared widget, `ui/map_top_bar.py` `MapTopBar`; both screens
+used to carry their own copy of plain triangle arrows, a brass map name that was hard to
+read on the wood and a small "Show Borders" checkbox.
+- **Randomize Starting Positions** (Phase 1 logic, Phase 2 button): clears every start and
+  gives each active slot a random territory. `map_data.pick_starting_territories()`: at
+  least `RANDOM_START_MIN_TERRITORIES_BETWEEN` (4) territories between any two starts
+  (5 moves, BFS over the adjacency), never a Fortress (no Keep can be built there); random
+  greedy tries (`RANDOM_START_ATTEMPTS` per gap size), the gap shrinks one step at a time
+  only when no spread fits. Custom: `SetupConfig.randomize_starting_territories()`. Lobby:
+  host-only `TerritorySelector.randomize_starting_positions()` →
+  `LobbyState.assign_starting_territories()` (claim records follow the new picks) → one
+  `LOBBY_STATE`; clients see the button greyed with a "host only" tooltip. Tooltips
+  `randomize_starts` / `randomize_starts_host_only` in `config/setup_tooltips.py`.
+- **Map name on TextBar.png** (cropped, 3-sliced, fixed width from the longest map name)
+  between **round medallion arrows** (dark disc, gold rim, faceted chevron, drawn 4x and
+  scaled down; owner's pick).
+- **Show Borders** is a wood button (`SetupFrames.wood_button()`, new) whose inside glows
+  while borders show; the checkbox is gone.
+- Both buttons share one font size and width; Randomize's label is on two lines (owner
+  feedback: the one-line button was very wide). Every control highlights on hover,
+  flashes on click and plays one click sound (`change_map()` played a second one).
+- Lobby: a host map change also clears the claim records (they outlived the map; harmless
+  today since the two maps share no territory names).
+- Tests: `tests/test_random_starts.py` (17), `tests/test_map_top_bar.py` (24: layout at
+  720p-1440p for Custom / host / client, hover < flash pixel audit, glow, clicks, client
+  restrictions, modals, the host's picks reaching a client over the in-memory network).
+
 ## 2026-10-14 - Fixes from the FFA test game (game 67546468)
 
 Branch `fix/ffa-game-findings`. The owner's simultaneous FFA (3 humans + Easy AI, 42 rounds)

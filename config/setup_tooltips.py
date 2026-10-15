@@ -17,6 +17,8 @@ Lines wrap automatically to the tooltip width. Where each one shows:
   "Victory Condition:" labels (or the small (i) mark next to them) on the left panel
 - neutral_armies / randomize_bonuses / gold_transfer / starting_gold: hovering the
   option's name in the Additional Options window
+- randomize_starts / randomize_starts_host_only: hovering "Randomize Starting
+  Positions" on the map top bar (ui/map_top_bar.py)
 """
 
 SETUP_TOOLTIPS = {
@@ -166,6 +168,26 @@ SETUP_TOOLTIPS = {
         'entries': [
             (None, "Every player needs a starting territory. For an AI, click its row and "
                    "then a territory on the map."),
+        ],
+    },
+
+    # Map top bar (both screens): hovering the "Randomize Starting Positions" button.
+    # randomize_starts_host_only shows on a multiplayer client's greyed button.
+    'randomize_starts': {
+        'title': "Randomize Starting Positions",
+        'entries': [
+            (None, "Clears every starting territory and gives each player a random one. "
+                   "At least 4 territories lie between any two players, and no one starts "
+                   "in a Fortress."),
+            (None, "Press again for a new draw. You can still change a territory by hand "
+                   "afterwards."),
+        ],
+    },
+    'randomize_starts_host_only': {
+        'title': "Randomize Starting Positions",
+        'entries': [
+            (None, "Only the host can randomize the starting positions. Every player sees "
+                   "the new territories at once."),
         ],
     },
 }

@@ -32,8 +32,15 @@ from steam_integration import steam_manager
 from ui.additional_options_overlay import AdditionalOptionsOverlay
 from ui.setup_tooltip import SetupTooltips
 from ui.setup_frames import SetupFrames
+from ui.map_top_bar import MapTopBar
+from network.lobby_chat import LobbyChat, CHANNELS as CHAT_CHANNELS, clean_text as clean_chat_text
+from ui.lobby_chat_panel import LobbyChatPanel
 
 logger = get_logger(__name__)
+
+# Lobby chat: at most one new-message sound per this many seconds (a burst of lines plays
+# one click, not a rattle)
+CHAT_SOUND_GAP_SECONDS = 0.4
 
 # A friend's Invite button stays "Invited" this long, then it can be clicked again
 INVITE_COOLDOWN_SECONDS = 30
@@ -211,10 +218,12 @@ class TerritorySelector:
         # Selected map (host can change, synced to clients)
         self.selected_map = map_data.get_map_ids()[0] if map_data.get_map_ids() else 'avareon'
 
-        # Map selector arrow rects and hover state
-        self.arrow_up_rect = None
-        self.arrow_down_rect = None
-        self.hovered_arrow = None  # 'up' or 'down' or None
+        # Map top bar (shared with the Custom Game setup, ui/map_top_bar.py): Randomize
+        # Starting Positions + map arrows for the host (a client's Randomize is greyed,
+        # with a tooltip), the map name, Show Borders. Placed in _initialize_map.
+        self.map_top_bar = MapTopBar(self.ui_scale)
+        self.map_top_bar.configure(can_change_map=is_host and len(map_data.get_map_ids()) > 1,
+                                   randomize_enabled=is_host)
 
         # Additional options (host can modify, synced to clients)
         self.neutral_armies = False
@@ -255,9 +264,17 @@ class TerritorySelector:
         for i in range(num_players):
             self.active_slot_dropdown[i] = None
 
-        # Show Borders checkbox (persisted in settings)
+        # Show Borders toggle (persisted in settings; the top bar's button glows while on)
         self.show_borders = settings.get('show_setup_borders', False)
-        self.borders_checkbox_rect = None  # Set each frame in render
+
+        # Lobby chat (network/lobby_chat.py): separate from the game's chat, cleared when
+        # the lobby ends. Sent as LOBBY_CHAT; drawn by the collapsible chat panel.
+        self.lobby_chat = LobbyChat()
+        self._chat_sound_at = float('-inf')   # Last new-message sound (time.monotonic())
+        # Collapsible chat panel on the right of the map, like the in-game sidebar with
+        # one "Chat" bookmark (ui/lobby_chat_panel.py). Placed in _initialize_map.
+        self.chat_panel = LobbyChatPanel(screen, self.lobby_chat, self.send_lobby_chat,
+                                         lambda: (self.local_player_index, self._local_team()))
 
         # Countdown state (for launch countdown)
         self.countdown_active = False
@@ -411,28 +428,15 @@ class TerritorySelector:
         # Hovered territory
         self.hovered_territory = None
 
-        # Top section: (◄) Name (►) — fixed width based on longest map name
-        arrow_size = 16
-        self._top_arrow_size = arrow_size
-        self._top_row_y = 6
-        gap = 10
-        # Pre-compute fixed layout width using the longest map name
-        longest_name = max((map_data.get_map_display_name(mid) for mid in map_data.get_map_ids()), key=len, default="")
-        self._selector_fixed_width = self.text_font.size(longest_name)[0]
-        total_w = arrow_size + gap + self._selector_fixed_width + gap + arrow_size
-        center_x = self.map_x + self.scaled_map_width // 2
-        self._selector_start_x = center_x - total_w // 2
-        # Compute fixed arrow rects
-        name_h = self.text_font.get_height()
-        left_x = self._selector_start_x
-        right_x = self._selector_start_x + arrow_size + gap + self._selector_fixed_width + gap
-        self.arrow_left_rect = pygame.Rect(left_x - 4, self._top_row_y - 4, arrow_size + 8, name_h + 8)
-        self.arrow_right_rect = pygame.Rect(right_x - 4, self._top_row_y - 4, arrow_size + 8, name_h + 8)
-        self.map_name_click_rect = pygame.Rect(left_x + arrow_size + gap - 4, self._top_row_y - 4, self._selector_fixed_width + 8, name_h + 8)
+        # Map top bar: the wood strip above the map, across the map panel
+        self.map_top_bar.set_geometry(self.left_panel_width, available_width, self.map_y)
+        # Lobby chat panel: the map's height, at the right edge of the screen
+        self.chat_panel.set_geometry(self.width, self.map_y, self.scaled_map_height)
 
     def change_map(self, direction):
         """Cycle to next/previous map. Only host can call this.
-        direction: +1 (next) or -1 (previous)."""
+        direction: +1 (next) or -1 (previous).
+        (The map top bar plays the click sound for the arrow / name it came from.)"""
         if not self.is_host:
             return
 
@@ -444,7 +448,9 @@ class TerritorySelector:
         new_idx = (current_idx + direction) % len(map_ids)
         self.selected_map = map_ids[new_idx]
 
-        # Clear all territory selections (territories differ between maps)
+        # Clear all territory selections (territories differ between maps). Through the
+        # lobby so the claim records go too (they used to outlive the map they were on).
+        self.lobby_state.assign_starting_territories({})
         for i in range(len(self.player_selections)):
             self.player_selections[i] = None
         for slot in self.lobby_state.slots:
@@ -456,7 +462,120 @@ class TerritorySelector:
         # Sync map change to clients
         self._sync_settings_to_client()
 
-        sound_manager.play_ui_click()
+    def toggle_borders(self):
+        """Show Borders on / off (this PC only), remembered in settings for both setup
+        screens."""
+        self.show_borders = not self.show_borders
+        settings.set('show_setup_borders', self.show_borders)
+        settings.save()
+
+    def randomize_starting_positions(self):
+        """Host's "Randomize Starting Positions": every active slot (players and AIs)
+        gets a random start - at least RANDOM_START_MIN_TERRITORIES_BETWEEN territories
+        between any two, never a Fortress (map_data.pick_starting_territories()) - and
+        every client gets the new picks in one LOBBY_STATE. Returns True if it ran."""
+        if not self.is_host:
+            return False
+        active = [slot.index for slot in self.lobby_state.slots if slot.is_active()]
+        picks = map_data.pick_starting_territories(len(active))
+        self.lobby_state.assign_starting_territories(dict(zip(active, picks)))
+        self._sync_from_lobby_state()
+        self._broadcast_lobby_state()
+        logger.info(f"Randomized starting positions: {dict(zip(active, picks))}")
+        return True
+
+    def _on_map_top_bar_click(self, pos):
+        """A click on the map top bar: act on the control it names. Returns True when
+        the click landed on the bar (also a client's greyed Randomize: used up, no-op)."""
+        action = self.map_top_bar.handle_click(pos)
+        if action is None:
+            return False
+        if action == 'prev':
+            self.change_map(-1)
+        elif action in ('next', 'name'):
+            self.change_map(1)   # Clicking the name cycles forward
+        elif action == 'borders':
+            self.toggle_borders()
+        elif action == 'randomize':
+            self.randomize_starting_positions()
+        return True
+
+    # ------------------------------------------------------------------ lobby chat
+
+    def _local_team(self):
+        """This PC's player's lobby team (who reads its team chat lines)."""
+        slot = self.lobby_state.get_slot(self.local_player_index)
+        return slot.team if slot is not None else None
+
+    def _slot_chat_identity(self, slot_idx):
+        """(name, colour, team) of a slot for a chat line, as this PC sees it now."""
+        slot = self.lobby_state.get_slot(slot_idx)
+        if slot is None:
+            return f"Player {slot_idx + 1}", PLAYER_COLORS[0], None
+        name = slot.player_name or f"Player {slot_idx + 1}"
+        color = PLAYER_COLORS[slot.color] if 0 <= slot.color < len(PLAYER_COLORS) else PLAYER_COLORS[0]
+        return name, color, slot.team
+
+    def _add_lobby_chat_line(self, slot_idx, text, channel):
+        """Put a player's line into this PC's lobby chat (team = the sender's team now)."""
+        name, color, team = self._slot_chat_identity(slot_idx)
+        entry = self.lobby_chat.add_player_line(slot_idx, name, color, text, channel, team)
+        if entry is not None and slot_idx != self.local_player_index:
+            # Someone else wrote: a click (owner), at most one per CHAT_SOUND_GAP_SECONDS,
+            # and only if this player can read the line
+            now = time.monotonic()
+            _, _, my_team = self._slot_chat_identity(self.local_player_index)
+            if (now - self._chat_sound_at >= CHAT_SOUND_GAP_SECONDS
+                    and self.lobby_chat.is_visible(entry, self.local_player_index, my_team)):
+                self._chat_sound_at = now
+                sound_manager.play_ui_click()
+        return entry
+
+    def send_lobby_chat(self, text, channel='all'):
+        """Our own lobby chat line: shown here at once and sent to everyone (the host
+        broadcasts it; a client sends it to the host, whose server relays it to the other
+        clients). Returns True if a line went out (empty text is not sent)."""
+        text = clean_chat_text(text)
+        if not text:
+            return False
+        if channel not in CHAT_CHANNELS:
+            channel = 'all'
+        self._add_lobby_chat_line(self.local_player_index, text, channel)
+        message = self.protocol.create_lobby_chat(self.local_player_index, text, channel)
+        if self.is_host:
+            self.network_connection.broadcast_message(message)
+        else:
+            self.network_connection.send_message(message)
+        return True
+
+    def _receive_lobby_chat(self, msg, data):
+        """A LOBBY_CHAT line from another PC. The server already made sure a client's
+        line names its own slot (_SENDER_FIELDS); the host also checks that the slot is
+        in the lobby. A line naming us (our own echo) is ignored."""
+        slot_idx = data.get('player_index')
+        if type(slot_idx) is not int or not 0 <= slot_idx < len(self.lobby_state.slots):
+            logger.warning(f"Lobby chat: ignored a line from slot {slot_idx!r}")
+            return
+        sender = msg.get('from_player_index')
+        if isinstance(sender, int) and sender != slot_idx:
+            logger.warning(f"Lobby chat: ignored a line for slot {slot_idx} sent by player {sender}")
+            return
+        if slot_idx == self.local_player_index:
+            return
+        slot = self.lobby_state.get_slot(slot_idx)
+        if self.is_host and (slot is None or not slot.is_active()):
+            logger.warning(f"Lobby chat: ignored a line from empty slot {slot_idx}")
+            return
+        channel = data.get('channel', 'all')
+        self._add_lobby_chat_line(slot_idx, data.get('message', ''),
+                                  channel if channel in CHAT_CHANNELS else 'all')
+
+    def _chat_player_left(self, slot_idx):
+        """Name of an occupied slot (for "X left the lobby"), read BEFORE it is cleared."""
+        slot = self.lobby_state.get_slot(slot_idx) if isinstance(slot_idx, int) else None
+        if slot is None or not slot.is_active() or not slot.is_human():
+            return None
+        return slot.player_name or f"Player {slot_idx + 1}"
 
     def _calculate_ui_layout(self):
         """Calculate positions for left panel UI elements.
@@ -581,6 +700,9 @@ class TerritorySelector:
             # Friends must stop seeing a lobby to join the moment it closes: launched,
             # Return to Main Menu, Alt+F4 or an error (host only)
             self._clear_hosting_presence()
+            # The lobby chat ends with the lobby, however it ends (owner: never carried
+            # into the game)
+            self.lobby_chat.clear()
 
     def _update_hosting_presence(self, now=None):
         """
@@ -629,16 +751,8 @@ class TerritorySelector:
                     _music_manager.handle_music_end_event()
 
                 if event.type == pygame.KEYDOWN:
-                    if self.overlay_open and not self._show_friend_picker:
-                        # Every key goes to the window while it shows (Starting Gold
-                        # typing; Escape closes an open list / the field, then the window)
-                        self.options_overlay.handle_key(event)
-                    elif event.key == pygame.K_ESCAPE:
-                        # Close friend picker first, otherwise exit selector
-                        if self._show_friend_picker:
-                            self._show_friend_picker = False
-                        else:
-                            return None
+                    if self.handle_key(event) == 'leave':
+                        return None
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
@@ -650,8 +764,7 @@ class TerritorySelector:
 
                 # MOUSEWHEEL event (SDL2 — preferred over button 4/5)
                 if hasattr(pygame, 'MOUSEWHEEL') and event.type == pygame.MOUSEWHEEL:
-                    if self._show_friend_picker:
-                        self._friend_scroll_offset = max(0, self._friend_scroll_offset - event.y)
+                    self.handle_wheel(pygame.mouse.get_pos(), event.y)
 
                 if event.type == pygame.MOUSEMOTION:
                     self.handle_hover(event.pos)
@@ -699,6 +812,37 @@ class TerritorySelector:
 
         return None
 
+    def handle_key(self, event):
+        """KEYDOWN in the lobby. Returns 'leave' when the player leaves (Escape).
+
+        Order: the Additional Options window takes every key while open; the friend
+        picker only Escape (closes it); then the chat (Enter opens it and starts typing,
+        and while typing it takes every key - Escape then only stops typing, so it never
+        throws a player out of the lobby mid-sentence); else Escape leaves the lobby.
+        """
+        if self.overlay_open and not self._show_friend_picker:
+            # Every key goes to the window while it shows (Starting Gold typing;
+            # Escape closes an open list / the field, then the window)
+            self.options_overlay.handle_key(event)
+            return None
+        if self._show_friend_picker:
+            if event.key == pygame.K_ESCAPE:
+                self._show_friend_picker = False
+            return None
+        if self.chat_panel.handle_key(event):
+            return None
+        if event.key == pygame.K_ESCAPE:
+            return 'leave'
+        return None
+
+    def handle_wheel(self, pos, wheel_y):
+        """MOUSEWHEEL: the friend picker's list while it is open, else the chat panel
+        when the pointer is over it."""
+        if self._show_friend_picker:
+            self._friend_scroll_offset = max(0, self._friend_scroll_offset - wheel_y)
+        elif not self.overlay_open:
+            self.chat_panel.handle_wheel(pos, wheel_y)
+
     def get_player_territories(self) -> Dict[int, str]:
         """Get mapping of player index -> territory for active players."""
         return self.lobby_state.get_player_territories()
@@ -719,24 +863,13 @@ class TerritorySelector:
             self._handle_overlay_click(pos)
             return
 
-        # Check map selector arrow/name clicks (host only)
-        if self.is_host and len(map_data.get_map_ids()) > 1:
-            if self.arrow_left_rect and self.arrow_left_rect.collidepoint(pos):
-                self.change_map(-1)
-                return
-            if self.arrow_right_rect and self.arrow_right_rect.collidepoint(pos):
-                self.change_map(1)
-                return
-            if self.map_name_click_rect and self.map_name_click_rect.collidepoint(pos):
-                self.change_map(1)
-                return
+        # Map top bar: Randomize + map arrows / name (host), Show Borders (everyone)
+        if self._on_map_top_bar_click(pos):
+            return
 
-        # Check Show Borders checkbox click
-        if self.borders_checkbox_rect and self.borders_checkbox_rect.collidepoint(pos):
-            self.show_borders = not self.show_borders
-            settings.set('show_setup_borders', self.show_borders)
-            settings.save()
-            sound_manager.play_ui_click()
+        # Lobby chat panel (bookmark, round button, input field, list): a click on it
+        # never reaches the map underneath. Elsewhere it just stops typing.
+        if self.chat_panel.handle_click(pos):
             return
 
         # Check if host clicked on the IP address to copy to clipboard
@@ -1031,8 +1164,10 @@ class TerritorySelector:
         # Use server's kick_player method to send message AND disconnect the client
         self.network_connection.kick_player(slot_idx, "Kicked by host")
 
-        # Remove player from lobby (this also clears their territory)
-        self.lobby_state.remove_player(slot_idx)
+        # Remove player from lobby (this also clears their territory). The server's
+        # LOBBY_LEAVE for them finds the slot empty, so the chat notice is written here.
+        if self.lobby_state.remove_player(slot_idx):
+            self.lobby_chat.add_system_line(f"{player_name or f'Player {slot_idx + 1}'} left the lobby")
 
         # Sync host's local UI to reflect the removal (clear territory display)
         self._sync_from_lobby_state()
@@ -1189,30 +1324,36 @@ class TerritorySelector:
         # Block normal hover while friend picker modal is open
         if self._show_friend_picker:
             self.hovered_territory = None
+            self.map_top_bar.clear_hover()
+            self.chat_panel.update_hover((-1, -1))
             return
 
         # Block normal hover while overlay is open
         if self.overlay_open:
             self.hovered_territory = None
+            self.map_top_bar.clear_hover()
+            self.chat_panel.update_hover((-1, -1))
             self.options_overlay.update_hover(pos, self.screen.get_size())
+            return
+
+        # Lobby chat panel: its own hover; the map under it does not light up
+        self.chat_panel.update_hover(pos)
+        if self.chat_panel.contains(pos):
+            self.hovered_territory = None
+            self.map_top_bar.clear_hover()
+            self._ip_hovered = False
             return
 
         # Track hover over clickable IP address (host only)
         self._ip_hovered = (self.is_host and self._ip_click_rect is not None
                             and self._ip_click_rect.collidepoint(pos))
 
-        # Track map selector arrow hover (host only)
-        self.hovered_arrow = None
-        if self.is_host:
-            if self.arrow_left_rect and self.arrow_left_rect.collidepoint(pos):
-                self.hovered_arrow = 'left'
-            elif self.arrow_right_rect and self.arrow_right_rect.collidepoint(pos):
-                self.hovered_arrow = 'right'
-            elif self.map_name_click_rect and self.map_name_click_rect.collidepoint(pos):
-                self.hovered_arrow = 'name'
+        # Map top bar buttons (highlight; Randomize's tooltip, incl. a client's greyed one)
+        self.map_top_bar.update_hover(pos)
 
         if pos[0] >= self.left_panel_width:  # In map area
             self.hovered_territory = self.get_territory_at_pos(pos)
+            self.hovered_tooltip = self.map_top_bar.tooltip_key()
         else:
             self.hovered_territory = None
             # Label tooltips (not while a list is open - it can cover the labels)
@@ -1454,6 +1595,8 @@ class TerritorySelector:
                         slot.player_name = player_name
                         self._sync_from_lobby_state()
                         logger.info(f"Player {player_name} joined slot {server_assigned_index + 1}")
+                        # Lobby chat notice (made on each PC, never sent)
+                        self.lobby_chat.add_system_line(f"{slot.player_name} joined the lobby")
 
                         # Send full lobby state to the new client so they see everything
                         self._broadcast_lobby_state()
@@ -1466,20 +1609,30 @@ class TerritorySelector:
                             slot.player_name = player_name
                         self._sync_from_lobby_state()
                         logger.info(f"Player {player_name} joined slot {server_assigned_index + 1}")
+                        if server_assigned_index != self.local_player_index:
+                            # Lobby chat notice for someone else joining (not our own join)
+                            self.lobby_chat.add_system_line(f"{player_name} joined the lobby")
 
             elif msg_type == MessageType.LOBBY_LEAVE:
                 # Player left. The server tells the other clients AND the host's lobby
                 # (the host used to never hear it and kept a ghost player).
                 player_index = data.get('player_index')
                 if isinstance(player_index, int) and 0 < player_index < self.num_players:
+                    leaver = self._chat_player_left(player_index)   # Before the slot is cleared
                     if self.lobby_state.remove_player(player_index):
                         logger.info(f"Player left slot {player_index + 1}")
+                        if leaver:
+                            self.lobby_chat.add_system_line(f"{leaver} left the lobby")
                     if self.selected_slot_for_territory == player_index and self.is_host:
                         self.selected_slot_for_territory = self.local_player_index
                     self._sync_from_lobby_state()
                     if self.is_host:
                         # Everyone gets the authoritative state (freed territory included)
                         self._broadcast_lobby_state()
+
+            elif msg_type == MessageType.LOBBY_CHAT:
+                # A lobby chat line from another PC (network/lobby_chat.py)
+                self._receive_lobby_chat(msg, data)
 
             elif msg_type == MessageType.LOBBY_KICK:
                 # Client received kick notification
@@ -1636,6 +1789,9 @@ class TerritorySelector:
         # Draw dropdown menus (on top of everything)
         self._draw_dropdown_menus()
         self._draw_slot_dropdown_menus()
+
+        # Lobby chat panel over the map's right side (under tooltips and modal windows)
+        self.chat_panel.draw()
 
         # Draw countdown overlay if active
         if self.countdown_active and self.countdown_seconds > 0:
@@ -1917,57 +2073,10 @@ class TerritorySelector:
             bottom_bar_y = self.map_y + self.scaled_map_height
             self.screen.blit(scaled_bottom_bar, (bottom_bar_x, bottom_bar_y))
 
-        # Draw "Show Borders" checkbox in top-right of map area
-        cb_label = self.tiny_font.render("Show Borders", True, BRASS_COLOR)
-        cb_size = 14
-        cb_x = self.width - cb_label.get_width() - cb_size - 20
-        cb_y = 8
-        cb_rect = pygame.Rect(cb_x, cb_y, cb_size, cb_size)
-        self.borders_checkbox_rect = pygame.Rect(cb_x - 4, cb_y - 4, cb_label.get_width() + cb_size + 28, cb_size + 8)
-        pygame.draw.rect(self.screen, BRASS_COLOR, cb_rect, 1)
-        if self.show_borders:
-            pygame.draw.line(self.screen, BRASS_COLOR, (cb_rect.left + 2, cb_rect.centery), (cb_rect.centerx, cb_rect.bottom - 2), 2)
-            pygame.draw.line(self.screen, BRASS_COLOR, (cb_rect.centerx, cb_rect.bottom - 2), (cb_rect.right - 2, cb_rect.top + 2), 2)
-        self.screen.blit(cb_label, (cb_x + cb_size + 6, cb_y - 1))
-
-        # Draw map selector arrows and map name (only if multiple maps, host only can click)
-        if len(map_data.get_map_ids()) > 1:
-            self._draw_map_selector_arrows()
-
-    def _draw_map_selector_arrows(self):
-        """Draw (◄) Map Name (►) at top with fixed-width layout."""
-        s = self._top_arrow_size
-        y = self._top_row_y
-        gap = 10
-        start_x = self._selector_start_x
-        name_h = self.text_font.get_height()
-
-        if self.is_host:
-            # Left arrow (◄)
-            left_x = start_x
-            left_color = (220, 200, 100) if self.hovered_arrow == 'left' else BRASS_COLOR
-            pygame.draw.polygon(self.screen, left_color, [
-                (left_x, y + name_h // 2),
-                (left_x + s, y + name_h // 2 - s // 2),
-                (left_x + s, y + name_h // 2 + s // 2),
-            ])
-
-            # Right arrow (►)
-            right_x = start_x + s + gap + self._selector_fixed_width + gap
-            right_color = (220, 200, 100) if self.hovered_arrow == 'right' else BRASS_COLOR
-            pygame.draw.polygon(self.screen, right_color, [
-                (right_x + s, y + name_h // 2),
-                (right_x, y + name_h // 2 - s // 2),
-                (right_x, y + name_h // 2 + s // 2),
-            ])
-
-        # Map name (centered within fixed-width area, visible for both host and client)
-        display_name = map_data.get_map_display_name(self.selected_map)
-        name_color = (220, 200, 100) if self.hovered_arrow == 'name' else BRASS_COLOR
-        name_surface = self.text_font.render(display_name, True, name_color)
-        name_area_x = start_x + s + gap
-        name_x = name_area_x + (self._selector_fixed_width - name_surface.get_width()) // 2
-        self.screen.blit(name_surface, (name_x, y))
+        # Map top bar on the wood strip: Randomize Starting Positions (greyed for
+        # clients), map name + arrows (arrows for the host), Show Borders (glowing while on)
+        self.map_top_bar.draw(self.screen, map_data.get_map_display_name(self.selected_map),
+                              self.show_borders)
 
     def _draw_territory_overlays(self):
         """Draw territory selection overlays on the map."""
