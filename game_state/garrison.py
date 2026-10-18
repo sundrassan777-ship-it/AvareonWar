@@ -105,7 +105,24 @@ class GarrisonMixin:
         # slightly outside polygon — colliding flags are worse than a small overshoot
         return best
 
-    def get_flag_positions_for_territory(self, territory, center_x, center_y, num_positions=4):
+    # Upper bound for _flag_position_cache. Entries made at an earlier resolution are
+    # never read again, so the cache is cleared wholesale rather than left to grow.
+    _FLAG_POSITION_CACHE_MAX = 512
+
+    def _scaled_territory_polygon(self, territory):
+        """
+        The territory's outline in the Game's world coordinates (Game.scaled_polygons).
+
+        That is the space every caller's center comes from (Game.scaled_centers), so it
+        is the polygon flag positions must be clamped against. None when no Game is
+        attached (pure game-logic use, e.g. unit tests).
+        """
+        game = getattr(self, 'game', None)
+        polygons = getattr(game, 'scaled_polygons', None) if game is not None else None
+        return polygons.get(territory) if polygons else None
+
+    def get_flag_positions_for_territory(self, territory, center_x, center_y, num_positions=4,
+                                         polygon=None):
         """
         Generate multiple flag positions for a territory to show different garrisons.
 
@@ -118,16 +135,24 @@ class GarrisonMixin:
             center_x: Territory center X in world coordinates
             center_y: Territory center Y in world coordinates
             num_positions: Number of positions to generate (default 4)
+            polygon: Territory outline in the SAME coordinates as center_x/center_y.
+                Defaults to the Game's scaled polygon, which matches every caller's
+                center (Game.scaled_centers). No clamping when no Game is attached.
 
         Returns:
             list: List of (x, y) tuples for flag positions
         """
-        # Check cache — world coords don't change during a game session
+        # BUG FIX (resolution change): the cache was keyed by (territory, count) on the
+        # assumption that world coordinates never change during a game. They do — they
+        # follow the window's scale_factor — so after an in-game resolution change every
+        # ring came back at the OLD scale, leaving the banners (and their click boxes and
+        # arrow starts) detached from their territory. The center is now part of the key.
         if not hasattr(self, '_flag_position_cache'):
             self._flag_position_cache = {}
-        cache_key = (territory, num_positions)
-        if cache_key in self._flag_position_cache:
-            return self._flag_position_cache[cache_key]
+        cache_key = (territory, num_positions, center_x, center_y)
+        cached = self._flag_position_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         # Distance from center for flag positions
         radius = 25  # World coordinate units (will be scaled with map)
@@ -156,12 +181,20 @@ class GarrisonMixin:
                 y = center_y + radius * math.sin(angle)
                 positions.append((x, y))
 
-        # Clamp positions to stay within territory polygon
-        polygon = map_data.TERRITORY_POLYGONS.get(territory)
+        # Clamp positions to stay within territory polygon.
+        # BUG FIX (coordinate spaces): this used map_data.TERRITORY_POLYGONS — the RAW
+        # 4096x3072 art coordinates — while the center is in scaled world coordinates
+        # (x0.16-0.26 of the art). No scaled point ever fell inside its raw polygon
+        # (0 of 57 centers), so every ring collapsed to _clamp_to_polygon()'s 0.4
+        # minimum: flags sat +/-10 apart instead of the designed +/-25.
+        if polygon is None:
+            polygon = self._scaled_territory_polygon(territory)
         if polygon:
             positions = [self._clamp_to_polygon(x, y, center_x, center_y, polygon)
                          for x, y in positions]
 
+        if len(self._flag_position_cache) >= self._FLAG_POSITION_CACHE_MAX:
+            self._flag_position_cache.clear()
         self._flag_position_cache[cache_key] = positions
         return positions
 

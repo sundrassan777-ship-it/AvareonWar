@@ -956,6 +956,15 @@ top.
 its own `get_flag_positions_for_territory()` slot. Hover highlights any garrison's banner;
 clicking still only ever selects the current player's garrison.
 
+**Flag slots live in the Game's world coordinates.** The ring (radius 25 world units) is
+clamped against `game.scaled_polygons` (`GarrisonMixin._scaled_territory_polygon()`), the
+same space as the `scaled_centers` every caller passes - **never** against
+`map_data.TERRITORY_POLYGONS`, which is raw 4096x3072 art coordinates. Doing that put no
+point inside any territory, so every ring collapsed to the 0.4 minimum (banners +/-10 apart
+instead of +/-25) until 2026-10-19. The ring cache is keyed by the centre too, so a
+resolution change gives a fresh ring (see "Rebuild scale-derived caches" below).
+Tests: `tests/test_garrison.py` `TestFlagRingCoordinates`.
+
 **When adding a hit target near armies:** derive its rect from a shared helper and add it
 to all three passes, or it will drift the same way.
 
@@ -3088,6 +3097,10 @@ The codebase uses several performance patterns. Follow these when adding new ren
   `MapRenderer.rebuild_scale_caches()`, as `apply_display_settings()` does.
 - Skipping it left the caches at the old scale: after 1600x900 → 1280x720 the cached projection
   was **418px** off, misaligning polygons with the map and breaking AABB hit-testing.
+- **Never key a cache of world coordinates by territory alone** - world coordinates follow
+  `scale_factor`. `GameState.get_flag_positions_for_territory()` did, and after a resolution
+  change kept allied banners (and their click boxes and arrow starts) at the old scale's
+  positions, off the territory. It now keys by the centre as well.
 - Guarded by `tests/test_resolution_caches.py`.
 
 **Cache, don't copy, full-screen overlays:**

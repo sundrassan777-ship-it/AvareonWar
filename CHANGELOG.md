@@ -2,6 +2,29 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-19 - Fix: banners of allies sharing a territory (spacing, resolution change)
+
+Branch `fix/flag-ring-coordinates`. Found while studying the map renderer for a 3D-map
+feasibility analysis. `GameState.get_flag_positions_for_territory()`
+(`game_state/garrison.py`) places one banner per garrison when allies share a territory;
+drawing, clicks, hover, order arrows and army animations all use it.
+- **Spacing**: the ring was clamped against `map_data.TERRITORY_POLYGONS` (raw 4096x3072
+  art coordinates) while its centre is in scaled world coordinates, so no position was ever
+  inside (0 of 57 centres) and every ring collapsed to the 0.4 minimum: banners +/-10 world
+  units apart instead of the designed +/-25. Now clamped against the Game's
+  `scaled_polygons` (new `_scaled_territory_polygon()`; optional `polygon` argument in the
+  caller's coordinates; no clamp when no Game is attached). Visible change: allied banners
+  stand further apart, still inside their territory.
+- **Resolution change**: the ring cache was keyed by (territory, count) only, so after an
+  in-game resolution change the banners, their click boxes and arrow starts stayed at the
+  old scale's coordinates, off the territory (Lobardia after 1600x900 -> 1280x720: banners
+  at (641, 455) / (661, 455), centre now (502, 351)). The centre is now part of the key;
+  the cache is bounded (512 entries).
+- FPS: no measurable change (~0.005 ms per frame with every territory shared by 2-4
+  garrisons; building a ring got cheaper because the first inside-test now usually passes).
+- Tests: `tests/test_garrison.py` `TestFlagRingCoordinates` (8),
+  `tests/test_resolution_caches.py` `test_allied_banners_follow_resolution_change`.
+
 ## 2026-10-15 - Multiplayer lobby chat
 
 Branch `feature/setup-map-top-bar` (with the map top bar below). Owner: a chat in the

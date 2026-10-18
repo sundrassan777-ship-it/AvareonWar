@@ -4,6 +4,22 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Allied Banner Fixes
+
+*19 October 2026*
+
+### Fixes
+
+- **Allied banners no longer crowd together.** When an ally's army shares a territory with
+  yours, each army's banner now stands at its own spot around the territory's centre,
+  clearly apart and still inside the territory. They used to stand almost on top of each
+  other.
+- **Banners stay on their territory after changing the resolution.** Changing the screen
+  resolution during a game could leave the banners of a shared territory away from it,
+  along with the spots you click to select them and the start of their order arrows.
+
+---
+
 ## Game Setup: Lobby Chat, Random Starting Positions and a Clearer Map Bar
 
 *15 October 2026*
