@@ -431,3 +431,88 @@ class TestGarrisonPositions:
             ring = gs.get_flag_positions_for_territory('Lobardia', 100, 100, total)
             assert all(i < len(ring) for i in indices), (total, indices)
             assert len(set(indices)) == len(indices), indices
+
+
+# ============================================================================
+# TestFlagRingCoordinates
+# ============================================================================
+
+class _StubGame:
+    """Stands in for main.Game: only the scaled geometry GameState reads."""
+
+    def __init__(self, scaled_polygons):
+        self.scaled_polygons = scaled_polygons
+
+
+def _scaled(points, scale):
+    """Art coordinates -> world coordinates, rounded the way main.Game does it."""
+    return [(round(x * scale), round(y * scale)) for x, y in points]
+
+
+class TestFlagRingCoordinates:
+    """
+    get_flag_positions_for_territory() must clamp in the CALLER's coordinates.
+
+    Two bugs, both pinned here:
+    - It clamped scaled world points against the RAW 4096x3072 polygon, which never
+      contains them, so every ring collapsed to the 0.4 minimum (+/-10, not +/-25).
+    - Its cache ignored the center, so after a resolution change it kept returning
+      the ring for the OLD scale, away from the territory.
+    """
+
+    RADIUS = 25  # designed ring radius in world units (garrison.py)
+
+    @pytest.fixture
+    def gs(self):
+        return GameState(num_players=2, player_is_ai=[False, False],
+                         player_ai_difficulty=[1, 1], skip_setup_phase=True)
+
+    def test_room_to_spare_keeps_the_full_radius(self, gs):
+        square = [(400, 400), (600, 400), (600, 600), (400, 600)]
+        ring = gs.get_flag_positions_for_territory('Lobardia', 500, 500, 2, polygon=square)
+        assert ring == [(500 - self.RADIUS, 500), (500 + self.RADIUS, 500)]
+
+    def test_small_territory_shrinks_the_ring_inside(self, gs):
+        # Half-size 15: the 25 and 18.75 rings fall outside, the 12.5 one fits
+        square = [(485, 485), (515, 485), (515, 515), (485, 515)]
+        ring = gs.get_flag_positions_for_territory('Lobardia', 500, 500, 2, polygon=square)
+        assert ring == [(487.5, 500), (512.5, 500)]
+        assert all(map_data.point_in_polygon(p, square) for p in ring)
+
+    @pytest.mark.parametrize('scale', [0.163, 0.211, 0.256])  # 720p / 900p / 1080p
+    def test_real_territory_gets_the_designed_spacing(self, gs, scale):
+        """Lobardia has room for a +/-25 pair at every resolution (it got +/-10)."""
+        polygon = _scaled(map_data.TERRITORY_POLYGONS['Lobardia'], scale)
+        gs.game = _StubGame({'Lobardia': polygon})
+        cx, cy = _scaled([map_data.TERRITORY_CENTERS['Lobardia']], scale)[0]
+
+        ring = gs.get_flag_positions_for_territory('Lobardia', cx, cy, 2)
+
+        assert ring == [(cx - self.RADIUS, cy), (cx + self.RADIUS, cy)]
+        assert all(map_data.point_in_polygon(p, polygon) for p in ring)
+
+    def test_ring_follows_the_center_after_a_rescale(self, gs):
+        """Same GameState, new resolution: the ring must move with the territory."""
+        rings = []
+        for scale in (0.211, 0.256):
+            gs.game = _StubGame(
+                {'Lobardia': _scaled(map_data.TERRITORY_POLYGONS['Lobardia'], scale)})
+            cx, cy = _scaled([map_data.TERRITORY_CENTERS['Lobardia']], scale)[0]
+
+            ring = gs.get_flag_positions_for_territory('Lobardia', cx, cy, 2)
+
+            mid = ((ring[0][0] + ring[1][0]) / 2, (ring[0][1] + ring[1][1]) / 2)
+            assert mid == pytest.approx((cx, cy)), f"ring left the territory at scale {scale}"
+            rings.append(ring)
+        assert rings[0] != rings[1]
+
+    def test_without_a_game_there_is_no_clamp(self, gs):
+        """Pure game-logic use: no Game attached, so no scaled polygon to clamp to."""
+        assert gs.game is None
+        ring = gs.get_flag_positions_for_territory('Lobardia', 100, 100, 2)
+        assert ring == [(100 - self.RADIUS, 100), (100 + self.RADIUS, 100)]
+
+    def test_cache_stays_bounded(self, gs):
+        for i in range(gs._FLAG_POSITION_CACHE_MAX + 50):
+            gs.get_flag_positions_for_territory('Lobardia', i, i, 2)
+        assert len(gs._flag_position_cache) <= gs._FLAG_POSITION_CACHE_MAX

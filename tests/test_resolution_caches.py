@@ -144,3 +144,38 @@ def test_round_trip_resolution_change(game):
     game.apply_display_settings(1600, 900, False)
     assert _max_bbox_error(game) == pytest.approx(0.0, abs=1e-6)
     assert _max_projection_error(game) < 1.0
+
+
+def test_allied_banners_follow_resolution_change(game):
+    """
+    Both banners of a territory shared with an ally stay on it after a resolution change.
+
+    GameState.get_flag_positions_for_territory() cached its ring without the center, so
+    after a resolution change the banners (and their click boxes) stayed at the OLD
+    scale's coordinates: Lobardia's pair sat ~100 world units off the territory.
+    """
+    import map_data
+    gs = game.game_state
+    territory = 'Lobardia'
+    gs.territory_owners[territory] = 0
+    gs.territory_garrisons[territory] = {}
+    gs.add_garrison(territory, 0, unmoved=3)
+    gs.add_garrison(territory, 1, unmoved=2)
+
+    def banner_anchors():
+        cx, cy = game.scaled_centers[territory]
+        num = game.get_effective_garrison_count(territory)
+        return [game.get_garrison_anchor(territory, cx, cy, p, num)[:2] for p in (0, 1)]
+
+    banner_anchors()  # fills the ring cache at the current scale
+    original_scale = game.scale_factor
+    game.apply_display_settings(1280, 720, False)
+    _require_scale_change(game, original_scale)
+
+    anchors = banner_anchors()
+    cx, cy = game.scaled_centers[territory]
+    polygon = game.scaled_polygons[territory]
+    assert all(map_data.point_in_polygon(a, polygon) for a in anchors), (
+        f"banners {anchors} left {territory} after the resolution change")
+    mid = ((anchors[0][0] + anchors[1][0]) / 2, (anchors[0][1] + anchors[1][1]) / 2)
+    assert mid == pytest.approx((cx, cy), abs=1.0)
