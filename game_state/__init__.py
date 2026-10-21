@@ -613,10 +613,12 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Victory condition settings
         # NOTE: victory_condition is set from parameter at line 217, not here
         # Options: 'Domination (45+)', 'Capital Assault', 'Total Conquest'
-        # Domination threshold: ~79% of total territories (45/57 on Avareon), scales with map size
-        import math
+        # Domination threshold: 45/57 of the territories (exactly 45 on Avareon, the
+        # "Domination (45+)" label), rounded up, so it scales with map size.
+        # Integer maths on purpose: the old ceil(total * 0.79) gave ceil(45.03) = 46 on
+        # Avareon, one more than the label and the docs (fixed 2026-10-21).
         total_territories = len(map_data.get_all_territories())
-        self.victory_territory_threshold = math.ceil(total_territories * 0.79)
+        self.victory_territory_threshold = -(-total_territories * 45 // 57)
         
         # Turn tracking
         self.turn_number = 0  # Track turns for construction completion

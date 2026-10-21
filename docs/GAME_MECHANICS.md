@@ -451,7 +451,8 @@ Toggle "Neutral Armies" in Additional Options during custom game or multiplayer 
 ## 🎯 Victory Conditions
 
 **Implemented:**
-- **Domination (45+):** Control 45 or more territories (default)
+- **Domination (45+):** Control 45 or more territories (default); on other maps the same
+  share, 45 of every 57 territories rounded up (44 on Azincournean Highlands)
   - **Team-based:** Combined team territories count toward threshold
   - Solo players win at 45+ individually
 - **Capital Assault:** Capture enemy capital territories to eliminate them

@@ -145,6 +145,28 @@ class TestDominationVictory:
         assert game.winner == 1, "game.winner should be set to player 1"
 
 
+class TestDominationThreshold:
+    """The threshold is 45/57 of the map's territories, rounded up (2026-10-21 fix: the
+    old ceil(total * 0.79) gave 46 on Avareon, one more than "Domination (45+)")."""
+
+    def _threshold(self):
+        return GameState(num_players=2, player_is_ai=[False, False], player_ai_difficulty=[1, 1],
+                         skip_setup_phase=True).victory_territory_threshold
+
+    def test_avareon_needs_45(self):
+        assert len(map_data.get_all_territories()) == 57
+        assert self._threshold() == 45
+
+    def test_azincournean_highlands_keeps_44(self):
+        map_data.load_map('azincournean_highlands')
+        assert len(map_data.get_all_territories()) == 55
+        assert self._threshold() == 44          # ceil(55 * 45 / 57) = ceil(43.4); unchanged by the fix
+
+    def test_scales_with_map_size(self):
+        for total, expected in ((57, 45), (55, 44), (114, 90), (21, 17), (1, 1)):
+            assert -(-total * 45 // 57) == expected
+
+
 # ============================================================================
 # TestCapitalAssaultVictory
 # ============================================================================
