@@ -74,6 +74,9 @@ SETTING_TYPES = {
     'campaign_missions_xp_claimed': (list,),
     # Setup screen options
     'show_setup_borders': (bool,),
+    # OPEN BETA ONLY (remove at full release, see OPEN_BETA in config/constants.py):
+    # the one-time wishlist prompt on a campaign victory has been shown (wishlist.py)
+    'wishlist_prompt_shown': (bool,),
     # Steam networking kill switches (no Options-menu entry - edit config.json, or use the
     # --no-steam-join-hook / --no-steam-relay launch options; see steam_integration.py)
     'steam_join_hook': (bool,),
@@ -151,6 +154,9 @@ class SettingsManager:
 
             # Setup screen options
             'show_setup_borders': False,        # Show territory borders in setup screens
+
+            # OPEN BETA ONLY (remove at full release): the one-time wishlist prompt was shown
+            'wishlist_prompt_shown': False,
 
             # Steam networking kill switches: False turns the feature off for a build
             # where it misbehaves, without touching anything else

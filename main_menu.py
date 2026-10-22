@@ -16,7 +16,8 @@ The main menu is the entry point for the game, showing buttons for:
 
 import pygame
 import sys
-from config.constants import WHITE, BLACK, GRAY, DARK_GRAY, GAME_VERSION, FPS_LIMIT_OPTIONS
+from config.constants import WHITE, BLACK, GRAY, DARK_GRAY, GAME_VERSION, FPS_LIMIT_OPTIONS, OPEN_BETA
+import wishlist  # OPEN BETA ONLY: the Wishlist button (remove at full release)
 from utils.colors import lighten_color, brighten_color
 from settings_manager import settings
 from global_sound import sound_manager  # Global sound manager for UI clicks
@@ -363,6 +364,15 @@ class MainMenu:
         except Exception as e:
             logger.warning(f"Error loading replays icon: {e}")
 
+        # OPEN BETA ONLY (wishlist.py - remove at full release): the Wishlist button icon
+        # (bottom-left corner). The owner adds the icon later; until then None = a drawn tile.
+        self.wishlist_button_icon = None
+        if OPEN_BETA:
+            try:
+                self.wishlist_button_icon = pygame.image.load(wishlist.WISHLIST_ICON_PATH).convert_alpha()
+            except (pygame.error, FileNotFoundError) as e:
+                logger.info(f"Wishlist icon not there yet ({e}); drawing a fallback tile")
+
         # Load achievement panel background (same as options)
         try:
             ach_bg = pygame.image.load('assets/OptionsMenuBG.png').convert_alpha()
@@ -499,6 +509,21 @@ class MainMenu:
         else:
             self.replays_button_icon_scaled = None
 
+        # OPEN BETA ONLY (remove at full release): Wishlist button in the bottom-left
+        # corner (the only free corner), one version-text line above the version label
+        self.wishlist_button_rect = None
+        self.wishlist_button_icon_scaled = None
+        if OPEN_BETA:
+            self.wishlist_button_rect = pygame.Rect(
+                profile_button_margin,
+                self.height - profile_button_size - profile_button_margin - self.tooltip_font.get_linesize(),
+                profile_button_size,
+                profile_button_size
+            )
+            if self.wishlist_button_icon:
+                self.wishlist_button_icon_scaled = pygame.transform.smoothscale(
+                    self.wishlist_button_icon, (profile_button_size, profile_button_size))
+
         # Pre-scale reward icons for profile panel
         self.reward_icons_panel_scaled = {}
         for path, raw_icon in self.reward_icons_raw.items():
@@ -625,6 +650,10 @@ class MainMenu:
             # Check replays button hover (bottom-left)
             if self.replays_button_rect.collidepoint(mouse_pos):
                 self.hovered_button = 'replays'
+
+            # OPEN BETA ONLY: Wishlist button hover (bottom-left)
+            if self.wishlist_button_rect and self.wishlist_button_rect.collidepoint(mouse_pos):
+                self.hovered_button = 'wishlist'
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -992,6 +1021,14 @@ class MainMenu:
             # Don't handle menu button clicks if options panel is open
             return
 
+        # OPEN BETA ONLY: the Wishlist button opens the full game's store page (overlay,
+        # else the Steam client, else the browser - wishlist.open_wishlist_page)
+        if self.wishlist_button_rect and self.wishlist_button_rect.collidepoint(pos):
+            sound_manager.play_ui_click()
+            self.clicked_button = 'wishlist'
+            wishlist.open_wishlist_page()
+            return
+
         # Handle replays button click (bottom-left)
         if self.replays_button_rect.collidepoint(pos):
             sound_manager.play_ui_click()
@@ -1215,6 +1252,10 @@ class MainMenu:
         # Draw replays button in bottom left corner
         self._draw_replays_button()
 
+        # OPEN BETA ONLY: Wishlist button (bottom-left corner)
+        if self.wishlist_button_rect:
+            self._draw_wishlist_button()
+
         # Draw sliding options panel
         if self.options_panel_y > -self.options_panel_height:
             self._draw_options_panel()
@@ -1235,6 +1276,9 @@ class MainMenu:
                 self._draw_tooltip(self.screen, "Achievements", pygame.mouse.get_pos(), self.tooltip_font)
             elif self.hovered_button == 'replays':
                 self._draw_tooltip(self.screen, "Replays", pygame.mouse.get_pos(), self.tooltip_font)
+            elif self.hovered_button == 'wishlist':
+                self._draw_tooltip(self.screen, wishlist.WISHLIST_TOOLTIP, pygame.mouse.get_pos(),
+                                   self.tooltip_font)
 
         # Draw version label in bottom-left corner
         version_text = self.tooltip_font.render(f"Version: {GAME_VERSION}", True, GRAY)
@@ -1874,6 +1918,44 @@ class MainMenu:
         self.screen.blit(icon_surface, rect)
 
         # Draw border frame overlay (offset -1 to center enlarged border)
+        if self.icon_border_button_scaled:
+            self.screen.blit(self.icon_border_button_scaled, (rect.x - 1, rect.y - 1))
+
+    def _draw_wishlist_button(self):
+        """OPEN BETA ONLY (remove at full release): the Wishlist button in the bottom-left
+        corner - the owner's icon (wishlist.WISHLIST_ICON_PATH), or until it exists a
+        Steam-blue tile with a heart. Hover / click like the other corner buttons."""
+        rect = self.wishlist_button_rect
+        is_hovered = (self.hovered_button == 'wishlist')
+        is_clicked = (self.clicked_button == 'wishlist')
+
+        icon_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        if self.wishlist_button_icon_scaled:
+            icon_surface.blit(self.wishlist_button_icon_scaled, (0, 0))
+        else:
+            # Fallback: Steam's dark blue with a light blue heart, drawn (no font glyph needed)
+            icon_surface.fill((27, 40, 56))
+            w, h = rect.width, rect.height
+            r = max(4, w // 7)
+            cy = int(h * 0.42)
+            heart = (102, 192, 244)
+            pygame.draw.circle(icon_surface, heart, (w // 2 - r + 1, cy), r)
+            pygame.draw.circle(icon_surface, heart, (w // 2 + r - 1, cy), r)
+            pygame.draw.polygon(icon_surface, heart, [
+                (w // 2 - 2 * r + 1, cy + r // 3), (w // 2 + 2 * r - 1, cy + r // 3),
+                (w // 2, cy + int(2.2 * r))])
+
+        # Same hover / click effects as the other corner buttons
+        if is_clicked:
+            bright_overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            bright_overlay.fill((100, 100, 100, 100))
+            icon_surface.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        elif is_hovered:
+            light_overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            light_overlay.fill((50, 50, 50, 50))
+            icon_surface.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+        self.screen.blit(icon_surface, rect)
         if self.icon_border_button_scaled:
             self.screen.blit(self.icon_border_button_scaled, (rect.x - 1, rect.y - 1))
 

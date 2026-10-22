@@ -4,6 +4,21 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Wishlist War of Avareon
+
+*22 October 2026*
+
+### New
+
+- **War of Avareon is on the Steam Store.** A new button in the bottom-left corner of the
+  main menu takes you to the full game's store page, where one click adds it to your
+  wishlist. It opens in the Steam overlay, or in Steam itself (or your browser) when the
+  overlay isn't available.
+- After you have won a few campaign chapters, the game asks once whether you would like to
+  wishlist the full game. It won't ask again.
+
+---
+
 ## Domination Victory Fix
 
 *21 October 2026*

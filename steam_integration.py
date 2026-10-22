@@ -40,6 +40,12 @@ logger = get_logger(__name__)
 # Steam App ID — must match Steamworks partner dashboard
 STEAM_APP_ID = 4518130
 
+# The full game's App ID (STEAM_APP_ID above is the Playtest the open beta runs as). Its
+# store page is where players wishlist the game (wishlist.py); at full release
+# STEAM_APP_ID becomes this, which tests/test_release_readiness.py uses to demand that
+# the open-beta-only parts are gone.
+MAIN_GAME_APP_ID = 4518100
+
 # Kill switches for the Steam networking features (steam_networking.py), so a build where
 # one misbehaves stays playable: a Steam launch option, or the matching config.json key
 # set to false. Join hook = "join game" requests while the game runs (callback 337);
@@ -389,6 +395,29 @@ class SteamManager:
         except Exception as e:
             logger.warning(f"Failed to get Steam persona name: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Store page in the Steam overlay (wishlist.py)
+    # ------------------------------------------------------------------
+
+    def open_store_overlay(self, app_id):
+        """Show an app's store page in the Steam overlay. Returns True only when the
+        overlay is hooked into the game (IsOverlayEnabled); False when Steam is
+        unavailable or the overlay is not there - a Pygame window is not always hooked
+        (the same reason F12 screenshots may not work), and asking an unhooked overlay
+        does nothing visible, so the caller must open the page another way."""
+        if not self._initialized:
+            return False
+        try:
+            if not self._steamworks.Utils.IsOverlayEnabled():
+                logger.info("Steam overlay not hooked into the game; store page opens another way")
+                return False
+            self._steamworks.Friends.ActivateGameOverlayToStore(int(app_id))
+            logger.info(f"Opened store page {app_id} in the Steam overlay")
+            return True
+        except Exception as e:
+            logger.warning(f"Steam overlay store page failed: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # Hosting presence (Steam rich presence; HOSTING_STATUS above). Through the flat
