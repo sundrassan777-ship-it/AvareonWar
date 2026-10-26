@@ -2,6 +2,45 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-26 - Plot effects: production light rays and construction dust
+
+Branch `feature/plot-effects`. Owner: replace the slowly turning "star" on producing plots
+with BFME II War of the Ring style rays of light, and show construction / upgrades on the map
+with floating dust - without a noticeable FPS cost when tens are on screen at once. 2D and 3D
+looks share one style (`ui/effects/plot_fx_style.py`, `PLOT_FX_STYLES`), ready to diverge.
+- **Production light rays** (Barracks training units, Keep / Castle training a hero; own and
+  allied plots only, as before): two counter-rotating layers of soft beams (7 long, 5 short)
+  plus a faint halo, additive light in the owner's colour softened toward warm white.
+  `ProductionRays` (`ui/effects/production_glow_effect.py`) keeps one current frame per (even
+  plot radius, colour, phase group, layer), shared by every plot, re-rotated every 0.25 deg
+  (smooth; baked 1.5-2 deg steps visibly ticked). Pausing the game pauses them.
+- **Why the old star looked unpolished:** 8 rays baked into 16 frames 22.5 deg apart - and 8
+  rays repeat every 45 deg, so it only ever showed two poses, flipping every ~2.6 s. It was
+  sized by `camera_zoom` while plots use `ui_scale`, so at min zoom it poked ~4 px past the plot.
+  The rays are sized by the plot radius (`MapRenderer._plot_radius()`).
+- **Construction dust** (`ui/effects/construction_dust_effect.py`): sienna clouds rolling
+  around the base, motes rising over the plot, debris chips hopping off it. A Keep being
+  upgraded to a Castle gets the same dust with gold glints - before, an upgrade showed nothing
+  on the map until the completion burst. Stateless (shared clock + stable plot phase): drawn
+  wherever `under_construction` / `castle_upgrades_in_progress` say, right in every game mode
+  with nothing to sync. Visible to everyone, like the construction disc. Level of detail: 15
+  particles on small (zoomed-out) plots, 19 on large. Grey-brown dust was tried first and was
+  hard to see on the beige 2D map.
+- **Fix:** after a resolution change the production glow stayed where the plot used to be
+  (it kept the world position it was created at). Effects now keep `(territory, plot_index)`
+  and look the plot up every frame. Rays are also no longer drawn outside the playing phase.
+- **Wiring** (`rendering/map_renderer.py`): shared clock `update_plot_effects(dt)` (replaces
+  `update_production_glow_effects`, called from the main loop's update section),
+  `_build_plot_fx_renderers()` (also on display changes, `rebuild_scale_caches()`).
+- **Dev tool:** `tools/plot_fx_preview.py` - live preview on the real map (zoom, 2D/3D, FPS),
+  `--sheet` / `--closeups` stills, `--bench` cost.
+- **Cost** (`tests/test_fps_benchmark.py`): 99 producing plots static 6.93 -> 6.74 ms/frame,
+  zooming 24.25 -> 23.00 ms avg (worst 43.0 -> 28.7 ms); new `dust_static` 9.45 ms with 99
+  constructions at once (99 plain buildings: 6.18 ms), `dust_zoom` 26.18 ms, `mixed_static`
+  7.90 ms (57 producing + 42 constructing). Dust ~24 us per plot. Caches ~2 MB (rays) + ~1.8 MB
+  (dust).
+- Tests: `tests/test_plot_effects.py` (41).
+
 ## 2026-10-26 - TEMP: the 3D map look unhidden for testing
 
 Owner: unhide the switch for downstream testing; **hide it again before the next patch

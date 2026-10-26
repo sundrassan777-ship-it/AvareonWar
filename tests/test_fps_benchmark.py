@@ -149,7 +149,8 @@ def sync_camera(game, zoom=None, offset=None, force_rescale=True):
 
 
 def populate_map(game, buildings_per_territory=0, producing=False,
-                 armies=50, garrisons_per_territory=1, single_owner=None):
+                 armies=50, garrisons_per_territory=1, single_owner=None,
+                 constructing=0):
     """
     Fill the game state with a given entity density.
 
@@ -157,10 +158,13 @@ def populate_map(game, buildings_per_territory=0, producing=False,
         buildings_per_territory: Barracks per territory (clamped to that territory's
             real plot count — Avareon has 107 plots across 57 territories, NOT 4 each).
         producing: Give each Barracks an active training queue. This is what spawns
-            ProductionGlowEffect instances, which rebuild a 16-frame sprite cache on
-            every zoom change — the dominant crowded-map cost.
+            ProductionGlowEffect instances (production light rays). Until 2026-10 each
+            rebuilt a 16-frame sprite cache on every zoom change — then the dominant
+            crowded-map cost.
         single_owner: If set, assign every territory to this player. Production glows
             only render for the viewer's own/allied buildings, so use 0 to maximise them.
+        constructing: Plots per territory put under construction, after the Barracks
+            (clamped to the plots left). Each shows construction dust - for everyone.
     """
     gs = game.game_state
     territories = list(game.scaled_polygons.keys())
@@ -184,6 +188,10 @@ def populate_map(game, buildings_per_territory=0, producing=False,
         gs.training_queue[territory] = (
             {j: [('Swordsman', 2, 30)] for j in range(count)} if producing else {}
         )
+        building_count = min(constructing, n_plots - count)
+        gs.under_construction[territory] = {
+            j: ('Barracks', 1, 50) for j in range(count, count + building_count)
+        }
 
     # Bump dirty-flag version counters so the renderer rebuilds its caches
     gs._territory_owners_version += 1
@@ -197,6 +205,11 @@ def glow_effect_count(game):
     """Number of active production glow effects."""
     fx = getattr(game.map_renderer, 'production_glow_effects', None)
     return len(fx) if fx else 0
+
+
+def construction_count(game):
+    """Number of plots under construction (each draws construction dust)."""
+    return sum(len(plots) for plots in game.game_state.under_construction.values())
 
 
 @pytest.fixture(scope="module")
@@ -556,9 +569,13 @@ class TestZoomPerformance:
 
 class TestProductionGlowPerformance:
     """
-    ProductionGlowEffect rebuilds 16 pre-rendered sprite frames whenever the raw
-    zoom float changes. With many producing buildings that is thousands of polygon
-    draws in a single frame — the dominant cause of crowded-map zoom stutter.
+    Production light rays on ~100 producing buildings, static and while zooming.
+
+    History: the old 8-ray star rebuilt 16 pre-rendered sprite frames whenever the
+    raw zoom float changed - thousands of polygon draws in a single frame, the
+    dominant cause of crowded-map zoom stutter. The light rays (2026-10) share one
+    current frame per (plot size, colour, phase group, layer) and re-rotate it every
+    0.25 deg, so zooming only re-tints a few small surfaces.
     """
 
     @pytest.fixture
@@ -580,7 +597,7 @@ class TestProductionGlowPerformance:
         sync_camera(glow_game, zoom=glow_game.camera.min_zoom)
 
         def before(i):
-            glow_game.map_renderer.update_production_glow_effects(1.0 / 60.0)
+            glow_game.map_renderer.update_plot_effects(1.0 / 60.0)
 
         fps = FPSMeasurement(sample_count=60)
         result = record('glow_static', fps.run_benchmark(glow_game, before_frame=before, warmup=5),
@@ -610,7 +627,7 @@ class TestProductionGlowPerformance:
             glow_game.camera.handle_zoom(direction[0], centre, 0.078, top_panel)
             glow_game.camera.update_zoom(1.0 / 60.0)
             sync_camera(glow_game)
-            glow_game.map_renderer.update_production_glow_effects(1.0 / 60.0)
+            glow_game.map_renderer.update_plot_effects(1.0 / 60.0)
 
         fps = FPSMeasurement(sample_count=60)
         result = record('glow_zoom', fps.run_benchmark(glow_game, before_frame=before, warmup=3),
@@ -619,6 +636,84 @@ class TestProductionGlowPerformance:
                [f'(pre-optimization baseline: ~113-167ms per frame)'])
         assert result['worst_frame_ms'] < 100, (
             f"Zoom-with-glows worst frame too slow: {result['worst_frame_ms']:.1f}ms")
+
+
+class TestConstructionDustPerformance:
+    """
+    Construction dust (2026-10) on ~100 plots under construction, static and while
+    zooming, and mixed with production rays. The dust is stateless: 15-19 sprites per
+    plot (level of detail by plot size), positions computed from the shared clock. Compare against
+    density_buildings_2 (the same number of plain buildings, no effects).
+    """
+
+    @pytest.fixture
+    def dust_game(self, pygame_init):
+        from main import Game
+        game = Game()
+        game.initialize_game({
+            'num_players': 4,
+            'player_is_ai': [False, True, True, True],
+            'player_ai_difficulty': [None, 'Normal', 'Normal', 'Normal'],
+        })
+        game.game_state.phase = 'playing'
+        return game
+
+    def test_static_fps_with_many_constructions(self, dust_game):
+        """Steady state with ~100 plots under construction (no zoom change)."""
+        populate_map(dust_game, constructing=2)
+        n = construction_count(dust_game)
+        sync_camera(dust_game, zoom=dust_game.camera.min_zoom)
+
+        def before(i):
+            dust_game.map_renderer.update_plot_effects(1.0 / 60.0)
+
+        fps = FPSMeasurement(sample_count=60)
+        result = record('dust_static', fps.run_benchmark(dust_game, before_frame=before, warmup=5),
+                        constructions=n)
+        report(f'Static FPS with {n} constructions', result)
+        assert result['avg_fps'] >= 25, f"Dust static FPS too low: {result['avg_fps']:.1f}"
+
+    def test_zoom_with_many_constructions(self, dust_game):
+        """Zooming crosses every plot size, so the dust keeps needing new sprite sizes."""
+        populate_map(dust_game, constructing=2)
+        n = construction_count(dust_game)
+        top_panel = getattr(dust_game, 'TOP_PANEL_HEIGHT', 40)
+        centre = (dust_game.screen.get_width() // 2, dust_game.screen.get_height() // 2)
+        sync_camera(dust_game, zoom=dust_game.camera.min_zoom)
+        direction = [1]
+
+        def before(i):
+            if dust_game.camera.target_zoom >= dust_game.camera.max_zoom - 1e-6:
+                direction[0] = -1
+            elif dust_game.camera.target_zoom <= dust_game.camera.min_zoom + 1e-6:
+                direction[0] = 1
+            dust_game.camera.handle_zoom(direction[0], centre, 0.078, top_panel)
+            dust_game.camera.update_zoom(1.0 / 60.0)
+            sync_camera(dust_game)
+            dust_game.map_renderer.update_plot_effects(1.0 / 60.0)
+
+        fps = FPSMeasurement(sample_count=60)
+        result = record('dust_zoom', fps.run_benchmark(dust_game, before_frame=before, warmup=3),
+                        constructions=n)
+        report(f'Zooming with {n} constructions', result)
+        assert result['worst_frame_ms'] < 100, (
+            f"Zoom-with-dust worst frame too slow: {result['worst_frame_ms']:.1f}ms")
+
+    def test_static_fps_mixed_rays_and_dust(self, dust_game):
+        """One producing Barracks and one construction per territory, all the viewer's."""
+        populate_map(dust_game, buildings_per_territory=1, producing=True, single_owner=0,
+                     constructing=1)
+        glows, n = glow_effect_count(dust_game), construction_count(dust_game)
+        sync_camera(dust_game, zoom=dust_game.camera.min_zoom)
+
+        def before(i):
+            dust_game.map_renderer.update_plot_effects(1.0 / 60.0)
+
+        fps = FPSMeasurement(sample_count=60)
+        result = record('mixed_static', fps.run_benchmark(dust_game, before_frame=before, warmup=5),
+                        glow_effects=glows, constructions=n)
+        report(f'Static FPS with {glows} production glows + {n} constructions', result)
+        assert result['avg_fps'] >= 25, f"Mixed static FPS too low: {result['avg_fps']:.1f}"
 
 
 class TestCrowdedMapPerformance:

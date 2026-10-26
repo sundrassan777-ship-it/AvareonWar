@@ -11825,9 +11825,10 @@ class Game:
                 self.map_renderer.sync_embargo_effects()
                 self.map_renderer.update_embargo_effects(delta_time)
 
-                # Sync and update production glow effects (for buildings with active training)
+                # Sync production glow effects (for buildings with active training) and
+                # advance the shared clock of the plot effects (skipped while paused)
                 self.map_renderer.sync_production_glow_effects()
-                self.map_renderer.update_production_glow_effects(delta_time)
+                self.map_renderer.update_plot_effects(delta_time)
 
                 # Update floating chat notifications (polls for new messages)
                 if self.chat_notification_effect:

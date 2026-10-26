@@ -140,7 +140,7 @@ AvareonWar/
 - [cutscene_player.py](cutscene_player.py) - Cutscene player (Ken Burns camera pan/zoom/rotate, crossfade, audio, subtitles)
 - [cutscene_exporter.py](cutscene_exporter.py) - MP4 export: offscreen frame rendering + ffmpeg encoding (used by Cutscene_Tool)
 
-**Development Tools (8 files):**
+**Development Tools (10 files):**
 - [Adjacency_Tool.py](Adjacency_Tool.py) - Territory adjacency editor
 - [Economic_Tool.py](Economic_Tool.py) - Economy data editor
 - [Plot_Tool.py](Plot_Tool.py) - Building plot location editor
@@ -150,11 +150,13 @@ AvareonWar/
 - [Cutscene_Tool.py](Cutscene_Tool.py) - Cutscene editor (camera rects, audio, subtitles)
 - [tools/stress_test_generator.py](tools/stress_test_generator.py) - Late-game scenario generator for FPS testing
 - [tools/gif_to_spritesheet.py](tools/gif_to_spritesheet.py) - GIF to spritesheet converter
+- [tools/plot_fx_preview.py](tools/plot_fx_preview.py) - Plot effects preview on the real map (production light rays, construction dust): live window with zoom / 2D-3D look / FPS, `--sheet` contact sheets, `--bench` frame cost
 
 **Performance Tests:**
-- [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
+- [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow, construction-dust and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
 - [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
 - [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
+- [tests/test_plot_effects.py](tests/test_plot_effects.py) - Plot effects: light rays turn smoothly (regression for the old 2-pose star), sized by plot radius, shared frames, own/allied only, follow plots through a rescale, pause with the game; construction dust deterministic, around the plot only, gold glints on Keep -> Castle upgrades, for every player, capped sprite building, no new sprites once warm
 - [tests/test_unit_context_menu.py](tests/test_unit_context_menu.py) - Right-click context menu on the army composition unit icons
 - [tests/test_battle_bar_volley.py](tests/test_battle_bar_volley.py) - Volley-based battle bar animation (chunk split, determinism, skip, mirrored geometry)
 - [tests/test_battle_interface_integration.py](tests/test_battle_interface_integration.py) - EnhancedBattleInterface wiring (state machine, derived duration, retarget, skip)
@@ -254,7 +256,10 @@ AvareonWar/
 **UI & Effects:**
 - [ui/scaler.py](ui/scaler.py) - Dynamic UI scaling
 - [ui/sidebar_layout.py](ui/sidebar_layout.py) - Right sidebar geometry + collapse slide (single source of truth for "is this point over the sidebar"), tab content area (`content_geometry`), pixel `ScrollState`
-- [ui/effects/](ui/effects/) - 14 effect modules (battle, sparkles, turn announcements, hero ability burst/arc/polygon/silence wave, alliance markers, castle upgrade, production glow, chat notifications, etc.)
+- [ui/effects/](ui/effects/) - 16 effect modules (battle, sparkles, turn announcements, hero ability burst/arc/polygon/silence wave, alliance markers, castle upgrade, production light rays, construction dust, chat notifications, etc.)
+- [ui/effects/plot_fx_style.py](ui/effects/plot_fx_style.py) - The look of the plot effects in one place (`RAY_STYLE`, `DUST_STYLE`, per map look `PLOT_FX_STYLES`), `plot_phase()`
+- [ui/effects/production_glow_effect.py](ui/effects/production_glow_effect.py) - Production light rays on producing Barracks / Keeps / Castles: shared `ProductionRays` renderer + per-plot `ProductionGlowEffect`
+- [ui/effects/construction_dust_effect.py](ui/effects/construction_dust_effect.py) - Construction dust (`ConstructionDust`, stateless) on plots under construction; gold-glint variant on Keep -> Castle upgrades
 
 **Configuration:**
 - [config/constants.py](config/constants.py) - All game constants (window, colors, timing, camera)
@@ -608,6 +613,7 @@ After making code changes, ask yourself:
 - Build/train from any input (map icon, bottom panel, keyboard) → `main.py` `_try_start_construction()` / `_try_start_training()` — never a separate copy
 - Add a button tooltip / hover system → call `update_button_hover(current, type)` **every frame** while its buttons are drawn (`None` when nothing is hovered); `update_frame_tooltips()` drops a hover whose system didn't run that frame (`_release_orphaned_button_hover()`). See "Orphaned tooltips" in CODE_GUIDE.md
 - Hero death toast → `HeroMixin._record_hero_death()` + `main.py` `_show_hero_death_notifications()` (+ Battle Report `heroes_slain` for multiplayer defenders)
+- Change the production light rays / construction dust on plots → look in `ui/effects/plot_fx_style.py` (preview: `py tools/plot_fx_preview.py`); wiring in `rendering/map_renderer.py`. Sized by plot radius, one shared clock (`update_plot_effects`), never store plot positions in effects. See "Change the plot effects" in CODE_GUIDE.md
 
 ## Notes
 <!-- Any additional notes or context for Claude Code -->
