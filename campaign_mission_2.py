@@ -1270,7 +1270,9 @@ class Mission2:
         Uses pure pygame (no numpy) for PyInstaller compatibility.
         """
         try:
-            raw = pygame.image.load('assets/CampaignMaps/CampaignMission2Cover.png').convert()
+            # The cover in the game's map look: in 3D its twin, which covers the same land
+            # on the 3D picture (map_data.look_picture; choose_look made sure it exists)
+            raw = pygame.image.load(map_data.look_picture('assets/CampaignMaps/CampaignMission2Cover.png')).convert()
         except pygame.error as e:
             logger.warning(f"Could not load CampaignMission2Cover.png: {e}")
             return

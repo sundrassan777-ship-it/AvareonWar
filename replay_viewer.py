@@ -273,23 +273,20 @@ class ReplayViewer:
         """Load and scale map image, polygons, centers, and icon assets."""
         # Load map data for the replay's map (multi-map support)
         replay_map_id = self.metadata.get('map_id', 'avareon')
-        map_data.load_map(replay_map_id)
+        # In this PC's map look (2D / 3D), whatever look the replay was recorded in: a
+        # replay holds territory names and state, no coordinates (map_data "Map looks")
+        picture_2d = map_data.default_picture(replay_map_id)
+        look = map_data.choose_look(replay_map_id, map_data.pictures_needed(picture_2d))
+        map_data.load_map(replay_map_id, look)
 
-        # Load map image from map directory or fallback
-        map_dir = map_data.get_map_directory(replay_map_id)
-        map_png = os.path.join(map_dir, 'map.png')
+        # Load map image: maps/<id>/map.png, Avareon's assets/map.png, or its 3D twin
+        map_png = map_data.look_picture(picture_2d, replay_map_id, look)
         map_loaded = False
-        if os.path.exists(map_png):
+        if map_png:
             try:
                 self.map_image_original = pygame.image.load(map_png).convert()
                 map_loaded = True
-            except pygame.error:
-                pass
-        if not map_loaded and replay_map_id == 'avareon':
-            try:
-                self.map_image_original = pygame.image.load("assets/map.png").convert()
-                map_loaded = True
-            except pygame.error:
+            except (FileNotFoundError, pygame.error):
                 pass
         if not map_loaded:
             # Fallback: dark surface

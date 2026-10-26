@@ -32,6 +32,7 @@ This guide provides module-specific guidance on when and how to modify different
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
 22. [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby) - Additional Options window, map top bar (Randomize Starting Positions, map name, Show Borders), random starts, lobby chat, Starting Gold, label tooltips, framed art
 23. [Open beta only: remove at full release](#open-beta-only-remove-at-full-release) - Wishlist button, one-time wishlist prompt, the release check
+24. [Map looks: 2D / 3D](#map-looks-2d--3d) - The locked 3D map look: resolver, invariant, mixed multiplayer, unhiding, re-exporting
 
 ---
 
@@ -3260,8 +3261,10 @@ outside `("map_edge", "window_edge")` to the default, `window_edge`.
 - `maps/<map_id>/` — Per-map data directory containing:
   - `territory_polygons.json`, `plots.json`, `economic_data.json`
   - `territory_bonuses.json`, `adjacencies.json`, `fortress_territories.json`
-- `load_map(map_id)` — Primary entry point: loads all data from map directory into globals
-- `load_polygons()` — Legacy backward-compat entry point (loads Avareon from root-level files)
+- `load_map(map_id, look='2d')` — Primary entry point: loads all data from map directory into
+  globals; `look='3d'` takes the outlines and plots from the map's 3D look (see
+  [Map looks: 2D / 3D](#map-looks-2d--3d))
+- `load_polygons()` — Legacy backward-compat entry point (loads Avareon from root-level files; always 2D)
 - Campaign missions 1-7 use the Avareon map via `load_polygons()`; a registry `config` with
   `'map_id'` (Book of Tales, e.g. Tale I on `azincournean_highlands`) makes
   `Game.initialize_game()` call `load_map(map_id)` instead
@@ -4932,4 +4935,78 @@ and CHANGELOG.
 
 **Release check:** `tests/test_release_readiness.py` (keep it) fails as soon as `STEAM_APP_ID`
 becomes the main game's (`MAIN_GAME_APP_ID`) while any of these parts is still there.
+
+---
+
+## Map looks: 2D / 3D
+
+**Owner (2026-10-22):** a 2D / 3D map look switch, finished but **invisible for now**. In 3D
+every map view is replaced (game, Custom Game setup, multiplayer lobby, replays, all campaign
+missions with their cloud covers, Book of Tales); 2D and 3D players play together seamlessly;
+the switch sits only in the main menu's Options (never in game).
+
+**Locked:** `MAP_3D_AVAILABLE = False` (`config/constants.py`). While False,
+`map_data.map_look()` is `'2d'` whatever config.json says, no `look.json` is read, and the
+Options have no row, so the game is exactly as before. **To unhide:** set it True. Before that the
+owner wants 3D banners, wind, wave movement and 3D building models.
+
+**Where the looks come from:** AvareonWorldEditor (separate repo). Its `--export-looks` bakes
+a map from the game camera, and `--install-looks` copies it in (never on main):
+
+| Folder | Holds |
+|---|---|
+| `maps/<id>/3d/` | `map.png` (the 3D picture), `territory_polygons.json` + `plots.json` (moved onto the 3D terrain), `look.json` |
+| `assets/CampaignMaps/3d/` | Avareon's campaign twins: `Campaign1-6Map.png` (each chapter's ink + painted clouds on the 3D terrain), `CampaignMission1/2Cover.png` (the covers moved onto the 3D picture, same format) |
+
+`look.json` ties the look to the 2D files it was made from:
+- `source`: canonical JSON hashes of the 2D outlines and plots, the territory names, the plot counts;
+- `pictures`: every 2D picture it replaces → its twin + the 2D file's SHA-256;
+- `draw_borders` (false: borders are baked in).
+
+**Resolver** (`map_data.py` "Map looks"):
+- `map_look()`: the player's choice (lock + `map_style` setting).
+- `look_info(map_id)`: the validated `look.json`, or None. It is None when anything is missing,
+  the 2D outlines or plots changed, or names or plot counts differ; this is logged and cached by
+  file size and time.
+- `choose_look(map_id, pictures)`: `'3d'` only when wanted, the look is valid **and** every
+  picture the screen shows has a current twin (`pictures_needed()` adds the tutorial's /
+  Mission 2's cover to their chapter: `CAMPAIGN_COVERS`).
+- `load_map(map_id, look)`: outlines and plots from the chosen look; everything else
+  (names, adjacencies, economy, bonuses, fortresses, lore) is the one 2D copy.
+- `look_picture(picture, map_id, look)`: the twin under 3D, else the 2D picture.
+  `default_picture(map_id)` is today's rule (`maps/<id>/map.png`, Avareon's `assets/map.png`, or None).
+- `current_map_draws_borders()` follows `look.json` under 3D.
+
+**The invariant:** a screen never mixes looks. Its picture, outlines and plots come from one
+look; if anything it needs is missing or out of date, the whole screen is 2D.
+
+**Consumers** (all through the resolver):
+- `main.py` `initialize_game()`: sets `self.map_look` from the campaign picture (or the map's
+  own) and its cover, then `load_map`; `_reload_map_assets()` loads the matching picture. A
+  campaign game reloads its chapter's twin; 2D keeps the picture from `__init__`.
+- `integrated_setup.py` / `network/territory_selector.py` `_initialize_map()` (incl. the
+  client's map change at launch).
+- `replay_viewer.py` `_load_map_assets()`.
+- The covers: `tutorial_mission.py` / `campaign_mission_2.py` `_bake_cloud_cover()`
+  (`look_picture` in the current look).
+
+**Mixed multiplayer:** each PC picks its own look. Nothing coordinate-based crosses the network:
+claims, orders and battles go by territory name, and battles are seeded. Coordinates only drive
+local animations, banners and particles (`Game.scaled_centers`, `scaled_polygons`), hit-tests
+use each Game's own scaled outlines, and saves and replays hold no pixels. Tested in
+`tests/test_mp_map_look.py`.
+
+**When the 2D map changes** (Polygon_Tool / Plot_Tool, a new picture): the look becomes
+out of date and the game shows 2D (logged, and `tests/test_map_look.py::test_shipped_looks_are_current`
+fails). Re-export in AvareonWorldEditor (`--export-looks <map_id>`, `--install-looks`).
+
+**Tests:** `tests/test_map_look.py`:
+- lock off: nothing changes, config.json can't turn it on, no Options row;
+- unlocked: game, Highlands borders, every campaign twin, the tutorial's 3D cover, Tale I,
+  setup / lobby / replay, out-of-date pictures and outlines fall back to 2D, Options row (main menu only);
+- shipped looks are current, plots stay in their territory.
+
+`tests/test_mp_map_look.py`: a sequential battle and a simultaneous round, identical with
+host 3D / client 2D and the reverse; clicks pick the same territory; lobby claims show on both.
+`mp_harness.Session(looks={seat: '2d' / '3d'})` sets each PC's look.
 

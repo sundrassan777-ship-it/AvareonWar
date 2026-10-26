@@ -284,19 +284,22 @@ class Session:
     """Host (player 0) + one client per human seat, all running real Game objects."""
 
     def __init__(self, num_players=2, ai_slots=(), turn_mode='sequential', teams=None,
-                 territories=None, neutral_armies=False, config=None):
+                 territories=None, neutral_armies=False, config=None, looks=None):
+        """looks (optional): {seat: '2d' / '3d'} - the map look each PC chose in its
+        Options (map_data "Map looks"); default: the PC's setting (2D while locked)."""
         pygame.init()
         map_data.load_polygons()
         self.net = Network()
         self.config = config or build_config(num_players, ai_slots, turn_mode, teams,
                                              territories, neutral_armies)
+        looks = looks or {}
         self.peers = {}
-        self.peers[0] = Peer(make_game(self.net.server, 0, self.config), 0)
+        self.peers[0] = Peer(make_game(self.net.server, 0, self.config, looks.get(0)), 0)
         for index in range(1, num_players):
             if index in ai_slots:
                 continue
             client = self.net.add_client(index)
-            self.peers[index] = Peer(make_game(client, index, self.config), index)
+            self.peers[index] = Peer(make_game(client, index, self.config, looks.get(index)), index)
         # Every Game() recreates the display; point them all at the live surface
         surface = pygame.display.get_surface()
         for peer in self.peers.values():
@@ -373,12 +376,18 @@ def make_session():
             session.close()
 
 
-def make_game(connection, local_index, config):
-    """A real Game for one seat, initialised the way main.py's multiplayer flow does."""
+def make_game(connection, local_index, config, look=None):
+    """A real Game for one seat, initialised the way main.py's multiplayer flow does.
+    look: '2d' / '3d' - this PC's map look (as if chosen in its Options), or None."""
+    from unittest import mock
     from main import Game
     game = Game(network_connection=connection)
     game.local_player_index = local_index
-    game.initialize_game(copy.deepcopy(config))
+    if look is None:
+        game.initialize_game(copy.deepcopy(config))
+    else:
+        with mock.patch.object(map_data, 'map_look', lambda: look):
+            game.initialize_game(copy.deepcopy(config))
     return game
 
 

@@ -3,6 +3,7 @@
 # Territory definitions and adjacency data for the game
 # Supports multiple maps via maps/ directory structure and manifest.json
 
+import hashlib
 import json
 import os
 import random
@@ -16,6 +17,10 @@ logger = get_logger(__name__)
 
 # Currently loaded map ID (None = not yet loaded)
 _current_map_id = None
+
+# The look the loaded outlines and plots come from: '2d' (the painted map) or '3d'
+# (the map's 3D look, maps/<id>/3d/ - see "Map looks" below)
+_current_look = '2d'
 
 # Cached map manifest from maps/manifest.json
 _map_manifest = None
@@ -180,7 +185,12 @@ def current_map_draws_borders():
     background art already has visible borders painted in (Avareon) leave it
     off; maps with faint painted borders (Azincournean Highlands) turn it on.
     The legacy load_polygons() path leaves _current_map_id unset (Avareon).
+    A 3D look says for itself (look.json "draw_borders"): its borders are baked in.
     """
+    if _current_look == LOOK_3D and _current_map_id:
+        look = look_info(_current_map_id)
+        if look is not None:
+            return bool(look.get('draw_borders', False))
     info = get_map_info(_current_map_id) if _current_map_id else None
     return bool(info and info.get('draw_borders', False))
 
@@ -197,19 +207,229 @@ def get_map_display_name(map_id):
     return map_id
 
 # ============================================================================
+# Map looks: 2D (the painted maps) or 3D (baked by AvareonWorldEditor)
+# ============================================================================
+#
+# A map's 3D look lives in maps/<id>/3d/: its picture, its territory outlines and plots
+# moved onto the 3D terrain, and look.json, written by the editor. look.json ties the look
+# to the 2D files it was made from (hashes of the outlines and plots, the territory names,
+# the plot counts) and lists every 2D picture it replaces, with its 3D twin and the 2D
+# file's hash - the map's own picture and, for Avareon, the campaign chapters and cloud
+# covers (assets/CampaignMaps/3d/). Rules:
+#   - A screen never mixes looks: its picture, outlines and plots all come from one look
+#     (choose_look checks every picture the screen needs before saying '3d').
+#   - Anything missing, or made from 2D files that have changed since, is 2D (logged).
+#   - Only the outlines, plots and pictures differ. Everything that matters to the game -
+#     names, adjacencies, economy - is shared, and the network only ever sends territory
+#     names, so 2D and 3D players play the same game together.
+#   - LOCKED: map_look() is '2d' while MAP_3D_AVAILABLE is False (config/constants.py),
+#     whatever config.json says, and nothing here reads a look.json then.
+
+LOOK_2D = '2d'
+LOOK_3D = '3d'
+LOOK_FORMAT = 1
+LOOK_FOLDER = '3d'
+
+# Campaign pictures with a cloud cover the mission lays over them (tutorial_mission.py,
+# campaign_mission_2.py): a 3D chapter needs its 3D cover, or the whole game stays 2D
+CAMPAIGN_COVERS = {
+    'assets/CampaignMaps/Campaign1Map.png': 'assets/CampaignMaps/CampaignMission1Cover.png',
+    'assets/CampaignMaps/Campaign2Map.png': 'assets/CampaignMaps/CampaignMission2Cover.png',
+}
+
+_look_cache = {}        # map_id -> (key, look info or None)
+_file_hash_cache = {}   # path -> ((size, mtime), sha256)
+
+
+def map_look():
+    """The look the player chose: '3d' only while the switch exists (MAP_3D_AVAILABLE) and
+    the main menu's Options say 3D; otherwise '2d'. Read when a screen loads its map."""
+    from config.constants import MAP_3D_AVAILABLE
+    if not MAP_3D_AVAILABLE:
+        return LOOK_2D
+    from settings_manager import settings
+    return LOOK_3D if settings.get('map_style', LOOK_2D) == LOOK_3D else LOOK_2D
+
+
+def get_current_look():
+    """The look the loaded map's outlines and plots come from ('2d' or '3d')."""
+    return _current_look
+
+
+def picture_key(path):
+    """A picture path as look.json writes it: relative to the game folder, '/'-separated."""
+    if path is None:
+        return None
+    key = str(path).replace('\\', '/')
+    while key.startswith('./'):
+        key = key[2:]
+    return key
+
+
+def default_picture(map_id):
+    """The map's own 2D picture: maps/<id>/map.png, Avareon's assets/map.png, or None
+    (no background: a dark map with outlines)."""
+    candidate = os.path.join(get_map_directory(map_id), 'map.png')
+    if os.path.exists(candidate):
+        return picture_key(candidate)
+    if map_id == 'avareon':
+        return 'assets/map.png'
+    return None
+
+
+def pictures_needed(picture):
+    """Every picture a game on this background shows: the background and, for the
+    tutorial and Mission 2, the cloud cover laid over it."""
+    key = picture_key(picture)
+    return [p for p in (key, CAMPAIGN_COVERS.get(key)) if p]
+
+
+def canonical_hash(data):
+    """The hash of parsed JSON, independent of formatting and line endings - the same as
+    the editor's export.canonical_hash."""
+    text = json.dumps(data, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _file_hash(path):
+    """SHA-256 of a file, cached while its size and modification time stay the same."""
+    stat = os.stat(path)
+    key = (stat.st_size, stat.st_mtime_ns)
+    cached = _file_hash_cache.get(path)
+    if cached and cached[0] == key:
+        return cached[1]
+    digest = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            digest.update(block)
+    _file_hash_cache[path] = (key, digest.hexdigest())
+    return digest.hexdigest()
+
+
+def _read_json(path):
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def look_info(map_id):
+    """The map's 3D look (look.json + 'dir'), or None when it is missing, incomplete or
+    made from other 2D outlines / plots than the map has now (logged once per change)."""
+    map_dir = get_map_directory(map_id)
+    look_dir = os.path.join(map_dir, LOOK_FOLDER)
+    files = [os.path.join(look_dir, name) for name in ('look.json', 'territory_polygons.json', 'plots.json')]
+    files += [os.path.join(map_dir, name) for name in ('territory_polygons.json', 'plots.json')]
+    try:
+        key = tuple((os.path.getsize(p), os.path.getmtime(p)) for p in files)
+    except OSError:
+        key = None
+    cached = _look_cache.get(map_id)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    info, problem = None, None
+    if key is None:
+        problem = 'no 3D look (maps/<id>/3d/ incomplete)'
+    else:
+        try:
+            look = _read_json(files[0])
+            polygons_2d, plots_2d = _read_json(files[3]), _read_json(files[4])
+            polygons_3d, plots_3d = _read_json(files[1]), _read_json(files[2])
+            source = look.get('source', {})
+            if look.get('format') != LOOK_FORMAT or look.get('map') != map_id:
+                problem = f"look.json format {look.get('format')} / map {look.get('map')!r}"
+            elif (source.get('territory_polygons') != canonical_hash(polygons_2d)
+                  or source.get('plots') != canonical_hash(plots_2d)):
+                problem = "made from other territory outlines or plots than the map's own (re-export the look)"
+            elif list(polygons_3d) != list(polygons_2d) or source.get('territories') != list(polygons_2d):
+                problem = 'territory names differ'
+            elif any(len(plots_3d.get(name, [])) != len(points) for name, points in plots_2d.items()):
+                problem = 'plot counts differ'
+            else:
+                info = dict(look)
+                info['dir'] = look_dir
+        except (OSError, ValueError, AttributeError, TypeError) as e:
+            problem = f'unreadable ({e})'
+    if problem:
+        logger.warning(f"Map '{map_id}': 3D look not used - {problem}")
+    _look_cache[map_id] = (key, info)
+    return info
+
+
+def _twin(info, picture):
+    """The 3D twin of a 2D picture under a valid look, or None (not listed, missing, or
+    the 2D picture changed since the twin was made)."""
+    entry = info.get('pictures', {}).get(picture_key(picture))
+    if not entry:
+        return None
+    twin = entry.get('path')
+    try:
+        if not (twin and os.path.exists(twin) and os.path.exists(picture)
+                and _file_hash(picture) == entry.get('source')):
+            logger.warning(f"3D twin of {picture} is missing or out of date (re-export the look)")
+            return None
+    except OSError:
+        return None
+    return twin
+
+
+def choose_look(map_id, pictures, look=None):
+    """The look a screen shows: '3d' when the player wants it (map_look, or look) and the
+    map's look is valid with a current twin for every picture the screen needs
+    (pictures_needed); otherwise '2d' - a screen never mixes a 3D picture with 2D
+    outlines, or a 2D cover with a 3D chapter."""
+    look = map_look() if look is None else look
+    if look != LOOK_3D:
+        return LOOK_2D
+    info = look_info(map_id)
+    if info is None:
+        return LOOK_2D
+    for picture in pictures:
+        if _twin(info, picture) is None:
+            return LOOK_2D
+    return LOOK_3D
+
+
+def look_picture(picture, map_id=None, look=None):
+    """The picture to show for a 2D picture: its 3D twin under the 3D look (by default
+    the loaded map's current look), else the 2D picture itself (None stays None)."""
+    if picture is None:
+        return None
+    map_id = _current_map_id if map_id is None else map_id
+    look = _current_look if look is None else look
+    if look == LOOK_3D and map_id:
+        info = look_info(map_id)
+        twin = _twin(info, picture) if info is not None else None
+        if twin:
+            return twin
+    return picture
+
+
+# ============================================================================
 # Map Loading Functions
 # ============================================================================
 
-def load_map(map_id):
+def load_map(map_id, look='2d'):
     """Load all data for a specific map by ID.
     Sets all module globals (polygons, centers, plots, income, bonuses, adjacencies, fortresses).
-    This is the primary entry point for switching maps."""
-    global _current_map_id
-    map_dir = get_map_directory(map_id)
+    This is the primary entry point for switching maps.
 
-    # Load all map data from the map's directory
-    _load_polygons_from_dir(map_dir)
-    _load_plots_from_dir(map_dir)
+    look: '3d' takes the territory outlines and plots from the map's 3D look
+    (maps/<id>/3d/) when it is valid (look_info), so they match its 3D picture; everything
+    else - names, economy, bonuses, adjacencies, fortresses, lore - is the same single copy
+    in the map's own folder either way. Callers pick the look with choose_look(), which
+    also checks the pictures they will show."""
+    global _current_map_id, _current_look
+    map_dir = get_map_directory(map_id)
+    geometry_dir = map_dir
+    _current_look = LOOK_2D
+    if look == LOOK_3D:
+        info = look_info(map_id)
+        if info is not None:
+            geometry_dir = info['dir']
+            _current_look = LOOK_3D
+
+    # Load all map data from the map's directory (outlines + plots: from the look's)
+    _load_polygons_from_dir(geometry_dir)
+    _load_plots_from_dir(geometry_dir)
     _load_economic_data_from_dir(map_dir)
     _load_territory_bonuses_from_dir(map_dir)
     _load_adjacencies_from_dir(map_dir, map_id)
@@ -217,14 +437,16 @@ def load_map(map_id):
     _load_territory_lore_from_dir(map_dir)
 
     _current_map_id = map_id
-    logger.info(f"Loaded map '{map_id}' from {map_dir} ({len(TERRITORY_POLYGONS)} territories)")
+    logger.info(f"Loaded map '{map_id}' from {map_dir} ({len(TERRITORY_POLYGONS)} territories, "
+                f"{_current_look} look)")
 
 def load_polygons():
     """Load territory polygons from JSON file and calculate centers (UTF-8 safe).
 
     Backward-compatible entry point — loads the Avareon map from root-level files
-    (used by campaign missions, tools, and legacy code paths)."""
-    global TERRITORY_POLYGONS, TERRITORY_CENTERS, _current_map_id
+    (used by campaign missions, tools, and legacy code paths). Always the 2D look."""
+    global TERRITORY_POLYGONS, TERRITORY_CENTERS, _current_map_id, _current_look
+    _current_look = LOOK_2D
     try:
         with open('territory_polygons.json', 'r', encoding='utf-8') as f:
             TERRITORY_POLYGONS = json.load(f)

@@ -343,25 +343,18 @@ class MapPreview:
         """Load map image, scale polygons, and set up bars for the current map."""
         map_id = self.config.selected_map
 
-        # Load map data for selected map
-        map_data.load_map(map_id)
+        # Load map data for selected map, in this PC's map look (2D / 3D): outlines, plots
+        # and picture from the same look (map_data "Map looks")
+        picture_2d = map_data.default_picture(map_id)
+        look = map_data.choose_look(map_id, map_data.pictures_needed(picture_2d))
+        map_data.load_map(map_id, look)
 
-        # Load map image from map directory
-        map_info = map_data.get_map_info(map_id)
+        # Load the map image: maps/<id>/map.png, Avareon's assets/map.png, or its 3D twin
         map_image_original = None
-        if map_info and map_info.get('has_background', False):
-            map_dir = map_data.get_map_directory(map_id)
-            import os
-            map_png_path = os.path.join(map_dir, 'map.png')
+        map_png_path = map_data.look_picture(picture_2d, map_id, look)
+        if map_png_path:
             try:
                 map_image_original = pygame.image.load(map_png_path)
-            except (FileNotFoundError, pygame.error, OSError):
-                pass
-
-        # Fallback: try assets/map.png for avareon, else dark surface with polygon outlines
-        if map_image_original is None and map_id == 'avareon':
-            try:
-                map_image_original = pygame.image.load("assets/map.png")
             except (FileNotFoundError, pygame.error, OSError):
                 pass
 

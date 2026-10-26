@@ -2,6 +2,32 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-26 - 2D / 3D map looks (built, locked: invisible to players)
+
+Branch `feature/3d-map-look`. Owner: a 2D / 3D map look switch, finished but hidden, using the
+current 3D looks from AvareonWorldEditor (Avareon's art is unfinished and gets re-exported later).
+- **Locked:** `MAP_3D_AVAILABLE = False` (`config/constants.py`). No Options row, and
+  `map_data.map_look()` is 2D whatever config.json says, so the game is unchanged. Setting
+  `map_style` ('2d' / '3d'), validated.
+- **Resolver** (`map_data.py` "Map looks"): `look_info()` validates `maps/<id>/3d/look.json`
+  against the 2D outlines, plots and names. `choose_look()` says 3D only when every picture a
+  screen shows has a current twin (campaign covers included). `load_map(map_id, look)` takes the
+  outlines and plots from the chosen look. `look_picture()` and `default_picture()` replace the
+  background rule that was copied in five places.
+- **Every view:** the game (`initialize_game` / `_reload_map_assets`, campaign missions reload
+  their chapter's twin), Custom Game setup, the multiplayer lobby, the replay viewer, and the
+  tutorial and Mission 2 cloud covers. A screen never mixes looks; anything missing or out of
+  date falls back to 2D.
+- **Main menu Options:** a "3D Map Look" checkbox, drawn only while unlocked. The in-game
+  options are untouched.
+- **Assets:** `maps/avareon/3d/`, `maps/azincournean_highlands/3d/`, `assets/CampaignMaps/3d/`
+  (6 chapter twins + 2 covers), about 106 MB, shipped in the build.
+- Tests:
+  - `tests/test_map_look.py` (23): locked / unlocked / fall-backs / shipped looks are current.
+  - `tests/test_mp_map_look.py` (7): host 3D + client 2D and the reverse, identical through a
+    sequential battle and a simultaneous round; clicks; lobby claims.
+  - `mp_harness.Session(looks=...)`.
+
 ## 2026-10-22 - Wishlist button and one-time wishlist prompt (OPEN BETA ONLY)
 
 Branch `feature/wishlist-button`. Owner: the Steam store page is live, and during the open beta

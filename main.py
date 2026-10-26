@@ -398,21 +398,17 @@ class Game:
             if self.campaign_map:
                 map_path = self.campaign_map
             else:
-                # Multi-map support: load from maps/{map_id}/ directory or default
-                map_id = map_data.get_current_map_id() or 'avareon'
-                map_dir = map_data.get_map_directory(map_id)
-                candidate = os.path.join(map_dir, 'map.png')
-                if os.path.exists(candidate):
-                    map_path = candidate
-                elif map_id == 'avareon':
-                    map_path = "assets/map.png"
-                else:
-                    map_path = None  # No background — use dark fallback
+                # Multi-map support: maps/{map_id}/map.png, Avareon's assets/map.png, or
+                # None (dark fallback). The 2D picture here; initialize_game() picks the
+                # look (2D / 3D) and reloads (_reload_map_assets)
+                map_path = map_data.default_picture(map_data.get_current_map_id() or 'avareon')
 
             logger.info(f"Loading map: {map_path}")
             # Remembered so the east map extension can find an optional painted
             # '<background>_east.png' beside it (rendering/map_extension.py)
             self.map_background_path = map_path
+            # The map look ('2d' / '3d') this game shows; initialize_game() decides it
+            self.map_look = map_data.LOOK_2D
 
             # Load original high-resolution image (4096×3072) in display format.
             # The .convert() inside _load_map_background saves ~9ms per frame.
@@ -704,19 +700,13 @@ class Game:
 
     def _reload_map_assets(self, map_id):
         """Reload map image and rescale polygons/centers/plots for a different map.
-        Called from initialize_game() when the selected map differs from the default."""
-        # Skip map image reload for campaign missions — campaign_map was already loaded
-        # in __init__ and must not be overwritten with the default avareon map image
-        if not self.campaign_map:
-            map_dir = map_data.get_map_directory(map_id)
-            candidate = os.path.join(map_dir, 'map.png')
-            if os.path.exists(candidate):
-                map_path = candidate
-            elif map_id == 'avareon':
-                map_path = "assets/map.png"
-            else:
-                map_path = None
-
+        Called from initialize_game() after map_data.load_map(), in the game's look
+        (self.map_look): the picture comes from the same look as the outlines and plots."""
+        # A campaign mission keeps the campaign picture loaded in __init__ (never the
+        # default Avareon picture) - unless the game is in 3D, when its 3D twin replaces it
+        picture_2d = self.campaign_map or map_data.default_picture(map_id)
+        map_path = map_data.look_picture(picture_2d, map_id, getattr(self, 'map_look', map_data.LOOK_2D))
+        if not self.campaign_map or map_path != self.campaign_map:
             try:
                 # Display-format load (see _load_map_background) — applies to every
                 # map, including Azincournean Highlands and future backgrounds.
@@ -786,10 +776,16 @@ class Game:
         from settings_manager import settings
         self.setup_config = setup_config
 
-        # Load selected map data (multi-map support)
+        # Load selected map data (multi-map support), in the look this PC shows: 3D only
+        # when chosen in Options and the map's 3D look has a twin for every picture this
+        # game shows (the campaign picture and its cloud cover too) - else 2D throughout.
+        # Only outlines, plots and pictures differ between looks; the state and the
+        # network messages (territory names) are the same, so looks mix in multiplayer.
         map_id = setup_config.get('map_id', 'avareon')
-        map_data.load_map(map_id)
-        logger.info(f"Game using map: {map_id}")
+        picture_2d = self.campaign_map or map_data.default_picture(map_id)
+        self.map_look = map_data.choose_look(map_id, map_data.pictures_needed(picture_2d))
+        map_data.load_map(map_id, self.map_look)
+        logger.info(f"Game using map: {map_id} ({self.map_look} look)")
 
         # Reload map image and rescale polygons/centers/plots for the selected map
         # (Game.__init__ loaded Avareon by default — override with correct map here)

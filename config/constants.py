@@ -33,6 +33,13 @@ Color4 = Tuple[int, int, int, int]   # RGBA color (with alpha)
 # Game version displayed on main menu
 GAME_VERSION = "1.0.0"
 
+# 3D map look (map_data "Map looks"): the 2D / 3D switch in the main menu's Options. LOCKED:
+# while False there is no Options row and every map shows its 2D picture whatever
+# config.json says - the feature is built but invisible (owner, 2026-10-22). Set True to
+# unhide it (CODE_GUIDE "Map looks: 2D / 3D"); before that the owner wants 3D banners,
+# wind, wave movement and 3D building models.
+MAP_3D_AVAILABLE = False
+
 # OPEN BETA ONLY - remove at full release, together with wishlist.py, the main menu's
 # Wishlist button, the recap's one-time wishlist prompt and the 'wishlist_prompt_shown'
 # setting (CODE_GUIDE "Open beta only: remove at full release"). The release check in
