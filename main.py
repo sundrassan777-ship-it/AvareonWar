@@ -11659,19 +11659,76 @@ class Game:
         off_x, off_y = self._map_view_offset
         self.screen.blit(self._map_view_surface, (map_x + off_x, map_y + off_y))
 
+    def update_map_effects(self, delta_time):
+        """
+        Advance every animated map effect by delta_time (run() calls this in its
+        update section, which is skipped while paused; benchmarks call it too).
+        """
+        # Hero ability bubble animations (unified system)
+        for effect_key in self._bubble_configs:
+            self._update_hero_bubbles(effect_key, delta_time)
+
+        # Castle upgrade particle effects
+        self.map_renderer.update_castle_upgrade_effects(delta_time)
+
+        # Hero ability visual effects (burst + arc particles)
+        self.map_renderer.update_ability_effects(delta_time)
+
+        # Sync and update embargo persistent bubble effects
+        self.map_renderer.sync_embargo_effects()
+        self.map_renderer.update_embargo_effects(delta_time)
+
+        # Sync production glow effects (for buildings with active training) and
+        # advance the shared clock of the plot effects
+        self.map_renderer.sync_production_glow_effects()
+        self.map_renderer.update_plot_effects(delta_time)
+
+    def draw_map_layer(self):
+        """
+        Draw the map and everything on it: background, territories, plots, armies,
+        orders, markers and the map effects. Shared by run() and draw(), so the
+        benchmarks render exactly what the game does.
+        """
+        # Draw map (Phase 2D: transform with camera!)
+        # Viewport-only rescale — see _blit_map_background() for why this is not
+        # a full-map scale (it was 16-53ms per zoom change; now ~0.3-2.5ms).
+        self._blit_map_background()
+
+        # Draw territories (Phase 4D: inlined from delegate methods)
+        self.map_renderer.draw_territories()
+
+        # Draw silence fog overlay if any player is silenced
+        self.draw_silence_fog_overlay()
+
+        # Draw hero ability bubbles (unified system)
+        for effect_key in self._bubble_configs:
+            self._draw_hero_bubbles(effect_key)
+
+        # Draw movement arrows (orders) (Phase 4D: inlined)
+        self.map_renderer.draw_movement_arrows()
+
+        # Draw battle markers (Phase 4D: inlined)
+        self.map_renderer.draw_battle_markers()
+
+        # SIMULTANEOUS MODE: Draw alliance markers and overflow indicators (Phase 4D: inlined)
+        self.map_renderer.draw_alliance_markers()
+        self.map_renderer.draw_overflow_indicators()
+
+        # Draw castle upgrade particle effects (after battle markers, before UI)
+        self.map_renderer.render_castle_upgrade_effects()
+
+        # Draw hero ability visual effects (burst + arc particles, same layer as castle upgrades)
+        self.map_renderer.render_ability_effects()
+
+        # Draw embargo persistent bubble effects (on enemy territories while embargo active)
+        self.map_renderer.render_embargo_effects()
+
     def draw(self):
         """Render a single frame (core rendering pipeline extracted from run() for benchmarking)."""
         self.screen.fill(WHITE)
 
-        # Draw map with camera transform (viewport-only rescale)
-        self._blit_map_background()
-
-        # Draw map elements (Phase 4D: inlined from delegate methods)
-        self.map_renderer.draw_territories()
-        self.map_renderer.draw_movement_arrows()
-        self.map_renderer.draw_battle_markers()
-        self.map_renderer.draw_alliance_markers()
-        self.map_renderer.draw_overflow_indicators()
+        # Map, territories, plots, armies and the map effects (same as run())
+        self.draw_map_layer()
 
         # Draw UI panels (Phase 4D: inlined from delegate method)
         self.ui_renderer.draw_top_panel()
@@ -11811,24 +11868,8 @@ class Game:
                     logger.info(f"[MAIN] Animations complete in sim mode, calling on_animations_complete")
                     self.sim_state.phase_manager.on_animations_complete()
 
-                # Update hero ability bubble animations (unified system)
-                for effect_key in self._bubble_configs:
-                    self._update_hero_bubbles(effect_key, delta_time)
-
-                # Update castle upgrade particle effects
-                self.map_renderer.update_castle_upgrade_effects(delta_time)
-
-                # Update hero ability visual effects (burst + arc particles)
-                self.map_renderer.update_ability_effects(delta_time)
-
-                # Sync and update embargo persistent bubble effects
-                self.map_renderer.sync_embargo_effects()
-                self.map_renderer.update_embargo_effects(delta_time)
-
-                # Sync production glow effects (for buildings with active training) and
-                # advance the shared clock of the plot effects (skipped while paused)
-                self.map_renderer.sync_production_glow_effects()
-                self.map_renderer.update_plot_effects(delta_time)
+                # Map effects: hero abilities, auras, castle upgrades, plot effects
+                self.update_map_effects(delta_time)
 
                 # Update floating chat notifications (polls for new messages)
                 if self.chat_notification_effect:
@@ -12348,39 +12389,8 @@ class Game:
             # Drawing
             self.screen.fill(WHITE)
 
-            # Draw map (Phase 2D: transform with camera!)
-            # Viewport-only rescale — see _blit_map_background() for why this is not
-            # a full-map scale (it was 16-53ms per zoom change; now ~0.3-2.5ms).
-            self._blit_map_background()
-
-            # Draw territories (Phase 4D: inlined from delegate methods)
-            self.map_renderer.draw_territories()
-
-            # Draw silence fog overlay if any player is silenced
-            self.draw_silence_fog_overlay()
-
-            # Draw hero ability bubbles (unified system)
-            for effect_key in self._bubble_configs:
-                self._draw_hero_bubbles(effect_key)
-
-            # Draw movement arrows (orders) (Phase 4D: inlined)
-            self.map_renderer.draw_movement_arrows()
-
-            # Draw battle markers (Phase 4D: inlined)
-            self.map_renderer.draw_battle_markers()
-
-            # SIMULTANEOUS MODE: Draw alliance markers and overflow indicators (Phase 4D: inlined)
-            self.map_renderer.draw_alliance_markers()
-            self.map_renderer.draw_overflow_indicators()
-
-            # Draw castle upgrade particle effects (after battle markers, before UI)
-            self.map_renderer.render_castle_upgrade_effects()
-
-            # Draw hero ability visual effects (burst + arc particles, same layer as castle upgrades)
-            self.map_renderer.render_ability_effects()
-
-            # Draw embargo persistent bubble effects (on enemy territories while embargo active)
-            self.map_renderer.render_embargo_effects()
+            # Map, territories, plots, armies and the map effects
+            self.draw_map_layer()
 
             # Draw top panel (Phase 4D: inlined from delegate method)
             self.ui_renderer.draw_top_panel()
