@@ -829,7 +829,8 @@ self._resolved_battle_info = {
 **Effect types:**
 - Battle map markers (hurricane spiral) → `ui/effects/battleeffect.py` — 1000 particles in 4 spiral arms
 - Alliance markers (blue hurricane) → `ui/effects/alliance_marker_effect.py` — 600 particles in 3 spiral arms
-- Production glow (sunrays) → `ui/effects/production_glow_effect.py` — 8 rotating ray trapezoids
+- Production light rays (producing Barracks / Keeps / Castles) → `ui/effects/production_glow_effect.py` — two counter-rotating layers of soft additive beams; see "Change the plot effects" below
+- Construction dust (plots under construction, Keep → Castle upgrades with gold glints) → `ui/effects/construction_dust_effect.py` — stateless particles; see "Change the plot effects" below
 - Castle upgrades (golden explosion) → `ui/effects/castle_upgrade_effect.py` — 140 gold particles, 3 phases
 - Battle bar combat (volleys) → `ui/effects/battle_interface.py` (BattleBarVolleyEffect) — discrete blasts, pre-rendered sprites
 - Sparkle particles → `ui/effects/sparkle_effect.py`
@@ -844,6 +845,8 @@ self._resolved_battle_info = {
 - `pygame.draw.polygon` for tapered ray/trapezoid shapes
 - `pygame.SRCALPHA` surfaces for per-pixel alpha transparency
 - Reusable surfaces to avoid per-frame allocation
+- Light as `BLEND_RGB_ADD` from opaque black frames (black adds nothing; no per-pixel alpha cost)
+- Stateless particles: positions as a pure function of a shared clock (nothing to sync or remove)
 
 **Steps:**
 1. Create effect class in `ui/effects/your_effect.py`
@@ -851,6 +854,45 @@ self._resolved_battle_info = {
 3. Instantiate in `Game.__init__()` or when triggered
 4. Update in `Game.update()` method
 5. Render in `Game.draw_effects()` or appropriate phase
+
+#### ✅ Change the plot effects (production rays, construction dust)
+
+**What they are (2026-10-26):** persistent effects on map plots. Producing Barracks /
+Keeps / Castles show soft rays of light turning behind the plot (BFME II War of the Ring
+style). Plots under construction show sienna dust clouds, rising motes and hopping debris
+chips; a Keep being upgraded to a Castle shows the same dust with gold glints.
+
+| To change | Where |
+|---|---|
+| The look (colours, sizes, speeds, counts, strength) | `ui/effects/plot_fx_style.py` — `RAY_STYLE`, `DUST_STYLE`; all sizes in plot radii |
+| A different look for the 3D map | `PLOT_FX_STYLES['3d']` (both looks share one style today) |
+| Who gets rays | `MapRenderer.sync_production_glow_effects()` (own + allied plots, `_training_version` dirty flag) |
+| Where they are drawn | Rays: `render_production_glow_effects()` (just before `draw_plots()`). Dust: `_render_construction_plot()` / `_render_completed_plot()` (clouds before the disc, motes and chips after the rings) |
+| Preview / tune / measure | `py tools/plot_fx_preview.py` (live window on the real map, 2D/3D), `--sheet out.png [--closeups --zoom Z]`, `--bench` |
+
+**Rules:**
+- **Sized by the plot radius** (`MapRenderer._plot_radius()`, the same `int(EMPTY_PLOT_RADIUS *
+  ui_scale)` `draw_plots_original()` uses), never `camera_zoom` — the old glow used zoom and
+  barely showed past the plot at min zoom.
+- **One shared clock**, `MapRenderer._plot_fx_clock`, advanced only by `update_plot_effects(dt)`
+  in the main loop's update section (skipped while paused, so the effects pause too).
+- **Keep plots, not positions.** `ProductionGlowEffect` holds `(territory, plot_index)` and the
+  position is looked up every frame: a stored world position went stale on a resolution change.
+- **Visibility:** rays only for the viewer's own and allied plots (training is private); dust
+  for everyone (construction is already public via the construction disc and Castle icon).
+- **Dust is stateless** — drawn wherever `under_construction` / `castle_upgrades_in_progress`
+  say, so it is right in every game mode with nothing to sync. Don't add per-plot dust state.
+- **No per-frame surfaces:** `ProductionRays` keeps one current frame per (even plot radius,
+  colour, phase group, layer) and re-rotates it into a persistent canvas every `angle_step`
+  (0.25°, smooth; 1.5-2° baked steps visibly ticked). `ConstructionDust` scales sprites from
+  one base per colour, caches them, and builds at most `BUILDS_PER_FRAME` per frame
+  (`begin_frame()` in `_draw_all_plots_unified()`). Both are rebuilt in
+  `rebuild_scale_caches()` because their surfaces carry the display format.
+- **Cost** (`tests/test_fps_benchmark.py`): rays ~0.4-0.6 ms per frame for dozens of plots;
+  dust ~24 µs per plot with level of detail (15 particles on small plots, 19 on large).
+
+**Tests:** `tests/test_plot_effects.py`; benchmarks `glow_static`, `glow_zoom`, `dust_static`,
+`dust_zoom`, `mixed_static`.
 
 #### ✅ Modify Camera/Zoom
 
@@ -2966,6 +3008,12 @@ if self.sim_state is not None:
 - Avareon leaves the flag off (its art has painted borders). The setup-screen preview and
   the replay viewer render maps separately and do not draw these borders.
 
+✅ **Plot effects (production light rays, construction dust):** see "Change the plot
+effects" under main.py → Add Visual Effect. In this file: `_build_plot_fx_renderers()`,
+`_plot_radius()`, `update_plot_effects()`, `sync_production_glow_effects()`,
+`render_production_glow_effects()`, and the dust calls in `_render_construction_plot()` /
+`_render_completed_plot()`.
+
 ### rendering/ui_renderer.py (~2,553 lines)
 
 **What it does:** UI panels, buttons, info displays
@@ -3066,7 +3114,8 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `_sidebar_toggle_sprites` (main.py) - Round sidebar collapse button, one sprite per (size, direction, state)
 - `MapEastExtension` (rendering/map_extension.py) - East map extension + its scaled visible slice (see that section)
 - `text_cache` (ui_renderer.py) - UIRenderer's own text cache: `self._get_cached_text(text, font, color)`
-- `_SHARED_SPRITE_CACHE` (production_glow_effect.py) - 16 pre-rendered rotation frames, keyed by `(quantized_zoom, player_color)` and **shared process-wide** across all effect instances (bounded LRU). Instances hold a reference via `_sprite_cache`.
+- `ProductionRays._sets` (production_glow_effect.py) - Production light rays: per `(even plot radius, player colour)` the tinted layers plus one current frame per phase group, **shared by every producing plot** (bounded LRU, ~2 MB). Re-rotated into persistent canvases every 0.25°; colour-free bases pre-built for all plot radii at load (`prewarm()`).
+- `ConstructionDust._sprites` (construction_dust_effect.py) - Dust sprites keyed by `(diameter, colour, alpha, softness)`, scaled from one soft base per colour; at most `BUILDS_PER_FRAME` built per frame, LRU-bounded (~1.8 MB).
 - `_scaled_text_cache` (turn_announcement_effect.py) - Smoothscale cache by quantized (width, height)
 
 **Always `.convert()` / `.convert_alpha()` loaded images — including backgrounds:**
@@ -3103,6 +3152,10 @@ The codebase uses several performance patterns. Follow these when adding new ren
   `scale_factor`. `GameState.get_flag_positions_for_territory()` did, and after a resolution
   change kept allied banners (and their click boxes and arrow starts) at the old scale's
   positions, off the territory. It now keys by the centre as well.
+- **Don't store world positions in long-lived effects either.** The old production glow kept
+  the world position it was created at, so after a resolution change it glowed where the
+  plot used to be. `ProductionGlowEffect` now keeps `(territory, plot_index)` and looks the
+  plot up in `scaled_plots` every frame (`tests/test_plot_effects.py`).
 - Guarded by `tests/test_resolution_caches.py`.
 
 **Cache, don't copy, full-screen overlays:**
@@ -3115,10 +3168,15 @@ The codebase uses several performance patterns. Follow these when adding new ren
 
 **Never key a cache on a raw continuous float (quantize it):**
 - Keying on an un-quantized zoom/scale/alpha float means the cache **never hits** while that
-  value animates. `ProductionGlowEffect` keyed its sprite cache on the raw zoom and so rebuilt
+  value animates. The old production glow keyed its sprite cache on the raw zoom and so rebuilt
   16 surfaces per effect per zoom change — ~150ms frames with ~100 producing buildings.
-- Quantize the key (glow: 0.1 zoom steps; flags: 5px; static glows: 3px) and, where the cached
-  result depends only on shared inputs, share one cache across instances rather than per-object.
+- Quantize the key (production rays: even integer plot radius; dust: integer diameters and 12
+  alpha levels; flags: 5px; static glows: 3px) and, where the cached result depends only on
+  shared inputs, share one cache across instances rather than per-object.
+- **Count the distinct frames you bake.** The old glow baked 16 rotation frames 22.5° apart for
+  8 rays that repeat every 45° — only 2 distinct poses, so its "rotation" was a flip every
+  ~2.6 s. Rotation frames only need to cover 360° / ray count, and must be fine enough
+  (≲0.5 px per step where the image is bright) to read as motion.
 - Known remaining instances of this bug: `battleeffect.py` and `alliance_marker_effect.py`
   cache on a continuously-animated scale float, so they `smoothscale` every frame.
 
@@ -3381,6 +3439,10 @@ outside `("map_edge", "window_edge")` to the default, `window_edge`.
 
 **...add visual effect**
 → `ui/effects/` directory, create new effect class
+
+**...change the production rays or construction dust on plots**
+→ `ui/effects/plot_fx_style.py` (look), preview with `py tools/plot_fx_preview.py`; wiring in
+`rendering/map_renderer.py` (see "Change the plot effects")
 
 **...modify camera/zoom**
 → `input/camera_handler.py`

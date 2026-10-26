@@ -37,6 +37,33 @@ zoom quantization was removed, so it now renders ~88 distinct zoom values instea
 
 ---
 
+## Plot effects (2026-10-26, 1600x900)
+
+The training "star" was replaced by production light rays, and construction / Keep → Castle
+upgrades gained construction dust (CHANGELOG 2026-10-26). Measured with the same suite:
+
+| Scenario | Before | After |
+|---|---|---|
+| Static, 99 production glows | 6.93 ms avg | 6.74 ms avg |
+| Zooming, 99 production glows | 24.25 ms avg / 43.0 ms worst | 23.00 ms avg / 28.7 ms worst |
+| Static, 99 constructions (`dust_static`) | — | 9.45 ms avg (99 plain buildings: 6.18 ms) |
+| Zooming, 99 constructions (`dust_zoom`) | — | 26.18 ms avg / 31.4 ms worst |
+| Static, 57 producing + 42 constructing (`mixed_static`) | — | 7.90 ms avg |
+
+What to know before touching them:
+- **Rays** cost ~0.4-0.6 ms per frame for dozens of plots, almost all of it the few
+  `rotozoom`s of the shared frames (0.06-0.12 ms each, only when a layer turns 0.25°).
+  Per-plot cost is two additive blits. Adding colours or phase groups multiplies the
+  rotations, not the per-plot cost.
+- **Dust** is ~24 µs per plot, and ~70% of that is Python arithmetic, not blitting — which is
+  why its loops are hand-tuned (style unpacked in `__init__`, inlined hash, direction tables)
+  and why it has level of detail (15 particles on small plots, 19 on large). This is the one
+  place where LOD paid off; the general LOD idea below still doesn't.
+- 99 simultaneous constructions all on screen is far beyond a real game (20-30 is busy:
+  ~0.5-0.7 ms). `tools/plot_fx_preview.py --bench` measures the effects alone.
+
+---
+
 ## Deferred: small, safe, low value
 
 These were investigated and consciously skipped. Doing them is not wrong, but do not expect
@@ -82,10 +109,10 @@ if self.cached_scale_factor != icon_scale:
 the effect `smoothscale`s **every frame** — despite the comment claiming "caching reduces to
 <0.1ms". Verified by reading the animation source; not yet measured in a frame budget.
 
-- **Fix:** quantize the cache key, exactly as `ProductionGlowEffect` now does
-  (`round(scale * N) / N`). Small, self-contained, low risk.
+- **Fix:** quantize the cache key, as `EnhancedBattleInterface._render_pulsed_icon()` does
+  (`round(scale * N) / N`, see below). Small, self-contained, low risk.
 - **Why deferred:** these are transient effects (a battle, an alliance marker), not
-  continuous per-frame costs across many entities like the production glow was.
+  continuous per-frame costs across many entities like the old production glow was.
 
 **Done for `battle_interface.py` (2026-09-21).** The same bug lived in the pulsing battle
 icon, which had no cache at all and `smoothscale`d every frame in both the SETUP and

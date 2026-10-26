@@ -4,6 +4,28 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Light and Dust on the Map
+
+*26 October 2026*
+
+### New
+
+- **Production shines.** Barracks training troops and Keeps or Castles training a hero now
+  cast slowly turning rays of light in your colour, in place of the old star. As before,
+  only you and your allies see them.
+- **Construction raises dust.** Plots being built on are wrapped in rolling clouds of dust,
+  with motes rising and the odd chip flying off, so you can see at a glance what is going
+  up - yours and everyone else's.
+- **Castle upgrades show too.** A Keep being upgraded to a Castle now shows the same dust,
+  sparkling with gold, until the Castle is complete.
+
+### Fixes
+
+- **The production glow follows its building after a resolution change.** Changing the
+  resolution during a game used to leave the glow where the building had been.
+
+---
+
 ## Wishlist War of Avareon
 
 *22 October 2026*
