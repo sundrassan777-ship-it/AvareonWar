@@ -16,7 +16,8 @@ The main menu is the entry point for the game, showing buttons for:
 
 import pygame
 import sys
-from config.constants import WHITE, BLACK, GRAY, DARK_GRAY, GAME_VERSION, FPS_LIMIT_OPTIONS, OPEN_BETA
+from config.constants import (WHITE, BLACK, GRAY, DARK_GRAY, GAME_VERSION, FPS_LIMIT_OPTIONS, OPEN_BETA,
+                              MAP_3D_AVAILABLE)
 import wishlist  # OPEN BETA ONLY: the Wishlist button (remove at full release)
 from utils.colors import lighten_color, brighten_color
 from settings_manager import settings
@@ -125,6 +126,8 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
         self.temp_tooltips_enabled = settings.get('tooltips_enabled', True)
         self.temp_show_fps = settings.get('show_fps', False)
+        # 3D map look (map_data.map_look): a row only while MAP_3D_AVAILABLE
+        self.temp_map_3d = settings.get('map_style', '2d') == '3d'
         self.temp_edge_scrolling_mode = settings.get('edge_scrolling_mode', 'window_edge')
         self.temp_tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
         self.temp_pan_speed = settings.get('camera_pan_speed', 10.0)
@@ -973,6 +976,13 @@ class MainMenu:
                 self.temp_show_fps = not self.temp_show_fps
                 return
 
+            # 3D map look checkbox (only while the switch exists: MAP_3D_AVAILABLE)
+            if (MAP_3D_AVAILABLE and 'map_3d_checkbox' in self.options_ui_elements
+                    and self.options_ui_elements['map_3d_checkbox']['rect'].collidepoint(pos)):
+                sound_manager.play_ui_click()
+                self.temp_map_3d = not self.temp_map_3d
+                return
+
             # Master Volume slider
             if 'master_volume_thumb' in self.options_ui_elements and self.options_ui_elements['master_volume_thumb']['rect'].collidepoint(pos):
                 sound_manager.play_ui_click()
@@ -1082,6 +1092,7 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = settings.get('edge_scrolling_enabled', True)
         self.temp_tooltips_enabled = settings.get('tooltips_enabled', True)
         self.temp_show_fps = settings.get('show_fps', False)
+        self.temp_map_3d = settings.get('map_style', '2d') == '3d'
         self.temp_edge_scrolling_mode = settings.get('edge_scrolling_mode', 'window_edge')
         self.temp_tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
         self.temp_pan_speed = settings.get('camera_pan_speed', 10.0)
@@ -1170,6 +1181,8 @@ class MainMenu:
         settings.set('edge_scrolling_enabled', self.temp_edge_scrolling_enabled)
         settings.set('tooltips_enabled', self.temp_tooltips_enabled)
         settings.set('show_fps', self.temp_show_fps)
+        if MAP_3D_AVAILABLE:   # locked: the saved look stays as it is (and is not read)
+            settings.set('map_style', '3d' if self.temp_map_3d else '2d')
         settings.set('edge_scrolling_mode', self.temp_edge_scrolling_mode)
         settings.set('tooltip_delay_ms', self.temp_tooltip_delay_ms)
         settings.set('camera_pan_speed', self.temp_pan_speed)
@@ -1208,6 +1221,7 @@ class MainMenu:
         self.temp_edge_scrolling_enabled = True
         self.temp_tooltips_enabled = True
         self.temp_show_fps = False
+        self.temp_map_3d = False
         self.temp_edge_scrolling_mode = "window_edge"
         self.temp_tooltip_delay_ms = 500
         self.temp_pan_speed = 10.0
@@ -1646,6 +1660,28 @@ class MainMenu:
                            (checkbox_rect.right - 6, checkbox_rect.top + 6), 3)
         self.options_ui_elements['show_fps_checkbox'] = {'rect': checkbox_rect}
         y += int(40 * self.ui_scale)
+
+        # 3D map look checkbox - main menu only (never the in-game options: the look is
+        # read when a screen loads its map). LOCKED: no row at all while MAP_3D_AVAILABLE
+        # is False, so the panel looks exactly as before.
+        self.options_ui_elements.pop('map_3d_checkbox', None)
+        if MAP_3D_AVAILABLE:
+            label_text = label_font.render("3D Map Look:", True, WHITE)
+            self.screen.blit(label_text, (content_x + label_x_offset, y))
+            checkbox_rect = pygame.Rect(checkbox_x, y - 5, checkbox_size, checkbox_size)
+            is_hovered = (self.hovered_option_element == 'map_3d_checkbox')
+            bg_color = (30, 30, 30) if is_hovered else (20, 20, 20)
+            pygame.draw.rect(self.screen, bg_color, checkbox_rect, border_radius=5)
+            pygame.draw.rect(self.screen, (100, 100, 100), checkbox_rect, 2, border_radius=5)
+            if self.temp_map_3d:
+                pygame.draw.line(self.screen, WHITE,
+                               (checkbox_rect.left + 6, checkbox_rect.centery),
+                               (checkbox_rect.centerx, checkbox_rect.bottom - 8), 3)
+                pygame.draw.line(self.screen, WHITE,
+                               (checkbox_rect.centerx, checkbox_rect.bottom - 8),
+                               (checkbox_rect.right - 6, checkbox_rect.top + 6), 3)
+            self.options_ui_elements['map_3d_checkbox'] = {'rect': checkbox_rect}
+            y += int(40 * self.ui_scale)
 
         # === AUDIO SECTION === (horizontal separator line)
         separator_y = y + int(3 * self.ui_scale)

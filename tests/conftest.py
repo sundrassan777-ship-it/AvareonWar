@@ -31,3 +31,18 @@ def clean_map_data():
     yield
     # Post-test cleanup: restore full territory list
     map_data.clear_enabled_territories()
+
+
+@pytest.fixture(autouse=True)
+def map_look_2d():
+    """Every test starts in the 2D map look, whatever this PC's config.json says (once the
+    3D map look is unhidden, a developer's own "map_style": "3d" would otherwise move every
+    test game's outlines). Tests that want 3D set it themselves (tests/test_map_look.py)."""
+    from settings_manager import settings
+    before = settings.settings.get('map_style')
+    settings.settings['map_style'] = '2d'
+    yield
+    if before is None:
+        settings.settings.pop('map_style', None)
+    else:
+        settings.settings['map_style'] = before

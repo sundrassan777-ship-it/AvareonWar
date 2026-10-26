@@ -74,6 +74,8 @@ SETTING_TYPES = {
     'campaign_missions_xp_claimed': (list,),
     # Setup screen options
     'show_setup_borders': (bool,),
+    # Map look: '2d' or '3d' (map_data.map_look; only read while MAP_3D_AVAILABLE)
+    'map_style': (str,),
     # OPEN BETA ONLY (remove at full release, see OPEN_BETA in config/constants.py):
     # the one-time wishlist prompt on a campaign victory has been shown (wishlist.py)
     'wishlist_prompt_shown': (bool,),
@@ -154,6 +156,10 @@ class SettingsManager:
 
             # Setup screen options
             'show_setup_borders': False,        # Show territory borders in setup screens
+
+            # Map look: '2d' (the painted maps) or '3d' (AvareonWorldEditor's looks). The
+            # Options row exists only while MAP_3D_AVAILABLE (config/constants.py)
+            'map_style': '2d',
 
             # OPEN BETA ONLY (remove at full release): the one-time wishlist prompt was shown
             'wishlist_prompt_shown': False,
@@ -345,6 +351,12 @@ class SettingsManager:
                 f"Reset 'edge_scrolling_mode' from {old_mode!r} to "
                 f"{self.defaults['edge_scrolling_mode']!r} - expected one of {valid_edge_modes}"
             )
+
+        # The map look is one of two values (map_data.map_look)
+        if self.settings.get('map_style') not in ('2d', '3d'):
+            old_style = self.settings.get('map_style')
+            self.settings['map_style'] = self.defaults['map_style']
+            corrections.append(f"Reset 'map_style' from {old_style!r} to '2d' - expected '2d' or '3d'")
 
         # Log all corrections
         if corrections:
