@@ -157,8 +157,9 @@ def populate_map(game, buildings_per_territory=0, producing=False,
         buildings_per_territory: Barracks per territory (clamped to that territory's
             real plot count — Avareon has 107 plots across 57 territories, NOT 4 each).
         producing: Give each Barracks an active training queue. This is what spawns
-            ProductionGlowEffect instances, which rebuild a 16-frame sprite cache on
-            every zoom change — the dominant crowded-map cost.
+            ProductionGlowEffect instances (production light rays). Until 2026-10 each
+            rebuilt a 16-frame sprite cache on every zoom change — then the dominant
+            crowded-map cost.
         single_owner: If set, assign every territory to this player. Production glows
             only render for the viewer's own/allied buildings, so use 0 to maximise them.
     """
@@ -556,9 +557,13 @@ class TestZoomPerformance:
 
 class TestProductionGlowPerformance:
     """
-    ProductionGlowEffect rebuilds 16 pre-rendered sprite frames whenever the raw
-    zoom float changes. With many producing buildings that is thousands of polygon
-    draws in a single frame — the dominant cause of crowded-map zoom stutter.
+    Production light rays on ~100 producing buildings, static and while zooming.
+
+    History: the old 8-ray star rebuilt 16 pre-rendered sprite frames whenever the
+    raw zoom float changed - thousands of polygon draws in a single frame, the
+    dominant cause of crowded-map zoom stutter. The light rays (2026-10) share one
+    current frame per (plot size, colour, phase group, layer) and re-rotate it every
+    0.25 deg, so zooming only re-tints a few small surfaces.
     """
 
     @pytest.fixture
@@ -580,7 +585,7 @@ class TestProductionGlowPerformance:
         sync_camera(glow_game, zoom=glow_game.camera.min_zoom)
 
         def before(i):
-            glow_game.map_renderer.update_production_glow_effects(1.0 / 60.0)
+            glow_game.map_renderer.update_plot_effects(1.0 / 60.0)
 
         fps = FPSMeasurement(sample_count=60)
         result = record('glow_static', fps.run_benchmark(glow_game, before_frame=before, warmup=5),
@@ -610,7 +615,7 @@ class TestProductionGlowPerformance:
             glow_game.camera.handle_zoom(direction[0], centre, 0.078, top_panel)
             glow_game.camera.update_zoom(1.0 / 60.0)
             sync_camera(glow_game)
-            glow_game.map_renderer.update_production_glow_effects(1.0 / 60.0)
+            glow_game.map_renderer.update_plot_effects(1.0 / 60.0)
 
         fps = FPSMeasurement(sample_count=60)
         result = record('glow_zoom', fps.run_benchmark(glow_game, before_frame=before, warmup=3),

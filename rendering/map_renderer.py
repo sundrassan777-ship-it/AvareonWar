@@ -31,7 +31,8 @@ from utils.logger import get_logger
 from ui.effects.battleeffect import BattleHurricaneEffect
 from ui.effects.castle_upgrade_effect import CastleUpgradeEffect
 from ui.effects.alliance_marker_effect import AllianceMarkerEffect
-from ui.effects.production_glow_effect import ProductionGlowEffect
+from ui.effects.production_glow_effect import ProductionGlowEffect, ProductionRays
+from ui.effects.plot_fx_style import get_plot_fx_style
 from ui.effects.ability_burst_effect import AbilityBurstEffect
 from ui.effects.ability_arc_effect import AbilityArcEffect
 from ui.effects.ability_polygon_burst_effect import AbilityPolygonBurstEffect
@@ -78,6 +79,13 @@ class MapRenderer:
         # Tracks Barracks with units in training queue, and Keep/Castle with hero in training
         self.production_glow_effects = {}
         self._production_glow_version = -1  # FPS OPT: Track training version for dirty check
+        # Persistent plot effects (production light rays): one shared clock, advanced
+        # by update_plot_effects() in the main loop's update section (so it stops
+        # while the game is paused), and shared renderers styled by the map look -
+        # both looks share one style today, ui/effects/plot_fx_style.py
+        self._plot_fx_clock = 0.0
+        self._plot_fx_style = get_plot_fx_style(map_data.get_current_look())
+        self._build_plot_fx_renderers()
         # List to store active hero ability visual effects (burst + arc particles)
         self.ability_effects = []
         # Embargo persistent effects: {territory_name: AbilityPolygonBurstEffect}
@@ -253,6 +261,30 @@ class MapRenderer:
         self._last_hover_territory = None
         self._last_hover_camera_state = None
         self._territory_overlay_cache = {}
+        # Plot effect frames were converted to the old display format; rebuild them
+        # (~5 ms). Production effects themselves look their plots up every frame, so
+        # they already follow the new scale.
+        self._build_plot_fx_renderers()
+
+    def _build_plot_fx_renderers(self):
+        """(Re)create the shared plot effect renderers and pre-build their bases."""
+        self.production_rays = ProductionRays(self._plot_fx_style['rays'])
+        self.production_rays.prewarm(self._plot_radius_range())
+
+    def _plot_radius(self, ui_scale=None):
+        """
+        The on-screen plot radius in px, as draw_plots_original() draws it. Plot
+        effects are sized by this (not camera_zoom), so they always match the plot.
+        """
+        if ui_scale is None:
+            ui_scale = self.game.get_ui_scale_factor()
+        return int(EMPTY_PLOT_RADIUS * ui_scale)
+
+    @staticmethod
+    def _plot_radius_range():
+        """Every plot radius the zoom range gives (ui_scale is 1.0 - 1.5,
+        CameraHandler.get_ui_scale_factor)."""
+        return range(int(EMPTY_PLOT_RADIUS * 1.0), int(EMPTY_PLOT_RADIUS * 1.5) + 1)
 
     def _prewarm_image_caches(self):
         """
@@ -3050,15 +3082,11 @@ class MapRenderer:
                 if has_training:
                     currently_training.add((territory, plot_index))
 
-                    # Create effect if not already active
+                    # Create effect if not already active. It keeps (territory, plot_index),
+                    # not a position: render looks the plot up every frame
                     if (territory, plot_index) not in self.production_glow_effects:
-                        world_pos = self.game.scaled_plots[territory][plot_index]
-                        player_color = gs.get_player_color(owner)
-                        effect = ProductionGlowEffect(
-                            center_pos=world_pos,
-                            player_color=player_color,
-                            world_coords=True
-                        )
+                        effect = ProductionGlowEffect(territory, plot_index,
+                                                      gs.get_player_color(owner))
                         self.production_glow_effects[(territory, plot_index)] = effect
                     else:
                         # Update color in case territory changed ownership
@@ -3074,32 +3102,52 @@ class MapRenderer:
         for key in to_remove:
             del self.production_glow_effects[key]
 
-    def update_production_glow_effects(self, delta_time):
+    def update_plot_effects(self, delta_time):
         """
-        Update all active production glow effects.
+        Advance the shared clock of the persistent plot effects (production rays).
+
+        Called from the main loop's update section, which is skipped while the game
+        is paused, so the effects pause with it. Every effect animates from this one
+        clock - there is no per-effect state to update.
 
         Args:
             delta_time: Time elapsed since last update in seconds
         """
-        for effect in self.production_glow_effects.values():
-            effect.update(delta_time)
+        self._plot_fx_clock += delta_time
 
     def render_production_glow_effects(self):
         """
-        Render all active production glow effects on screen.
+        Render the light rays of every producing plot.
 
-        Effects are rendered behind buildings to create a glow emanating
-        from the building position.
+        Called just before draw_plots(), so the plots cover the inner ends of the
+        rays and the light seems to come from behind them. Rays are sized by the
+        plot radius (not camera_zoom) so they match the plot at every zoom.
         """
-        # Get current zoom scale for proper ray sizing
-        zoom_scale = self.game.camera_zoom
+        # Plots are only drawn while playing (draw_plots_original); no rays around
+        # plots that aren't there
+        if not self.production_glow_effects or self.game.game_state.phase != 'playing':
+            return
+
+        screen = self.game.screen
+        screen_w, screen_h = screen.get_size()
+        radius = self._plot_radius()
+        reach = self.production_rays.reach(radius)
+        clock = self._plot_fx_clock
+        rays = self.production_rays
+        scaled_plots = self.game.scaled_plots
+        world_to_screen = self.game.world_to_screen
 
         for effect in self.production_glow_effects.values():
-            effect.render(
-                self.game.screen,
-                world_to_screen_func=self.game.world_to_screen,
-                zoom_scale=zoom_scale
-            )
+            plots = scaled_plots.get(effect.territory)
+            if not plots or effect.plot_index >= len(plots):
+                continue
+            # Same projection and truncation as the plot itself (draw_plots_original)
+            sx, sy = world_to_screen(plots[effect.plot_index])
+            x, y = int(sx), int(sy)
+            # Off-screen: skip before touching the shared frames (no rotation needed)
+            if x < -reach or x > screen_w + reach or y < -reach or y > screen_h + reach:
+                continue
+            effect.render(screen, x, y, radius, clock, rays)
 
     def _draw_all_plots_unified(self, ui_scale, scaled_empty_plot_radius, building_letter_font):
         """
@@ -4379,8 +4427,8 @@ class MapRenderer:
         # Calculate UI scale factor based on zoom (1.0 at min zoom, 1.5 at max zoom)
         ui_scale = self.game.get_ui_scale_factor()
         
-        # Calculate scaled sizes for UI elements
-        scaled_empty_plot_radius = int(EMPTY_PLOT_RADIUS * ui_scale)
+        # Calculate scaled sizes for UI elements (plot effects use the same radius)
+        scaled_empty_plot_radius = self._plot_radius(ui_scale)
         scaled_building_icon_radius = int(BUILDING_ICON_RADIUS * ui_scale)
         scaled_icon_click_radius = int(ICON_CLICK_RADIUS * ui_scale)
         
