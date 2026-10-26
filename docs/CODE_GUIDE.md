@@ -4945,6 +4945,10 @@ every map view is replaced (game, Custom Game setup, multiplayer lobby, replays,
 missions with their cloud covers, Book of Tales); 2D and 3D players play together seamlessly;
 the switch sits only in the main menu's Options (never in game).
 
+> **TEMPORARILY UNHIDDEN (2026-10-26)** for the owner's downstream testing:
+> `MAP_3D_AVAILABLE = True`. **Hide it again before the next patch release**: set it to False,
+> or revert the "TEMP: unhide the 3D map look" commit. Every test run warns until then.
+
 **Locked:** `MAP_3D_AVAILABLE = False` (`config/constants.py`). While False,
 `map_data.map_look()` is `'2d'` whatever config.json says, no `look.json` is read, and the
 Options have no row, so the game is exactly as before. **To unhide:** set it True. Before that the

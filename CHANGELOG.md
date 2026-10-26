@@ -2,6 +2,14 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-26 - TEMP: the 3D map look unhidden for testing
+
+Owner: unhide the switch for downstream testing; **hide it again before the next patch
+release**. `MAP_3D_AVAILABLE = True` (`config/constants.py`): the main menu's Options show "3D
+Map Look" (off by default). To hide it, set it back to False or revert this commit. While it is
+unhidden, every test run warns (`tests/test_map_look.py::test_reminder_hide_before_the_next_patch_release`).
+The locked-behaviour tests now lock the switch themselves.
+
 ## 2026-10-26 - 2D / 3D map looks (built, locked: invisible to players)
 
 Branch `feature/3d-map-look`. Owner: a 2D / 3D map look switch, finished but hidden, using the

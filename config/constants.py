@@ -38,7 +38,12 @@ GAME_VERSION = "1.0.0"
 # config.json says - the feature is built but invisible (owner, 2026-10-22). Set True to
 # unhide it (CODE_GUIDE "Map looks: 2D / 3D"); before that the owner wants 3D banners,
 # wind, wave movement and 3D building models.
-MAP_3D_AVAILABLE = False
+#
+# !!! TEMPORARILY UNHIDDEN FOR TESTING (owner, 2026-10-26: "We will need to remember to
+# !!! hide it again for next patch release"). SET BACK TO False BEFORE THE NEXT PATCH
+# !!! RELEASE (or revert the "TEMP: unhide the 3D map look" commit). While True, every
+# !!! test run warns (tests/test_map_look.py::test_reminder_hide_before_the_next_patch_release).
+MAP_3D_AVAILABLE = True
 
 # OPEN BETA ONLY - remove at full release, together with wishlist.py, the main menu's
 # Wishlist button, the recap's one-time wishlist prompt and the 'wishlist_prompt_shown'
