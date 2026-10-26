@@ -195,11 +195,18 @@ def opens(monkeypatch):
     return calls
 
 
+def _fresh_display(size):
+    """A display of exactly this size: an earlier test module can leave a fullscreen one
+    behind, and set_mode then keeps its size (see test_map_top_bar)."""
+    pygame.init()
+    pygame.display.quit()
+    pygame.display.init()
+    return pygame.display.set_mode(size)
+
+
 def _menu(size):
     import main_menu
-    pygame.init()
-    screen = pygame.display.set_mode(size)
-    return main_menu.MainMenu(screen)
+    return main_menu.MainMenu(_fresh_display(size))
 
 
 def _brightness(screen, rect):
@@ -280,8 +287,7 @@ def test_no_button_outside_the_open_beta(monkeypatch, clicks, opens):
 
 def _recap(size=(1600, 900), prompt=True, xp_result=None):
     from recap_screen import RecapScreen
-    pygame.init()
-    screen = pygame.display.set_mode(size)
+    screen = _fresh_display(size)
     stats = {0: {}, 1: {}}
     return RecapScreen(screen, stats, ['Human', 'AI'], [(200, 40, 40), (40, 40, 200)], 0, 2,
                        newly_earned_achievements=[], xp_result=xp_result, replay_recorder=None,
