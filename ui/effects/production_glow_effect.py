@@ -29,6 +29,7 @@ import math
 from collections import OrderedDict
 
 from ui.effects.plot_fx_style import RAY_STYLE, plot_phase
+from ui.effects import light_fx
 
 
 # ========================================
@@ -58,35 +59,14 @@ SUPERSAMPLE = 2          # rays are drawn at 2x and smoothscaled down: soft, ant
 WEDGE_LEVELS = 6         # nested wedges per ray -> a soft "tent" cross-section
 
 
-def _new_black_surface(size):
-    """Opaque 32-bit black square (black = no light under BLEND_RGB_ADD)."""
-    surface = pygame.Surface((size, size), 0, 32)
-    if pygame.display.get_surface() is not None:
-        surface = surface.convert()   # display format: fastest blits (needs a display)
-    surface.fill((0, 0, 0))
-    return surface
-
-
-def _radial_surface(size, profile):
-    """
-    Grey square whose brightness at distance r from the centre is profile(r) (0-1).
-
-    Filled discs drawn from the outside in, each overwriting the middle of the
-    previous one, give any radial profile in one pass (bake time only).
-    """
-    surface = _new_black_surface(size)
-    centre = size // 2
-    for r in range(centre + 1, 0, -1):
-        value = int(255 * max(0.0, min(1.0, profile(r))))
-        if value:
-            pygame.draw.circle(surface, (value, value, value), (centre, centre), r)
-    return surface
+# The light helpers are shared with the hero ability effects (light_fx.py)
+_new_black_surface = light_fx.new_black_surface
+_radial_surface = light_fx.radial_surface
 
 
 def light_colour(player_color, style=RAY_STYLE):
     """The player colour blended toward warm white, so the rays read as light, not paint."""
-    mix = style['white_mix']
-    return tuple(int(c + (w - c) * mix) for c, w in zip(player_color[:3], style['warm_white']))
+    return light_fx.light_colour(player_color, style['white_mix'], style['warm_white'])
 
 
 class _RaySet:
