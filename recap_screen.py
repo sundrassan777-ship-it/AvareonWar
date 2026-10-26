@@ -83,7 +83,8 @@ class RecapScreen:
     }
 
     def __init__(self, screen, player_stats, player_names, player_colors, winner_index, num_players,
-                 newly_earned_achievements=None, xp_result=None, replay_recorder=None):
+                 newly_earned_achievements=None, xp_result=None, replay_recorder=None,
+                 wishlist_prompt=False):
         """
         Args:
             screen: Pygame display surface
@@ -96,6 +97,9 @@ class RecapScreen:
             xp_result: Dict from player_level_manager.record_game_xp() with xp_earned,
                        old_level, new_level, old_xp, new_xp (or None)
             replay_recorder: ReplayRecorder instance for saving replays (or None)
+            wishlist_prompt: OPEN BETA ONLY (remove at full release) - show the one-time
+                "Wishlist the full game" prompt once the popups are done
+                (wishlist.prompt_due decides; main.py show_recap_if_ended)
         """
         self.screen = screen
         self.width = screen.get_width()
@@ -262,12 +266,23 @@ class RecapScreen:
         self.xp_level_up_particles = []  # Golden burst particles on level-up
         self.xp_level_up_spawn_accum = 0.0
 
+        # --- OPEN BETA ONLY (wishlist.py - remove at full release): one-time wishlist
+        # prompt, opened a moment after the achievement / XP popups are done ---
+        self.wishlist_phase = 'waiting' if wishlist_prompt else 'off'  # waiting -> open -> closed
+        self.wishlist_timer = 0.0
+        self.wishlist_open_delay = 0.6   # seconds after the popups finish
+        self.wishlist_panel_rect = None
+        self.wishlist_buttons = {}
+        if wishlist_prompt:
+            self._layout_wishlist_prompt()
+
     def run(self):
         """Main loop - blocks until user clicks Main Menu."""
         while not self.done:
             dt = self.clock.tick(menu_frame_cap()) / 1000.0
             self._update_achievement_preview(dt)
             self._update_xp_bar(dt)
+            self._update_wishlist_prompt(dt)
             self.handle_events()
             self.render()
             draw_custom_cursor(self.screen)
@@ -277,6 +292,11 @@ class RecapScreen:
     def handle_events(self):
         """Process input events."""
         mouse_pos = pygame.mouse.get_pos()
+
+        # OPEN BETA ONLY: the wishlist prompt is modal while open (the recap waits under it)
+        if self.wishlist_phase == 'open':
+            self._handle_wishlist_events(mouse_pos)
+            return
 
         # Update hover state
         self.hovered_button = None
@@ -393,8 +413,104 @@ class RecapScreen:
         # Player Level XP bar (drawn after/instead of achievement preview)
         self._draw_xp_bar()
 
+        # OPEN BETA ONLY: one-time wishlist prompt (on top of everything)
+        if self.wishlist_phase == 'open':
+            self._draw_wishlist_prompt()
+
         # Reset clicked state after render
         self.clicked_button = None
+
+    # ------------------------------------------------------------------
+    # OPEN BETA ONLY (wishlist.py - remove at full release, with the
+    # wishlist_prompt argument): the one-time "Wishlist the full game" prompt
+    # ------------------------------------------------------------------
+
+    def _layout_wishlist_prompt(self):
+        """Centered panel with a title, one line and two buttons: Wishlist / Not now.
+        The panel and the dimming are made once here, not per frame."""
+        panel_w = int(760 * self.ui_scale)
+        panel_h = int(440 * self.ui_scale)
+        self.wishlist_panel_rect = pygame.Rect((self.width - panel_w) // 2, (self.height - panel_h) // 2,
+                                               panel_w, panel_h)
+        btn_w = int(250 * self.ui_scale)
+        btn_h = int(btn_w * self.btn_aspect)
+        gap = int(30 * self.ui_scale)
+        btn_y = self.wishlist_panel_rect.bottom - btn_h - int(115 * self.ui_scale)
+        left_x = self.wishlist_panel_rect.centerx - btn_w - gap // 2
+        self.wishlist_buttons = {
+            'wishlist_yes': pygame.Rect(left_x, btn_y, btn_w, btn_h),
+            'wishlist_later': pygame.Rect(left_x + btn_w + gap, btn_y, btn_w, btn_h),
+        }
+        self._wishlist_panel = pygame.transform.smoothscale(self.panel_image, (panel_w, panel_h))
+        self._wishlist_dim = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        self._wishlist_dim.fill((0, 0, 0, 150))
+
+    def _popups_done(self):
+        """True once the achievement popups and the XP bar have finished."""
+        achievements_done = (not self.newly_earned or self.achievement_preview_phase == 'done')
+        xp_done = (not self.xp_result or self.xp_result.get('xp_earned', 0) <= 0
+                   or self.xp_bar_phase == 'xp_done')
+        return achievements_done and xp_done and not self.glitter_particles and not self.xp_level_up_particles
+
+    def _update_wishlist_prompt(self, dt):
+        """Open the prompt a moment after the popups; it counts as shown from then on."""
+        if self.wishlist_phase != 'waiting' or not self._popups_done():
+            return
+        self.wishlist_timer += dt
+        if self.wishlist_timer >= self.wishlist_open_delay:
+            import wishlist
+            self.wishlist_phase = 'open'
+            # Shown = never again, whatever the player clicks (or if the game closes now)
+            wishlist.mark_prompt_shown()
+
+    def _close_wishlist_prompt(self):
+        self.wishlist_phase = 'closed'
+        self.hovered_button = None
+
+    def _handle_wishlist_events(self, mouse_pos):
+        """Events while the prompt is open: its two buttons, Escape = Not now; nothing
+        under it reacts. Alt+F4 still leaves the game."""
+        import wishlist
+        self.hovered_button = None
+        for btn_id, rect in self.wishlist_buttons.items():
+            if rect.collidepoint(mouse_pos):
+                self.hovered_button = btn_id
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.result = 'quit'
+                self.done = True
+                return
+            elif event.type == _MUSIC_END_EVENT:
+                _music_manager.handle_music_end_event()
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self._close_wishlist_prompt()
+                return
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self.wishlist_buttons['wishlist_yes'].collidepoint(mouse_pos):
+                    sound_manager.play_ui_click()
+                    self.clicked_button = 'wishlist_yes'
+                    wishlist.open_wishlist_page()
+                    self._close_wishlist_prompt()
+                    return
+                if self.wishlist_buttons['wishlist_later'].collidepoint(mouse_pos):
+                    sound_manager.play_ui_click()
+                    self.clicked_button = 'wishlist_later'
+                    self._close_wishlist_prompt()
+                    return
+
+    def _draw_wishlist_prompt(self):
+        import wishlist
+        self.screen.blit(self._wishlist_dim, (0, 0))
+        panel = self.wishlist_panel_rect
+        self.screen.blit(self._wishlist_panel, panel)
+        title = self.title_font.render(wishlist.PROMPT_TITLE, True, WHITE)
+        self.screen.blit(title, title.get_rect(center=(panel.centerx, panel.y + int(140 * self.ui_scale))))
+        line = self.btn_font.render(wishlist.PROMPT_TEXT, True, WHITE)
+        self.screen.blit(line, line.get_rect(center=(panel.centerx, panel.y + int(195 * self.ui_scale))))
+        self._draw_btn(self.wishlist_buttons['wishlist_yes'], wishlist.PROMPT_WISHLIST_LABEL,
+                       'wishlist_yes', self.btn_font)
+        self._draw_btn(self.wishlist_buttons['wishlist_later'], wishlist.PROMPT_LATER_LABEL,
+                       'wishlist_later', self.btn_font)
 
     def _draw_btn(self, rect, text, btn_id, font, is_selected=False):
         """Draw a CampaignBTN.png-based button with hover/click/selected states."""

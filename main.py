@@ -16818,6 +16818,15 @@ if __name__ == "__main__":
         # Record game result and check for newly earned achievements (after XP update)
         newly_earned = achievement_manager.record_game_result(game)
 
+        # OPEN BETA ONLY (wishlist.py - remove at full release): the one-time "Wishlist
+        # the full game" prompt on a campaign / Book of Tales victory once enough missions
+        # are won. After record_game_xp, which adds a first win to the missions-won list.
+        from config.constants import OPEN_BETA
+        wishlist_prompt = False
+        if OPEN_BETA:
+            import wishlist
+            wishlist_prompt = wishlist.prompt_due(game)
+
         end_stats = game.game_state.get_end_game_stats()
         player_names = [game.game_state.get_player_name(i) for i in range(game.game_state.num_players)]
         player_colors = game.game_state.player_colors[:game.game_state.num_players]
@@ -16838,7 +16847,8 @@ if __name__ == "__main__":
             num_players=game.game_state.num_players,
             newly_earned_achievements=newly_earned,
             xp_result=xp_result,
-            replay_recorder=replay_recorder
+            replay_recorder=replay_recorder,
+            wishlist_prompt=wishlist_prompt
         )
         recap_result = recap.run()
 

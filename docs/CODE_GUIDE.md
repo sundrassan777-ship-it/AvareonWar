@@ -31,6 +31,7 @@ This guide provides module-specific guidance on when and how to modify different
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
 22. [Game Setup Screens](#game-setup-screens-custom-game--multiplayer-lobby) - Additional Options window, map top bar (Randomize Starting Positions, map name, Show Borders), random starts, lobby chat, Starting Gold, label tooltips, framed art
+23. [Open beta only: remove at full release](#open-beta-only-remove-at-full-release) - Wishlist button, one-time wishlist prompt, the release check
 
 ---
 
@@ -4209,6 +4210,8 @@ the lobby with AI slots used to earn them.
 
 **Integration:** `main.py` calls `show_recap_if_ended(game)` after each `game.run()` at 5 sites (custom, 3 campaign missions, multiplayer).
 
+**Wishlist prompt (OPEN BETA ONLY):** `RecapScreen(wishlist_prompt=...)` opens a modal "Enjoying War of Avareon? Wishlist the full game" panel once the achievement popups and the XP bar are done. See [Open beta only: remove at full release](#open-beta-only-remove-at-full-release).
+
 ### When to Modify
 
 - **Add new stat column**: Add to `TAB_COLUMNS` in `recap_screen.py`, add tracking hook in `game_state/__init__.py` (init in `player_stats` + increment via `_track_stat`)
@@ -4881,4 +4884,52 @@ Tests: `tests/test_lobby_chat.py` (model, network over `tests/mp_harness.py`, th
   the title / host-IP height plus the frame thickness — don't go back to fixed y offsets,
   or the frame covers the IP. The AI "no territory" (!) sits at the right end of the name
   line (left of the row is the frame).
+
+---
+
+## Open beta only: remove at full release
+
+**Owner (2026-10-22):** the Steam store page is live. During the open beta, players get a
+**Wishlist the full game** button in the main menu, and **once ever** a soft prompt after a
+campaign victory. "This button and this prompt to wishlist is only part of the open beta. It
+is very important that it is removed once the game hits full release."
+
+| Part | Where |
+|---|---|
+| The switch | `OPEN_BETA = True` in `config/constants.py` |
+| All the logic | `wishlist.py`: `open_wishlist_page()`, `prompt_due()`, `mark_prompt_shown()`, texts, `WISHLIST_PROMPT_AFTER` |
+| Main menu button (bottom-left corner, above the version text) | `main_menu.py`: icon load in `_load_background`, `wishlist_button_rect` in `_calculate_layout`, hover, `handle_click`, `_draw_wishlist_button`, tooltip in `render` |
+| One-time prompt | `main.py` `show_recap_if_ended()` (`wishlist.prompt_due` → `RecapScreen(wishlist_prompt=)`); `recap_screen.py` (`_layout_wishlist_prompt` … `_draw_wishlist_prompt`) |
+| Remembered as shown | setting `wishlist_prompt_shown` (`settings_manager.py` `SETTING_TYPES` + defaults) |
+| Tests | `tests/test_wishlist.py` |
+
+**Opening the store page** (`open_wishlist_page`): always the **full game** (`MAIN_GAME_APP_ID`
+4518100 in `steam_integration.py`), never the Playtest the beta runs as (`STEAM_APP_ID`
+4518130 - its store page is empty).
+1. **Steam overlay**, only when `steam_manager.open_store_overlay()` finds it hooked into the
+   game (`Utils.IsOverlayEnabled()`): a Pygame window is not always hooked (the reason F12
+   screenshots may not work), and an unhooked overlay silently does nothing.
+2. **The Steam client**: `os.startfile("steam://store/4518100")`, where the player is logged in
+   and wishlists with one click.
+3. **The web browser**: `https://store.steampowered.com/app/4518100/`.
+
+**The prompt:** only after a campaign or Book of Tales **victory** (never a defeat, Custom Game
+or multiplayer), once the player has won `WISHLIST_PROMPT_AFTER` (3) different missions (the
+first-time-win list `campaign_missions_xp_claimed`, so tales count), and only if
+`wishlist_prompt_shown` is still False. It opens 0.6 s after the recap's achievement popups and
+XP bar finish, counts as shown the moment it opens (whatever the player clicks), and is modal:
+**Wishlist** opens the page, **Not now** / Escape close it, nothing under it reacts.
+
+**Icon:** `assets/WishlistIcon.png` (the owner adds it). Until then the button draws a Steam-blue
+tile with a heart.
+
+### Removing it at full release
+Delete `wishlist.py`, `tests/test_wishlist.py`, `OPEN_BETA`, the main-menu button code, the
+recap prompt code + `wishlist_prompt` argument, the `show_recap_if_ended` lines, and the
+`wishlist_prompt_shown` setting (everything above, all marked "OPEN BETA ONLY" in comments:
+`grep -rn "OPEN BETA ONLY"`). Keep `MAIN_GAME_APP_ID`. Then update this section, PATCHNOTES
+and CHANGELOG.
+
+**Release check:** `tests/test_release_readiness.py` (keep it) fails as soon as `STEAM_APP_ID`
+becomes the main game's (`MAIN_GAME_APP_ID`) while any of these parts is still there.
 

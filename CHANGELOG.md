@@ -2,6 +2,31 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-22 - Wishlist button and one-time wishlist prompt (OPEN BETA ONLY)
+
+Branch `feature/wishlist-button`. Owner: the Steam store page is live, and during the open beta
+players are asked, softly, to wishlist the full game. Everything is behind `OPEN_BETA`
+(`config/constants.py`) and must be removed at full release (CODE_GUIDE "Open beta only:
+remove at full release").
+- **`wishlist.py`**: `open_wishlist_page()` opens the full game's store page (app 4518100,
+  not the Playtest's 4518130). It uses the Steam overlay only when it is hooked into the game
+  (`SteamManager.open_store_overlay()`, `Utils.IsOverlayEnabled()`), else
+  `steam://store/4518100` in the Steam client, else the web store page. It never raises.
+- **Main menu**: a Wishlist button in the free bottom-left corner, above the version text,
+  styled like the replays button (hover / click flash, tooltip "Wishlist the full game on
+  Steam"). It uses `assets/WishlistIcon.png` once the owner adds it, and draws a Steam-blue
+  tile with a heart until then.
+- **One-time prompt** on the recap after a campaign or Book of Tales victory, once 3 different
+  missions are won: "Enjoying War of Avareon? Wishlist the full game", with Wishlist / Not now.
+  It opens after the achievement / XP popups, is modal, and is shown once ever (new setting
+  `wishlist_prompt_shown`).
+- `steam_integration.py`: `MAIN_GAME_APP_ID = 4518100` (kept after release).
+- Tests: `tests/test_wishlist.py` (34) covers the open order with the right app id, the overlay
+  check, the button at 720p-1440p (corner, no overlaps, hover < flash, tooltip, one click
+  sound, the owner's icon), and the prompt's rules and modal behaviour.
+  `tests/test_release_readiness.py` fails once `STEAM_APP_ID` is the main game's while any
+  open-beta part is left.
+
 ## 2026-10-21 - Fix: Domination needed 46 territories on Avareon, not 45
 
 Branch `fix/domination-threshold`. Found by `tests/test_victory.py` `TestDominationVictory`

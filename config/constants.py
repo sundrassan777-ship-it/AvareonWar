@@ -33,6 +33,12 @@ Color4 = Tuple[int, int, int, int]   # RGBA color (with alpha)
 # Game version displayed on main menu
 GAME_VERSION = "1.0.0"
 
+# OPEN BETA ONLY - remove at full release, together with wishlist.py, the main menu's
+# Wishlist button, the recap's one-time wishlist prompt and the 'wishlist_prompt_shown'
+# setting (CODE_GUIDE "Open beta only: remove at full release"). The release check in
+# tests/test_release_readiness.py fails while any of it is left in a full-game build.
+OPEN_BETA = True
+
 # Window Size - ADJUST THESE TO FIT YOUR SCREEN
 WINDOW_WIDTH = 1600  # Adjust this to your screen width
 WINDOW_HEIGHT = 850  # Adjust this to your screen height
