@@ -49,7 +49,10 @@ def display():
 
 @pytest.fixture
 def light():
-    return HeroLight(SQUARES)
+    """A HeroLight without the per-frame time budget: tests must not depend on speed."""
+    light = HeroLight(SQUARES)
+    light.glow._budget.ms = light.tint._budget.ms = 10 ** 6
+    return light
 
 
 def _view(screen=None, zoom=1.0, radius=16):
@@ -75,6 +78,7 @@ class TestGlowSprites:
 
     def test_additive_sprites_add_nothing_at_their_corners(self):
         glow = GlowSprites()
+        glow._budget.ms = 10 ** 6
         for profile in ('mote', 'flare', 'bead'):
             sprite = glow.sprite(24, GOLD, GlowSprites.LEVELS, profile)
             assert sprite.get_flags() & pygame.SRCALPHA == 0
@@ -83,6 +87,7 @@ class TestGlowSprites:
 
     def test_brightness_levels_are_baked_in(self):
         glow = GlowSprites()
+        glow._budget.ms = 10 ** 6
         dim = glow.sprite(24, GOLD, 3)
         bright = glow.sprite(24, GOLD, 12)
         assert sum(tuple(dim.get_at((12, 12)))[:3]) < sum(tuple(bright.get_at((12, 12)))[:3])
@@ -115,6 +120,7 @@ class TestGlowSprites:
 
     def test_ladder_is_complete_or_none(self):
         glow = GlowSprites()
+        glow._budget.ms = 10 ** 6
         glow.begin_frame()
         ladder = glow.ladder(16, GOLD)
         assert ladder is not None and ladder[0] is None and len(ladder) == GlowSprites.LEVELS + 1
@@ -379,6 +385,17 @@ class TestHeroAura:
         for i in range(30):
             light.begin_frame()
             aura.render(view, i / 30.0)
+
+    def test_firefly_count_follows_territory_area(self, light):
+        """The same firefly density in big and small territories (owner, 2026-10-26:
+        7 per territory were barely visible)."""
+        assert light.area('West') == pytest.approx(10000.0)
+        assert light.mote_count('West', {'density': 1.0, 'min': 3}, 30) == 10
+        assert light.mote_count('West', {'density': 0.1, 'min': 3}, 30) == 3     # at least min
+        assert light.mote_count('West', {'density': 9.0, 'min': 3}, 30) == 30    # at most the table
+        assert light.mote_count('West', {}, 12) == 12                            # no density: all
+        motes = HERO_FX_STYLE['auras']['defiance']['motes']
+        assert light.mote_count('West', motes, motes['count']) >= 14
 
     def test_aura_set_change_rebuilds_the_outline_only_when_it_changes(self, light):
         aura = HeroAura(light, 'safe_haven')

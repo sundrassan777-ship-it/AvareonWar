@@ -133,6 +133,9 @@ class GlowSprites:
         self._bases = {}                # profile -> grey base
         self._budget = _BuildBudget(self.BUILDS_PER_FRAME, self.BUILD_MS_PER_FRAME)
         self.sprites_built = 0
+        # Every base up front (~1-2 ms each), so no frame's budget pays for one
+        for profile in GLOW_PROFILES:
+            self._base(profile)
 
     def begin_frame(self):
         """Call once per rendered frame: resets the build budget."""

@@ -154,6 +154,7 @@ class HeroLight:
         self._bboxes = {}                # territory -> world bbox
         self._outlines = OrderedDict()   # frozenset(territories) -> outline
         self._spawns = {}                # (territory, rise) -> [(x, y), ...]
+        self._areas = {}                 # territory -> area, world px^2
         self._scratch = {}               # (w, h) -> black surface for fading ray frames
         self._wave_tables = OrderedDict()
         self._positions = OrderedDict()  # bead screen positions per (outline, camera, size)
@@ -185,8 +186,10 @@ class HeroLight:
                 if tint and tint.get('alpha', 0) > 0:
                     self.tint.prewarm([_even(tint['size'] * radius)], tuple(aura['colour']),
                                       [tint['alpha']], tint.get('softness', 1.5))
-            lo, hi = aura['motes']['size']
-            self.glow.prewarm(range(_even(lo * min(radii)), _even(hi * max(radii)) + 1, 2), colour)
+            motes = aura['motes']
+            lo, hi = motes['size']
+            mote_colour = self.light_colour(aura['colour'], motes.get('white_mix', aura['white_mix']))
+            self.glow.prewarm(range(_even(lo * min(radii)), _even(hi * max(radii)) + 1, 2), mote_colour)
 
     def light_colour(self, colour, white_mix):
         return light_fx.light_colour(colour, white_mix, self.warm_white)
@@ -409,23 +412,59 @@ class HeroLight:
             self.draw_bead_tint(view, outline, raw_colour, tint, strength)
         self.draw_beads(view, outline, colour, rim, levels, shift, sweep)
 
-    def draw_motes(self, view, territories, colour, motes, rise, sway, clock, brightness):
+    def area(self, territory):
+        """A territory's area in world px^2 (shoelace), cached."""
+        area = self._areas.get(territory)
+        if area is None:
+            polygon = self.polygons.get(territory) or []
+            total = 0.0
+            for i in range(len(polygon)):
+                x1, y1 = polygon[i - 1]
+                x2, y2 = polygon[i]
+                total += x1 * y2 - x2 * y1
+            area = self._areas[territory] = abs(total) / 2.0
+        return area
+
+    def mote_count(self, territory, style, available):
+        """
+        Fireflies in one territory: style['density'] per 1000 world px^2 (the
+        same density in big and small territories), clamped to min..available.
+        Without a density every firefly of the table is used.
+        """
+        density = style.get('density')
+        if density is None:
+            return available
+        count = int(round(self.area(territory) * density / 1000.0))
+        return max(min(style.get('min', 1), available), min(available, count))
+
+    def draw_motes(self, view, territories, colour, motes, style, clock, brightness, raw_colour=None):
         """
         Fireflies rising inside each territory. motes: [(1 / life, offset,
-        size share, sway phase, salt), ...] (see mote_table). Stateless: each
-        firefly's spawn point changes every life by an integer hash.
+        size share, sway phase, salt), ...] (see mote_table); style: rise,
+        sway (world px), optional density / min (fireflies per territory, see
+        mote_count) and tint / tint_size (a normal-blend halo of raw_colour
+        under each firefly, so it keeps its hue on the bright map).
+        Stateless: each firefly's spawn point changes every life by an
+        integer hash.
         """
         if brightness <= 0.02:
             return
+        rise = style['rise']
+        sway = style['sway']
+        tint_alpha = style.get('tint', 0) if raw_colour is not None else 0
+        tint_size = style.get('tint_size', 2.0)
         radius = view.radius
         steps = GlowSprites.LEVELS
         z = view.zoom
         ax, ay = view.ax, view.ay
         w, h = view.width, view.height
         glow = self.glow
+        tint = self.tint
+        halos = []
         seq = []
         append = seq.append
         sin = math.sin
+        pi = math.pi
         for territory in territories:
             bx0, by0, bx1, by1 = self.bbox(territory)
             if (ax + bx1 * z < -radius or ax + bx0 * z > w + radius
@@ -435,31 +474,44 @@ class HeroLight:
             count = len(points)
             tsalt = stable_seed(territory) & 0xFFFF
             tphase = tsalt / 65536.0
-            for inv_life, offset, size, sway_phase, salt in motes:
+            for inv_life, offset, size, sway_phase, salt in motes[:self.mote_count(territory, style, len(motes))]:
                 u = clock * inv_life + offset + tphase
                 cycle = int(u)
                 age = u - cycle
-                env = sin(math.pi * age)
-                level = int(steps * brightness * env * env + 0.5)
+                env = sin(pi * age)
+                env *= env
+                level = int(steps * brightness * env + 0.5)
                 if level <= 0:
                     continue
                 hsh = ((cycle * 73856093) ^ salt ^ tsalt) & 0xFFFFFFFF
                 hsh = ((hsh ^ (hsh >> 13)) * 1274126177) & 0xFFFFFFFF
                 px, py = points[(hsh >> 8) % count]
+                x = ax + (px + sway * sin(age * 6.0 + sway_phase)) * z
+                y = ay + (py - rise * age) * z
+                if tint_alpha:
+                    # Halo sizes in steps of 4 px: fewer sprites to build
+                    halo_d = max(4, int(size * radius * tint_size) & ~3)
+                    halo = tint.sprite(halo_d, raw_colour, tint_alpha * brightness * env)
+                    if halo is not None:
+                        half = halo_d >> 1
+                        halos.append((halo, (int(x) - half, int(y) - half)))
                 diameter = _even(size * radius)
                 sprite = glow.sprite(diameter, colour, min(steps, level))
                 if sprite is None:
                     continue
                 half = diameter >> 1
-                x = px + sway * sin(age * 6.0 + sway_phase)
-                y = py - rise * age
-                append((sprite, (int(ax + x * z) - half, int(ay + y * z) - half), None, ADD))
+                append((sprite, (int(x) - half, int(y) - half), None, ADD))
+        if halos:
+            view.screen.blits(halos, doreturn=False)
         if seq:
             view.screen.blits(seq, doreturn=False)
 
 
 def mote_table(style, seed):
-    """Per firefly: (1 / life, offset, size, sway phase, hash salt) - fixed per style."""
+    """
+    Per firefly: (1 / life, offset, size, sway phase, hash salt) - fixed per
+    style. style['count'] fireflies (the most one territory shows).
+    """
     rng = random.Random(seed)
     lo, hi = style['size']
     return [(1.0 / rng.uniform(*style['life']), rng.random(), rng.uniform(lo, hi),
@@ -694,15 +746,14 @@ class _MotesCue(_Cue):
     def __init__(self, spec, effect, territories):
         super().__init__(spec, effect)
         self.territories = list(territories)
-        self.rise = spec.get('rise', 8.0)
-        self.sway = spec.get('sway', 1.2)
+        self.style = dict(spec, rise=spec.get('rise', 8.0), sway=spec.get('sway', 1.2))
         self.motes = mote_table(spec, effect.seed ^ 0x5A5A)
 
     def render(self, light, view, t):
         b = self.brightness(t)
         if b > 0.02:
-            light.draw_motes(view, self.territories, self.colour, self.motes, self.rise, self.sway,
-                             t, b)
+            light.draw_motes(view, self.territories, self.colour, self.motes, self.style, t, b,
+                             self.raw_colour)
 
 
 _POINT_CUES = {'rays': _RaysCue, 'flare': _FlareCue, 'ring': _RingCue, 'sparks': _SparksCue}
@@ -794,7 +845,12 @@ class HeroAura:
         self.key = key
         self.style = style or light.style['auras'][key]
         self.colour = light.light_colour(self.style['colour'], self.style['white_mix'])
-        self.motes = mote_table(self.style['motes'], stable_seed('aura', key))
+        # Fireflies: a brighter, whiter core than the outline (a spark), coloured by
+        # their halo
+        motes = self.style['motes']
+        self.mote_colour = light.light_colour(self.style['colour'],
+                                              motes.get('white_mix', self.style['white_mix']))
+        self.motes = mote_table(motes, stable_seed('aura', key))
         self.territories = ()
         self.outline = []
         self.strength = 0.0      # 0-1, eased toward 1 while shown
@@ -829,5 +885,5 @@ class HeroAura:
         self.light.draw_outline(view, self.outline, self.style['colour'], self.colour, rim, levels,
                                 shift, strength)
         motes = self.style['motes']
-        self.light.draw_motes(view, self.territories, self.colour, self.motes, motes['rise'],
-                              motes['sway'], clock, strength * motes['intensity'])
+        self.light.draw_motes(view, self.territories, self.mote_colour, self.motes, motes, clock,
+                              strength * motes['intensity'], self.style['colour'])

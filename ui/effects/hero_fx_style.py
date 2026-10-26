@@ -98,7 +98,7 @@ KIT = {
     'inset': 0.9,           # beads sit this far inside the border, world px
     'wave_length': 48.0,    # world px of border per shimmer wave
     'ring_width': 0.16,     # soft ring half-width, share of its radius
-    'spawn_points': 24,     # firefly spawn points per territory
+    'spawn_points': 40,     # firefly spawn points per territory
 }
 
 # ========================================
@@ -125,13 +125,21 @@ def _aura(colour, white_mix, wave_speed, rise, intensity=0.6, tint_alpha=70):
             'tint': {'size': 1.2, 'spacing': 0.42, 'inset': 0.3, 'alpha': tint_alpha,
                      'softness': 1.0},
         },
+        # Fireflies inside the covered territories. The same density everywhere:
+        # a median territory (~3500 world px^2 at 1600x900) gets ~14 (owner,
+        # 2026-10-26: 7 per territory were barely visible)
         'motes': {
-            'count': 7,            # fireflies per territory
-            'life': (1.6, 2.8),
+            'count': 30,           # the most fireflies one territory shows
+            'density': 4.0,        # fireflies per 1000 world px^2 of territory...
+            'min': 6,              # ...but at least this many
+            'life': (1.4, 2.4),
             'rise': rise,          # world px over a life
             'sway': 1.4,           # world px
-            'size': (0.5, 0.85),   # diameter, plot radii
-            'intensity': 0.95,
+            'size': (0.6, 1.05),   # diameter, plot radii
+            'intensity': 1.0,
+            'white_mix': 0.35,     # a whiter core than the outline: reads as a spark
+            'tint': 120,           # alpha of the colour halo under each firefly
+            'tint_size': 2.2,      # halo diameter / firefly diameter
         },
     }
 
