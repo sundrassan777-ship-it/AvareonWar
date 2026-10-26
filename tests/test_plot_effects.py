@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Plot effects: production light rays (2026-10-26).
+Plot effects (2026-10-26): production light rays and construction dust.
 
 Producing Barracks / Keeps / Castles show soft rays of light turning behind the
 plot (ui/effects/production_glow_effect.py, styled in ui/effects/plot_fx_style.py).
@@ -9,9 +9,13 @@ rays repeating every 45 deg it only ever showed TWO poses, so it "rotated" by
 flipping between them every ~2.6 s, and it was sized by camera_zoom while the
 plots use ui_scale.
 
-Unit tests cover the shared renderer (ProductionRays) and the per-plot effect;
-integration tests drive MapRenderer with a real Game: who gets rays, where they
-are drawn, how big, and when the clock moves.
+Plots under construction, and Keeps being upgraded to Castles (gold glints),
+show dust (ui/effects/construction_dust_effect.py). It is stateless: drawn from
+the shared clock and the plot's phase wherever game_state says, nothing synced.
+
+Unit tests cover the shared renderers and the per-plot effect; integration tests
+drive MapRenderer with a real Game: who gets which effect, where it is drawn, how
+big, and when the clock moves.
 """
 
 import math
@@ -29,6 +33,8 @@ from ui.effects.plot_fx_style import (RAY_STYLE, PLOT_FX_STYLES, get_plot_fx_sty
                                       plot_phase)
 from ui.effects.production_glow_effect import (ProductionRays, ProductionGlowEffect,  # noqa: E402
                                                light_colour)
+from ui.effects.construction_dust_effect import (ConstructionDust, VARIANT_BUILD,  # noqa: E402
+                                                 VARIANT_UPGRADE)
 
 RED = (255, 100, 100)
 BLUE = (100, 150, 255)
@@ -200,6 +206,118 @@ class TestProductionGlowEffect:
 
 
 # ========================================
+# ConstructionDust (shared renderer)
+# ========================================
+
+def _dust_frame(dust, clock, phase=0.3, variant=VARIANT_BUILD, radius=20, frames=3):
+    """Dust of one plot at (100, 100) on black, after letting the sprite budget fill."""
+    screen = pygame.Surface((200, 200))
+    for _ in range(frames):
+        screen.fill((0, 0, 0))
+        dust.begin_frame()
+        dust.draw_back(screen, 100, 100, radius, clock, phase, variant)
+        dust.draw_front(screen, 100, 100, radius, clock, phase, variant)
+    return screen
+
+
+def _is_gold(pixel):
+    """Gold glint colours (255, 204, 60) / (255, 232, 130) over black: bright, green
+    close to red, blue well below. Sienna dust (green/red ~0.65), cream motes (blue
+    ~ red), cream blended over sienna (red/blue < 1.7) and the dark debris chips
+    (red <= 108) don't match."""
+    r, g, b = tuple(pixel)[:3]
+    return r > 110 and g >= 0.78 * r and r >= 1.7 * b
+
+
+class TestConstructionDust:
+
+    def test_same_moment_same_dust(self):
+        """Stateless and deterministic: (clock, phase) fully decide the frame - also
+        across instances (fixed particle tables), so every client draws the same."""
+        a = _pixels(_dust_frame(ConstructionDust(), 4.2))
+        b = _pixels(_dust_frame(ConstructionDust(), 4.2))
+        assert a == b
+
+    def test_it_moves(self):
+        dust = ConstructionDust()
+        assert _pixels(_dust_frame(dust, 4.2)) != _pixels(_dust_frame(dust, 4.3))
+
+    def test_neighbouring_plots_differ(self):
+        dust = ConstructionDust()
+        assert _pixels(_dust_frame(dust, 4.2, phase=0.1)) != _pixels(_dust_frame(dust, 4.2, phase=0.6))
+
+    def test_dust_stays_around_the_plot(self):
+        dust = ConstructionDust()
+        radius = 20
+        for clock in (0.5, 1.7, 3.1, 6.4):
+            screen = _dust_frame(dust, clock, radius=radius)
+            drawn = [(x, y) for x in range(0, 200, 2) for y in range(0, 200, 2)
+                     if sum(tuple(screen.get_at((x, y)))[:3]) > 0]
+            assert drawn, f'no dust at clock {clock}'
+            assert all(math.hypot(x - 100, y - 100) < 4 * radius for x, y in drawn)
+
+    def test_upgrade_dust_has_gold_glints(self):
+        """Keep -> Castle upgrades: gold glints among the dust; plain construction has none."""
+        dust = ConstructionDust()
+
+        def gold_pixels(variant):
+            count = 0
+            for i in range(12):
+                screen = _dust_frame(dust, 2.0 + i * 0.37, variant=variant)
+                count += sum(1 for x in range(60, 140) for y in range(40, 160)
+                             if _is_gold(screen.get_at((x, y))))
+            return count
+
+        assert gold_pixels(VARIANT_UPGRADE) > 0
+        assert gold_pixels(VARIANT_BUILD) == 0
+
+    def test_dust_scales_with_the_plot(self):
+        dust = ConstructionDust()
+
+        def extent(radius):
+            far = 0.0
+            for i in range(10):
+                screen = _dust_frame(dust, 1.0 + i * 0.41, radius=radius)
+                for x in range(0, 200, 2):
+                    for y in range(0, 200, 2):
+                        if sum(tuple(screen.get_at((x, y)))[:3]) > 0:
+                            far = max(far, math.hypot(x - 100, y - 100))
+            return far
+
+        assert extent(24) > extent(16) * 1.2
+
+    def test_sprite_building_is_capped_per_frame(self):
+        """At most BUILDS_PER_FRAME new sprites a frame (a new zoom never hitches);
+        particles whose sprite isn't ready just wait a frame."""
+        dust = ConstructionDust()
+        screen = pygame.Surface((200, 200))
+        dust.begin_frame()
+        for i in range(40):   # many plots, same frame
+            dust.draw_back(screen, 100, 100, 16 + i % 9, 1.0, i / 40.0)
+            dust.draw_front(screen, 100, 100, 16 + i % 9, 1.0, i / 40.0)
+        assert dust.sprites_built <= ConstructionDust.BUILDS_PER_FRAME
+
+    def test_no_new_sprites_once_warm(self):
+        """After a warm-up the sprite cache covers what the dust needs: nothing is
+        allocated per frame any more (the rendering rule in CLAUDE.md)."""
+        dust = ConstructionDust()
+        for i in range(800):   # 10 s at 80 FPS, one plot size
+            _dust_frame(dust, i / 80.0, radius=20, frames=1)
+        built = dust.sprites_built
+        for i in range(800, 960):
+            _dust_frame(dust, i / 80.0, radius=20, frames=1)
+        assert dust.sprites_built - built <= 2
+
+    def test_sprite_cache_is_bounded(self):
+        dust = ConstructionDust()
+        dust.BUILDS_PER_FRAME = 10_000
+        for radius in range(16, 25):
+            for i in range(60):
+                _dust_frame(dust, i * 0.13, phase=i / 60.0, radius=radius, frames=1)
+        assert len(dust._sprites) <= ConstructionDust.MAX_SPRITES
+
+
+# ========================================
 # MapRenderer integration (real Game)
 # ========================================
 
@@ -242,13 +360,14 @@ def plot(game):
     """A visible plot, with everything this test changes put back afterwards."""
     gs = game.game_state
     territory, index, x, y = _visible_plot(game)
-    saved = (gs.territory_owners.get(territory), gs.buildings.get(territory),
-             gs.training_queue.get(territory), gs.phase,
-             list(game.scaled_plots[territory]))
+    stores = (gs.buildings, gs.training_queue, gs.under_construction,
+              gs.castle_upgrades_in_progress)
+    saved = (gs.territory_owners.get(territory), [store.get(territory) for store in stores],
+             gs.phase, list(game.scaled_plots[territory]))
     yield territory, index, x, y
-    owner, buildings, queue, phase, scaled = saved
+    owner, values, phase, scaled = saved
     gs.territory_owners[territory] = owner
-    for store, value in ((gs.buildings, buildings), (gs.training_queue, queue)):
+    for store, value in zip(stores, values):
         if value is None:
             store.pop(territory, None)
         else:
@@ -344,3 +463,88 @@ class TestMapRendererRays:
         game.map_renderer.rebuild_scale_caches()
         assert game.map_renderer.production_rays is not before
         assert sorted(game.map_renderer.production_rays._grey_bases) == [16, 18, 20, 22, 24]
+
+
+def _plot_region(game, x, y):
+    """The plot's surroundings after drawing all plots on black."""
+    game.screen.fill((0, 0, 0))
+    game.map_renderer.draw_plots()
+    radius = game.map_renderer._plot_radius()
+    rect = pygame.Rect(0, 0, radius * 6, radius * 6)
+    rect.center = (x, y)
+    return game.screen.subsurface(rect.clip(game.screen.get_rect())).copy()
+
+
+def _animated(game, x, y):
+    """Does the plot's surroundings change as the effect clock moves?"""
+    renderer = game.map_renderer
+    first = _pixels(_plot_region(game, x, y))
+    renderer.update_plot_effects(0.7)
+    second = _pixels(_plot_region(game, x, y))
+    return first != second
+
+
+class TestMapRendererDust:
+
+    def _set(self, game, territory, plot_index, owner, building=None, constructing=None,
+             upgrading=False):
+        gs = game.game_state
+        gs.territory_owners[territory] = owner
+        gs.buildings[territory] = {plot_index: building} if building else {}
+        gs.training_queue.pop(territory, None)
+        gs.under_construction.pop(territory, None)
+        gs.castle_upgrades_in_progress.pop(territory, None)
+        if constructing:
+            gs.under_construction[territory] = {plot_index: (constructing, 1, 50)}
+        if upgrading:
+            gs.castle_upgrades_in_progress[territory] = {plot_index: 2}
+        gs._training_version += 1
+        game.map_renderer.sync_production_glow_effects()
+
+    def test_construction_has_dust(self, game, plot):
+        territory, index, x, y = plot
+        self._set(game, territory, index, owner=0, constructing='Farm')
+        assert _animated(game, x, y)
+
+    def test_enemy_construction_has_dust_too(self, game, plot):
+        """Construction is public (the construction disc already shows it to everyone)."""
+        territory, index, x, y = plot
+        self._set(game, territory, index, owner=1, constructing='Barracks')
+        assert _animated(game, x, y)
+
+    def test_finished_buildings_are_still(self, game, plot):
+        territory, index, x, y = plot
+        self._set(game, territory, index, owner=0, building='Farm')
+        assert not _animated(game, x, y)
+
+    def test_upgrading_keep_has_gold_dust(self, game, plot):
+        """It used to show nothing on the map until the Castle's completion burst."""
+        territory, index, x, y = plot
+        self._set(game, territory, index, owner=0, building='Keep', upgrading=True)
+        assert _animated(game, x, y)
+        gold = 0
+        for _ in range(12):
+            game.map_renderer.update_plot_effects(0.37)
+            region = _plot_region(game, x, y)
+            w, h = region.get_size()
+            gold += sum(1 for px in range(0, w, 2) for py in range(0, h, 2)
+                        if _is_gold(region.get_at((px, py))))
+        assert gold > 0
+
+    def test_keep_not_upgrading_is_still(self, game, plot):
+        territory, index, x, y = plot
+        self._set(game, territory, index, owner=0, building='Keep')
+        assert not _animated(game, x, y)
+
+    def test_dust_stands_still_without_update(self, game, plot):
+        """No update_plot_effects() (the game is paused) -> the dust holds still."""
+        territory, index, x, y = plot
+        self._set(game, territory, index, owner=0, constructing='Farm')
+        _plot_region(game, x, y)   # let the sprite budget build what this moment needs
+        first = _pixels(_plot_region(game, x, y))
+        assert _pixels(_plot_region(game, x, y)) == first
+
+    def test_display_change_rebuilds_the_dust(self, game):
+        before = game.map_renderer.construction_dust
+        game.map_renderer.rebuild_scale_caches()
+        assert game.map_renderer.construction_dust is not before

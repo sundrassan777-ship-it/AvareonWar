@@ -19,8 +19,9 @@ cancel) - it simply draws wherever game_state.under_construction says.
 Each particle's spawn point changes every cycle (integer hash of the cycle
 number), so a plot never visibly repeats.
 
-Cost: one Surface.blits() call per layer, ~19 sprites per plot. The per-particle
-loops are kept lean (style unpacked once in __init__) because Python maths, not
+Cost: one Surface.blits() call per layer, 15-19 sprites per plot (fewer on small,
+zoomed-out plots: 'lod' in the style). Measured ~2.3 ms for 98 plots on screen at
+min zoom, ~24 us each. The per-particle loops are kept lean (style unpacked once in __init__) because Python maths, not
 blitting, is most of the cost. Sprites are scaled from one soft base per colour
 (built up front) and cached per (size, alpha); at most BUILDS_PER_FRAME new ones
 are made per frame, so a new zoom level never causes a hitch. Measure with
@@ -129,6 +130,14 @@ class ConstructionDust:
                         rng.randrange(len(chips['colours'])), _particle_salt(j + 101))
                        for j in range(chips['count'])]
 
+        # Level of detail: smaller plots (zoomed out, when the most plots are on screen)
+        # get proportionally fewer particles - the same density in a smaller area, and
+        # the cost follows what is visible. Lists pre-sliced per radius, cached.
+        lod = style['lod']
+        self._lod_full_radius = float(lod['full_radius'])
+        self._lod_min_share = float(lod['min_share'])
+        self._lod_tables = {}           # radius -> (back clouds, front clouds, motes, chips)
+
         self._sprites = OrderedDict()   # (diameter, colour, alpha, softness) -> Surface
         self._bases = {}                # (colour, softness) -> full-alpha soft dot, BASE_SIZE
         self._build_budget = self.BUILDS_PER_FRAME
@@ -158,6 +167,24 @@ class ConstructionDust:
     def begin_frame(self):
         """Call once per rendered frame before drawing: resets the sprite build budget."""
         self._build_budget = self.BUILDS_PER_FRAME
+
+    def _tables_for(self, radius):
+        """The particles drawn at this plot radius (level of detail), cached per radius."""
+        tables = self._lod_tables.get(radius)
+        if tables is None:
+            share = min(1.0, max(self._lod_min_share, radius / self._lod_full_radius))
+
+            def keep(items):
+                return items[:max(1, int(math.ceil(len(items) * share)))]
+
+            tables = (keep(self._back_puffs[1]), keep(self._front_puffs[1]),
+                      keep(self._motes), keep(self._chips))
+            self._lod_tables[radius] = tables
+        return tables
+
+    def particle_count(self, radius):
+        """Particles one plot draws at this radius (tests, benchmarks)."""
+        return sum(len(table) for table in self._tables_for(radius))
 
     # ---------- sprites ----------
 
@@ -211,10 +238,10 @@ class ConstructionDust:
 
     # ---------- layers ----------
 
-    def _add_clouds(self, seq, tables, x, y, radius, clock, phase, plot_salt):
+    def _add_clouds(self, seq, shape, clouds, x, y, radius, clock, phase, plot_salt):
         """Dust clouds that form on the rim, swell and drift out (appends to seq)."""
-        ((directions, distance, drift, size0, size_span, peak, softness, inv_swell, hold,
-          inv_fade), clouds) = tables
+        (directions, distance, drift, size0, size_span, peak, softness, inv_swell, hold,
+         inv_fade) = shape
         steps = self.ALPHA_STEPS
         sprites_get = self._sprites.get
         for inv_life, offset, phase_mult, colour, salt in clouds:
@@ -250,7 +277,8 @@ class ConstructionDust:
     def draw_back(self, screen, x, y, radius, clock, phase, variant=VARIANT_BUILD):
         """Dust clouds rolling around the base. Draw BEFORE the plot disc."""
         seq = []
-        self._add_clouds(seq, self._back_puffs, x, y, radius, clock, phase, _plot_salt(phase))
+        self._add_clouds(seq, self._back_puffs[0], self._tables_for(radius)[0], x, y, radius,
+                         clock, phase, _plot_salt(phase))
         if seq:
             screen.blits(seq, doreturn=False)
 
@@ -260,8 +288,10 @@ class ConstructionDust:
         upgrading) and debris chips. Draw AFTER the plot.
         """
         plot_salt = _plot_salt(phase)
+        _, front_clouds, motes, chips = self._tables_for(radius)
         seq = []
-        self._add_clouds(seq, self._front_puffs, x, y, radius, clock, phase, plot_salt)
+        self._add_clouds(seq, self._front_puffs[0], front_clouds, x, y, radius, clock, phase,
+                         plot_salt)
 
         directions, peak, softness = self._motes_shape
         upgrading = variant == VARIANT_UPGRADE
@@ -272,7 +302,7 @@ class ConstructionDust:
         sin = math.sin
 
         for (inv_life, offset, phase_mult, dist, rise, sway, size, colour, wobble,
-             glint, salt) in self._motes:
+             glint, salt) in motes:
             u = clock * inv_life + offset + phase * phase_mult
             cycle = int(u)
             age = u - cycle
@@ -310,7 +340,7 @@ class ConstructionDust:
         directions, hop, start, reach, height, chip_px, chip_alpha, chip_colours = self._chips_shape
         chip_size = max(1, int(chip_px * scale + 0.5))
         chip_half = chip_size >> 1
-        for cycle_len, offset, phase_mult, colour_index, salt in self._chips:
+        for cycle_len, offset, phase_mult, colour_index, salt in chips:
             u = clock / cycle_len + offset + phase * phase_mult
             cycle = int(u)
             elapsed = (u - cycle) * cycle_len

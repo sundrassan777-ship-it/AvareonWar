@@ -32,7 +32,8 @@ from ui.effects.battleeffect import BattleHurricaneEffect
 from ui.effects.castle_upgrade_effect import CastleUpgradeEffect
 from ui.effects.alliance_marker_effect import AllianceMarkerEffect
 from ui.effects.production_glow_effect import ProductionGlowEffect, ProductionRays
-from ui.effects.plot_fx_style import get_plot_fx_style
+from ui.effects.construction_dust_effect import ConstructionDust, VARIANT_BUILD, VARIANT_UPGRADE
+from ui.effects.plot_fx_style import get_plot_fx_style, plot_phase
 from ui.effects.ability_burst_effect import AbilityBurstEffect
 from ui.effects.ability_arc_effect import AbilityArcEffect
 from ui.effects.ability_polygon_burst_effect import AbilityPolygonBurstEffect
@@ -79,12 +80,13 @@ class MapRenderer:
         # Tracks Barracks with units in training queue, and Keep/Castle with hero in training
         self.production_glow_effects = {}
         self._production_glow_version = -1  # FPS OPT: Track training version for dirty check
-        # Persistent plot effects (production light rays): one shared clock, advanced
-        # by update_plot_effects() in the main loop's update section (so it stops
-        # while the game is paused), and shared renderers styled by the map look -
-        # both looks share one style today, ui/effects/plot_fx_style.py
+        # Persistent plot effects (production light rays, construction dust): one
+        # shared clock, advanced by update_plot_effects() in the main loop's update
+        # section (so it stops while the game is paused), and shared renderers styled
+        # by the map look - both looks share one style today, ui/effects/plot_fx_style.py
         self._plot_fx_clock = 0.0
         self._plot_fx_style = get_plot_fx_style(map_data.get_current_look())
+        self._plot_phases = {}   # (territory, plot_index) -> stable animation offset
         self._build_plot_fx_renderers()
         # List to store active hero ability visual effects (burst + arc particles)
         self.ability_effects = []
@@ -270,6 +272,15 @@ class MapRenderer:
         """(Re)create the shared plot effect renderers and pre-build their bases."""
         self.production_rays = ProductionRays(self._plot_fx_style['rays'])
         self.production_rays.prewarm(self._plot_radius_range())
+        self.construction_dust = ConstructionDust(self._plot_fx_style['dust'])
+
+    def _plot_phase(self, territory, plot_index):
+        """A plot's stable animation offset (plot_fx_style.plot_phase), cached."""
+        key = (territory, plot_index)
+        phase = self._plot_phases.get(key)
+        if phase is None:
+            phase = self._plot_phases[key] = plot_phase(territory, plot_index)
+        return phase
 
     def _plot_radius(self, ui_scale=None):
         """
@@ -3104,7 +3115,8 @@ class MapRenderer:
 
     def update_plot_effects(self, delta_time):
         """
-        Advance the shared clock of the persistent plot effects (production rays).
+        Advance the shared clock of the persistent plot effects (production rays,
+        construction dust).
 
         Called from the main loop's update section, which is skipped while the game
         is paused, so the effects pause with it. Every effect animates from this one
@@ -3172,6 +3184,8 @@ class MapRenderer:
         scaled_plot_center_offset = scaled_plot_surface_size // 2
         mouse_screen_x, mouse_screen_y = self.game.mouse_pos
         current_player = self.game.game_state.current_player
+        # Construction dust caps how many new sprites it makes per frame (no hitch)
+        self.construction_dust.begin_frame()
 
         for territory, plots in self.game.scaled_plots.items():
             owner = self.game.game_state.territory_owners.get(territory, -1)
@@ -3250,6 +3264,16 @@ class MapRenderer:
         except (KeyError, TypeError):
             return
 
+        # A Keep being upgraded to a Castle gets construction dust with gold glints
+        # (it used to show nothing on the map until the completion burst). Everyone
+        # sees it, like the Castle icon that shows from the first turn of the upgrade.
+        upgrading = (building == 'Keep' and
+                     self.game.game_state.is_upgrading_to_castle(territory, plot_index))
+        if upgrading:
+            phase = self._plot_phase(territory, plot_index)
+            self.construction_dust.draw_back(self.game.screen, x, y, scaled_empty_plot_radius,
+                                             self._plot_fx_clock, phase, VARIANT_UPGRADE)
+
         # Get plot surface from pool
         plot_surface = self.get_reusable_surface(scaled_plot_surface_size, scaled_plot_surface_size)
 
@@ -3324,6 +3348,10 @@ class MapRenderer:
         player_color = self.game.game_state.get_player_color(owner)
         self._blit_plot_chrome(x, y, scaled_empty_plot_radius, player_color)
 
+        if upgrading:
+            self.construction_dust.draw_front(self.game.screen, x, y, scaled_empty_plot_radius,
+                                              self._plot_fx_clock, phase, VARIANT_UPGRADE)
+
         # Selection glow
         is_selected_hero_keep = False
         if self.game.selected_hero and building == 'Keep':
@@ -3365,6 +3393,14 @@ class MapRenderer:
             letter = building_info['letter']
         except (KeyError, TypeError, ValueError, IndexError):
             return
+
+        # Construction dust: clouds behind the plot now, motes and chips over it after
+        # the rings. Stateless (clock + plot phase), so it is right in every game mode
+        # with nothing to sync - it draws wherever under_construction says. Everyone
+        # sees it, like the construction disc itself.
+        phase = self._plot_phase(territory, plot_index)
+        self.construction_dust.draw_back(self.game.screen, x, y, scaled_empty_plot_radius,
+                                         self._plot_fx_clock, phase, VARIANT_BUILD)
 
         plot_surface = self.get_reusable_surface(scaled_plot_surface_size, scaled_plot_surface_size)
         circle_color = COLOR_CONSTRUCTION
@@ -3422,6 +3458,9 @@ class MapRenderer:
         pygame.draw.circle(self.game.screen, BLACK, (x, y), scaled_empty_plot_radius, 1)
         pygame.draw.circle(self.game.screen, player_color, (x, y), scaled_empty_plot_radius - 1, 3)
         pygame.draw.circle(self.game.screen, BLACK, (x, y), scaled_empty_plot_radius - 4, 1)
+
+        self.construction_dust.draw_front(self.game.screen, x, y, scaled_empty_plot_radius,
+                                          self._plot_fx_clock, phase, VARIANT_BUILD)
 
     def _render_empty_plot(self, territory, plot_index, owner, x, y,
                            ui_scale, scaled_empty_plot_radius, scaled_plot_surface_size,

@@ -125,6 +125,13 @@ DUST_STYLE = {
         'alpha': 240,
         'colours': ((74, 54, 34), (108, 84, 56)),
     },
+    # Level of detail: a plot draws this share of the particles above, from
+    # min_share at the smallest plot (zoomed out, the most plots on screen) up to
+    # all of them at full_radius px - the same density in a smaller area
+    'lod': {
+        'full_radius': 24,
+        'min_share': 0.6,
+    },
     # Keep -> Castle upgrade in progress: every Nth mote is a twinkling gold glint
     'upgrade': {
         'glint_every': 2,         # every 2nd mote is gold
