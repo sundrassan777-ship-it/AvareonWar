@@ -2,6 +2,19 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-21 - Fix: Domination needed 46 territories on Avareon, not 45
+
+Branch `fix/domination-threshold`. Found by `tests/test_victory.py` `TestDominationVictory`
+(3 tests failing on main). Since "dynamic victory scaling" (`139e0d2`) the threshold was
+`math.ceil(total * 0.79)`: on Avareon ceil(57 x 0.79) = ceil(45.03) = 46, one more than
+the "Domination (45+)" label, the code comment, the docs and the tests.
+- `GameState.__init__` (`game_state/__init__.py`): now 45/57 of the map's territories,
+  rounded up, in integer maths (`-(-total * 45 // 57)`): Avareon 45, Azincournean
+  Highlands 44 (unchanged), still scales with map size.
+- Tests: `tests/test_victory.py` `TestDominationThreshold` (3): Avareon 45, Azincournean 44,
+  scaling. The 3 `TestDominationVictory` tests pass again.
+- Docs: CODE_GUIDE "Change Victory Conditions", GAME_MECHANICS "Victory Conditions".
+
 ## 2026-10-19 - Fix: banners of allies sharing a territory (spacing, resolution change)
 
 Branch `fix/flag-ring-coordinates`. Found while studying the map renderer for a 3D-map

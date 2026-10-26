@@ -4,6 +4,18 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Domination Victory Fix
+
+*21 October 2026*
+
+### Fixes
+
+- **Domination is won at 45 territories again.** On the Avareon map a Domination victory
+  needed 46 territories, one more than the "Domination (45+)" setting promises. It now
+  takes 45, as stated. Azincournean Highlands is unchanged (44 of its 55 territories).
+
+---
+
 ## Allied Banner Fixes
 
 *19 October 2026*

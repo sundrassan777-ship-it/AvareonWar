@@ -416,7 +416,7 @@ def resolve_battle(self, battle):
 
 | Condition | Threshold | Team Behavior |
 |-----------|-----------|---------------|
-| Domination (45+) | 45 territories | Team counts aggregated |
+| Domination (45+) | 45 territories on Avareon; 45/57 of the map's territories, rounded up (`victory_territory_threshold`, integer maths: 44 on Azincournean Highlands) | Team counts aggregated |
 | Capital Assault | Capture enemy capitals | Allies can't eliminate each other |
 | Total Conquest | All 57 territories | Team counts aggregated |
 
