@@ -121,6 +121,13 @@ class TransmissionOverlay:
         # Keep self.height for text padding calculations
         self.height = self.body_height
 
+        # Screen y of the board's lowest drawn pixel (the image has transparent padding):
+        # the floating notifications are stacked below it while the board is shown
+        if self.bg_surface is not None:
+            self._visible_bottom = self.body_y + self.bg_surface.get_bounding_rect(min_alpha=40).bottom
+        else:
+            self._visible_bottom = self.body_y + self.body_height
+
         # Body text font
         try:
             self.font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf', max(14, int(screen_height / 47)))
@@ -132,6 +139,10 @@ class TransmissionOverlay:
             self.speaker_font = pygame.font.Font('assets/fonts/Cinzel-Bold.ttf', max(13, int(screen_height / 52)))
         except (FileNotFoundError, OSError):
             self.speaker_font = pygame.font.SysFont('serif', max(13, int(screen_height / 52)), bold=True)
+
+    def visible_bottom(self):
+        """Screen y just below the visible board (Game._notification_top)."""
+        return self._visible_bottom
 
     def set_text(self, text, speaker=None):
         """Update the displayed text and optionally the speaker."""
@@ -1233,6 +1244,11 @@ class TutorialMission:
 
         elif action_type == 'click_barracks':
             return bool(allowed.get('click_barracks'))
+
+        elif action_type == 'click_keep':
+            # Steps 37-38 allow it; without this branch it fell through to the final
+            # refusal and a Keep could never be selected in the tutorial
+            return bool(allowed.get('click_keep'))
 
         elif action_type == 'click_army':
             return bool(allowed.get('click_army'))

@@ -3402,16 +3402,20 @@ class MapRenderer:
         if self.game.multiplayer_mode and not self.game.is_local_player_active():
             return
 
-        # Tutorial: hide quick-access icons when build/train not allowed
-        if hasattr(self.game, 'tutorial_mission') and self.game.tutorial_mission and self.game.tutorial_mission.active:
-            if not self.game.tutorial_mission.is_action_allowed('click_plots'):
-                return
+        # Mission gate: each ring shows exactly when its clicks are taken - main.py
+        # handle_map_area_click tests the building ring under 'click_plots' and the
+        # training ring under 'click_barracks' (the training ring used to hide under
+        # 'click_plots' too, so in tutorial steps 18-19 it was invisible but clickable)
+        mission = getattr(self.game, 'tutorial_mission', None)
+        mission_on = mission is not None and getattr(mission, 'active', False)
+        building_ring = not mission_on or mission.is_action_allowed('click_plots')
+        training_ring = not mission_on or mission.is_action_allowed('click_barracks')
 
         scaled_plot_surface_size = int(PLOT_SURFACE_SIZE * ui_scale)
         scaled_plot_center_offset = scaled_plot_surface_size // 2
 
         # Draw quick-access building icons around selected empty plot
-        if self.game.selected_plot and self.game.game_state.phase == 'playing':
+        if building_ring and self.game.selected_plot and self.game.game_state.phase == 'playing':
             territory, plot_index = self.game.selected_plot
             if territory in self.game.scaled_plots and plot_index < len(self.game.scaled_plots[territory]):
                 # PERFORMANCE OPTIMIZATION: Use cached screen positions
@@ -3578,7 +3582,7 @@ class MapRenderer:
                         self.game.hover_start_time_button = None
         
         # Draw quick-access training icons around selected Barracks
-        if self.game.selected_barracks and self.game.game_state.phase == 'playing':
+        if training_ring and self.game.selected_barracks and self.game.game_state.phase == 'playing':
             territory, barracks_plot_index = self.game.selected_barracks
             if territory in self.game.scaled_plots and barracks_plot_index < len(self.game.scaled_plots[territory]):
                 # PERFORMANCE OPTIMIZATION: Use cached screen positions

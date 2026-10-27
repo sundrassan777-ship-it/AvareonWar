@@ -164,9 +164,11 @@ class BuildingMixin:
         self.last_action_error = None
         self.last_action_error_args = None  # values for the message's {placeholders}
 
-        # Tutorial hook: check if building action is allowed
+        # Mission hook (tutorial, campaign, Tales): a building type it hasn't unlocked yet
         if self.tutorial_mission and not self.tutorial_mission.is_action_allowed(
                 'build', building_type=building_type, territory=territory):
+            self.last_action_error = 'mission_build_locked'
+            self.last_action_error_args = {'building': building_type}
             return False
 
         # Check if player owns territory (with error handling)
@@ -559,9 +561,12 @@ class BuildingMixin:
         self.last_action_error = None
         self.last_action_error_args = None  # values for the message's {placeholders}
 
-        # Tutorial hook: check if training action is allowed
+        # Mission hook (tutorial, campaign, Tales): a unit type it hasn't unlocked yet
         if self.tutorial_mission and not self.tutorial_mission.is_action_allowed(
                 'train', unit_type=unit_type, territory=territory):
+            from config.constants import UNIT_PLURALS
+            self.last_action_error = 'mission_train_locked'
+            self.last_action_error_args = {'units': UNIT_PLURALS.get(unit_type, unit_type)}
             return False
 
         # Validate unit type (with error handling)

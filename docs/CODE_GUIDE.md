@@ -3725,8 +3725,10 @@ All screens must distinguish Alt+F4 (exit app) from Escape (go back). Callers mu
 #### ✅ Action Failure Feedback Pattern
 
 When the game refuses something the player tried, it plays the denial sound and shows a
-red **toast** (top-left of the map, `chat_notification_effect.add_system_notification()`).
-There is exactly one way to do this — **never add a new popup or ad-hoc message.**
+red **toast** (top-left of the map, `chat_notification_effect.add_system_notification()`;
+below a mission's speech board while one is shown - `Game._notification_top()`, the board is
+drawn over that corner). There is exactly one way to do this — **never add a new popup or
+ad-hoc message.**
 
 **Where the text lives:** `config/action_error_messages.py` → `ACTION_ERROR_MESSAGES`
 (`code → text`, `{placeholders}`, `\n` for a line break). Every entry has a comment saying
@@ -3748,16 +3750,26 @@ mismatched placeholder → raw text + log warning).
   research/castle_upgrade/hero_training`, `add_movement_order_for_units`,
   `activate_hero_ability`). The AI, network handlers and the sim executor call the same
   methods and never read the code — without the reset their leftovers were shown for a later,
-  unrelated failure. Code-less refusals (tutorial blocks) must stay code-less → silent.
+  unrelated failure. A code-less refusal stays silent.
 - **Hero abilities:** `execute_*` refusals go through `HeroMixin._ability_refusal(code, **fmt)`,
   which records the code and still returns `(False, text)` — the AI reads `result[0]`, the
   network code logs the text. `main.py` clears the code before a targeted cast.
-- **R1 — tint instead of toast:** if a control is **red** (a rule refuses it), **grey** (tutorial/
-  mission lock) or hidden when the action would be refused, it needs no toast. A button
+- **R1 — tint, and say why:** a control is **red** when a rule refuses it, **grey** when a
+  mission (tutorial, campaign, Tales) has locked it, hidden when it can't apply. A button
   that *looks* available but is refused is a bug: fix its tint. The tint must use the same
   check as the action (`get_building_type_block_reason()`, `MAX_TRAINING_QUEUE`,
   `get_effective_tech_cost()`, `tutorial_mission.is_action_allowed()` — campaign missions
   and the Tale only block through `is_action_allowed`, `is_button_locked` is tutorial-only).
+- **A mission's lock toasts too** (owner, 2026-10-27 - until then grey meant silent, so
+  ordering an attack on Damlére or clicking a greyed building in the tutorial did nothing):
+  section G of the table (`mission_build_locked`, `mission_train_locked`,
+  `mission_end_turn_locked`, `mission_research_locked`, `mission_tab_locked`,
+  `mission_heroes_locked`, `mission_locked`) and `target_blocked` for a locked route. The
+  game-state locks (`start_construction`, `start_training`, both movement-order methods) set
+  the code; UI-only locks (`main.py` `handle_*_click`, the sidebar collapse) call
+  `show_action_error` where the mission refuses. **Story moments stay silent:** a step
+  without camera (the speech-only and enemy-turn steps), an intro or victory sequence drops
+  every input before any of this (`main.py` run loop).
 - **Hidden territories never produce errors:** `get_territory_at_pos()` skips territories a
   mission hides (`map_data.is_territory_enabled`); map clicks and ability targeting use it.
 - **Stay silent:** right-click without selected units, destination == source, modal/AI-turn

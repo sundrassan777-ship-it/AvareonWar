@@ -161,6 +161,10 @@ COLOR_ICON_UNAVAILABLE: Color4 = (200, 100, 100, 200)
 COLOR_ICON_LOCKED: Color4 = (120, 120, 120, 200)
 COLOR_ICON_BORDER: Color4 = (50, 50, 50, 255)
 
+# Unit names in the plural (Action Queue cards, "Archers cannot be trained yet!")
+UNIT_PLURALS = {'Swordsman': 'Swordsmen', 'Archer': 'Archers', 'Pikeman': 'Pikemen',
+                'Cavalry': 'Cavalry', 'Captain': 'Captains'}
+
 # --- Map Colors: Movement Arrows ---
 # By order kind (GameState.order_kind), the hues of the Action Queue cards
 # (UIRenderer.ORDER_KIND_STYLE): attack coral-red, move blue, reinforce ally green

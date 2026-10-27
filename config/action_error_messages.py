@@ -76,7 +76,9 @@ ACTION_ERROR_MESSAGES = {
     # greyed out in the army strip).
     'unit_not_ready': "Some selected armies are not ready to move!",
 
-    # Campaign Mission 6: the target territory is locked by the story for now.
+    # The target territory is locked by the mission for now: the tutorial's
+    # steps allow only the routes they teach (e.g. Damlére while it asks for an
+    # attack on Free Cities), Campaign Mission 6 locks story territories.
     # {territory} = target.
     'target_blocked': "Cannot target {territory} yet!",
 
@@ -200,6 +202,36 @@ ACTION_ERROR_MESSAGES = {
     # set off at all - none of its units were still there, or there was no room for
     # any of them. (A move stopped by an enemy army crossing it has its own popup.)
     'move_refused': "Your move from {source} to {target} could not set off.",
+
+    # =====================================================================
+    # G. LOCKED BY THE MISSION (tutorial, campaign missions, Book of Tales):
+    #    the player clicked something the mission hasn't unlocked yet. Its
+    #    button is usually greyed out.
+    # =====================================================================
+
+    # A building type the mission doesn't allow yet (e.g. a Mine while the
+    # tutorial asks for a Farm). {building} = its name.
+    'mission_build_locked': "{building} cannot be built yet!",
+
+    # A unit type the mission doesn't allow yet (e.g. Archers while the tutorial
+    # asks for Swordsmen). {units} = its name in the plural.
+    'mission_train_locked': "{units} cannot be trained yet!",
+
+    # End Turn while the mission is waiting for something else first.
+    'mission_end_turn_locked': "Cannot end the turn yet!",
+
+    # A technology the mission doesn't allow yet. {tech} = its name.
+    'mission_research_locked': "{tech} cannot be researched yet!",
+
+    # A sidebar tab the mission keeps closed for now. {tab} = its name.
+    'mission_tab_locked': "The {tab} tab is not available yet!",
+
+    # A Keep's hero training: heroes come with the story in the missions.
+    'mission_heroes_locked': "Heroes cannot be trained in this mission!",
+
+    # Anything else the mission keeps locked for now: cancelling, demolishing,
+    # selecting a plot the step doesn't use, collapsing the sidebar.
+    'mission_locked': "Not available yet!",
 
     # =====================================================================
     # F. RARE SAFETY MESSAGES (practically never shown - only if the game's

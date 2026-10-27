@@ -5449,6 +5449,20 @@ class Game:
         return (self._is_tutorial_active()
                 and not self.tutorial_mission.is_action_allowed(action))
 
+    def _notification_top(self):
+        """
+        Where the floating notifications (chat, refused-action toasts) start: just
+        below the active mission's speech board while one is shown - the board is
+        drawn over the same corner, after them - else None (their default).
+        """
+        mission = getattr(self, 'tutorial_mission', None)
+        if mission is None or not getattr(mission, 'active', False):
+            return None
+        board = getattr(mission, 'transmission_overlay', None)
+        if board is None or not hasattr(board, 'visible_bottom'):
+            return None
+        return board.visible_bottom() + 6
+
     def show_action_error(self, code=None, message=None, **fmt):
         """
         The single "action refused" feedback: denial sound + red notification (toast)
@@ -6184,11 +6198,12 @@ class Game:
                            self.game_state.buildings[territory][plot_index] == 'Keep')
 
                 if has_barracks:
-                    # Tutorial hook: check if barracks click is allowed
+                    # Mission hook: a Barracks the step doesn't use yet
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('click_barracks')):
-                        return True  # Silently block
+                        self.show_action_error('mission_locked')
+                        return True
                     # Select Barracks for training UI
                     self.selected_barracks = (territory, plot_index)
                     self.selected_keep = None
@@ -6216,11 +6231,12 @@ class Game:
                     self.selected_army_units = []
                     play_structure_sound('Keep')
                 else:
-                    # Tutorial hook: check if plot clicking is allowed
+                    # Mission hook: a plot the step doesn't use yet
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('click_plots')):
-                        return  # Silently block
+                        self.show_action_error('mission_locked')
+                        return
                     # Select plot for building UI
                     self.selected_plot = plot_click
                     self.selected_barracks = None
@@ -6428,6 +6444,10 @@ class Game:
                             'unit_ids': last_order.unit_ids,
                             'player_index': self.local_player_index  # Include player for 4-player support
                         })
+            else:
+                # A coded refusal (a mission's locked route) is shown; this path's other
+                # refusals only write to the Action Log
+                self._show_action_failure_feedback()
             return  # C1 fix: explicit return after CASE 2 movement order
 
     def _draw_battle_popup_initial(self, battle, modal_x, modal_y, modal_height, y_pos):
@@ -7207,7 +7227,10 @@ class Game:
                 or self.victory_sequence_active
                 or self.game_state is None or self.game_state.phase == 'ended'):
             return False
-        return self.toggle_sidebar()
+        toggled = self.toggle_sidebar()
+        if not toggled and self.game_state.sidebar_expanded and not self.can_collapse_sidebar():
+            self.show_action_error('mission_locked')   # the mission keeps the sidebar open
+        return toggled
 
     def draw_territory_hover_tooltip(self, mouse_pos):
         """Draw comprehensive tooltip when hovering over a territory (Phase 2: Using helper)"""
@@ -12109,9 +12132,10 @@ class Game:
             # Draw chat input box (appears above bottom UI when active) (Phase 4D: inlined)
             self.ui_renderer.draw_chat_input()
 
-            # Draw floating chat notifications (top-left of map, below top panel)
+            # Draw floating chat notifications (top-left of map, below top panel - or
+            # below a mission's speech board, which is drawn over that corner)
             if self.chat_notification_effect:
-                self.chat_notification_effect.render(self.screen)
+                self.chat_notification_effect.render(self.screen, top=self._notification_top())
 
             # P7 fix: removed duplicate building button hover tracking here —
             # already handled in update_frame_tooltips() called at line 9373
@@ -13620,11 +13644,12 @@ class Game:
 
         # End Turn button
         if self.end_turn_button and self.end_turn_button.collidepoint(pos):
-                # Tutorial hook: block End Turn if not allowed
+                # Mission hook: End Turn while the mission waits for something else
                 if (self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('end_turn')):
-                    return True  # Silently consume the click
+                    self.show_action_error('mission_end_turn_locked')
+                    return True
 
                 self.trigger_click_flash('bottom_button', 'end_turn')
 
@@ -13684,11 +13709,12 @@ class Game:
         if self.selected_barracks and self.queue_cancel_buttons:
             for cancel_rect, queue_index in self.queue_cancel_buttons:
                 if cancel_rect.collidepoint(pos):
-                    # Tutorial hook: block cancel training during tutorial unless allowed
+                    # Mission hook: cancelling training is locked for now
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('cancel_training')):
-                        return True  # Silently block
+                        self.show_action_error('mission_locked')
+                        return True
                     self.trigger_click_flash('queue_cancel', queue_index)
                     territory, barracks_plot_index = self.selected_barracks
 
@@ -13725,11 +13751,12 @@ class Game:
         # Demolish Barracks button (only when Barracks is actually selected)
         if self.selected_barracks and self.demolish_barracks_button is not None:
             if self.demolish_barracks_button.collidepoint(pos):
-                # Tutorial hook: block demolish during tutorial unless allowed
+                # Mission hook: demolishing is locked for now
                 if (self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('demolish')):
-                    return True  # Silently block
+                    self.show_action_error('mission_locked')
+                    return True
                 # No new actions while simultaneous mode resolves battles (the map
                 # quick-icons already enforced this; the bottom panel did not)
                 if self._is_sim_resolving():
@@ -13890,7 +13917,8 @@ class Game:
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('train_hero')):
-                        return True  # Silently block
+                        self.show_action_error('mission_heroes_locked')
+                        return True
                     # No new actions while simultaneous mode resolves battles (the map
                     # quick-icons already enforced this; the bottom panel did not)
                     if self._is_sim_resolving():
@@ -13935,11 +13963,12 @@ class Game:
         # Demolish Keep button (only when Keep is actually selected)
         if self.selected_keep and self.demolish_keep_button:
             if self.demolish_keep_button.collidepoint(pos):
-                # Tutorial hook: block demolish during tutorial unless allowed
+                # Mission hook: demolishing is locked for now
                 if (self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('demolish')):
-                    return True  # Silently block
+                    self.show_action_error('mission_locked')
+                    return True
                 # No new actions while simultaneous mode resolves battles (the map
                 # quick-icons already enforced this; the bottom panel did not)
                 if self._is_sim_resolving():
@@ -14065,11 +14094,12 @@ class Game:
                                    self.game_state.buildings[territory][plot_index] == 'Keep')
 
                         if has_barracks:
-                            # Tutorial hook: block barracks click in bottom UI when not allowed
+                            # Mission hook: a Barracks the step doesn't use yet
                             if (self.tutorial_mission
                                     and self.tutorial_mission.active
                                     and not self.tutorial_mission.is_action_allowed('click_barracks')):
-                                return True  # Silently block
+                                self.show_action_error('mission_locked')
+                                return True
                             # Select Barracks for training UI
                             self.selected_barracks = (territory, plot_index)
                             self.selected_keep = None
@@ -14078,11 +14108,12 @@ class Game:
                             self.game_state.deselect_army()
                             play_structure_sound('Barracks')
                         elif has_keep:
-                            # Tutorial hook: block keep click in bottom UI when not allowed
+                            # Mission hook: a Keep the step doesn't use yet
                             if (self.tutorial_mission
                                     and self.tutorial_mission.active
                                     and not self.tutorial_mission.is_action_allowed('click_keep')):
-                                return True  # Silently block
+                                self.show_action_error('mission_locked')
+                                return True
                             # Select Keep for hero training UI
                             self.selected_keep = (territory, plot_index)
                             self.selected_barracks = None
@@ -14091,11 +14122,12 @@ class Game:
                             self.game_state.deselect_army()
                             play_structure_sound('Keep')
                         else:
-                            # Tutorial hook: block plot selection in bottom UI when not allowed
+                            # Mission hook: a plot the step doesn't use yet
                             if (self.tutorial_mission
                                     and self.tutorial_mission.active
                                     and not self.tutorial_mission.is_action_allowed('click_plots')):
-                                return True  # Silently block
+                                self.show_action_error('mission_locked')
+                                return True
                             # Select plot for building UI
                             self.selected_plot = (territory, plot_index)
                             self.selected_barracks = None
@@ -14131,11 +14163,12 @@ class Game:
             # Cancel construction button
             if self.cancel_button is not None:
                 if self.cancel_button.collidepoint(pos):
-                    # Tutorial hook: block cancel construction during tutorial unless allowed
+                    # Mission hook: cancelling construction is locked for now
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('cancel_construction')):
-                        return True  # Silently block
+                        self.show_action_error('mission_locked')
+                        return True
                     self.trigger_click_flash('cancel', 'construction')
                     territory, plot_index = self.selected_plot
 
@@ -14174,11 +14207,12 @@ class Game:
             # Demolish building button
             if self.demolish_button is not None:
                 if self.demolish_button.collidepoint(pos):
-                    # Tutorial hook: block demolish during tutorial unless allowed
+                    # Mission hook: demolishing is locked for now
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('demolish')):
-                        return True  # Silently block
+                        self.show_action_error('mission_locked')
+                        return True
                     # No new actions while simultaneous mode resolves battles (the map
                     # quick-icons already enforced this; the bottom panel did not)
                     if self._is_sim_resolving():
@@ -14291,12 +14325,13 @@ class Game:
         if self.sidebar_tab_buttons:
             for tab_id, tab_rect in self.sidebar_tab_buttons.items():
                 if tab_rect.collidepoint(pos):
-                    # Tutorial gate: block tabs not in allowed list. A locked bookmark
-                    # does nothing at all — it doesn't even open a collapsed panel.
+                    # Mission gate: a tab the mission keeps closed. A locked bookmark
+                    # doesn't open (not even a collapsed panel), it says why.
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('sidebar_tab', tab_name=tab_id)):
-                        return True  # Silently consume click
+                        self.show_action_error('mission_tab_locked', tab=tab_id.replace('_', ' ').title())
+                        return True
                     # Click flash on the bookmark (its sprite brightens briefly)
                     self.trigger_click_flash('sidebar_tab', tab_id)
                     # A bookmark on the collapsed sidebar opens it on that tab
@@ -14319,11 +14354,12 @@ class Game:
             # Format: (rect, order, player_order_index) — index access, see ui_renderer
             for button in self.order_cancel_buttons:
                 if button[0].collidepoint(pos):
-                    # Tutorial hook: block order cancellation during tutorial unless allowed
+                    # Mission hook: cancelling orders is locked for now
                     if (self.tutorial_mission
                             and self.tutorial_mission.active
                             and not self.tutorial_mission.is_action_allowed('cancel_order')):
-                        return True  # Silently block
+                        self.show_action_error('mission_locked')
+                        return True
                     # Find the clicked order by identity: its position in the full list can
                     # differ from its position among this player's orders
                     order = button[1]
@@ -14344,11 +14380,12 @@ class Game:
         # Check cancel all button (only if expanded)
         if self.game_state.sidebar_expanded and self.cancel_all_button:
             if self.cancel_all_button.collidepoint(pos):
-                # Tutorial hook: block cancel all orders during tutorial unless allowed
+                # Mission hook: cancelling orders is locked for now
                 if (self.tutorial_mission
                         and self.tutorial_mission.active
                         and not self.tutorial_mission.is_action_allowed('cancel_all_orders')):
-                    return True  # Silently block
+                    self.show_action_error('mission_locked')
+                    return True
                 self.trigger_click_flash('sidebar_cancel_all', None)
                 # Cancel only the orders the sidebar shows — other players' orders
                 # (e.g. AI orders in the same planning phase) must survive
@@ -15418,7 +15455,8 @@ class Game:
                             and self.tutorial_mission.active):
                         if not self.tutorial_mission.is_action_allowed('research', tech_id=tech_id):
                             logger.info(f"[TUTORIAL] Research blocked: {tech['name']}")
-                            return True  # Block silently
+                            self.show_action_error('mission_research_locked', tech=tech['name'])
+                            return True
 
                     # Check per-player state
                     current_player = self.game_state.current_player

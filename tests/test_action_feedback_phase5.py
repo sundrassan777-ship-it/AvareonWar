@@ -6,8 +6,9 @@ territory with units selected in the army strip).
 Refusals now give the denial sound + toast instead of an Action Log line only:
   reinforce_limit, not_adjacent ("Cannot reach target territory!"), unit_not_ready,
   target_blocked (Mission 6), wrong_phase (simultaneous 'resolving').
-Silent by decision: right-click without units selected, destination == source,
-tutorial blocks.
+Silent by decision: right-click without units selected, destination == source.
+(Tutorial blocks were silent too until 2026-10-27; a mission's locked route now
+toasts target_blocked - see tests/test_mission_refusal_toasts.py.)
 
 Also: main.py's own reinforcement pre-check was removed. It counted the selected
 units' existing order to the same destination twice and refused valid re-orders;
@@ -181,14 +182,14 @@ class TestRightClickFeedback:
             game.handle_right_click(pos)
         show.assert_called_once_with('target_blocked', territory=territory)
 
-    def test_tutorial_move_block_is_silent(self, game, target):
-        """A tutorial 'move' block sets no code -> no toast (by decision)."""
+    def test_mission_move_block_toasts(self, game, target):
+        """A mission's locked route (the tutorial's step whitelist) says so (owner, 2026-10-27)."""
         territory, pos = target
         _open_strip(game, next(iter(map_data.get_neighbors(territory))))
         game.game_state.tutorial_mission = SimpleNamespace(is_action_allowed=lambda *a, **k: False)
         with mock.patch.object(game, 'show_action_error') as show:
             game.handle_right_click(pos)
-        show.assert_not_called()
+        show.assert_called_once_with('target_blocked', territory=territory)
 
 
 class TestResolvingPhase:

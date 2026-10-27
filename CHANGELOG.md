@@ -2,6 +2,39 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-27 - "Not yet" toasts for what a mission has locked
+
+Branch `feature/mission-refusal-toasts`. Owner: in the tutorial, ordering an attack on
+Damlére or clicking a greyed building gave no toast - make every unavailable action say so.
+They were silent by the action-feedback rule R1 (2026-09: a greyed, mission-locked control
+needs no toast). Decisions: every mission (tutorial, campaign, Book of Tales); story moments
+stay silent; one short line each.
+- **Codes** (`config/action_error_messages.py`, new section G): `mission_build_locked`
+  ("{building} cannot be built yet!"), `mission_train_locked` ("{units} cannot be trained
+  yet!"), `mission_end_turn_locked`, `mission_research_locked`, `mission_tab_locked`,
+  `mission_heroes_locked` ("Heroes cannot be trained in this mission!"), `mission_locked`
+  ("Not available yet!"); a locked route reuses `target_blocked` ("Cannot target {territory}
+  yet!").
+- **Game state**: `start_construction`, `start_training`, `add_movement_order_for_units` and the
+  legacy `add_movement_order` (which now resets the code on entry, and whose caller got a
+  failure branch) set the code when a mission refuses - so the panel buttons, the map
+  quick-icons and the keys all toast.
+- **UI-only locks**: End Turn, the sidebar tabs, technologies, hero training, cancelling
+  (training, construction, orders), demolishing, plots a step doesn't use (map and territory
+  view), collapsing the sidebar (button and F2) - every `# Silently block` the tutorial had.
+  Still silent: steps without camera (speech-only, the enemy's turn), intros and victory
+  sequences, the camera and hover, clouded territories.
+- **Toasts below the speech board**: the mission's board is drawn over the same corner, after
+  the toasts, and hid them - also Mission 6's existing "Cannot target ... yet!".
+  `TransmissionOverlay.visible_bottom()` (both copies), `ChatNotificationEffect.render(top=)`,
+  `Game._notification_top()`.
+- **Fixes**: the tutorial's `'click_keep'` had no branch, so steps 37-38 could never select a
+  Keep; the map's quick-access training ring followed `'click_plots'` while its clicks
+  followed `'click_barracks'`, so in steps 18-19 it was invisible but clickable.
+- `UNIT_PLURALS` moved to `config/constants.py` (the Action Queue cards and the toasts).
+- Tests: `tests/test_mission_refusal_toasts.py`; `test_action_feedback_phase5.py`'s silent
+  tutorial move is now `test_mission_move_block_toasts`.
+
 ## 2026-10-27 - Tutorial guidance in gold, thinner arrows
 
 Branch `feature/tutorial-guidance`. From a review of the tutorial (a new player's first
