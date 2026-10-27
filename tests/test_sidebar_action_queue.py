@@ -317,21 +317,20 @@ class TestRouteHighlight:
         assert game.sidebar_hovered_route is None
 
     def test_only_the_hovered_route_turns_gold(self, game, monkeypatch):
-        """The hovered order's own arrow changes colour - no extra frame around it."""
-        import pygame
-        from config.constants import COLOR_ARROW_HOVERED, COLOR_ARROW_MOVEMENT
+        """The hovered order's own arrow changes style (gold light) - no extra frame around it."""
         first = _order(game, to_owner=2)
         _order(game, to_owner=1, src_skip=1)
-        colors = []
-        real_line = pygame.draw.line
-        monkeypatch.setattr(pygame.draw, 'line', lambda surf, color, *a, **k: colors.append(tuple(color)) or real_line(surf, color, *a, **k))
+        kinds = []
+        light = game.map_renderer.order_light
+        real_draw = light.draw_arrows
+        monkeypatch.setattr(light, 'draw_arrows', lambda view, arrows, *a, **k: kinds.append(
+            [arrow.kind for arrow in arrows]) or real_draw(view, arrows, *a, **k))
         game.sidebar_hovered_route = None
         game.map_renderer.draw_movement_arrows()
-        assert COLOR_ARROW_HOVERED not in colors and COLOR_ARROW_MOVEMENT in colors
-        colors.clear()
+        assert sorted(kinds[-1]) == ['own', 'own']
         game.sidebar_hovered_route = (first.from_territory, first.to_territory)
         game.map_renderer.draw_movement_arrows()
-        assert colors.count(COLOR_ARROW_HOVERED) == 1 and COLOR_ARROW_MOVEMENT in colors
+        assert sorted(kinds[-1]) == ['hovered', 'own']
 
 
 # ============================================================================

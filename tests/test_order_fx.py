@@ -461,3 +461,131 @@ class TestSelectionInGame:
         game.update_map_effects(0.25)
         game.draw()
         assert calls[1][4] == pytest.approx(calls[0][4] + 0.25)
+
+
+class _SimPlanning:
+    """The parts of SimultaneousGameState the arrows read, in the planning phase."""
+
+    sim_phase = 'planning'
+
+    def __init__(self, player_orders):
+        self.player_orders = player_orders
+
+
+class TestArrowsInGame:
+
+    def test_one_arrow_per_route_with_the_summed_count(self, game, home, monkeypatch):
+        import map_data
+        from game_state import MovementOrder
+        gs = game.game_state
+        target = sorted(map_data.get_neighbors(home))[0]
+        gs.movement_orders.extend([MovementOrder(home, target, 2, 0), MovementOrder(home, target, 3, 0)])
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_arrows')
+        game.map_renderer.draw_movement_arrows()
+        arrows = calls[0][1]
+        assert len(calls) == 1 and len(arrows) == 1
+        arrow = arrows[0]
+        assert (arrow.kind, arrow.count) == ('own', 5)
+        assert arrow.points == (game.scaled_centers[home], game.scaled_centers[target])
+
+    def test_lift_matches_the_army_circle(self, game, home, monkeypatch):
+        import map_data
+        from game_state import MovementOrder
+        from config.constants import ARMY_CIRCLE_RADIUS, ARMY_CIRCLE_DRAW_LIFT
+        lifts = []
+        light = game.map_renderer.order_light
+        real = light.draw_arrows
+        monkeypatch.setattr(light, 'draw_arrows',
+                            lambda view, arrows, clock, lift=0, badge=None: lifts.append(lift)
+                            or real(view, arrows, clock, lift=lift, badge=badge))
+        game.game_state.movement_orders.append(
+            MovementOrder(home, sorted(map_data.get_neighbors(home))[0], 2, 0))
+        game.map_renderer.draw_movement_arrows()
+        assert lifts == [int(ARMY_CIRCLE_RADIUS * game.get_ui_scale_factor() * ARMY_CIRCLE_DRAW_LIFT)]
+
+    def test_two_hop_order_bends_through_its_waypoint(self, game, home, monkeypatch):
+        import map_data
+        from game_state import MovementOrder
+        via = sorted(map_data.get_neighbors(home))[0]
+        onward = next(t for t in sorted(map_data.get_neighbors(via)) if t != home)
+        game.game_state.movement_orders.append(
+            MovementOrder(home, onward, 2, 0, intermediate_territory=via))
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_arrows')
+        game.map_renderer.draw_movement_arrows()
+        assert calls[0][1][0].points[1] == game.scaled_centers[via]
+
+    def test_arrow_starts_at_the_players_flag_when_garrisons_share_a_territory(self, game, home, monkeypatch):
+        import map_data
+        from game_state import MovementOrder
+        gs = game.game_state
+        gs.territory_garrisons[home] = {0: {'unmoved': 4, 'moved': 0}, 1: {'unmoved': 3, 'moved': 0}}
+        try:
+            gs.movement_orders.append(MovementOrder(home, sorted(map_data.get_neighbors(home))[0], 2, 0))
+            calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_arrows')
+            game.map_renderer.draw_movement_arrows()
+            cx, cy = game.scaled_centers[home]
+            flags = gs.get_flag_positions_for_territory(home, cx, cy, 2)
+            assert calls[0][1][0].points[0] == tuple(float(v) for v in flags[0])
+        finally:
+            gs.territory_garrisons[home] = {0: {'unmoved': 6, 'moved': 0}}
+
+    def test_cancelled_orders_shake_and_fade_then_go(self, game, home, monkeypatch):
+        import time
+        import map_data
+        from config.constants import ARROW_CANCEL_DURATION
+        gs = game.game_state
+        target = sorted(map_data.get_neighbors(home))[0]
+        gs.cancelling_arrows.extend([
+            {'from_territory': home, 'to_territory': target, 'army_count': 3,
+             'start_time': time.time() - ARROW_CANCEL_DURATION / 2},
+            {'from_territory': home, 'to_territory': target, 'army_count': 4,
+             'start_time': time.time() - ARROW_CANCEL_DURATION * 2},   # over
+        ])
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_arrows')
+        game.map_renderer.draw_movement_arrows()
+        arrows = calls[0][1]
+        assert len(arrows) == 1 and arrows[0].kind == 'cancelled' and arrows[0].count == 3
+        assert 0.3 < arrows[0].fade < 0.7
+        assert len(gs.cancelling_arrows) == 1
+
+    def test_simultaneous_planning_shows_allies_in_cyan_and_cancels(self, game, home, monkeypatch):
+        import time
+        import map_data
+        gs = game.game_state
+        neighbours = sorted(map_data.get_neighbors(home))
+        monkeypatch.setattr(gs, 'player_teams', [0, 0, 1])   # players 0 and 1 allied
+        monkeypatch.setattr(game, 'sim_state', _SimPlanning({
+            0: [{'type': 'movement', 'from_territory': home, 'to_territory': neighbours[0], 'army_count': 2}],
+            1: [{'type': 'movement', 'from_territory': neighbours[1], 'to_territory': home, 'army_count': 3}],
+            2: [{'type': 'movement', 'from_territory': neighbours[2], 'to_territory': home, 'army_count': 9}],
+        }), raising=False)
+        gs.cancelling_arrows.append({'from_territory': home, 'to_territory': neighbours[0], 'army_count': 1,
+                                     'start_time': time.time()})
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_arrows')
+        game.map_renderer.draw_movement_arrows()
+        kinds = sorted((a.kind, a.count) for a in calls[0][1])
+        # The enemy's order (player 2) is not shown; the cancel animation is
+        assert kinds == [('ally', 3), ('cancelled', 1), ('own', 2)]
+
+
+class TestReticlesInGame:
+
+    @pytest.mark.parametrize('to_own', [False, True], ids=['attack', 'merge'])
+    def test_selected_armys_destinations_get_a_reticle(self, game, home, monkeypatch, to_own):
+        import map_data
+        from game_state import MovementOrder
+        gs = game.game_state
+        target = sorted(map_data.get_neighbors(home))[0]
+        if to_own:
+            gs.territory_owners[target] = 0
+            gs.territory_garrisons[target] = {0: {'unmoved': 6, 'moved': 0}}
+        gs.movement_orders.append(MovementOrder(home, target, 2, 0))
+        gs.selected_army = (home, 6)
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_reticle')
+        game.draw()
+        assert [c[4] for c in calls] == ['merge' if to_own else 'attack']
+        # Not while the army isn't selected
+        gs.selected_army = None
+        calls.clear()
+        game.draw()
+        assert calls == []
