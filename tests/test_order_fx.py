@@ -22,7 +22,8 @@ os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 
 import pygame  # noqa: E402
 
-from config.constants import COLOR_ARROW_MOVEMENT, COLOR_ARROW_HOVERED, COLOR_ARROW_ALLY  # noqa: E402
+from config.constants import (COLOR_ARROW_ATTACK, COLOR_ARROW_MOVE, COLOR_ARROW_REINFORCE,  # noqa: E402
+                              COLOR_ARROW_HOVERED, COLOR_ARROW_CANCELLED)
 from ui.effects.light_fx import SoftRing, path_beads, path_lengths, path_point  # noqa: E402
 from ui.effects.hero_fx_effect import FxView  # noqa: E402
 from ui.effects.order_fx_style import ORDER_FX_STYLE, ORDER_FX_STYLES, get_order_fx_style  # noqa: E402
@@ -40,10 +41,9 @@ def display():
 
 def _unbudgeted(light):
     """No per-frame time budgets: tests must not depend on speed."""
-    light.glow._budget.ms = light.tint._budget.ms = 10 ** 6
-    light.glow._budget.count = light.tint._budget.count = 10 ** 6
-    for ring in light._rings:
-        ring._budget.ms = ring._budget.count = 10 ** 6
+    budgets = [light.glow._budget, light.tint._budget] + [ring._budget for ring in light._rings]
+    for budget in budgets:
+        budget.ms = budget.count = budget.left = 10 ** 6
     return light
 
 
@@ -238,7 +238,8 @@ class TestArrows:
         assert path.badge[0] < 200
 
     def test_crests_flow_from_source_to_target(self, light):
-        arrow = OrderArrow([(40, 150), (360, 150)])
+        # Dimmed, so no colour channel saturates and the brightest bead is the crest's
+        arrow = OrderArrow([(40, 150), (360, 150)], fade=0.4)
         path = _arrow_path(light, arrow)
 
         def brightest_x(clock):
@@ -251,10 +252,42 @@ class TestArrows:
         flow = ORDER_FX_STYLE['arrows']['flow']
         assert brightest_x(0.1 / flow) > brightest_x(0.0)
 
-    def test_hovered_arrows_are_gold_and_allies_cyan(self, light):
-        assert light.arrow_colours['own'][0] == COLOR_ARROW_MOVEMENT
+    def test_kinds_take_the_action_queue_colours(self, light):
+        assert light.arrow_colours['attack'][0] == COLOR_ARROW_ATTACK
+        assert light.arrow_colours['own'][0] == COLOR_ARROW_MOVE
+        assert light.arrow_colours['ally'][0] == COLOR_ARROW_REINFORCE
         assert light.arrow_colours['hovered'][0] == COLOR_ARROW_HOVERED
-        assert light.arrow_colours['ally'][0] == COLOR_ARROW_ALLY
+        assert light.arrow_colours['cancelled'][0] == COLOR_ARROW_CANCELLED
+        # Same hue families as the cards: attack red, move blue, reinforce green
+        r, g, b = COLOR_ARROW_ATTACK
+        assert r > g and r > b
+        r, g, b = COLOR_ARROW_MOVE
+        assert b > r and b > g
+        r, g, b = COLOR_ARROW_REINFORCE
+        assert g > r and g > b
+
+    def test_an_allys_order_is_dimmer_and_does_not_flow(self, light):
+        def picture(allied, clock):
+            screen = _blank()
+            light.draw_arrows(_view(screen), [OrderArrow([(40, 150), (360, 150)], 'attack', allied=allied)],
+                              clock)
+            return screen
+
+        assert _total(picture(True, 0.0)) < _total(picture(False, 0.0)) * 0.8
+        flow = ORDER_FX_STYLE['arrows']['flow']
+        still = pygame.image.tostring(picture(True, 0.0), 'RGB')
+        assert pygame.image.tostring(picture(True, 0.3 / flow), 'RGB') == still
+        moving = pygame.image.tostring(picture(False, 0.0), 'RGB')
+        assert pygame.image.tostring(picture(False, 0.3 / flow), 'RGB') != moving
+
+    def test_a_cancelled_arrow_fizzles_bead_by_bead(self, light):
+        from ui.effects.order_fx_effect import _fizzled
+        beads = list(range(60))
+        assert _fizzled(beads, 1.0) == beads
+        lit = [len(_fizzled(beads, fade)) for fade in (0.9, 0.6, 0.3, 0.05)]
+        assert lit == sorted(lit, reverse=True) and lit[0] > 40 and lit[-1] < 10
+        # A bead that has gone out stays out as the arrow fades further
+        assert set(_fizzled(beads, 0.3)) <= set(_fizzled(beads, 0.6))
 
     def test_cancelled_arrows_fade_out(self, light):
         arrow = OrderArrow([(40, 150), (360, 150)], 'cancelled')
@@ -323,15 +356,29 @@ class TestReticle:
         # Not between the ticks, outside the ring
         assert _light_at(screen, 200 + mid * 0.7071, 150 + mid * 0.7071) < _light_at(screen, 200 + mid, 150)
 
-    def test_attack_is_red_and_merge_cyan(self, light):
-        red, cyan = _blank(), _blank()
-        light.draw_reticle(_view(red), 200, 150, 14, 'attack', clock=0.0)
-        light.draw_reticle(_view(cyan), 200, 150, 14, 'merge', clock=0.0)
+    def test_the_ring_takes_the_order_kinds_colour(self, light):
         ring = 14 + ORDER_FX_STYLE['reticle']['gap'] * RADIUS
-        r, g, b, _ = red.get_at((200 + int(ring), 150))
+        colours = {}
+        for kind in ('attack', 'own', 'ally'):
+            screen = _blank()
+            light.draw_reticle(_view(screen), 200, 150, 14, kind, clock=0.0)
+            colours[kind] = screen.get_at((200 + int(ring), 150))[:3]
+        r, g, b = colours['attack']
         assert r > g and r > b
-        r, g, b, _ = cyan.get_at((200 + int(ring), 150))
-        assert b > r and g > r
+        r, g, b = colours['own']
+        assert b > r and b > g
+        r, g, b = colours['ally']
+        assert g > r and g > b
+
+    def test_only_an_attack_has_ticks(self, light):
+        reticle = ORDER_FX_STYLE['reticle']
+        ticks = reticle['ticks']
+        ring = 14 + reticle['gap'] * RADIUS
+        mid = ring + (ticks['gap'] + ticks['travel'] * 0.5 + ticks['length'] * 0.5) * RADIUS
+        for kind, has_ticks in (('attack', True), ('own', False), ('ally', False)):
+            screen = _blank()
+            light.draw_reticle(_view(screen), 200, 150, 14, kind, clock=0.0)
+            assert (_light_at(screen, 200 + mid, 150) > 40) == has_ticks, kind
 
 
 # ========================================
@@ -345,8 +392,8 @@ class TestStyles:
         assert get_order_fx_style('elsewhere') is ORDER_FX_STYLES['2d']
 
     def test_every_arrow_kind_and_reticle_kind_has_a_colour(self):
-        assert set(ORDER_FX_STYLE['arrows']['kinds']) == {'own', 'ally', 'hovered', 'cancelled'}
-        assert set(ORDER_FX_STYLE['reticle']['kinds']) == {'attack', 'merge'}
+        assert set(ORDER_FX_STYLE['arrows']['kinds']) == {'attack', 'own', 'ally', 'hovered', 'cancelled'}
+        assert set(ORDER_FX_STYLE['reticle']['kinds']) == {'attack', 'own', 'ally'}
 
     def test_prewarm_builds_the_arrow_and_ring_sprites(self):
         light = OrderLight()
@@ -485,8 +532,36 @@ class TestArrowsInGame:
         arrows = calls[0][1]
         assert len(calls) == 1 and len(arrows) == 1
         arrow = arrows[0]
-        assert (arrow.kind, arrow.count) == ('own', 5)
+        assert (arrow.kind, arrow.count) == ('attack', 5)   # into player 1's territory
         assert arrow.points == (game.scaled_centers[home], game.scaled_centers[target])
+
+    @pytest.mark.parametrize('owner, kind', [(1, 'attack'), (-1, 'attack'), (0, 'own'), (2, 'ally')])
+    def test_arrows_take_the_order_kind(self, game, home, monkeypatch, owner, kind):
+        import map_data
+        from game_state import MovementOrder
+        gs = game.game_state
+        target = sorted(map_data.get_neighbors(home))[0]
+        monkeypatch.setattr(gs, 'player_teams', [0, 1, 0])   # player 2 allied to 0
+        monkeypatch.setitem(gs.territory_owners, target, owner)
+        gs.movement_orders.append(MovementOrder(home, target, 2, 0))
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_arrows')
+        game.map_renderer.draw_movement_arrows()
+        assert calls[0][1][0].kind == kind
+        # The Action Queue card agrees
+        assert game.ui_renderer._order_kind(0, target) == kind
+
+    def test_a_two_hop_takes_its_final_targets_kind(self, game, home, monkeypatch):
+        import map_data
+        from game_state import MovementOrder
+        gs = game.game_state
+        via = sorted(map_data.get_neighbors(home))[0]
+        onward = next(t for t in sorted(map_data.get_neighbors(via)) if t != home)
+        monkeypatch.setitem(gs.territory_owners, via, 0)
+        monkeypatch.setitem(gs.territory_owners, onward, 0)
+        gs.movement_orders.append(MovementOrder(home, onward, 2, 0, intermediate_territory=via))
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_arrows')
+        game.map_renderer.draw_movement_arrows()
+        assert calls[0][1][0].kind == 'own'
 
     def test_lift_matches_the_army_circle(self, game, home, monkeypatch):
         import map_data
@@ -548,7 +623,7 @@ class TestArrowsInGame:
         assert 0.3 < arrows[0].fade < 0.7
         assert len(gs.cancelling_arrows) == 1
 
-    def test_simultaneous_planning_shows_allies_in_cyan_and_cancels(self, game, home, monkeypatch):
+    def test_simultaneous_planning_shows_allies_dimmed_and_cancels(self, game, home, monkeypatch):
         import time
         import map_data
         gs = game.game_state
@@ -563,14 +638,16 @@ class TestArrowsInGame:
                                      'start_time': time.time()})
         calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_arrows')
         game.map_renderer.draw_movement_arrows()
-        kinds = sorted((a.kind, a.count) for a in calls[0][1])
-        # The enemy's order (player 2) is not shown; the cancel animation is
-        assert kinds == [('ally', 3), ('cancelled', 1), ('own', 2)]
+        kinds = sorted((a.kind, a.count, a.allied) for a in calls[0][1])
+        # Ours goes into the ally's territory (reinforce); the ally's reinforces ours and
+        # is marked as an ally's; the enemy's order (player 2) is not shown; the cancel
+        # animation is
+        assert kinds == [('ally', 2, False), ('ally', 3, True), ('cancelled', 1, False)]
 
 
 class TestReticlesInGame:
 
-    @pytest.mark.parametrize('to_own', [False, True], ids=['attack', 'merge'])
+    @pytest.mark.parametrize('to_own', [False, True], ids=['attack', 'move'])
     def test_selected_armys_destinations_get_a_reticle(self, game, home, monkeypatch, to_own):
         import map_data
         from game_state import MovementOrder
@@ -583,7 +660,7 @@ class TestReticlesInGame:
         gs.selected_army = (home, 6)
         calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_reticle')
         game.draw()
-        assert [c[4] for c in calls] == ['merge' if to_own else 'attack']
+        assert [c[4] for c in calls] == ['own' if to_own else 'attack']
         # Not while the army isn't selected
         gs.selected_army = None
         calls.clear()

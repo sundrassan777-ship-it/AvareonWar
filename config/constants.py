@@ -162,11 +162,13 @@ COLOR_ICON_LOCKED: Color4 = (120, 120, 120, 200)
 COLOR_ICON_BORDER: Color4 = (50, 50, 50, 255)
 
 # --- Map Colors: Movement Arrows ---
-COLOR_ARROW_MOVEMENT: Color3 = (0, 200, 0)
+# By order kind (GameState.order_kind), the hues of the Action Queue cards
+# (UIRenderer.ORDER_KIND_STYLE): attack coral-red, move blue, reinforce ally green
+COLOR_ARROW_ATTACK: Color3 = (235, 70, 45)
+COLOR_ARROW_MOVE: Color3 = (60, 125, 255)
+COLOR_ARROW_REINFORCE: Color3 = (45, 195, 70)
 # The order arrow whose Action Queue card is under the mouse (UIConstants.SIDEBAR_ROUTE_HIGHLIGHT)
 COLOR_ARROW_HOVERED: Color3 = (232, 186, 64)
-# An ally's queued order (simultaneous mode shows the team's orders)
-COLOR_ARROW_ALLY: Color3 = (0, 180, 200)
 
 # --- UI Colors: Tooltips ---
 COLOR_TOOLTIP_BG: Color3 = (50, 50, 50)
@@ -243,7 +245,7 @@ TOOLTIP_PADDING = 7
 # ui/effects/order_fx_style.py (ARROWS), in plot radii so they scale with zoom.
 
 # Cascade cancel animation: red shaking arrows when auto-cancelled due to overflow
-COLOR_ARROW_CANCELLED: Color3 = (220, 50, 50)
+COLOR_ARROW_CANCELLED: Color3 = (150, 142, 132)   # ash grey: fizzles out
 ARROW_CANCEL_DURATION = 0.6       # seconds
 ARROW_CANCEL_SHAKE_FREQ = 30      # Hz (oscillation speed)
 ARROW_CANCEL_SHAKE_AMP = 4        # pixels (shake amplitude)

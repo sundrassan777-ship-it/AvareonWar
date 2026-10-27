@@ -10,22 +10,28 @@ that carries the colour on the bright map, additive light over it.
                round it and soft rings pulse outward from it
 - 'arrows'     the arrows of movement orders: a light path bowed slightly to
                the right of travel, crests of light flowing toward the target,
-               a chevron head and a flare at its tip
-- 'reticle'    the mark on a selected army's order destinations: a ring with
-               four ticks at N/E/S/W (from the hero targeting circle's spikes)
+               a chevron head and a flare at its tip; coloured by order kind
+- 'reticle'    the mark on a selected army's order destinations: a ring in the
+               order kind's colour, with four ticks at N/E/S/W (from the hero
+               targeting circle's spikes) on an attack only
 
 Styles are keyed by map look ('2d' / '3d'); both looks share one style today.
 
 UNITS: sizes and distances in PLOT RADII (EMPTY_PLOT_RADIUS * ui_scale, 16..24
 px), so the marks match the plots at every zoom; times in seconds.
 
-COLOURS keep the meanings the flat arrows had (config/constants.py): green for
-the player's own orders, cyan for an ally's, gold while the order's Action
-Queue card is under the mouse, red for an order being auto-cancelled.
+COLOURS by order kind (GameState.order_kind), the same as the Action Queue
+cards (config/constants.py COLOR_ARROW_*): 'attack' coral-red, 'own' (a move
+into your own territory) blue, 'ally' (reinforcing an ally) green. Gold while
+the order's card is under the mouse; an auto-cancelled order fizzles out in ash
+grey. Allies' orders (simultaneous mode) take their kind's colour, dimmer and
+without the flow (ARROWS['allied']). The reticle takes the kind's colour, and
+only an attack's has ticks, so the shape tells attack from move as well as
+the colour (red / green colour blindness).
 """
 
-from config.constants import (COLOR_ARROW_MOVEMENT, COLOR_ARROW_HOVERED, COLOR_ARROW_ALLY,
-                              COLOR_ARROW_CANCELLED)
+from config.constants import (COLOR_ARROW_ATTACK, COLOR_ARROW_MOVE, COLOR_ARROW_REINFORCE,
+                              COLOR_ARROW_HOVERED, COLOR_ARROW_CANCELLED)
 
 WARM_WHITE = (255, 240, 215)
 
@@ -66,14 +72,19 @@ SELECTION = {
 # ========================================
 ARROWS = {
     'kinds': {
-        'own': {'colour': COLOR_ARROW_MOVEMENT, 'white_mix': 0.1, 'intensity': 0.85},
-        'ally': {'colour': COLOR_ARROW_ALLY, 'white_mix': 0.1, 'intensity': 0.85},
+        'attack': {'colour': COLOR_ARROW_ATTACK, 'white_mix': 0.08, 'intensity': 0.85},
+        'own': {'colour': COLOR_ARROW_MOVE, 'white_mix': 0.1, 'intensity': 0.85},
+        'ally': {'colour': COLOR_ARROW_REINFORCE, 'white_mix': 0.1, 'intensity': 0.85},
         # Brighter as well as gold: the card under the mouse points at its arrow
         'hovered': {'colour': COLOR_ARROW_HOVERED, 'white_mix': 0.15, 'intensity': 1.0},
-        # The flow stops; the cancel animation fades it out and shakes it
-        'cancelled': {'colour': COLOR_ARROW_CANCELLED, 'white_mix': 0.05, 'intensity': 0.9,
-                      'flowing': False},
+        # Ash grey, the flow stopped: the cancel animation shakes it while its beads
+        # go out one by one (fizzle) and the rest fade (owner: not red, which now
+        # means attack)
+        'cancelled': {'colour': COLOR_ARROW_CANCELLED, 'white_mix': 0.05, 'intensity': 0.8,
+                      'flowing': False, 'fizzle': True},
     },
+    # An ally's order (simultaneous mode): its kind's colour, dimmer, no flow
+    'allied': {'brightness': 0.55, 'tint': 0.6},
     'start_gap': 0.9,          # plot radii from the source banner to the tail
     'end_gap': 1.3,            # plot radii from the tip to the target banner
     'bow': 0.07,               # sideways bow to the right of travel, share of the length
@@ -101,8 +112,9 @@ ARROWS = {
 # ========================================
 RETICLE = {
     'kinds': {
-        'attack': {'colour': (225, 35, 25), 'white_mix': 0.08},
-        'merge': {'colour': (0, 195, 210), 'white_mix': 0.1},
+        'attack': {'colour': COLOR_ARROW_ATTACK, 'white_mix': 0.08, 'ticks': True},
+        'own': {'colour': COLOR_ARROW_MOVE, 'white_mix': 0.1, 'ticks': False},
+        'ally': {'colour': COLOR_ARROW_REINFORCE, 'white_mix': 0.1, 'ticks': False},
     },
     'gap': 0.3,                # plot radii between the army circle and the ring
     'width': 0.09,             # ring half-width, share of its radius

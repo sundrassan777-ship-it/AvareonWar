@@ -735,6 +735,22 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         if len(self.errors) > self.max_errors:
             self.errors.pop(0)  # Remove oldest error
 
+    def order_kind(self, player, to_territory):
+        """
+        What a movement order into to_territory is for its player: 'own' (a move
+        into their own territory), 'ally' (reinforcing an ally) or 'attack'
+        (anything else, neutral land included) - mirrors the order rules in
+        military.py. One rule for the Action Queue cards, the map arrows and the
+        destination reticles, so they always agree.
+        """
+        owner = self.territory_owners.get(to_territory, -1)
+        if owner == player:
+            return 'own'
+        if (owner is not None and owner >= 0 and player is not None and player >= 0
+                and self.are_allies(player, owner)):
+            return 'ally'
+        return 'attack'
+
     def are_allies(self, player1_index, player2_index):
         """
         Check if two players are on the same team (allies).

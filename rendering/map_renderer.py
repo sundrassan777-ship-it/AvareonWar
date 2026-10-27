@@ -1238,7 +1238,7 @@ class MapRenderer:
                 self.order_light.draw_selection(self._hero_fx_view(), glow_x, glow_y - circle_y_offset,
                                                 circle_radius, self._plot_fx_clock)
 
-            # Draw merge/attack destination highlight
+            # Draw the destination reticle of the selected army's orders
             # Check if this territory is receiving an order from selected army OR composition UI
             selected_territory = None
             if self.game.game_state.selected_army:
@@ -1251,19 +1251,13 @@ class MapRenderer:
                 orders_to_here = movement_destinations.get(territory, [])
                 for order in orders_to_here:
                     if order.from_territory == selected_territory:
-                        # Check if destination is friendly or enemy
-                        dest_owner = self.game.game_state.territory_owners.get(territory, -1)
-
-                        # Check if destination is friendly (owned by player OR ally)
-                        is_friendly = (dest_owner == order.player or
-                                     (dest_owner >= 0 and self.game.game_state.are_allies(order.player, dest_owner)))
-
-                        # The reticle round the army circle the arrow points at: cyan for a
-                        # merge / reinforcement, red for an attack
+                        # The reticle round the army circle the arrow points at, in the
+                        # order kind's colour (attack / own / ally, as the arrow and card)
+                        kind = self.game.game_state.order_kind(order.player, territory)
                         circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
                         circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
                         self.order_light.draw_reticle(self._hero_fx_view(), x, y - circle_y_offset, circle_radius,
-                                                      'merge' if is_friendly else 'attack', self._plot_fx_clock)
+                                                      kind, self._plot_fx_clock)
                         break
 
             # PERFORMANCE: Use cached ui_scale (pre-computed above)
@@ -1680,6 +1674,7 @@ class MapRenderer:
 
         hovered_route = getattr(self.game, 'sidebar_hovered_route', None)
         centers = self.game.scaled_centers
+        gs = self.game.game_state
         arrows = []
         for (from_territory, to_territory), total_count in route_counts.items():
             if from_territory not in centers or to_territory not in centers:
@@ -1691,8 +1686,12 @@ class MapRenderer:
             if intermediate and intermediate in centers:
                 points.append(centers[intermediate])
             points.append(centers[to_territory])
-            # Gold while its Action Queue card is under the mouse
-            kind = 'hovered' if hovered_route == (from_territory, to_territory) else 'own'
+            # Coloured by kind (attack / own / ally, the 2-hop's by its final target);
+            # gold while its Action Queue card is under the mouse
+            if hovered_route == (from_territory, to_territory):
+                kind = 'hovered'
+            else:
+                kind = gs.order_kind(first_order.player, to_territory)
             arrows.append(OrderArrow(points, kind, total_count))
         return arrows
 
@@ -1731,8 +1730,8 @@ class MapRenderer:
     def _sim_order_arrows(self, sim_state):
         """Movement arrows for simultaneous mode, as OrderArrows.
 
-        Shows player's own orders and allied players' orders: the 'own' style
-        for the local player's, 'ally' (cyan) for allied players'.
+        Shows player's own orders and allied players' orders, coloured by kind
+        (attack / own / ally); allied players' are dimmer and don't flow.
 
         During planning phase:
         - Local player's orders come from game_state.movement_orders (being created in UI)
@@ -1803,19 +1802,18 @@ class MapRenderer:
 
         hovered_route = getattr(self.game, 'sidebar_hovered_route', None)
         centers = self.game.scaled_centers
+        gs = self.game.game_state
         arrows = []
         for (from_territory, to_territory, is_ally), (total_count, order_player) in route_counts.items():
             if from_territory not in centers or to_territory not in centers:
                 continue
             points = [self._order_source_world(from_territory, order_player), centers[to_territory]]
             # An own order turns gold while its Action Queue card is under the mouse
-            if is_ally:
-                kind = 'ally'
-            elif hovered_route == (from_territory, to_territory):
+            if not is_ally and hovered_route == (from_territory, to_territory):
                 kind = 'hovered'
             else:
-                kind = 'own'
-            arrows.append(OrderArrow(points, kind, total_count))
+                kind = gs.order_kind(order_player, to_territory)
+            arrows.append(OrderArrow(points, kind, total_count, allied=is_ally))
         return arrows
 
     def draw_battle_markers(self):
