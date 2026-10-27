@@ -7,6 +7,9 @@ The look of the persistent effects drawn on map plots, in one place:
   Barracks training units and Keeps/Castles training heroes
 - 'dust': construction dust (ConstructionDust, construction_dust_effect.py) on
   plots under construction and Keeps being upgraded to Castles
+- 'castle_complete': the burst of light when a Keep -> Castle upgrade finishes
+  (MapRenderer.trigger_castle_upgrade_effect), played by the hero ability cue
+  engine (hero_fx_effect.HeroAbilityEffect)
 
 Styles are keyed by map look ('2d' / '3d', map_data.get_current_look()). Both
 looks share one style today; give '3d' its own dicts when the 3D look should
@@ -142,9 +145,35 @@ DUST_STYLE = {
     },
 }
 
+# ========================================
+# CASTLE UPGRADE FINISHED
+# ========================================
+# The upgrade's gold glints (DUST_STYLE 'upgrade') end in a burst of light at the
+# plot: rays behind it, a flare, two rings and gold sparks popping up. A cue
+# timeline in the hero ability vocabulary (hero_fx_style.py CUES); the anchor
+# 'keep' is the plot.
+CASTLE_COMPLETE_STYLE = {
+    'colour': (255, 204, 60),
+    'white_mix': 0.15,
+    'cues': (
+        {'kind': 'rays', 'at': 0.0, 'anchor': 'keep', 'duration': 1.8, 'fade_in': 0.12,
+         'fade_out': 1.0, 'intensity': 0.9, 'spin': 1.5},
+        {'kind': 'flare', 'at': 0.0, 'anchor': 'keep', 'duration': 0.7, 'size': (0.8, 3.2),
+         'grow': 0.12, 'fade_in': 0.03, 'fade_out': 0.5, 'intensity': 0.9, 'tint': 140,
+         'tint_size': 1.5},
+        {'kind': 'ring', 'at': 0.0, 'anchor': 'keep', 'duration': 0.55, 'radius': (0.6, 3.4),
+         'fade_in': 0.03, 'fade_out': 0.45, 'intensity': 0.8, 'tint': 110},
+        {'kind': 'ring', 'at': 0.25, 'anchor': 'keep', 'duration': 0.6, 'radius': (0.5, 2.6),
+         'fade_in': 0.03, 'fade_out': 0.5, 'intensity': 0.6, 'white_mix': 0.35, 'tint': 80},
+        {'kind': 'sparks', 'at': 0.05, 'anchor': 'keep', 'count': 22, 'life': (0.7, 1.2),
+         'spread': 0.25, 'distance': (0.6, 2.2), 'size': (0.4, 0.7), 'motion': 'fountain',
+         'rise': 2.4, 'swirl': 0.0, 'intensity': 1.0, 'colour': (255, 232, 130)},
+    ),
+}
+
 PLOT_FX_STYLES = {
-    '2d': {'rays': RAY_STYLE, 'dust': DUST_STYLE},
-    '3d': {'rays': RAY_STYLE, 'dust': DUST_STYLE},
+    '2d': {'rays': RAY_STYLE, 'dust': DUST_STYLE, 'castle_complete': CASTLE_COMPLETE_STYLE},
+    '3d': {'rays': RAY_STYLE, 'dust': DUST_STYLE, 'castle_complete': CASTLE_COMPLETE_STYLE},
 }
 
 
