@@ -159,6 +159,7 @@ AvareonWar/
 - [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
 - [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
 - [tests/test_hero_fx.py](tests/test_hero_fx.py) - Hero ability effects: light kit (sprite caches and build budget, rings, territory raster, bead chains), outlines drop shared borders, cue timelines, auras (fade, firefly density by area, no territory lookups per frame), game wiring (aura of the selected hero, Embargo embers from game state, Silence vignette, every active ability shows, AI casts shown once, no cast-time border building)
+- [tests/test_tutorial_guidance.py](tests/test_tutorial_guidance.py) - Tutorial / campaign highlights in gold: the glow frame, the plot "click here", and every highlight a tutorial step declares being drawn (plot, Barracks, build / training buttons, End Turn, Select All, target territory, technology tab and button)
 - [tests/test_order_fx.py](tests/test_order_fx.py) - Selection rings and order arrows: ring frames and open paths (light kit), ring placement and outward pulses, arrows (gaps at both banners, opposite routes apart, 2-hops through the waypoint, flow direction, cancel fade, culling, panning reuses geometry, badges), reticle, nothing rebuilt once warm; game wiring (army / building rings, one arrow per route, flag starts, cancels, simultaneous allies, reticles)
 - [tests/test_plot_effects.py](tests/test_plot_effects.py) - Plot effects: light rays turn smoothly (regression for the old 2-pose star), sized by plot radius, shared frames, own/allied only, follow plots through a rescale, pause with the game; construction dust deterministic, around the plot only, gold glints on Keep -> Castle upgrades, for every player, capped sprite building, no new sprites once warm
 - [tests/test_unit_context_menu.py](tests/test_unit_context_menu.py) - Right-click context menu on the army composition unit icons
@@ -268,7 +269,8 @@ AvareonWar/
 - [ui/effects/hero_fx_style.py](ui/effects/hero_fx_style.py) - The look of every hero ability effect: passive auras, Embargo embers, each active ability as a timeline of cues (`HERO_FX_STYLES` per map look)
 - [ui/effects/hero_fx_effect.py](ui/effects/hero_fx_effect.py) - Hero ability effects as light: shared `HeroLight` renderer, `HeroAbilityEffect` (one cast, drawn under and over the plots), `HeroAura` (passive aura / persistent embers)
 - [ui/effects/order_fx_style.py](ui/effects/order_fx_style.py) - The look of the selection ring, order arrows and destination reticle (`ORDER_FX_STYLES` per map look)
-- [ui/effects/order_fx_effect.py](ui/effects/order_fx_effect.py) - Selection ring, order arrows, destination reticle as light: shared `OrderLight` renderer, `OrderArrow` (one arrow: world points, kind, count, cancel fade / shake)
+- [ui/effects/order_fx_effect.py](ui/effects/order_fx_effect.py) - Selection ring, order arrows, destination reticle, tutorial "click here" (`draw_beckon`) as light: shared `OrderLight` renderer, `OrderArrow` (one arrow: world points, kind, count, cancel fade / shake)
+- [rendering/tutorial_glow.py](rendering/tutorial_glow.py) - The gold glow round a control a tutorial / campaign step points at (`Game.tutorial_glow`: rect, circle, button sprite)
 
 **Configuration:**
 - [config/constants.py](config/constants.py) - All game constants (window, colors, timing, camera)

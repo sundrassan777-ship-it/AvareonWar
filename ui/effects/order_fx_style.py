@@ -14,6 +14,14 @@ that carries the colour on the bright map, additive light over it.
 - 'reticle'    the mark on a selected army's order destinations: a ring in the
                order kind's colour, with four ticks at N/E/S/W (from the hero
                targeting circle's spikes) on an attack only
+- 'beckon'     a campaign / tutorial "click here" on a plot: a gold ring whose
+               pulses close in on it, and a chevron of light bobbing above it
+- 'objective'  a campaign / tutorial target territory: gold light running round
+               its border (the hero aura border light) over a faint gold wash
+- 'guide'      the gold glow round a highlighted button, tab or icon (UI)
+
+GOLD is the colour of the player's input to give (owner, 2026-10-27): the hero
+targeting circle, the hovered route and every tutorial highlight.
 
 Styles are keyed by map look ('2d' / '3d'); both looks share one style today.
 
@@ -34,6 +42,7 @@ from config.constants import (COLOR_ARROW_ATTACK, COLOR_ARROW_MOVE, COLOR_ARROW_
                               COLOR_ARROW_HOVERED, COLOR_ARROW_CANCELLED)
 
 WARM_WHITE = (255, 240, 215)
+GUIDE_GOLD = (255, 190, 60)
 
 # ========================================
 # SELECTION RING
@@ -89,20 +98,20 @@ ARROWS = {
     'end_gap': 1.3,            # plot radii from the tip to the target banner
     'bow': 0.07,               # sideways bow to the right of travel, share of the length
     'max_bow': 1.6,            # ...at most this many plot radii (A->B and B->A part)
-    'size': 0.42,              # light bead diameter, plot radii (owner: a little thinner)
+    'size': 0.34,              # light bead diameter, plot radii (owner: thinner, twice)
     'spacing': 0.42,           # bead spacing, share of the bead diameter
     # Crests of light flowing from source to target: a sharp front, a long trail
     'base': 0.4,               # steady light along the path
     'crest': 0.6,              # extra light at a crest
     'wave_length': 4.5,        # plot radii between crests
     'flow': 0.8,               # crests passing a point per second
-    'tint': {'size': 0.9, 'spacing': 0.36, 'alpha': 135, 'softness': 1.0},
+    'tint': {'size': 0.74, 'spacing': 0.36, 'alpha': 140, 'softness': 1.0},
     'head': {
         'length': 1.05,        # chevron arm length, plot radii
         'angle': 32.0,         # degrees between an arm and the shaft
         'base': 0.7,           # the head stays bright between crests...
         'crest': 0.3,          # ...and flashes as one arrives
-        'flare': 1.2,          # diameter of the light at the tip, plot radii
+        'flare': 1.05,         # diameter of the light at the tip, plot radii
         'flare_intensity': 0.7,
     },
 }
@@ -132,10 +141,73 @@ RETICLE = {
     },
 }
 
+# ========================================
+# TUTORIAL / CAMPAIGN GUIDANCE (gold)
+# ========================================
+# "Click here" on a plot: the opposite motion of the selection ring - pulses
+# close in on the plot - and a chevron of light bobbing above it, pointing down
+BECKON = {
+    'colour': GUIDE_GOLD,
+    'white_mix': 0.12,
+    'gap': 0.3,                # plot radii between the plot's rim and the ring
+    'intensity': 0.85,         # the ring, breathing between 70% and 100% of it
+    'tint': 150,               # alpha of the gold band under the ring
+    'breath': 0.9,             # breaths per second
+    'pulses': {
+        'count': 2,
+        'period': 1.4,         # seconds from the outer edge to the ring
+        'reach': 2.1,          # where a pulse starts, share of the ring radius
+        'intensity': 0.8,      # at the ring (a pulse brightens as it closes in)
+        'tint': 90,
+    },
+    'chevron': {
+        'size': 0.42,          # bead diameter, plot radii
+        'spacing': 0.42,
+        'arm': 0.6,            # arm length, plot radii
+        'angle': 42.0,         # degrees between an arm and the vertical
+        'height': 0.75,        # plot radii from the ring's top to the chevron's tip
+        'bob': 0.22,           # plot radii up and down
+        'bob_speed': 1.2,      # bobs per second
+        'intensity': 1.0,
+        'tint': 150,
+    },
+}
+
+# A target territory (the tutorial's "attack the territory to the north")
+OBJECTIVE = {
+    'colour': GUIDE_GOLD,
+    'white_mix': 0.12,
+    'fill_alpha': 34,          # the faint gold wash over the territory (normal blend)
+    'rim': {
+        'size': 0.62,
+        'spacing': 0.5,
+        'inset': 0.45,
+        'base': 0.3,
+        'wave': 0.7,
+        'wave_speed': 0.5,
+        'intensity': 0.9,
+        'tint': {'size': 1.2, 'spacing': 0.42, 'inset': 0.3, 'alpha': 110, 'softness': 1.0},
+    },
+}
+
+# The glow round a highlighted button, tab or icon: additive light hugging its
+# outline, breathing
+GUIDE = {
+    'colour': GUIDE_GOLD,
+    'reach': 9,                # px of glow outside the outline (scaled with the UI)
+    'base': 0.55,              # brightness at the bottom of a breath...
+    'amplitude': 0.45,         # ...plus this at the top
+    'breath': 0.9,             # breaths per second
+    'tint': (255, 214, 120),   # inner tint of a highlighted ornate button (End Turn, Select All)
+}
+
 ORDER_FX_STYLE = {
     'selection': SELECTION,
     'arrows': ARROWS,
     'reticle': RETICLE,
+    'beckon': BECKON,
+    'objective': OBJECTIVE,
+    'guide': GUIDE,
     'warm_white': WARM_WHITE,
 }
 

@@ -73,7 +73,7 @@ from rendering.panel_renderer import PanelRenderer
 from rendering.map_extension import MapEastExtension, east_extension_override_path
 from rendering.sidebar_widgets import (SidebarWidgets, build_toggle_sprite, draw_panel_border,
                                        draw_tab_badge)
-from rendering.bottom_panel_kit import (BottomPanelKit, TINT_END_TURN, TINT_END_TURN_HIGHLIGHT,
+from rendering.bottom_panel_kit import (BottomPanelKit, TINT_END_TURN, TINT_TUTORIAL_HIGHLIGHT,
                                         TINT_SELECT_ARMY, TINT_SELECT_ALL, TINT_DESELECT_ALL,
                                         TINT_DEMOLISH, TINT_CONFISCATE,
                                         GOLD_TEXT as BOTTOM_GOLD_TEXT, EDGE_PAD_REF as EDGE_PAD_REF_PX)
@@ -5416,6 +5416,23 @@ class Game:
         else:
             return f"- {str(effect)}"
 
+    @property
+    def tutorial_glow(self):
+        """
+        The gold glow round controls a mission points at (rendering/tutorial_glow.py),
+        shared by the bottom panel, the sidebar and the map; made on first use.
+        """
+        glow = self.__dict__.get('_tutorial_glow')
+        if glow is None:
+            from rendering.tutorial_glow import TutorialGlow
+            glow = self._tutorial_glow = TutorialGlow()
+        return glow
+
+    def _glow_ornate_button(self, rect):
+        """The tutorial's gold glow tracing an ornate (CampaignBTN) button's shape."""
+        sprite = self.sidebar_widgets.button_sprite('campaign', rect.size)
+        self.tutorial_glow.sprite(self.screen, rect, sprite, ('campaign', rect.w, rect.h))
+
     def _is_tutorial_active(self):
         """Check if a tutorial mission is currently running.
 
@@ -8802,16 +8819,13 @@ class Game:
         state, label = self._end_turn_button_state()
         end_turn_rect = pygame.Rect(0, y, button_w, button_h)
         end_turn_rect.centerx = cx
-        tint = TINT_END_TURN_HIGHLIGHT if state == 'highlight' else TINT_END_TURN
+        tint = TINT_TUTORIAL_HIGHLIGHT if state == 'highlight' else TINT_END_TURN
         kit.ornate_button(end_turn_rect, label, tint, flash_key=('bottom_button', 'end_turn'),
                           locked=(state == 'locked'))
         if state == 'highlight':
-            # Tutorial hook: pulsing green band tracing the highlighted End Turn
-            # button's shape (pointed end caps included), not a box around it
-            thickness = max(2, kit.px(3))
-            ring = kit.button_outline(end_turn_rect.size, thickness=thickness)
-            ring.set_alpha(int(150 + 105 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 200.0))))
-            self.screen.blit(ring, (end_turn_rect.x - thickness, end_turn_rect.y - thickness))
+            # Tutorial hook: the gold glow tracing the highlighted End Turn button's
+            # shape (pointed end caps included), not a box around it
+            self._glow_ornate_button(end_turn_rect)
         self.end_turn_button = end_turn_rect
         y += button_h + gap
 
@@ -9349,6 +9363,7 @@ class Game:
 
                 # Tutorial hook: override button color for locking/highlighting
                 building_locked = False
+                building_highlight = False
                 if self._is_tutorial_active():
                     btn_id = f'building_{building_name}'
                     # is_action_allowed('build') is what start_construction() checks (and what
@@ -9361,7 +9376,7 @@ class Game:
                         button_color = (120, 120, 120)  # Grey (locked)
                         can_build_this_building = False  # Prevent click
                     elif self.tutorial_mission.should_highlight_button(btn_id):
-                        button_color = (50, 255, 50)  # Bright green (highlighted)
+                        building_highlight = True   # the gold glow, drawn round the button below
 
                 # Circular button center and radius (size from _empty_plot_button_layout)
                 button_radius = button_size // 2
@@ -9449,6 +9464,10 @@ class Game:
                     text_surf = self._get_cached_text(letter, self.font, WHITE)
                     text_rect = text_surf.get_rect(center=(button_center_x, button_center_y))
                     self.screen.blit(text_surf, text_rect)
+
+                # Tutorial hook: the gold glow round the button the mission points at
+                if building_highlight:
+                    self.tutorial_glow.circle(self.screen, (button_center_x, button_center_y), button_radius)
 
                 self.building_buttons[building_name] = button_rect
                 button_x += button_size + button_gap  # Move right for next button
@@ -10060,11 +10079,11 @@ class Game:
                 self.draw_letter_button(train_button_rect, unit_info['letter'], button_color,
                                         letter_color=WHITE, button_type='training', button_id=unit_type)
 
-            # Tutorial hook: pulsing green border on a highlighted button
+            # Tutorial hook: the gold glow round the portrait the mission points at
             if self._is_tutorial_active():
                 if self.tutorial_mission.should_highlight_button(f'training_{unit_type}'):
-                    pulse = int(180 + 75 * math.sin(pygame.time.get_ticks() / 200.0))
-                    pygame.draw.rect(self.screen, (50, 255, 50, pulse), train_button_rect, 3)
+                    # Hugging the portrait frame (icon + 2 px, inside the button rect)
+                    self.tutorial_glow.rect(self.screen, train_button_rect.inflate(-2, -2), corner=2)
 
             self.train_buttons[unit_type] = train_button_rect
             button_x += button_size + button_spacing
@@ -10645,8 +10664,15 @@ class Game:
         select_all_rect = pygame.Rect(0, by, button_w, button_h)
         select_all_rect.centerx = right.centerx
         deselect_all_rect = select_all_rect.move(0, button_h + gap)
-        kit.ornate_button(select_all_rect, "Select All", TINT_SELECT_ALL,
+        # Tutorial hook: the gold Select All while the mission points at it and no
+        # unit is selected yet (then the order itself is the next step)
+        select_all_highlight = (self._is_tutorial_active() and not self.selected_army_units
+                                and self.tutorial_mission.should_highlight_button('select_all'))
+        kit.ornate_button(select_all_rect, "Select All",
+                          TINT_TUTORIAL_HIGHLIGHT if select_all_highlight else TINT_SELECT_ALL,
                           flash_key=('army_comp', 'select_all'), role='body_bold', hover_pos=hover_pos)
+        if select_all_highlight:
+            self._glow_ornate_button(select_all_rect)
         kit.ornate_button(deselect_all_rect, "Deselect All", TINT_DESELECT_ALL,
                           flash_key=('army_comp', 'deselect_all'), role='body_bold', hover_pos=hover_pos)
         self.select_all_button = select_all_rect

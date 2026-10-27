@@ -1005,6 +1005,38 @@ production rays and hero abilities. Select → order → target read as one inpu
 `tests/test_fps_benchmark.py` (`selection_army` / `_keep`, `arrows_5` / `_20`,
 `arrows_selected`, each static and `_zoom`, reference `order_fx_none`).
 
+#### ✅ Change the tutorial / campaign highlights (gold)
+
+**What they are (2026-10-27):** what a tutorial or campaign step points at is drawn in
+gold - the colour of the player's input to give (the targeting circle, the hovered route):
+- **"Click here" on a plot** (`OrderLight.draw_beckon`): a gold ring whose pulses close in on
+  it - the opposite motion of the selection ring - and a chevron of light bobbing above it.
+  For a step's `highlight_plots` and for a Barracks its `barracks_<territory>` highlight
+  names; it gives way while the plot is selected.
+- **Target territory** (`get_highlight_territory()`): gold light running round its border
+  (the hero aura border light, `HeroLight.draw_outline`) over a faint gold wash.
+- **Buttons, tabs, icons** (`Game.tutorial_glow`, `rendering/tutorial_glow.py` on
+  `light_fx.GlowFrame`): a breathing gold glow hugging the control's outline - round build
+  buttons and quick-access icons, training portraits, technologies, sidebar tabs, and the
+  pointed caps of End Turn and Select All (their wood turns gold too, `TINT_TUTORIAL_HIGHLIGHT`).
+
+| To change | Where |
+|---|---|
+| Look (gold, pulses, chevron, border light, glow reach and breath) | `ui/effects/order_fx_style.py` `BECKON`, `OBJECTIVE`, `GUIDE` |
+| Which controls a step points at | the step's `highlight_buttons` / `highlight_plots` / `highlight_territory` (`tutorial_mission.py`); campaign missions answer the same `should_highlight_*()` / `get_highlight_territory()` |
+| Where each highlight is drawn | `MapRenderer._mission_beckons()` (plots), `_draw_objective_rim()` (territory), the quick-access icons in `_draw_quick_access_icons()`; `main.py` building / training buttons, End Turn, Select All (`_glow_ornate_button`); `UIRenderer` technology buttons and sidebar tabs |
+
+**Rules:**
+- **Every highlight a step declares must be drawn.** `tests/test_tutorial_guidance.py`
+  fails when a step declares a highlight id it doesn't know; add the renderer and a case
+  there. (Step 18's Barracks and step 26's Select All were declared and never drawn; the
+  build buttons' highlight colour never reached the icon buttons.)
+- **One glow for the UI:** call `self.tutorial_glow.rect / circle / sprite` - not a hand-drawn
+  ring. `GlowFrame` bakes the shape once per size (rings by distance from the outline, ~0.3 ms)
+  and caches 12 brightness levels: a breathing highlight is one additive blit a frame.
+
+**Tests:** `tests/test_tutorial_guidance.py`.
+
 #### ✅ Modify Camera/Zoom
 
 **Don't modify main.py** - Use `input/camera_handler.py` instead
@@ -1409,7 +1441,7 @@ The bottom panel is split into **sections** by the wooden pillars (`Separator1.p
 
 | File | Role |
 |---|---|
-| `rendering/bottom_panel_kit.py` | `BottomPanelKit` (`game.bottom_panel_kit`): `section_rect()`, `header()`, `rule()`, `vertical_rule()`, `ornate_button()`, `battlebar()`, `button_outline()`, fonts / text helpers. Cached; `invalidate()` is called by `apply_display_settings()` |
+| `rendering/bottom_panel_kit.py` | `BottomPanelKit` (`game.bottom_panel_kit`): `section_rect()`, `header()`, `rule()`, `vertical_rule()`, `ornate_button()`, `battlebar()`, fonts / text helpers. Cached; `invalidate()` is called by `apply_display_settings()` |
 | `rendering/sidebar_widgets.py` | Supplies the art: `separator()` (the gold rule) and `button_sprite(..., inner_tint=...)` |
 | `utils/surface_utils.py` | `tint_campaign_button_wood()` + `CAMPAIGN_BTN_WOOD_RECT`; BattleBar `BAR_FRAME_CROP` / `BAR_FILL_*` (shared with the Tales' Popularity bar) |
 | `main.py` | The views: `_draw_player_info_section()` (End Turn), `draw_territory_info_panel()`, `_draw_building_ui_section()` (empty plot + `_draw_plot_building_view()` for finished / under-construction buildings), `draw_training_ui()` (Barracks), `draw_keep_ui()` (Keep), `draw_army_composition_ui()`, `draw_hero_ui()`; clicks in `handle_bottom_ui_click()` |
@@ -1454,8 +1486,8 @@ lore`. `kit.px(v)` scales lengths the same way.
   planning timer); height from `kit.battlebar_height(width)`.
 - `kit.vertical_rule(x, y0, y1)` — the upright of a "T" divider: solid at the top so it
   meets the rule's centre diamond (3 px below the rule art's top), fading at the bottom.
-- `kit.button_outline(size)` — tutorial highlight band traced from the button's alpha mask
-  (it hugs the pointed caps); set its alpha per frame like `pulse_ring()`.
+- `game._glow_ornate_button(rect)` — the tutorial's gold glow traced from an ornate button's
+  silhouette (it hugs the pointed caps); see "Change the tutorial / campaign highlights".
 - `_draw_info_list_section(rect, title, items, bullets=True)` — headline + wrapped items
   with a hanging indent (Unit Selection Info, Hero Info). Falls back to the small font and
   stops at the section bottom. Its body is `_draw_info_list(area, items)`, where an item

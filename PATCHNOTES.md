@@ -23,6 +23,13 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   with a ring in the order's colour; an attack's has crosshair marks.
 - An order cancelled by the army limit now fizzles out in grey, in simultaneous turns too.
 
+### Tutorial
+
+- **Clearer guidance.** What the tutorial asks you to click now glows gold: the plot to build
+  on, the Barracks to open, the Farm and Swordsman buttons, Select All, End Turn, the
+  Technology tab - and the territory to attack is outlined in gold light. Two steps used to
+  ask for a click with nothing on screen showing where.
+
 ### Fixes
 
 - The selection ring of a building no longer drifts away from it when zoomed in.

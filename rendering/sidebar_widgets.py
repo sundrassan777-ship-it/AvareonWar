@@ -54,6 +54,7 @@ SIDEBAR_TEXT_MAX_SCALE = 1.15
 GOLD = (212, 170, 80)
 GOLD_DARK = (120, 86, 34)
 GOLD_LIGHT = (245, 214, 140)
+TUTORIAL_GOLD = (255, 196, 70)   # a tab the tutorial points at (order_fx_style GUIDE gold)
 PARCHMENT = (226, 210, 178)
 PARCHMENT_DIM = (176, 160, 134)
 BRONZE_EDGE = (138, 98, 50)
@@ -552,7 +553,7 @@ class SidebarWidgets:
             label: Display name.
             size: (w, h).
             state: 'inactive' | 'hover' | 'flash' | 'active' | 'active_hover' |
-                   'locked' | 'highlight' (tutorial: green trim).
+                   'locked' | 'highlight' (tutorial: gold trim, the glow drawn round it).
             texture_src: (image, src_rect) the ribbon fill is cut from — the scaled
                 panel tapestry at the tab's own height, so its pattern continues the
                 panel's. Keyed by (id(image), rect), so the cut happens only on a miss.
@@ -607,7 +608,7 @@ class SidebarWidgets:
         # Swallowtail: cut a shallow V into the outer (left) edge
         pygame.draw.polygon(surf, (0, 0, 0, 0), [(0, h // 2 - notch * 2), (notch, h // 2), (0, h // 2 + notch * 2)])
 
-        trim = (95, 200, 95) if state == 'highlight' else ((96, 86, 70) if state == 'locked' else GOLD)
+        trim = TUTORIAL_GOLD if state == 'highlight' else ((96, 86, 70) if state == 'locked' else GOLD)
         active = state in ('active', 'active_hover')
         # Gold trim on top, bottom and the notched left edge; the active tab has no
         # inner (right) trim so it merges into the panel
@@ -632,7 +633,7 @@ class SidebarWidgets:
         # Labels lighter than the plaque ones: the tapestry behind them is busy
         # (owner feedback: inactive text was hard to read on it)
         color = {'active': (255, 240, 204), 'active_hover': (255, 246, 218), 'hover': (250, 236, 204),
-                 'flash': (255, 246, 218), 'locked': (150, 138, 124), 'highlight': (225, 248, 225)
+                 'flash': (255, 246, 218), 'locked': (150, 138, 124), 'highlight': (255, 236, 196)
                  }.get(state, (222, 208, 180))
         text = self._label_for(label, w, h, color, notch)
         center = (w // 2 + notch // 2, h // 2)
@@ -646,10 +647,10 @@ class SidebarWidgets:
         """Dark plaque with a gold frame; the active one gets a lit frame + inner glow."""
         surf = pygame.Surface((w, h), pygame.SRCALPHA)
         base = {'inactive': (34, 24, 20), 'hover': (52, 38, 30), 'flash': (78, 58, 40), 'locked': (24, 22, 20),
-                'highlight': (30, 52, 30), 'active': (70, 30, 34), 'active_hover': (82, 38, 40)}.get(state, (34, 24, 20))
+                'highlight': (58, 44, 18), 'active': (70, 30, 34), 'active_hover': (82, 38, 40)}.get(state, (34, 24, 20))
         pygame.draw.rect(surf, base, surf.get_rect(), border_radius=4)
         lit = state in ('active', 'active_hover', 'flash')
-        frame = (95, 200, 95) if state == 'highlight' else (GOLD_LIGHT if lit else (GOLD_DARK if state == 'locked' else GOLD))
+        frame = TUTORIAL_GOLD if state == 'highlight' else (GOLD_LIGHT if lit else (GOLD_DARK if state == 'locked' else GOLD))
         pygame.draw.rect(surf, frame, surf.get_rect(), 2, border_radius=4)
         pygame.draw.rect(surf, GOLD_DARK, surf.get_rect().inflate(-6, -6), 1, border_radius=3)
         if lit:
@@ -730,16 +731,6 @@ class SidebarWidgets:
         text = self.text(self.fit_text(label, 'small_bold', w - 8), 'small_bold', color)
         surf.blit(text, text.get_rect(center=rect.center))
         return self._put(key, self.display_alpha(surf))
-
-    def pulse_ring(self, size, color=(100, 255, 100)):
-        """Tutorial highlight ring, cached; the caller sets its alpha per frame."""
-        key = ('ring', int(size[0]), int(size[1]), color)
-        cached = self._get(key)
-        if cached is None:
-            cached = pygame.Surface((int(size[0]), int(size[1])), pygame.SRCALPHA)
-            pygame.draw.rect(cached, (*color, 255), cached.get_rect(), 3)
-            self._put(key, cached)
-        return cached
 
 
 # ---------------------------------------------------------------------- helpers

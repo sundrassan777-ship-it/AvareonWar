@@ -108,6 +108,14 @@ class MockMainGame:
         self.screen = MockScreen()
         self.scaled_centers = {}
         self.army_flag_icons = {0: None, 1: None}  # 2 player slots for tutorial
+        # The map picture the tutorial bakes its cloud cover into. Without it the
+        # mission failed to start whenever an earlier test module had left a pygame
+        # display open (the cover only loads with one), so this test depended on
+        # which tests ran before it
+        import pygame
+        self.map_image_original = pygame.Surface((64, 48))
+        self.cached_scaled_map = None
+        self.cached_zoom_level = None
 
         # Populate scaled_centers with mock positions
         for territory in map_data.get_all_territories():

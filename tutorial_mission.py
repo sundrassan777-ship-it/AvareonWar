@@ -1297,7 +1297,7 @@ class TutorialMission:
         return None
 
     def should_highlight_plot(self, territory, plot_index):
-        """Check if a plot should have a green highlight."""
+        """Check if a plot should have the gold "click here" (OrderLight.draw_beckon)."""
         if not self.active:
             return False
         current = self.steps[self.current_step_index]
@@ -1308,7 +1308,7 @@ class TutorialMission:
         return ("Enemies thinking...", "")
 
     def should_highlight_button(self, button_id):
-        """Check if a button should have a green highlight."""
+        """Check if a button should have the gold glow (Game.tutorial_glow)."""
         if not self.active:
             return False
         current = self.steps[self.current_step_index]

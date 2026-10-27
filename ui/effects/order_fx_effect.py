@@ -15,7 +15,7 @@ Pieces:
                  animation's fade and shake
     OrderLight   the shared renderer (one per MapRenderer): sprite caches, ring
                  frames and arrow geometry. draw_selection(), draw_arrows(),
-                 draw_reticle()
+                 draw_reticle(), draw_beckon() (a campaign / tutorial "click here")
 
 Cost rules (as the hero effects, see docs/PERFORMANCE_ROADMAP.md):
 - each layer of a mark is one Surface.blits() call, or one blit for a ring
@@ -127,7 +127,8 @@ class OrderLight:
         self.pulse_ring = SoftRing(selection['pulses']['width'])
         self.band_ring = SoftRing(selection['ring']['tint_width'])
         self.reticle_ring = SoftRing(style['reticle']['width'])
-        self._rings = (self.pulse_ring, self.band_ring, self.reticle_ring)
+        self.beckon_ring = SoftRing(style['reticle']['width'])
+        self._rings = (self.pulse_ring, self.band_ring, self.reticle_ring, self.beckon_ring)
         self._paths = OrderedDict()      # (points, zoom, radius, lift) -> _ArrowPath
         self._tables = OrderedDict()     # sprite tables (_table)
         self._circles = {}               # (radius, diameter, spacing, crests) -> ring bead offsets
@@ -141,6 +142,7 @@ class OrderLight:
         self.selection_colours = colours(selection)
         self.arrow_colours = {kind: colours(spec) for kind, spec in style['arrows']['kinds'].items()}
         self.reticle_colours = {kind: colours(spec) for kind, spec in style['reticle']['kinds'].items()}
+        self.beckon_colours = colours(style['beckon'])
         arrows = style['arrows']
         self._shaft_shape = _crest_shape(arrows['base'], arrows['crest'])
         self._head_shape = _crest_shape(arrows['head']['base'], arrows['head']['crest'])
@@ -182,6 +184,11 @@ class OrderLight:
             for raw, colour in self.reticle_colours.values():
                 self.glow.prewarm([_even(ticks['size'] * radius)], colour, profile='bead')
                 self.tint.prewarm([_even(2.0 * ticks['size'] * radius)], raw, [ticks['tint']])
+            chevron = self.style['beckon']['chevron']
+            raw, colour = self.beckon_colours
+            self.glow.prewarm([_even(chevron['size'] * radius)], colour,
+                              [int(GlowSprites.LEVELS * chevron['intensity'] + 0.5)], 'bead')
+            self.tint.prewarm([_even(2.0 * chevron['size'] * radius)], raw, [chevron['tint']])
 
     # ---------- tables ----------
 
@@ -332,6 +339,76 @@ class OrderLight:
         if sprite is not None:
             screen.blits([(sprite, (px - half, py - half), None, ADD) for px, py in points],
                          doreturn=False)
+
+    # ---------- campaign / tutorial "click here" ----------
+
+    def draw_beckon(self, view, x, y, target_radius, clock):
+        """
+        A gold "click here" round a plot of target_radius px centred on (x, y):
+        pulses closing in on a breathing ring - the opposite motion of the
+        selection ring - and a chevron of light bobbing above it, pointing down.
+        """
+        beckon = self.style['beckon']
+        pulses = beckon['pulses']
+        chevron = beckon['chevron']
+        radius = view.radius
+        r = target_radius + beckon['gap'] * radius
+        above = r + (chevron['height'] + chevron['bob'] + chevron['arm'] + chevron['size']) * radius
+        if not view.visible(x, y, max(r * pulses['reach'], above) + 4):
+            return
+        screen = view.screen
+        x, y = int(x), int(y)
+        raw, colour = self.beckon_colours
+        levels = SoftRing.LEVELS
+        ring = self.beckon_ring
+
+        # Pulses: from the outer edge in to the ring, speeding up and brightening
+        count = pulses['count']
+        for k in range(count):
+            u = (clock / pulses['period'] + k / float(count)) % 1.0
+            pulse_r = int(r * (pulses['reach'] - (pulses['reach'] - 1.0) * u * u))
+            fade = min(1.0, u / 0.15) * min(1.0, (1.0 - u) / 0.08) * (0.25 + 0.75 * u)
+            band = ring.tint_frame(pulse_r, raw, pulses['tint'] * fade)
+            if band is not None:
+                half = band.get_width() >> 1
+                screen.blit(band, (x - half, y - half))
+            light = ring.frame(pulse_r, colour, int(levels * pulses['intensity'] * fade + 0.5))
+            if light is not None:
+                half = light.get_width() >> 1
+                screen.blit(light, (x - half, y - half), special_flags=ADD)
+
+        # The ring, breathing
+        breath = 0.5 + 0.5 * math.sin(_TWO_PI * beckon['breath'] * clock)
+        band = ring.tint_frame(int(r), raw, beckon['tint'])
+        if band is not None:
+            half = band.get_width() >> 1
+            screen.blit(band, (x - half, y - half))
+        light = ring.frame(int(r), colour, int(levels * beckon['intensity'] * (0.7 + 0.3 * breath) + 0.5))
+        if light is not None:
+            half = light.get_width() >> 1
+            screen.blit(light, (x - half, y - half), special_flags=ADD)
+
+        # The chevron above the plot, bobbing, its tip pointing down at it
+        diameter = _even(chevron['size'] * radius)
+        tint_diameter = _even(2.0 * chevron['size'] * radius)
+        spacing = max(1.0, diameter * chevron['spacing'])
+        bob = chevron['bob'] * radius * math.sin(_TWO_PI * chevron['bob_speed'] * clock)
+        tip_y = y - r - chevron['height'] * radius + bob
+        angle = math.radians(chevron['angle'])
+        dx, dy = math.sin(angle), -math.cos(angle)
+        points = [(x, int(tip_y))]
+        steps = int(chevron['arm'] * radius / spacing)
+        for side in (-1.0, 1.0):
+            for k in range(1, steps + 1):
+                points.append((int(x + side * dx * k * spacing), int(tip_y + dy * k * spacing)))
+        halo = self.tint.sprite(tint_diameter, raw, chevron['tint'])
+        sprite = self.glow.sprite(diameter, colour, int(GlowSprites.LEVELS * chevron['intensity'] + 0.5), 'bead')
+        if halo is not None:
+            th = tint_diameter >> 1
+            screen.blits([(halo, (px - th, py - th)) for px, py in points], doreturn=False)
+        if sprite is not None:
+            hd = diameter >> 1
+            screen.blits([(sprite, (px - hd, py - hd), None, ADD) for px, py in points], doreturn=False)
 
     # ---------- arrows ----------
 

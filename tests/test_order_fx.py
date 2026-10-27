@@ -238,19 +238,29 @@ class TestArrows:
         assert path.badge[0] < 200
 
     def test_crests_flow_from_source_to_target(self, light):
-        # Dimmed, so no colour channel saturates and the brightest bead is the crest's
-        arrow = OrderArrow([(40, 150), (360, 150)], fade=0.4)
+        # Dimmed, so no colour channel saturates and the crests stand out
+        arrow = OrderArrow([(40, 150), (360, 150)], fade=0.6)
         path = _arrow_path(light, arrow)
+        half = max(2, int(ORDER_FX_STYLE['arrows']['size'] * RADIUS) & ~1) >> 1
 
-        def brightest_x(clock):
+        def profile(clock):
             screen = _blank()
             light.draw_arrows(_view(screen), [arrow], clock)
-            # Brightness along the shaft beads, away from the head
-            samples = [(x, _light_at(screen, x + 4, y + 4)) for x, y, _ in path.beads[3:-3]]
-            return max(samples, key=lambda s: s[1])[0]
+            # Brightness at each shaft bead, away from the head
+            return [_light_at(screen, x + half, y + half) for x, y, _ in path.beads[3:-3]]
+
+        def match(before, after, shift):
+            """How well `after` is `before` moved `shift` beads toward the target."""
+            if shift >= 0:
+                return sum(a * b for a, b in zip(before, after[shift:]))
+            return sum(a * b for a, b in zip(before[-shift:], after))
 
         flow = ORDER_FX_STYLE['arrows']['flow']
-        assert brightest_x(0.1 / flow) > brightest_x(0.0)
+        before, after = profile(0.0), profile(0.1 / flow)
+        assert before != after
+        forward = max(match(before, after, s) for s in range(1, 9))
+        backward = max(match(before, after, -s) for s in range(1, 9))
+        assert forward > backward
 
     def test_kinds_take_the_action_queue_colours(self, light):
         assert light.arrow_colours['attack'][0] == COLOR_ARROW_ATTACK
