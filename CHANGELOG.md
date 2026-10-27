@@ -31,6 +31,16 @@ the player's input: the targeting circle, the hovered route); the arrows thinner
 - Tests: `tests/test_tutorial_guidance.py` - including a guard that every highlight a tutorial
   step declares has a renderer.
 
+## 2026-10-27 - Wishlist button icon
+
+Branch `feature/wishlist-icon`. The owner's icon for the main menu's Wishlist button (open
+beta only): `assets/wishlisticon.png`, a scroll with the Steam seal, in place of the drawn
+Steam-blue tile (still the fallback if the file fails to load), with a subtle navy glow
+round it so it stands out a little (owner; `WISHLIST_GLOW_*` in `wishlist.py`), a bit
+stronger while hovered. `WISHLIST_ICON_PATH` named
+`WishlistIcon.png`: Windows found the file anyway, a build or another system might not, so
+the path now matches the file letter for letter and a test checks it.
+
 ## 2026-10-27 - Order arrows coloured by kind
 
 Branch `feature/order-kinds`. Owner: colour the order arrows by order type (attack vs
