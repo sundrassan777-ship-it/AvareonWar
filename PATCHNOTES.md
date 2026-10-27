@@ -4,6 +4,33 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Heroes in a New Light
+
+*26 October 2026*
+
+### New
+
+- **Every hero ability has new effects.** Abilities are now drawn as light, in the style of
+  the production rays: shock rings and flares where a blow lands, rays behind a Keep, light
+  running round a territory's borders, comets arcing from one territory to another. Each
+  keeps its own colour - gold for Levy, blue for Decisive Strike, purple for Regicide - so
+  you can tell them apart at a glance.
+- **Passive auras glow.** Selecting Seledra, Vearen, Darius or Regnus lights the outline of
+  the territories their Defiance, Haste or Safe Haven covers, with fireflies rising inside.
+- **Embargo smoulders.** While players are embargoed, embers drift up over all their land.
+- **Vow of Silence** sweeps a crimson curtain across the screen, and the silence now hangs
+  over the map as a deep red vignette that leaves its middle readable.
+- **You see the AI's abilities.** Abilities cast by computer players used to show nothing;
+  now they play the same effects as anyone else's.
+
+### Improvements
+
+- **Smoother casting.** Levy, Aggressive Diplomacy, Master Negotiator and above all Extort
+  Populace no longer make the game stutter while their effects play - with many Keeps,
+  Extort Populace used to drag the frame rate down for the whole effect.
+
+---
+
 ## Light and Dust on the Map
 
 *26 October 2026*
