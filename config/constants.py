@@ -165,6 +165,8 @@ COLOR_ICON_BORDER: Color4 = (50, 50, 50, 255)
 COLOR_ARROW_MOVEMENT: Color3 = (0, 200, 0)
 # The order arrow whose Action Queue card is under the mouse (UIConstants.SIDEBAR_ROUTE_HIGHLIGHT)
 COLOR_ARROW_HOVERED: Color3 = (232, 186, 64)
+# An ally's queued order (simultaneous mode shows the team's orders)
+COLOR_ARROW_ALLY: Color3 = (0, 180, 200)
 
 # --- UI Colors: Tooltips ---
 COLOR_TOOLTIP_BG: Color3 = (50, 50, 50)
@@ -237,10 +239,8 @@ TOOLTIP_PADDING = 7
 # ===========================================
 # ARROW DRAWING
 # ===========================================
-
-ARROW_LINE_WIDTH = 4
-ARROW_HEAD_SIZE = 15
-ARROW_HEAD_ANGLE_RAD = 0.5236  # math.pi / 6 (30 degrees)
+# Order arrows are drawn as light; their sizes and look are in
+# ui/effects/order_fx_style.py (ARROWS), in plot radii so they scale with zoom.
 
 # Cascade cancel animation: red shaking arrows when auto-cancelled due to overflow
 COLOR_ARROW_CANCELLED: Color3 = (220, 50, 50)

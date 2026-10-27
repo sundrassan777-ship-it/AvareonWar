@@ -152,12 +152,14 @@ AvareonWar/
 - [tools/gif_to_spritesheet.py](tools/gif_to_spritesheet.py) - GIF to spritesheet converter
 - [tools/plot_fx_preview.py](tools/plot_fx_preview.py) - Plot effects preview on the real map (production light rays, construction dust): live window with zoom / 2D-3D look / FPS, `--sheet` contact sheets, `--bench` frame cost
 - [tools/hero_fx_preview.py](tools/hero_fx_preview.py) - Hero ability effects preview on the real map: keys cast each ability at the territory under the mouse (with the Embargo embers / Silence fog they leave behind, C clears), A cycles the passive auras, `--sheet` stills over time (`--only` some effects), `--bench` frame cost
+- [tools/order_fx_preview.py](tools/order_fx_preview.py) - Selection ring / order arrows / destination reticle preview on the real map: click selects, right-click orders, keys add orders, reverse pairs, 2-hops, hover (gold), ally (cyan), cancel (red shake); `--sheet` stills, `--bench` frame cost
 
 **Performance Tests:**
 - [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow, construction-dust and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
 - [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
 - [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
 - [tests/test_hero_fx.py](tests/test_hero_fx.py) - Hero ability effects: light kit (sprite caches and build budget, rings, territory raster, bead chains), outlines drop shared borders, cue timelines, auras (fade, firefly density by area, no territory lookups per frame), game wiring (aura of the selected hero, Embargo embers from game state, Silence vignette, every active ability shows, AI casts shown once, no cast-time border building)
+- [tests/test_order_fx.py](tests/test_order_fx.py) - Selection rings and order arrows: ring frames and open paths (light kit), ring placement and outward pulses, arrows (gaps at both banners, opposite routes apart, 2-hops through the waypoint, flow direction, cancel fade, culling, panning reuses geometry, badges), reticle, nothing rebuilt once warm; game wiring (army / building rings, one arrow per route, flag starts, cancels, simultaneous allies, reticles)
 - [tests/test_plot_effects.py](tests/test_plot_effects.py) - Plot effects: light rays turn smoothly (regression for the old 2-pose star), sized by plot radius, shared frames, own/allied only, follow plots through a rescale, pause with the game; construction dust deterministic, around the plot only, gold glints on Keep -> Castle upgrades, for every player, capped sprite building, no new sprites once warm
 - [tests/test_unit_context_menu.py](tests/test_unit_context_menu.py) - Right-click context menu on the army composition unit icons
 - [tests/test_battle_bar_volley.py](tests/test_battle_bar_volley.py) - Volley-based battle bar animation (chunk split, determinism, skip, mirrored geometry)
@@ -262,9 +264,11 @@ AvareonWar/
 - [ui/effects/plot_fx_style.py](ui/effects/plot_fx_style.py) - The look of the plot effects in one place (`RAY_STYLE`, `DUST_STYLE`, per map look `PLOT_FX_STYLES`), `plot_phase()`
 - [ui/effects/production_glow_effect.py](ui/effects/production_glow_effect.py) - Production light rays on producing Barracks / Keeps / Castles: shared `ProductionRays` renderer + per-plot `ProductionGlowEffect`
 - [ui/effects/construction_dust_effect.py](ui/effects/construction_dust_effect.py) - Construction dust (`ConstructionDust`, stateless) on plots under construction; gold-glint variant on Keep -> Castle upgrades
-- [ui/effects/light_fx.py](ui/effects/light_fx.py) - Shared light kit: additive `GlowSprites`, normal-blend `TintSprites`, anti-light `DarkSprites`, `SoftRing`, `TerritoryRaster`, `bead_chain`, `vignette_surface` (used by the production rays and the hero ability effects)
+- [ui/effects/light_fx.py](ui/effects/light_fx.py) - Shared light kit: additive `GlowSprites`, normal-blend `TintSprites`, anti-light `DarkSprites`, `SoftRing` (with cached `frame()` / `tint_frame()`), `TerritoryRaster`, `bead_chain`, `path_beads`, `vignette_surface` (used by the production rays, the hero ability effects and the order effects)
 - [ui/effects/hero_fx_style.py](ui/effects/hero_fx_style.py) - The look of every hero ability effect: passive auras, Embargo embers, each active ability as a timeline of cues (`HERO_FX_STYLES` per map look)
 - [ui/effects/hero_fx_effect.py](ui/effects/hero_fx_effect.py) - Hero ability effects as light: shared `HeroLight` renderer, `HeroAbilityEffect` (one cast, drawn under and over the plots), `HeroAura` (passive aura / persistent embers)
+- [ui/effects/order_fx_style.py](ui/effects/order_fx_style.py) - The look of the selection ring, order arrows and destination reticle (`ORDER_FX_STYLES` per map look)
+- [ui/effects/order_fx_effect.py](ui/effects/order_fx_effect.py) - Selection ring, order arrows, destination reticle as light: shared `OrderLight` renderer, `OrderArrow` (one arrow: world points, kind, count, cancel fade / shake)
 
 **Configuration:**
 - [config/constants.py](config/constants.py) - All game constants (window, colors, timing, camera)
@@ -619,6 +623,7 @@ After making code changes, ask yourself:
 - Add a button tooltip / hover system → call `update_button_hover(current, type)` **every frame** while its buttons are drawn (`None` when nothing is hovered); `update_frame_tooltips()` drops a hover whose system didn't run that frame (`_release_orphaned_button_hover()`). See "Orphaned tooltips" in CODE_GUIDE.md
 - Hero death toast → `HeroMixin._record_hero_death()` + `main.py` `_show_hero_death_notifications()` (+ Battle Report `heroes_slain` for multiplayer defenders)
 - Change a hero ability effect, a passive aura or the Embargo embers → look in `ui/effects/hero_fx_style.py` (preview: `py tools/hero_fx_preview.py`); casts go through `main.py` `play_ability_effect()` → `MapRenderer.trigger_ability_effect()`; AI casts are recorded in `game_state.ability_fx_events`. See "Change the hero ability effects" in CODE_GUIDE.md
+- Change the selection ring, the order arrows or the destination reticle → look in `ui/effects/order_fx_style.py` (preview: `py tools/order_fx_preview.py`); which orders become arrows in `MapRenderer._order_arrows()` / `_sim_order_arrows()` / `_cancelling_order_arrows()`. See "Change the selection ring, order arrows and destination reticles" in CODE_GUIDE.md
 - Change the production light rays / construction dust on plots → look in `ui/effects/plot_fx_style.py` (preview: `py tools/plot_fx_preview.py`); wiring in `rendering/map_renderer.py`. Sized by plot radius, one shared clock (`update_plot_effects`), never store plot positions in effects. See "Change the plot effects" in CODE_GUIDE.md
 
 ## Notes

@@ -36,6 +36,8 @@ from ui.effects.construction_dust_effect import ConstructionDust, VARIANT_BUILD,
 from ui.effects.plot_fx_style import get_plot_fx_style, plot_phase
 from ui.effects.hero_fx_style import get_hero_fx_style
 from ui.effects.hero_fx_effect import HeroLight, HeroAura, HeroAbilityEffect, FxView, stable_seed
+from ui.effects.order_fx_style import get_order_fx_style
+from ui.effects.order_fx_effect import OrderLight, OrderArrow
 
 logger = get_logger(__name__)
 
@@ -91,6 +93,9 @@ class MapRenderer:
         self._hero_fx_style = get_hero_fx_style(map_data.get_current_look())
         self._hero_aura_sync = None      # what the aura territories were computed for
         self._embargo_sync = None        # what the ember territories were computed for
+        # The selection ring, order arrows and destination reticles as light
+        # (ui/effects/order_fx_effect.py), drawn from the same clock
+        self._order_fx_style = get_order_fx_style(map_data.get_current_look())
         self._build_plot_fx_renderers()
         # Active hero ability casts (HeroAbilityEffect), drawn in two layers
         self.ability_effects = []
@@ -283,6 +288,8 @@ class MapRenderer:
         self.embargo_embers = HeroAura(self.hero_light, 'embargo')
         self._hero_aura_sync = None
         self._embargo_sync = None
+        self.order_light = OrderLight(self._order_fx_style)
+        self.order_light.prewarm(self._plot_radius_range())
 
     def _plot_phase(self, territory, plot_index):
         """A plot's stable animation offset (plot_fx_style.plot_phase), cached."""
@@ -921,6 +928,8 @@ class MapRenderer:
         self.game.screen.blit(cached[0], cached[1])
     def draw_territories(self):
         """Draw territory overlays, markers and ownership colors"""
+        # Once per frame, before any selection ring, reticle or order arrow
+        self.order_light.begin_frame()
         # H8 fix: Rebuild overlay surfaces if window was resized
         current_size = (self.game.screen.get_width(), self.game.screen.get_height())
         if current_size != self._overlay_size:
@@ -1222,28 +1231,13 @@ class MapRenderer:
                         flag_world_x, flag_world_y = flag_positions[garrison_position_idx]
                         glow_x, glow_y = self.game.world_to_screen((flag_world_x, flag_world_y))
 
-                # Align glow with the drawn army circle (SHARED constants)
+                # The selection ring round the drawn army circle (SHARED constants),
+                # under the circle and banner
                 circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
                 circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
-                glow_y = glow_y - circle_y_offset
+                self.order_light.draw_selection(self._hero_fx_view(), glow_x, glow_y - circle_y_offset,
+                                                circle_radius, self._plot_fx_clock)
 
-                # Pulsing green glow effect (scales with zoom!)
-                pulse = abs(math.sin(time.time() * 2))  # Pulse between 0 and 1
-                glow_alpha = int(100 + 100 * pulse)  # Between 100 and 200
-
-                # PERFORMANCE OPTIMIZATION: Reduce glow layers when zoomed out
-                glow_layers = 1 if ui_scale < 1.5 else 3
-
-                # Draw glow circles sized to match the smaller army circle
-                for i in range(glow_layers):
-                    glow_radius = circle_radius + int((3 + i * 3) * ui_scale)
-                    # PERFORMANCE: Use reusable surface from pool
-                    glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                    pygame.draw.circle(glow_surface, (0, 255, 0, glow_alpha // (i + 1)),
-                                     (glow_radius + 5, glow_radius + 5), glow_radius, 3)
-                    self.game.screen.blit(glow_surface, (int(glow_x) - glow_radius - 5, int(glow_y) - glow_radius - 5))
-                    self.return_surface_to_pool(glow_surface)
-            
             # Draw merge/attack destination highlight
             # Check if this territory is receiving an order from selected army OR composition UI
             selected_territory = None
@@ -1264,43 +1258,12 @@ class MapRenderer:
                         is_friendly = (dest_owner == order.player or
                                      (dest_owner >= 0 and self.game.game_state.are_allies(order.player, dest_owner)))
 
-                        if is_friendly:
-                            # This is a MERGE/REINFORCEMENT destination - draw cyan highlight
-                            pulse = abs(math.sin(time.time() * 3))  # Slightly faster pulse
-                            glow_alpha = int(120 + 80 * pulse)  # Between 120 and 200
-
-                            # PERFORMANCE: Reduce glow layers when zoomed out (same as selection glow)
-                            glow_layers = 1 if ui_scale < 1.5 else 3  # FPS OPTIMIZATION: More aggressive threshold
-
-                            # Draw cyan glow rings (M6 fix: scale with zoom like red glow)
-                            for i in range(glow_layers):
-                                glow_radius = int((20 + i * 4) * ui_scale)
-                                # PERFORMANCE: Use reusable surface from pool
-                                glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                                pygame.draw.circle(glow_surface, (0, 200, 200, glow_alpha // (i + 1)),
-                                                 (glow_radius + 5, glow_radius + 5), glow_radius, 4)
-                                self.game.screen.blit(glow_surface, (int(x) - glow_radius - 5, int(y) - glow_radius - 5))
-                                self.return_surface_to_pool(glow_surface)
-                        else:
-                            # This is an ATTACK destination - draw red highlight
-                            pulse = abs(math.sin(time.time() * 3))  # Slightly faster pulse
-                            glow_alpha = int(120 + 80 * pulse)  # Between 120 and 200
-
-                            # PERFORMANCE: Use cached ui_scale (pre-computed above)
-                            # Removed redundant: ui_scale = self.game.get_ui_scale_factor()
-
-                            # PERFORMANCE: Reduce glow layers when zoomed out (same as selection glow)
-                            glow_layers = 1 if ui_scale < 1.5 else 3  # FPS OPTIMIZATION: More aggressive threshold
-
-                            # Draw red glow rings (scaled with zoom)
-                            for i in range(glow_layers):
-                                glow_radius = int((20 + i * 4) * ui_scale)
-                                # PERFORMANCE: Use reusable surface from pool
-                                glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                                pygame.draw.circle(glow_surface, (200, 0, 0, glow_alpha // (i + 1)),
-                                                 (glow_radius + 5, glow_radius + 5), glow_radius, 4)
-                                self.game.screen.blit(glow_surface, (int(x) - glow_radius - 5, int(y) - glow_radius - 5))
-                                self.return_surface_to_pool(glow_surface)
+                        # The reticle round the army circle the arrow points at: cyan for a
+                        # merge / reinforcement, red for an attack
+                        circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
+                        circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
+                        self.order_light.draw_reticle(self._hero_fx_view(), x, y - circle_y_offset, circle_radius,
+                                                      'merge' if is_friendly else 'attack', self._plot_fx_clock)
                         break
 
             # PERFORMANCE: Use cached ui_scale (pre-computed above)
@@ -1649,250 +1612,127 @@ class MapRenderer:
         """
         self.draw_plots_original()
     def draw_movement_arrows(self):
-        """Draw arrows showing planned movement orders.
+        """Draw the arrows of planned movement orders, as light (OrderLight.draw_arrows).
+
+        One arrow per route (from, to) with the summed army count on its badge,
+        plus the red, shaking arrows of auto-cancelled orders fading out.
 
         In simultaneous mode:
         - Shows player's own queued orders
         - Also shows allied players' queued orders (in a different shade)
         - Does NOT show enemy orders
         """
-
-        # Check if in simultaneous mode
         sim_state = getattr(self.game, 'sim_state', None)
-
         if sim_state is not None and sim_state.sim_phase == 'planning':
             # SIMULTANEOUS MODE: Draw from sim_state.player_orders
-            self._draw_sim_movement_arrows(sim_state)
+            arrows = self._sim_order_arrows(sim_state)
+        else:
+            arrows = self._order_arrows()
+        arrows.extend(self._cancelling_order_arrows())
+        if not arrows:
             return
+        # Arrows run between army circles, which sit above their banners' anchors
+        lift = int(ARMY_CIRCLE_RADIUS * self.game.get_ui_scale_factor() * ARMY_CIRCLE_DRAW_LIFT)
+        self.order_light.draw_arrows(self._hero_fx_view(), arrows, self._plot_fx_clock, lift=lift,
+                                     badge=self._draw_order_badge)
 
-        # SEQUENTIAL MODE: Original logic using movement_orders
+    def _draw_order_badge(self, pos, count, colour):
+        """An arrow's army count badge (drawn by OrderLight over all the arrows)."""
+        self.game.helpers.draw_circle_badge(pos, count, border_color=colour)
+
+    def _order_source_world(self, territory, player):
+        """
+        Where an order's arrow starts, in world coordinates: the ordering player's
+        flag in a territory with several garrisons, else the territory centre.
+        """
+        from_cx, from_cy = self.game.scaled_centers[territory]
+        garrisons = self.game.game_state.territory_garrisons.get(territory, {})
+        # Count only non-empty garrisons for positioning
+        occupied = sum(1 for g in garrisons.values() if g.get('unmoved', 0) + g.get('moved', 0) > 0)
+        if occupied <= 1 or player is None:
+            return (from_cx, from_cy)
+        flag_positions = self.game.game_state.get_flag_positions_for_territory(
+            territory, from_cx, from_cy, occupied
+        )
+        # The player's flag slot: non-empty garrisons before theirs
+        garrison_index = 0
+        for player_index in sorted(garrisons.keys()):
+            if player_index == player:
+                break
+            if garrisons[player_index].get('unmoved', 0) + garrisons[player_index].get('moved', 0) > 0:
+                garrison_index += 1
+        if garrison_index < len(flag_positions):
+            return flag_positions[garrison_index]
+        return (from_cx, from_cy)
+
+    def _order_arrows(self):
+        """The turn's movement orders as OrderArrows (turn-by-turn mode)."""
         # Group orders by (from_territory, to_territory) to show total count
         # PERFORMANCE: Also pre-index first order per route to avoid nested loop later
         route_counts = {}  # (from, to) -> total_army_count
         route_first_order = {}  # (from, to) -> first order (for player info)
-
         for order in self.game.game_state.movement_orders:
             route = (order.from_territory, order.to_territory)
             if route not in route_counts:
                 route_counts[route] = 0
                 route_first_order[route] = order  # Store first order for this route
             route_counts[route] += order.army_count
-        
+
         hovered_route = getattr(self.game, 'sidebar_hovered_route', None)
-
-        # Draw one arrow per unique route with total count
+        centers = self.game.scaled_centers
+        arrows = []
         for (from_territory, to_territory), total_count in route_counts.items():
-            # Get territory centers in world coordinates (already scaled!)
-            if from_territory not in self.game.scaled_centers or to_territory not in self.game.scaled_centers:
+            if from_territory not in centers or to_territory not in centers:
                 continue
+            first_order = route_first_order[(from_territory, to_territory)]
+            points = [self._order_source_world(from_territory, first_order.player)]
+            # Captain 2-hop: bent through the intermediate territory
+            intermediate = getattr(first_order, 'intermediate_territory', None)
+            if intermediate and intermediate in centers:
+                points.append(centers[intermediate])
+            points.append(centers[to_territory])
+            # Gold while its Action Queue card is under the mouse
+            kind = 'hovered' if hovered_route == (from_territory, to_territory) else 'own'
+            arrows.append(OrderArrow(points, kind, total_count))
+        return arrows
 
-            # For multi-garrison territories, use the flag position of the player making the order
-            # PERFORMANCE: Use pre-indexed order instead of nested loop search
-            first_order = route_first_order.get((from_territory, to_territory))
-            order_player = first_order.player if first_order else None
-
-            # Get FROM position - use flag position for multi-garrison, center for single garrison
-            from_cx, from_cy = self.game.scaled_centers[from_territory]
-            garrisons_from = self.game.game_state.territory_garrisons.get(from_territory, {})
-            # Count only non-empty garrisons for positioning
-            num_garrisons_from = sum(1 for g in garrisons_from.values() if g.get('unmoved', 0) + g.get('moved', 0) > 0)
-
-            if num_garrisons_from > 1 and order_player is not None:
-                # Multi-garrison: Get flag position for the player making the order
-                flag_positions = self.game.game_state.get_flag_positions_for_territory(
-                    from_territory, from_cx, from_cy, num_garrisons_from
-                )
-
-                # Find the garrison index for this player
-                garrison_index = 0
-                for player_index in sorted(garrisons_from.keys()):
-                    if player_index == order_player:
-                        break
-                    if garrisons_from[player_index].get('unmoved', 0) + garrisons_from[player_index].get('moved', 0) > 0:
-                        garrison_index += 1
-
-                if garrison_index < len(flag_positions):
-                    from_world = flag_positions[garrison_index]
-                else:
-                    from_world = (from_cx, from_cy)
-            else:
-                # Single garrison: Use territory center
-                from_world = (from_cx, from_cy)
-
-            to_world = self.game.scaled_centers[to_territory]
-
-            # Captain 2-hop: check if first order has intermediate_territory for bent arrow path
-            intermediate_world = None
-            if first_order and getattr(first_order, 'intermediate_territory', None):
-                intermediate_world = self.game.scaled_centers.get(first_order.intermediate_territory)
-
-            # Transform to screen coordinates (Phase 2D: camera transformation!)
-            from_x, from_y = self.game.world_to_screen(from_world)
-            to_x, to_y = self.game.world_to_screen(to_world)
-
-            # Arrow color - green for movement orders; gold while its Action Queue card
-            # is under the mouse (line, head and count badge all take the colour)
-            arrow_color = COLOR_ARROW_MOVEMENT
-            if hovered_route == (from_territory, to_territory):
-                arrow_color = COLOR_ARROW_HOVERED
-
-            if intermediate_world:
-                # Captain 2-hop: draw bent arrow from→intermediate→destination
-                inter_x, inter_y = self.game.world_to_screen(intermediate_world)
-                # Draw first segment (from → intermediate)
-                pygame.draw.line(self.game.screen, arrow_color, (int(from_x), int(from_y)), (int(inter_x), int(inter_y)), ARROW_LINE_WIDTH)
-                # Draw second segment (intermediate → destination) with arrowhead
-                pygame.draw.line(self.game.screen, arrow_color, (int(inter_x), int(inter_y)), (int(to_x), int(to_y)), ARROW_LINE_WIDTH)
-                # Use second segment direction for arrowhead
-                dx = to_x - inter_x
-                dy = to_y - inter_y
-            else:
-                # Standard single-segment arrow
-                pygame.draw.line(self.game.screen, arrow_color, (int(from_x), int(from_y)), (int(to_x), int(to_y)), ARROW_LINE_WIDTH)
-                dx = to_x - from_x
-                dy = to_y - from_y
-
-            # Calculate arrowhead
-            length = math.sqrt(dx*dx + dy*dy)
-
-            if length > 0:
-                # Normalize direction
-                dx /= length
-                dy /= length
-
-                # Arrowhead size
-                arrow_size = ARROW_HEAD_SIZE
-                arrow_angle = ARROW_HEAD_ANGLE_RAD
-
-                # Calculate arrowhead points
-                # Left point
-                left_x = to_x - arrow_size * (dx * math.cos(arrow_angle) - dy * math.sin(arrow_angle))
-                left_y = to_y - arrow_size * (dy * math.cos(arrow_angle) + dx * math.sin(arrow_angle))
-
-                # Right point
-                right_x = to_x - arrow_size * (dx * math.cos(arrow_angle) + dy * math.sin(arrow_angle))
-                right_y = to_y - arrow_size * (dy * math.cos(arrow_angle) - dx * math.sin(arrow_angle))
-
-                # Draw arrowhead
-                pygame.draw.polygon(self.game.screen, arrow_color, [
-                    (int(to_x), int(to_y)),
-                    (int(left_x), int(left_y)),
-                    (int(right_x), int(right_y))
-                ])
-
-                # Draw army count badge at midpoint (showing TOTAL count)
-                if intermediate_world:
-                    inter_x_s, inter_y_s = self.game.world_to_screen(intermediate_world)
-                    mid_x = int((from_x + inter_x_s) / 2)  # Badge on first segment
-                    mid_y = int((from_y + inter_y_s) / 2)
-                else:
-                    mid_x = int((from_x + to_x) / 2)
-                    mid_y = int((from_y + to_y) / 2)
-
-                # Draw badge using helper (Phase 1D)
-                self.game.helpers.draw_circle_badge((mid_x, mid_y), total_count, border_color=arrow_color)
-
-        # Draw cascade cancel animations (red shaking arrows that fade out)
-        self._draw_cancelling_arrows()
-
-    def _draw_cancelling_arrows(self):
-        """Draw red shaking arrows for orders that were auto-cancelled due to overflow.
-
-        These are visual-only entries in game_state.cancelling_arrows that persist
-        briefly after the order is removed. Shows a red arrow with shake effect
-        that fades out over ARROW_CANCEL_DURATION seconds.
+    def _cancelling_order_arrows(self):
+        """
+        The arrows of orders auto-cancelled due to overflow, as red OrderArrows
+        that shake and fade out over ARROW_CANCEL_DURATION seconds. Expired
+        entries are dropped from game_state.cancelling_arrows (visual only).
         """
         if not hasattr(self.game, 'game_state') or not self.game.game_state:
-            return
-
+            return []
         cancelling = self.game.game_state.cancelling_arrows
         if not cancelling:
-            return
+            return []
 
         now = time.time()
-        expired = []
-
-        for i, entry in enumerate(cancelling):
+        arrows = []
+        live = []
+        for entry in cancelling:
             elapsed = now - entry['start_time']
-            if elapsed >= ARROW_CANCEL_DURATION:
-                expired.append(i)
-                continue
-
-            # Progress 0.0 → 1.0 over the animation duration
-            progress = elapsed / ARROW_CANCEL_DURATION
-
             from_terr = entry['from_territory']
             to_terr = entry['to_territory']
-            army_count = entry['army_count']
-
-            if from_terr not in self.game.scaled_centers or to_terr not in self.game.scaled_centers:
-                expired.append(i)
+            if (elapsed >= ARROW_CANCEL_DURATION or from_terr not in self.game.scaled_centers
+                    or to_terr not in self.game.scaled_centers):
                 continue
-
-            from_world = self.game.scaled_centers[from_terr]
-            to_world = self.game.scaled_centers[to_terr]
-
-            from_x, from_y = self.game.world_to_screen(from_world)
-            to_x, to_y = self.game.world_to_screen(to_world)
-
+            live.append(entry)
+            # Progress 0.0 -> 1.0 over the animation duration
+            progress = elapsed / ARROW_CANCEL_DURATION
             # Shake offset: decreasing amplitude sine wave
-            shake_offset = math.sin(elapsed * ARROW_CANCEL_SHAKE_FREQ) * ARROW_CANCEL_SHAKE_AMP * (1.0 - progress)
-            from_x += shake_offset
-            to_x += shake_offset
+            shake = math.sin(elapsed * ARROW_CANCEL_SHAKE_FREQ) * ARROW_CANCEL_SHAKE_AMP * (1.0 - progress)
+            arrows.append(OrderArrow([self.game.scaled_centers[from_terr], self.game.scaled_centers[to_terr]],
+                                     'cancelled', entry['army_count'], fade=1.0 - progress, shake=shake))
+        cancelling[:] = live
+        return arrows
 
-            # Fade alpha: full → 0 over duration
-            alpha = int(255 * (1.0 - progress))
+    def _sim_order_arrows(self, sim_state):
+        """Movement arrows for simultaneous mode, as OrderArrows.
 
-            # Draw arrow line and head on a temporary surface for alpha blending
-            # Use a simple approach: draw with fading color (blend toward background)
-            fade_r = int(COLOR_ARROW_CANCELLED[0] * (1.0 - progress))
-            fade_g = int(COLOR_ARROW_CANCELLED[1] * (1.0 - progress))
-            fade_b = int(COLOR_ARROW_CANCELLED[2] * (1.0 - progress))
-            arrow_color = (max(fade_r, 1), fade_g, fade_b)
-
-            # Draw main line
-            pygame.draw.line(self.game.screen, arrow_color,
-                             (int(from_x), int(from_y)), (int(to_x), int(to_y)),
-                             ARROW_LINE_WIDTH)
-
-            # Calculate and draw arrowhead
-            dx = to_x - from_x
-            dy = to_y - from_y
-            length = math.sqrt(dx * dx + dy * dy)
-
-            if length > 0:
-                dx /= length
-                dy /= length
-                arrow_size = ARROW_HEAD_SIZE
-                arrow_angle = ARROW_HEAD_ANGLE_RAD
-
-                left_x = to_x - arrow_size * (dx * math.cos(arrow_angle) - dy * math.sin(arrow_angle))
-                left_y = to_y - arrow_size * (dy * math.cos(arrow_angle) + dx * math.sin(arrow_angle))
-                right_x = to_x - arrow_size * (dx * math.cos(arrow_angle) + dy * math.sin(arrow_angle))
-                right_y = to_y - arrow_size * (dy * math.cos(arrow_angle) - dx * math.sin(arrow_angle))
-
-                pygame.draw.polygon(self.game.screen, arrow_color, [
-                    (int(to_x), int(to_y)),
-                    (int(left_x), int(left_y)),
-                    (int(right_x), int(right_y))
-                ])
-
-                # Draw army count badge at midpoint (fading red)
-                mid_x = int((from_x + to_x) / 2)
-                mid_y = int((from_y + to_y) / 2)
-                self.game.helpers.draw_circle_badge(
-                    (mid_x, mid_y), army_count, border_color=arrow_color
-                )
-
-        # Remove expired entries (reverse order to keep indices valid)
-        for i in reversed(expired):
-            cancelling.pop(i)
-
-    def _draw_sim_movement_arrows(self, sim_state):
-        """Draw movement arrows for simultaneous mode.
-
-        Shows player's own orders and allied players' orders.
-        Uses different colors: green for own, cyan for allied.
+        Shows player's own orders and allied players' orders: the 'own' style
+        for the local player's, 'ally' (cyan) for allied players'.
 
         During planning phase:
         - Local player's orders come from game_state.movement_orders (being created in UI)
@@ -1962,81 +1802,21 @@ class MapRenderer:
             route_counts[key] = (route_counts[key][0] + count, player_id)
 
         hovered_route = getattr(self.game, 'sidebar_hovered_route', None)
-
-        # Draw arrows
+        centers = self.game.scaled_centers
+        arrows = []
         for (from_territory, to_territory, is_ally), (total_count, order_player) in route_counts.items():
-            if from_territory not in self.game.scaled_centers or to_territory not in self.game.scaled_centers:
+            if from_territory not in centers or to_territory not in centers:
                 continue
-
-            # Get FROM position
-            from_cx, from_cy = self.game.scaled_centers[from_territory]
-            garrisons_from = self.game.game_state.territory_garrisons.get(from_territory, {})
-            num_garrisons_from = sum(1 for g in garrisons_from.values() if g.get('unmoved', 0) + g.get('moved', 0) > 0)
-
-            if num_garrisons_from > 1 and order_player is not None:
-                flag_positions = self.game.game_state.get_flag_positions_for_territory(
-                    from_territory, from_cx, from_cy, num_garrisons_from
-                )
-
-                garrison_index = 0
-                for player_index in sorted(garrisons_from.keys()):
-                    if player_index == order_player:
-                        break
-                    if garrisons_from[player_index].get('unmoved', 0) + garrisons_from[player_index].get('moved', 0) > 0:
-                        garrison_index += 1
-
-                if garrison_index < len(flag_positions):
-                    from_world = flag_positions[garrison_index]
-                else:
-                    from_world = (from_cx, from_cy)
-            else:
-                from_world = (from_cx, from_cy)
-
-            to_world = self.game.scaled_centers[to_territory]
-
-            # Transform to screen coordinates
-            from_x, from_y = self.game.world_to_screen(from_world)
-            to_x, to_y = self.game.world_to_screen(to_world)
-
-            # Arrow color - green for own orders, cyan for allied orders; an own order
-            # turns gold while its Action Queue card is under the mouse
+            points = [self._order_source_world(from_territory, order_player), centers[to_territory]]
+            # An own order turns gold while its Action Queue card is under the mouse
             if is_ally:
-                arrow_color = (0, 180, 200)  # Cyan for allies
+                kind = 'ally'
             elif hovered_route == (from_territory, to_territory):
-                arrow_color = COLOR_ARROW_HOVERED
+                kind = 'hovered'
             else:
-                arrow_color = (0, 200, 0)  # Green for own
-
-            # Draw main line
-            pygame.draw.line(self.game.screen, arrow_color, (int(from_x), int(from_y)), (int(to_x), int(to_y)), 4)
-
-            # Calculate arrowhead
-            dx = to_x - from_x
-            dy = to_y - from_y
-            length = math.sqrt(dx*dx + dy*dy)
-
-            if length > 0:
-                dx /= length
-                dy /= length
-
-                arrow_size = 15
-                arrow_angle = 0.5236  # 30 degrees
-
-                left_x = to_x - arrow_size * (dx * math.cos(arrow_angle) - dy * math.sin(arrow_angle))
-                left_y = to_y - arrow_size * (dy * math.cos(arrow_angle) + dx * math.sin(arrow_angle))
-                right_x = to_x - arrow_size * (dx * math.cos(arrow_angle) + dy * math.sin(arrow_angle))
-                right_y = to_y - arrow_size * (dy * math.cos(arrow_angle) - dx * math.sin(arrow_angle))
-
-                pygame.draw.polygon(self.game.screen, arrow_color, [
-                    (int(to_x), int(to_y)),
-                    (int(left_x), int(left_y)),
-                    (int(right_x), int(right_y))
-                ])
-
-                # Draw army count badge
-                mid_x = int((from_x + to_x) / 2)
-                mid_y = int((from_y + to_y) / 2)
-                self.game.helpers.draw_circle_badge((mid_x, mid_y), total_count, border_color=arrow_color)
+                kind = 'own'
+            arrows.append(OrderArrow(points, kind, total_count))
+        return arrows
 
     def draw_battle_markers(self):
         """Draw battle markers with hurricane particle effects (Phase 2D: camera-aware)"""
@@ -2861,7 +2641,7 @@ class MapRenderer:
             self.construction_dust.draw_front(self.game.screen, x, y, scaled_empty_plot_radius,
                                               self._plot_fx_clock, phase, VARIANT_UPGRADE)
 
-        # Selection glow
+        # Selection ring
         is_selected_hero_keep = False
         if self.game.selected_hero and building == 'Keep':
             if current_player in self.game.game_state.heroes:
@@ -2880,15 +2660,9 @@ class MapRenderer:
         )
 
         if is_plot_selected:
-            pulse = abs(math.sin(time.time() * 2))
-            glow_alpha = int(100 + 100 * pulse)
-            for i in range(3):
-                glow_radius = int((scaled_empty_plot_radius + i * 5) * ui_scale)
-                glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                pygame.draw.circle(glow_surface, (0, 255, 0, glow_alpha // (i + 1)),
-                                 (glow_radius + 5, glow_radius + 5), glow_radius, 3)
-                self.game.screen.blit(glow_surface, (x - glow_radius - 5, y - glow_radius - 5))
-                self.return_surface_to_pool(glow_surface)
+            # Round the plot's rim (scaled_empty_plot_radius already carries ui_scale)
+            self.order_light.draw_selection(self._hero_fx_view(), x, y, scaled_empty_plot_radius,
+                                            self._plot_fx_clock)
 
     def _render_construction_plot(self, territory, plot_index, under_construction, owner, x, y,
                                   ui_scale, scaled_empty_plot_radius, scaled_plot_surface_size,
