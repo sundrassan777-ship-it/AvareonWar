@@ -78,14 +78,14 @@ ARROWS = {
     'end_gap': 1.3,            # plot radii from the tip to the target banner
     'bow': 0.07,               # sideways bow to the right of travel, share of the length
     'max_bow': 1.6,            # ...at most this many plot radii (A->B and B->A part)
-    'size': 0.48,              # light bead diameter, plot radii
+    'size': 0.42,              # light bead diameter, plot radii (owner: a little thinner)
     'spacing': 0.42,           # bead spacing, share of the bead diameter
     # Crests of light flowing from source to target: a sharp front, a long trail
     'base': 0.4,               # steady light along the path
     'crest': 0.6,              # extra light at a crest
     'wave_length': 4.5,        # plot radii between crests
     'flow': 0.8,               # crests passing a point per second
-    'tint': {'size': 1.05, 'spacing': 0.36, 'alpha': 135, 'softness': 1.0},
+    'tint': {'size': 0.9, 'spacing': 0.36, 'alpha': 135, 'softness': 1.0},
     'head': {
         'length': 1.05,        # chevron arm length, plot radii
         'angle': 32.0,         # degrees between an arm and the shaft
