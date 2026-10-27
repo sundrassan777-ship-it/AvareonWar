@@ -912,8 +912,8 @@ embargoed, embers drift over their territories.
 | Which hero shows which aura | `MapRenderer.HERO_AURAS` (hero → aura, `game_state` territory getter) |
 | Where an ability's pieces go (target, Keep, arc ends, points inside, the caster's Keeps, enemy territories...) | `MapRenderer._ability_anchors()` |
 | How a cast reaches the screen | Local cast, network replay and the AI all go through `main.py` `play_ability_effect()`; the AI records `game_state.ability_fx_events` (`ai_player.py`, `SimPhaseManager._record_ability_fx`), drained by `Game.update_map_effects()` |
-| The Silence fog | `main.py` `SILENCE_FOG_*`, `draw_silence_fog_overlay()` |
-| Preview / tune / measure | `py tools/hero_fx_preview.py` (live: keys cast at the territory under the mouse, A cycles the auras, L 2D/3D), `--sheet out.png [--only Levy defiance ...]`, `--bench` |
+| The Silence fog | `hero_fx_style.SILENCE_FOG` (look), `main.py` `draw_silence_fog_overlay()` |
+| Preview / tune / measure | `py tools/hero_fx_preview.py` (live: keys cast at the territory under the mouse, A cycles the auras, C clears the Embargo embers / Silence fog a cast leaves behind, L 2D/3D), `--sheet out.png [--only Levy defiance ...]`, `--bench` |
 
 **Rules:**
 - **Two layers.** `render_hero_effects_under()` (from `draw_territories()`, just before the
@@ -942,7 +942,7 @@ embargoed, embers drift over their territories.
   takes pygame's slow blit path (~3-4 ms full screen vs ~0.7 ms at 255), and `set_alpha(None)`
   switches the per-pixel alpha OFF (an opaque wall). The Silence vignette fades in, then holds.
 - **Cost** (docs/PERFORMANCE_ROADMAP.md "Hero ability effects"): the selected hero's aura
-  ~0.3-0.65 ms, Embargo embers ~0.44 ms over the whole map, a one-shot cast ~0.5-2 ms while
+  ~0.3-0.65 ms, Embargo embers ~0.55 ms over the whole map, a one-shot cast ~0.5-2 ms while
   it plays (Embargo's border light over half the map ~3 ms for 1.6 s), the cast itself under
   1.5 ms. Measure before/after back to back: the machine's speed drifts.
 

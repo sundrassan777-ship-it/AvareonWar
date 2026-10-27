@@ -90,8 +90,10 @@ Persistent effects, measured alone (`tools/hero_fx_preview.py --bench` and direc
 - **Passive aura** (selected hero): 0.32 ms at zoom 1.65, 0.65 ms at 4.0 for 4 territories;
   ~0.4 ms while zooming (bead positions recomputed per camera move). The old bubbles cost
   about the same static (~+0.3 ms) but did a point-in-polygon test per bubble per frame.
-- **Embargo embers**: 0.44 ms with all 42 embargoed territories on screen (193 embers after
-  the level of detail), 0.34 ms at zoom 2.4. Old bubbles: +0.3-1.0 ms.
+- **Embargo embers**: ~0.55 ms with all 42 embargoed territories on screen (155 embers
+  after the level of detail; halos ~0.2 ms of it). Old bubbles: +0.3-1.0 ms. Per-firefly
+  sprite lookups and per-territory bookkeeping (count from area, seed hash) were most of
+  the cost until they were cached per zoom level (`HeroLight._mote_sprites` / `_mote_plan`).
 - **Silence fog**: one vignette blit, ~0.7 ms (the old fog filled and blitted a full-map
   surface every frame, ~1.0 ms).
 

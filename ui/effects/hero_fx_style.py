@@ -61,7 +61,9 @@ CUES (one entry of an ability's 'cues'):
   dust:   count, life, spread, distance, size (start, end) in plot radii,
           alpha, softness, colours - normal-blend clouds, not light
   curtain: sweep (seconds to cross the screen), width (share of the screen),
-          wave (front waviness, share of the height), alpha, embers (count)
+          wave (front waviness, share of the height), alpha (at the front),
+          ramp (how the alpha builds toward the front: < 1 full sooner),
+          strip_colour (the strip; the front's light uses colour), embers (count)
   each:   stagger, cues - the cues repeated at every point of the anchor
 
 LIGHT ON THE PARCHMENT: additive light washes out toward white on the bright 2D
@@ -185,21 +187,36 @@ PERSISTENT = {
         'fade': 0.6,
         'motes': {
             'count': 14,
-            'density': 1.8,        # embers per 1000 world px^2 (~6 in a median territory)...
+            'density': 1.4,        # embers per 1000 world px^2 (~5 in a median territory)...
             'min': 2,
-            # ...thinned to 60% on the smallest plots (zoomed out, the whole map on
+            # ...thinned to 55% on the smallest plots (zoomed out, the whole map on
             # screen): it lasts a whole turn over every embargoed territory
-            'lod': {'full_radius': 24, 'min_share': 0.6},
+            'lod': {'full_radius': 24, 'min_share': 0.55},
             'life': (2.0, 3.2),
             'rise': 11.0,
             'sway': 2.0,
-            'size': (0.6, 1.0),
+            'size': (0.7, 1.15),
             'intensity': 1.0,
-            'white_mix': 0.3,
-            'tint': 150,
-            'tint_size': 2.2,
+            # A hot orange-white core in a deep red smudge, lit for most of its life:
+            # stands out on the bright 2D map's orange and yellow territories too
+            # (owner, 2026-10-27: the embers could not be seen)
+            'white_mix': 0.35,
+            'glow_power': 1,
+            'tint': 175,
+            'tint_size': 1.8,
+            'tint_colour': (125, 12, 8),
         },
     },
+}
+
+# The Vow of Silence fog over the map while anyone is silenced (main.py
+# draw_silence_fog_overlay): a crimson vignette, faint over the middle of the map
+# and deep toward its edges. Fades in, then holds (see main.py for why it doesn't pulse)
+SILENCE_FOG = {
+    'colour': (110, 0, 0),
+    'centre_alpha': 40,
+    'edge_alpha': 145,
+    'fade': 1.5,               # seconds to fade in
 }
 
 # ========================================
@@ -383,9 +400,11 @@ ABILITIES = {
         'colour': (200, 20, 30),
         'white_mix': 0.2,
         'cues': (
+            # A deep crimson strip, full right behind its glowing front (owner,
+            # 2026-10-27: the curtain was hardly visible on the bright 2D map)
             {'kind': 'curtain', 'at': 0.0, 'duration': 2.0, 'sweep': 1.4, 'fade_in': 0.05,
-             'fade_out': 0.5, 'intensity': 1.0, 'width': 0.22, 'wave': 0.05, 'alpha': 150,
-             'embers': 70},
+             'fade_out': 0.5, 'intensity': 1.0, 'width': 0.32, 'wave': 0.05, 'alpha': 215,
+             'ramp': 0.6, 'strip_colour': (150, 8, 22), 'embers': 90},
         ),
     },
     # --- Evain Nithieln ---
@@ -455,6 +474,7 @@ HERO_FX_STYLE = {
     'kit': KIT,
     'auras': AURAS,
     'persistent': PERSISTENT,
+    'silence_fog': SILENCE_FOG,
     'abilities': ABILITIES,
     'warm_white': WARM_WHITE,
 }

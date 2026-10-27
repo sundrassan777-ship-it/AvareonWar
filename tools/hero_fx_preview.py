@@ -18,6 +18,8 @@ Controls (live):
     1-9, 0, -, =  cast an ability at the territory under the mouse (order: ABILITY_KEYS)
     A  cycle the passive aura (off / Defiance / Haste / Safe Haven) on the territory
        under the mouse and its neighbours
+    C  clear what a cast leaves behind: the Embargo embers, the Silence fog (in the
+       game they last a turn; here until cleared or cast again)
     mouse wheel  zoom     drag  pan     L  2D / 3D look
     P  production rays + dust on/off   Space  pause   Esc  quit
 """
@@ -43,6 +45,7 @@ from tools.plot_fx_preview import (Preview, ui_scale_for, plot_radii, MIN_ZOOM, 
 from ui.effects.hero_fx_style import get_hero_fx_style  # noqa: E402
 from ui.effects.hero_fx_effect import (HeroLight, HeroAbilityEffect, HeroAura, FxView,  # noqa: E402
                                        stable_seed)
+from ui.effects.light_fx import vignette_surface  # noqa: E402
 
 AURA_ORDER = (None, 'defiance', 'haste', 'safe_haven')
 
@@ -59,6 +62,11 @@ class HeroPreview(Preview):
         self.light = None
         self.effects = []
         self.aura = None
+        # What casts leave behind - in the game drawn from game state, not by the cast
+        self.embers = None           # HeroAura('embargo') over the embargoed territories
+        self.embers_on = False
+        self.silence_since = None    # preview clock when Vow of Silence was cast
+        self._fog = None
         self.show_plot_fx = False
         self._fill_key = None
         self._fill = None
@@ -79,6 +87,9 @@ class HeroPreview(Preview):
         self.prewarm_ms = (time.perf_counter() - start) * 1000
         self.effects = []
         self.aura = None
+        self.embers = HeroAura(self.light, 'embargo')
+        self.embers_on = False
+        self.silence_since = None
         self._fill_key = None
         territories = sorted(map_data.TERRITORY_PLOTS)
         from config.constants import PLAYER_COLORS
@@ -159,6 +170,20 @@ class HeroPreview(Preview):
         anchors, seed = self.anchors(ability, territory)
         self.effects.append(HeroAbilityEffect(self.light, self.hero_style['abilities'][ability],
                                               anchors, seed))
+        # What the game shows afterwards from game state (MapRenderer.update_hero_effects,
+        # Game.draw_silence_fog_overlay)
+        if ability == 'Embargo':
+            self.embers.set_territories(anchors['enemy_territories'])
+            self.embers_on = True
+        elif ability == 'Vow of Silence':
+            self.silence_since = self.clock
+
+    def clear_persistent(self, at_once=False):
+        """End the Embargo embers (they fade out) and the Silence fog."""
+        self.embers_on = False
+        if at_once:
+            self.embers.strength = 0.0
+        self.silence_since = None
 
     def set_aura(self, key, territory, neighbours=3):
         """The aura over the territory and its nearest neighbours (as if the player owned them)."""
@@ -178,6 +203,7 @@ class HeroPreview(Preview):
         self.effects = [e for e in self.effects if not e.is_finished()]
         if self.aura is not None:
             self.aura.update(dt, True)
+        self.embers.update(dt, self.embers_on)
 
     # ---------- drawing ----------
 
@@ -203,6 +229,8 @@ class HeroPreview(Preview):
         start = perf()
         if self.aura is not None:
             self.aura.render(view, self.clock)
+        if self.embers.visible:
+            self.embers.render(view, self.clock)
         for effect in self.effects:
             effect.render_under(view)
         under_ms = (perf() - start) * 1000
@@ -211,11 +239,25 @@ class HeroPreview(Preview):
         self.show_rays = self.show_dust = self.show_plot_fx
         self._render_plots_only()
 
+        # The Silence fog, over the plots and under the casts' over layer, as in the game
         start = perf()
+        self._draw_silence_fog()
         for effect in self.effects:
             effect.render_over(view)
         over_ms = (perf() - start) * 1000
         return under_ms, over_ms
+
+    def _draw_silence_fog(self):
+        """Game.draw_silence_fog_overlay(): the vignette, faded in, then held."""
+        if self.silence_since is None:
+            return
+        fog = self.hero_style['silence_fog']
+        if self._fog is None or self._fog.get_size() != (self.width, self.height):
+            self._fog = vignette_surface((self.width, self.height), fog['colour'],
+                                         fog['centre_alpha'], fog['edge_alpha'])
+        progress = min(1.0, (self.clock - self.silence_since) / fog['fade'])
+        self._fog.set_alpha(int(255 * progress) if progress < 1.0 else 255)
+        self.screen.blit(self._fog, (0, 0))
 
     def _render_plots_only(self):
         radius = int(EMPTY_PLOT_RADIUS * ui_scale_for(self.zoom))
@@ -277,6 +319,8 @@ def run_live(look, size):
                 elif event.key == pygame.K_l:
                     preview.load_look('2d' if preview.look == '3d' else '3d')
                     aura_index = 0
+                elif event.key == pygame.K_c:
+                    preview.clear_persistent()
                 elif event.key == pygame.K_p:
                     preview.show_plot_fx = not preview.show_plot_fx
                 elif event.key == pygame.K_SPACE:
@@ -294,8 +338,11 @@ def run_live(look, size):
             f"{clock.get_fps():6.1f} FPS   frame {avg[0]:5.2f} ms   hero fx under {avg[1]:5.2f} ms"
             f"   over {avg[2]:5.2f} ms   casts {len(preview.effects)}",
             f"look {preview.look}   zoom {preview.zoom:.2f}   aura {AURA_ORDER[aura_index] or 'off'}"
+            f"{'   EMBARGO EMBERS' if preview.embers_on else ''}"
+            f"{'   SILENCE FOG' if preview.silence_since is not None else ''}"
             f"{'   PAUSED' if preview.paused else ''}",
-            '  '.join(f"{k}:{n}" for k, n in zip('1234567890-=', names)) + '   A aura  P plot fx  L look',
+            '  '.join(f"{k}:{n}" for k, n in zip('1234567890-=', names))
+            + '   A aura  C clear embers/fog  P plot fx  L look',
         ]
         for i, line in enumerate(lines):
             text = font.render(line, True, (255, 255, 255))
@@ -345,6 +392,7 @@ def run_sheet(path, look, size, zoom=2.4, magnify=2, only=None):
         for col, t in enumerate(times):
             preview.effects = []
             preview.aura = None
+            preview.clear_persistent(at_once=True)
             preview.clock = 0.0
             if kind == 'aura':
                 preview.set_aura(name, territory)
@@ -388,6 +436,8 @@ def run_bench(look, size, frames=180):
             preview.clamp()
             preview.effects = []
             preview.aura = None
+            preview.embers = HeroAura(preview.light, 'embargo')   # on the new light
+            preview.clear_persistent(at_once=True)
             preview.clock = 0.0
             if kind == 'aura':
                 preview.set_aura(name, territory)

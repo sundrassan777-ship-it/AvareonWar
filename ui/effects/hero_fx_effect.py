@@ -157,6 +157,9 @@ class HeroLight:
         self._outlines = OrderedDict()   # frozenset(territories) -> outline
         self._spawns = {}                # (territory, rise) -> [(x, y), ...]
         self._areas = {}                 # territory -> area, world px^2
+        self._mote_cache = OrderedDict() # firefly sprites per (mote table, radius, colours)
+        self._mote_plans = OrderedDict() # per-territory firefly plans (_mote_plan)
+        self.prewarm_radii = ()
         self._scratch = {}               # (w, h) -> black surface for fading ray frames
         self._wave_tables = OrderedDict()
         self._positions = OrderedDict()  # bead screen positions per (outline, camera, size)
@@ -179,6 +182,7 @@ class HeroLight:
         of the auras and abilities at every size the zoom range gives (a border
         light shows only once all its brightness levels exist).
         """
+        self.prewarm_radii = sorted(set(radii))   # HeroAura prewarms its fireflies at these
         self.rays.prewarm(radii)
         self.ring.prewarm()
         self.raster()
@@ -467,6 +471,76 @@ class HeroLight:
         count = int(round(self.area(territory) * density / 1000.0))
         return max(min(style.get('min', 1), available), min(available, count))
 
+    def _mote_sprites(self, motes, radius, colour, halo_colour, tint_size, with_halo):
+        """
+        Per firefly of a mote table at this plot radius: (core ladder, core half
+        size, halo ladder or None, halo half size) - the ladders indexed by
+        brightness / alpha level. Cached per (table, radius, colours); None while
+        a ladder is still being built within the frame budget.
+        """
+        key = (id(motes), radius, colour, halo_colour, tint_size, with_halo)
+        entry = self._mote_cache.get(key)
+        if entry is not None and entry[0] is motes:
+            return entry[1]
+        prepared = []
+        for _, _, size, _, _ in motes:
+            diameter = _even(size * radius)
+            cores = self.glow.ladder(diameter, colour)
+            if cores is None:
+                return None
+            halo_ladder, halo_half = None, 0
+            if with_halo:
+                # Halo sizes in steps of 4 px: fewer sprites to build
+                halo_d = max(4, int(size * radius * tint_size) & ~3)
+                halo_ladder = [None] + [self.tint.sprite(halo_d, halo_colour,
+                                                         level * 255.0 / TintSprites.LEVELS)
+                                        for level in range(1, TintSprites.LEVELS + 1)]
+                if None in halo_ladder[1:]:
+                    return None
+                halo_half = halo_d >> 1
+            prepared.append((cores, diameter >> 1, halo_ladder, halo_half))
+        self._mote_cache[key] = (motes, prepared)
+        if len(self._mote_cache) > 64:
+            self._mote_cache.popitem(last=False)
+        return prepared
+
+    def _mote_plan(self, territories, style, motes, sprites, radius):
+        """
+        Per territory, what draw_motes needs besides the clock: (world bbox, spawn
+        points, their count, hash salt, phase offset, [(firefly, its sprites), ...]
+        for this territory's firefly count). Cached per (territory set, style,
+        sprites, radius) - it only changes with the zoom level - so a frame does no
+        per-territory bookkeeping (it was most of the embers' cost over 40
+        territories).
+        """
+        key = (id(territories), id(style), id(sprites), radius)
+        entry = self._mote_plans.get(key)
+        if (entry is not None and entry[0] is territories and entry[1] is sprites
+                and entry[2] is style):
+            return entry[3]
+        rise = style['rise']
+        plan = []
+        for territory in territories:
+            points = self.spawn_points(territory, rise)
+            tsalt = stable_seed(territory) & 0xFFFF
+            n = self.mote_count(territory, style, len(motes), radius)
+            plan.append((self.bbox(territory), points, len(points), tsalt, tsalt / 65536.0,
+                         list(zip(motes[:n], sprites))))
+        self._mote_plans[key] = (territories, sprites, style, plan)
+        if len(self._mote_plans) > 32:
+            self._mote_plans.popitem(last=False)
+        return plan
+
+    def prewarm_motes(self, motes, colour, halo_colour, tint_size, with_halo):
+        """Build a mote table's sprites for every prewarmed plot radius now (at load)."""
+        budgets = (self.glow._budget, self.tint._budget)
+        self.glow._budget = self.tint._budget = light_fx._BuildBudget(10 ** 9, 10 ** 9)
+        try:
+            for radius in self.prewarm_radii:
+                self._mote_sprites(motes, radius, colour, halo_colour, tint_size, with_halo)
+        finally:
+            self.glow._budget, self.tint._budget = budgets
+
     def draw_motes(self, view, territories, colour, motes, style, clock, brightness, raw_colour=None):
         """
         Fireflies rising inside each territory. motes: [(1 / life, offset,
@@ -483,55 +557,55 @@ class HeroLight:
         sway = style['sway']
         tint_alpha = style.get('tint', 0) if raw_colour is not None else 0
         tint_size = style.get('tint_size', 2.0)
+        halo_colour = tuple(style.get('tint_colour', raw_colour or (0, 0, 0)))
+        # Brightness over a life: sin(pi * age) ** power (2 = a brief twinkle, 1 = lit
+        # for most of it)
+        squared = style.get('glow_power', 2) == 2
         radius = view.radius
         steps = GlowSprites.LEVELS
+        # Each firefly's core and halo sprites for this plot size, looked up once
+        # (a per-firefly cache lookup was most of the cost with hundreds of them)
+        sprites = self._mote_sprites(motes, radius, colour, halo_colour, tint_size, bool(tint_alpha))
+        if sprites is None:
+            return   # still being built (within the frame budget)
+        halo_scale = TintSprites.LEVELS * tint_alpha * brightness / 255.0
+        core_scale = steps * brightness
         z = view.zoom
         ax, ay = view.ax, view.ay
         w, h = view.width, view.height
-        glow = self.glow
-        tint = self.tint
         halos = []
+        halo_append = halos.append
         seq = []
         append = seq.append
         sin = math.sin
         pi = math.pi
-        for territory in territories:
-            bx0, by0, bx1, by1 = self.bbox(territory)
+        for (bx0, by0, bx1, by1), points, count, tsalt, tphase, active in \
+                self._mote_plan(territories, style, motes, sprites, radius):
             if (ax + bx1 * z < -radius or ax + bx0 * z > w + radius
                     or ay + by1 * z < -radius or ay + by0 * z > h + radius):
                 continue
-            points = self.spawn_points(territory, rise)
-            count = len(points)
-            tsalt = stable_seed(territory) & 0xFFFF
-            tphase = tsalt / 65536.0
-            for inv_life, offset, size, sway_phase, salt in motes[:self.mote_count(territory, style, len(motes),
-                                                                                   radius)]:
+            for (inv_life, offset, size, sway_phase, salt), (cores, core_half, halo_ladder, halo_half) \
+                    in active:
                 u = clock * inv_life + offset + tphase
                 cycle = int(u)
                 age = u - cycle
                 env = sin(pi * age)
-                env *= env
-                level = int(steps * brightness * env + 0.5)
+                if squared:
+                    env *= env
+                level = int(core_scale * env + 0.5)
                 if level <= 0:
                     continue
                 hsh = ((cycle * 73856093) ^ salt ^ tsalt) & 0xFFFFFFFF
                 hsh = ((hsh ^ (hsh >> 13)) * 1274126177) & 0xFFFFFFFF
                 px, py = points[(hsh >> 8) % count]
-                x = ax + (px + sway * sin(age * 6.0 + sway_phase)) * z
-                y = ay + (py - rise * age) * z
-                if tint_alpha:
-                    # Halo sizes in steps of 4 px: fewer sprites to build
-                    halo_d = max(4, int(size * radius * tint_size) & ~3)
-                    halo = tint.sprite(halo_d, raw_colour, tint_alpha * brightness * env)
-                    if halo is not None:
-                        half = halo_d >> 1
-                        halos.append((halo, (int(x) - half, int(y) - half)))
-                diameter = _even(size * radius)
-                sprite = glow.sprite(diameter, colour, min(steps, level))
-                if sprite is None:
-                    continue
-                half = diameter >> 1
-                append((sprite, (int(x) - half, int(y) - half), None, ADD))
+                x = int(ax + (px + sway * sin(age * 6.0 + sway_phase)) * z)
+                y = int(ay + (py - rise * age) * z)
+                if halo_ladder is not None:
+                    halo_level = int(halo_scale * env + 0.5)
+                    if halo_level > 0:
+                        halo_append((halo_ladder[halo_level], (x - halo_half, y - halo_half)))
+                append((cores[level if level < steps else steps], (x - core_half, y - core_half),
+                        None, ADD))
         if halos:
             view.screen.blits(halos, doreturn=False)
         if seq:
@@ -975,6 +1049,8 @@ class _CurtainCue(_Cue):
         self.width_share = spec.get('width', 0.2)
         self.wave = spec.get('wave', 0.05)
         self.alpha = spec.get('alpha', 150)
+        self.ramp = spec.get('ramp', 1.6)
+        self.strip_colour = tuple(spec.get('strip_colour', self.raw_colour))
         self.embers_spec = spec.get('embers', 60)
         self._strip = None
         self._glow = None
@@ -992,13 +1068,13 @@ class _CurtainCue(_Cue):
         # One row: transparent at the back (left), the colour building toward the front
         row_w = strip_w + 2 * amp
         row = pygame.Surface((row_w, 1), pygame.SRCALPHA)
-        r, g, b = self.raw_colour
+        r, g, b = self.strip_colour
         for x in range(strip_w):
-            a = int(self.alpha * (x / float(strip_w)) ** 1.6)
+            a = int(self.alpha * (x / float(strip_w)) ** self.ramp)
             row.set_at((x, 0), (r, g, b, a))
         strip = pygame.Surface((row_w, height), pygame.SRCALPHA)
         # The front's glow: additive light along the front edge
-        glow_w = max(8, strip_w // 6)
+        glow_w = max(8, strip_w // 7)
         glow_row = light_fx.new_black_surface((glow_w + 2 * amp, 1))
         lr, lg, lb = self.colour
         for x in range(glow_w):
@@ -1193,6 +1269,10 @@ class HeroAura:
         self.mote_colour = light.light_colour(self.style['colour'],
                                               motes.get('white_mix', self.style['white_mix']))
         self.motes = mote_table(motes, stable_seed('aura', key))
+        # Its fireflies' sprites now, so the first selection doesn't wait for them
+        light.prewarm_motes(self.motes, self.mote_colour,
+                            tuple(motes.get('tint_colour', self.style['colour'])),
+                            motes.get('tint_size', 2.0), bool(motes.get('tint', 0)))
         self.territories = ()
         self.outline = []
         self.strength = 0.0      # 0-1, eased toward 1 while shown
@@ -1205,6 +1285,9 @@ class HeroAura:
             self.territories = territories
             has_rim = 'rim' in self.style
             self.outline = self.light.outline(territories) if territories and has_rim else []
+            # Firefly spawn points now, not in the first frame that draws them
+            for territory in territories:
+                self.light.spawn_points(territory, self.style['motes']['rise'])
 
     def update(self, delta_time, shown):
         self.shown = shown and bool(self.territories)

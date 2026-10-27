@@ -5199,12 +5199,6 @@ class Game:
 
     # ========================================
     
-    # Vow of Silence fog: a crimson vignette, faint over the middle of the map and
-    # deep toward its edges (hero ability FX pass, 2026-10; was a flat wash)
-    SILENCE_FOG_COLOUR = (110, 0, 0)
-    SILENCE_FOG_CENTRE_ALPHA = 40
-    SILENCE_FOG_EDGE_ALPHA = 145
-
     def draw_silence_fog_overlay(self):
         """
         Draw a dark red fog over the map while silence is active.
@@ -5212,9 +5206,9 @@ class Game:
         This visual effect indicates when Vow of Silence is active.
         ALL players see the fog when ANY player has active silence effects.
         Features:
-        - A crimson vignette baked once per map size (light_fx.vignette_surface):
-          no full-map fill per frame
-        - Gradual fade-in from transparent to full strength over 1.5 seconds
+        - A crimson vignette baked once per map size (light_fx.vignette_surface;
+          the look is hero_fx_style.SILENCE_FOG): no full-map fill per frame
+        - Gradual fade-in from transparent to full strength (1.5 seconds)
 
         PERFORMANCE: the old flat fog pulsed its alpha all turn. A partial surface
         alpha on a per-pixel-alpha surface takes pygame's slow blit path (~3-4 ms
@@ -5234,9 +5228,10 @@ class Game:
         # Get current time for animations
         current_time = pygame.time.get_ticks()
 
-        # Calculate fade-in progress
-        # Animation lasts 1.5 seconds (1500ms) - gradual fade from 0 to full strength
-        fade_duration = 1500
+        fog = self.map_renderer._hero_fx_style['silence_fog']
+
+        # Calculate fade-in progress: gradual fade from 0 to full strength
+        fade_duration = fog['fade'] * 1000
         if self.game_state.silence_activation_time:
             elapsed = current_time - self.game_state.silence_activation_time
             fade_progress = min(1.0, elapsed / fade_duration)
@@ -5247,8 +5242,7 @@ class Game:
         size = (WINDOW_WIDTH, MAP_HEIGHT)
         if self._cached_silence_fog is None or self._cached_silence_fog.get_size() != size:
             self._cached_silence_fog = vignette_surface(
-                size, self.SILENCE_FOG_COLOUR, self.SILENCE_FOG_CENTRE_ALPHA,
-                self.SILENCE_FOG_EDGE_ALPHA)
+                size, fog['colour'], fog['centre_alpha'], fog['edge_alpha'])
         # A partial surface alpha only while fading in; 255 afterwards keeps the faster
         # blit path. (Never None: that turns the per-pixel alpha off too - an opaque wall)
         self._cached_silence_fog.set_alpha(int(255 * fade_progress) if fade_progress < 1.0 else 255)

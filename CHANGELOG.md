@@ -55,6 +55,16 @@ before), and the AI's casts get effects too.
 - **Correction**: the phase 0 commit put every cast's first frame at 50-62 ms; that was the
   benchmark's own camera reset, not the effects.
 - Tests: `tests/test_hero_fx.py` (64).
+- **Follow-up (owner, 2026-10-27: "the red curtain is not visible enough", "I cannot see
+  persistent embers")**: the Vow of Silence curtain is a deep crimson strip, full right behind
+  its glowing front (was a light haze ramping up slowly); Embargo embers are a hot core in a
+  deep red smudge, lit for most of their life, so they stand out on the 2D map's orange and
+  yellow territories (they were only tested on the darker 3D look). The preview now shows what
+  a cast leaves behind - the embers and the Silence fog (C clears them) - which the game draws
+  from game state; the fog's look moved to `hero_fx_style.SILENCE_FOG`. Fireflies and embers
+  look their sprites and per-territory plan up once per zoom level, not per firefly: embers
+  over 42 territories ~0.55 ms. Aura fireflies are built at load, spawn points when an aura's
+  territories are set (not in a frame).
 
 ## 2026-10-26 - Plot effects: production light rays and construction dust
 
