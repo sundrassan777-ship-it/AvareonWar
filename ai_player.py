@@ -776,6 +776,15 @@ class AIPlayer:
                     ability_success = True
 
                 if ability_success:
+                    # Show the cast on the map (the AI never reaches the UI's cast path)
+                    events = getattr(game_state, 'ability_fx_events', None)
+                    if events is not None:
+                        immediate = ('Extort Populace', 'Reinforce', 'Vow of Silence', 'Embargo',
+                                     'Master Negotiator')
+                        fx_target = (None if ability_name in immediate
+                                     else target_terr if ability_name == 'Levy' else target)
+                        events.append((self.player_index, hero_type, ability_name, fx_target))
+
                     # Set cooldown (mirrors activate_hero_ability logic)
                     hero_info = game_state.HERO_TYPES.get(hero_type, {})
                     for ab in hero_info.get('abilities', []):

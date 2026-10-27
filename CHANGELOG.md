@@ -2,6 +2,77 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-26 - Hero ability effects as light
+
+Branch `feature/hero-ability-fx`. Owner: after the plot effects, the hero ability effects
+looked unpolished in comparison - redo them in the glowy style of the production rays,
+keeping an eye on FPS, especially for the passive abilities. Decisions: each ability keeps
+its own colour (not the caster's), passive auras show only while their hero is selected (as
+before), and the AI's casts get effects too.
+- **Light kit** (`ui/effects/light_fx.py`): additive `GlowSprites`, normal-blend
+  `TintSprites`, anti-light `DarkSprites` (multiply), `SoftRing`, `TerritoryRaster` (territory
+  per world pixel), `bead_chain` / `smooth_outline` (points along a border), `vignette_surface`.
+  The production rays' helpers moved here (`production_glow_effect.py` imports them). Sprite
+  caches are bounded LRUs with brightness baked in, built within 24 sprites AND 1 ms per frame.
+- **Effects** (`ui/effects/hero_fx_effect.py`, styled in `ui/effects/hero_fx_style.py`): every
+  active ability is a timeline of cues - flares, shock rings, ray bursts (a second
+  `ProductionRays`), sparks, light running round a territory's border, fireflies, comets along
+  an arc (Royal Charisma, Valorous Charge), a light drain (Regicide), dust (Relentless Charge),
+  a screen-wide curtain (Vow of Silence). Drawn in two layers: under the plots (rays, border
+  light, fireflies) and over the armies. On the bright 2D map pure additive light washes out
+  to white, so each colour is carried by a normal-blend tint layer under the light.
+- **Passive auras** (Defiance, Haste, Safe Haven): light along the outline of the covered
+  territories (shared borders dropped: one outline) with a shimmer running round it, and
+  fireflies - 4 per 1000 world px^2 of territory, at least 6 (owner: 7 per territory were
+  barely visible). Replaces the bubbles that ran a point-in-polygon test per bubble per frame
+  and spawned at a frame-rate-dependent rate (`main.py` bubble system removed).
+- **Embargo**: embers drift over the embargoed players' territories for as long as the
+  embargo lasts, synced from `game_state.embargo_blocked_players` (so AI casts and loaded
+  games show them too); level of detail when zoomed out. On cast, a red border light runs
+  round their land. Replaces per-territory bubble effects that updated even off screen.
+- **Vow of Silence fog**: a crimson vignette baked once per map size (faint over the middle,
+  deep at the edges) instead of a flat wash refilled every frame. It no longer pulses: any
+  partial surface alpha on a per-pixel-alpha surface takes pygame's slow blit path (3-4 ms a
+  frame for the whole silenced turn).
+- **AI casts show their effects.** `ai_player.py` and `SimPhaseManager` called game state
+  directly and never reached the renderer. They now record
+  `game_state.ability_fx_events` (AI only, transient), drained every frame. Every cast - local,
+  network replay, AI - goes through `Game.play_ability_effect()`.
+- **Benchmarks**: `Game.update_map_effects()` / `Game.draw_map_layer()` are shared by the
+  game loop and `Game.draw()`, which used to skip the hero effects, the silence fog and
+  the castle upgrades, so no benchmark saw them. New `TestHeroAbilityFxPerformance`.
+- **Removed**: `ability_burst_effect.py`, `ability_arc_effect.py`,
+  `ability_polygon_burst_effect.py`, `ability_silence_wave_effect.py`, `ABILITY_PALETTES`, the
+  Particle PNG loading (the assets stay).
+- **Dev tool**: `tools/hero_fx_preview.py` - every ability and aura on the real map (live,
+  `--sheet` stills over time, `--bench`).
+- **Cost** (docs/PERFORMANCE_ROADMAP.md, before/after measured back to back): Extort Populace
+  with 24 Keeps 38.9 -> 8.2 ms/frame, its cast 82 -> 0.6 ms; Levy 13.6 -> 7.3; Aggressive
+  Diplomacy 13.8 -> 6.7; Master Negotiator cast 23 -> 0.7 ms. The aura ~0.3-0.65 ms, Embargo
+  embers 0.44 ms over the whole map, the silence fog ~0.7 ms. Embargo's cast effect (border
+  light over half the map, 1.6 s) costs ~3 ms more than the old one. Load: +0.2 s
+  (`HeroLight.prewarm()`).
+- **Correction**: the phase 0 commit put every cast's first frame at 50-62 ms; that was the
+  benchmark's own camera reset, not the effects.
+- Tests: `tests/test_hero_fx.py` (64).
+- **Follow-up (owner, 2026-10-27: "the red curtain is not visible enough", "I cannot see
+  persistent embers")**: the Vow of Silence curtain is a deep crimson strip, full right behind
+  its glowing front (was a light haze ramping up slowly); Embargo embers are a hot core in a
+  deep red smudge, lit for most of their life, so they stand out on the 2D map's orange and
+  yellow territories (they were only tested on the darker 3D look). The preview now shows what
+  a cast leaves behind - the embers and the Silence fog (C clears them) - which the game draws
+  from game state; the fog's look moved to `hero_fx_style.SILENCE_FOG`. Fireflies and embers
+  look their sprites and per-territory plan up once per zoom level, not per firefly: embers
+  over 42 territories ~0.55 ms. Aura fireflies are built at load, spawn points when an aura's
+  territories are set (not in a frame).
+- **Follow-up (owner, 2026-10-27: "Embargo embers seem to stutter very very subtly ... notable
+  when there is a lot of them")**: an ember rises ~0.17 px a frame, so blitted at whole pixels
+  it stood still for several frames and then jumped a pixel. Fireflies and embers now pick a
+  copy of their sprite shifted by quarter pixels down and half pixels across
+  (`GlowSprites.SUBPIXEL_PHASES`, built within the frame budget; measured: largest step 1.0 ->
+  0.28 px). Their halos fade in 12 steps within their own alpha range (`TintSprites.alpha_ladder`),
+  not 8 of 255's. ~12% more per firefly.
+
 ## 2026-10-26 - Plot effects: production light rays and construction dust
 
 Branch `feature/plot-effects`. Owner: replace the slowly turning "star" on producing plots

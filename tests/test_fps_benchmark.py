@@ -716,6 +716,182 @@ class TestConstructionDustPerformance:
         assert result['avg_fps'] >= 25, f"Mixed static FPS too low: {result['avg_fps']:.1f}"
 
 
+# Every active hero ability, in the order the per-ability benchmark plays them
+ACTIVE_ABILITIES = (
+    'Aggressive Diplomacy', 'Levy', 'Royal Charisma', 'Regicide', 'Extort Populace',
+    'Reinforce', 'Decisive Strike', 'Valorous Charge', 'Vow of Silence', 'Embargo',
+    'Master Negotiator', 'Relentless Charge',
+)
+
+
+def best_keep_territory(game, player=0):
+    """The player's territory with the most neighbours (the widest aura)."""
+    import map_data
+    gs = game.game_state
+    owned = [t for t, o in gs.territory_owners.items() if o == player and game.scaled_plots.get(t)]
+    return max(owned, key=lambda t: (len(map_data.get_neighbors(t)), t))
+
+
+def give_hero(game, hero, keep_territory, player=0):
+    """Give the player a trained hero living in a Keep on plot 0 of keep_territory."""
+    gs = game.game_state
+    gs.buildings.setdefault(keep_territory, {})[0] = 'Keep'
+    gs.heroes.setdefault(player, {})[hero] = {
+        'keep_territory': keep_territory, 'keep_plot': 0, 'status': 'active'}
+
+
+def enemy_neighbour(game, territory, player=0):
+    """A neighbouring territory not owned by the player (any territory if none)."""
+    import map_data
+    gs = game.game_state
+    for t in sorted(map_data.get_neighbors(territory)):
+        if gs.territory_owners.get(t, -1) not in (-1, player) and t in game.scaled_centers:
+            return t
+    return next(t for t, o in sorted(gs.territory_owners.items()) if o not in (-1, player))
+
+
+class TestHeroAbilityFxPerformance:
+    """
+    Hero ability effects (hero ability FX pass, 2026-10): the passive auras shown
+    while their hero is selected, every active ability's one-shot effect, the
+    persistent Embargo effect and the Vow of Silence fog.
+
+    Each scenario runs Game.update_map_effects() + Game.draw() per frame - the same
+    effect update and map drawing the game loop does. Compare against hero_fx_none
+    (the same map, no effects). trigger_ms is the cost of the frame an ability is
+    cast (effect construction, outside the timed draw).
+    """
+
+    @pytest.fixture
+    def hero_game(self, pygame_init):
+        from main import Game
+        game = Game()
+        game.initialize_game({
+            'num_players': 4,
+            'player_is_ai': [False, True, True, True],
+            'player_ai_difficulty': [None, 'Normal', 'Normal', 'Normal'],
+        })
+        game.game_state.phase = 'playing'
+        game.game_state.current_player = 0
+        return game
+
+    @staticmethod
+    def _run(game, name, frames=90, warmup=5, zoom_sweep=False, **extra):
+        top_panel = getattr(game, 'TOP_PANEL_HEIGHT', 40)
+        centre = (game.screen.get_width() // 2, game.screen.get_height() // 2)
+        direction = [1]
+
+        def before(i):
+            if zoom_sweep:
+                if game.camera.target_zoom >= game.camera.max_zoom - 1e-6:
+                    direction[0] = -1
+                elif game.camera.target_zoom <= game.camera.min_zoom + 1e-6:
+                    direction[0] = 1
+                game.camera.handle_zoom(direction[0], centre, 0.078, top_panel)
+                game.camera.update_zoom(1.0 / 60.0)
+                sync_camera(game)
+            game.update_map_effects(1.0 / 60.0)
+
+        fps = FPSMeasurement(sample_count=frames)
+        result = record(name, fps.run_benchmark(game, before_frame=before, warmup=warmup), **extra)
+        report(name, result, [f'{k}: {v}' for k, v in extra.items()])
+        return result
+
+    @pytest.mark.parametrize('zoom_sweep', [False, True], ids=['static', 'zoom'])
+    def test_no_effects_reference(self, hero_game, zoom_sweep):
+        """The map the aura scenarios use, with no hero effects (the reference)."""
+        populate_map(hero_game, buildings_per_territory=1, single_owner=0)
+        sync_camera(hero_game, zoom=hero_game.camera.min_zoom)
+        name = 'hero_fx_none_zoom' if zoom_sweep else 'hero_fx_none'
+        result = self._run(hero_game, name, frames=60, warmup=70, zoom_sweep=zoom_sweep)
+        assert result['worst_frame_ms'] < 100
+
+    @pytest.mark.parametrize('zoom_sweep', [False, True], ids=['static', 'zoom'])
+    def test_passive_aura(self, hero_game, zoom_sweep):
+        """Seledra's Defiance aura (hero selected) over her Keep and its neighbours."""
+        populate_map(hero_game, buildings_per_territory=1, single_owner=0)
+        keep = best_keep_territory(hero_game)
+        give_hero(hero_game, 'Seledra Rennervail', keep)
+        hero_game.selected_hero = 'Seledra Rennervail'
+        covered = len(hero_game.game_state.get_defiance_protected_territories(0))
+        sync_camera(hero_game, zoom=hero_game.camera.min_zoom)
+        name = 'hero_aura_zoom' if zoom_sweep else 'hero_aura_static'
+        # Warm up a full aura life (1 s) so the aura is at its steady state
+        result = self._run(hero_game, name, frames=60, warmup=70, zoom_sweep=zoom_sweep,
+                           territories=covered)
+        assert result['worst_frame_ms'] < 100
+
+    @pytest.mark.parametrize('ability', ACTIVE_ABILITIES)
+    def test_active_ability(self, hero_game, ability):
+        """1.5 s from the cast of one active ability (the effect's busiest stretch)."""
+        populate_map(hero_game, buildings_per_territory=1)
+        gs = hero_game.game_state
+        keep = best_keep_territory(hero_game)
+        for hero in ('Darius Brennhen', 'Evain Nithieln', 'Aidam Narn', 'Serthus Diarcess'):
+            give_hero(hero_game, hero, keep)
+        # Extort Populace bursts at every owned Keep / Castle: give it ~20 of them
+        keeps = 0
+        for territory, owner in sorted(gs.territory_owners.items()):
+            if owner == 0:
+                for plot in range(min(2, len(hero_game.scaled_plots.get(territory, [])))):
+                    gs.buildings.setdefault(territory, {})[plot] = 'Keep'
+                    keeps += 1
+        target = enemy_neighbour(hero_game, keep)
+        if ability == 'Levy':
+            target = keep
+        if ability == 'Embargo':
+            gs._activate_embargo(0)
+        if ability == 'Vow of Silence':
+            gs.hero_silence_status[1] = 2
+        sync_camera(hero_game, zoom=hero_game.camera.min_zoom)
+        # Frames before the cast: the camera change above makes the next frame rescale
+        # the map (~50 ms), which is not the effect's cost
+        for _ in range(5):
+            hero_game.update_map_effects(1.0 / 60.0)
+            hero_game.draw()
+
+        renderer = hero_game.map_renderer
+        start = time.perf_counter()
+        if ability == 'Royal Charisma':
+            renderer.trigger_ability_effect(ability, keep, 0, source_territory=target)
+        elif ability == 'Valorous Charge':
+            renderer.trigger_ability_effect(ability, target, 0, source_territory=keep)
+        elif ability in ('Reinforce', 'Extort Populace', 'Vow of Silence', 'Embargo',
+                         'Master Negotiator'):
+            renderer.trigger_ability_effect(ability, None, 0)
+        else:
+            renderer.trigger_ability_effect(ability, target, 0)
+        trigger_ms = (time.perf_counter() - start) * 1000
+
+        name = 'ability_' + ability.lower().replace(' ', '_')
+        result = self._run(hero_game, name, frames=90, warmup=0,
+                           trigger_ms=round(trigger_ms, 3), keeps=keeps)
+        assert result['worst_frame_ms'] < 150
+
+    def test_embargo_persistent(self, hero_game):
+        """What an Embargo leaves for the rest of the turn, after its cast effect is over."""
+        populate_map(hero_game, buildings_per_territory=1)
+        gs = hero_game.game_state
+        give_hero(hero_game, 'Evain Nithieln', best_keep_territory(hero_game))
+        gs._activate_embargo(0)
+        hero_game.map_renderer.trigger_ability_effect('Embargo', None, 0)
+        sync_camera(hero_game, zoom=hero_game.camera.min_zoom)
+        territories = sum(1 for o in gs.territory_owners.values() if o in gs.embargo_blocked_players)
+        # 4 s of warm-up: the cast effect has finished, only what persists is left
+        result = self._run(hero_game, 'embargo_persistent', frames=60, warmup=240,
+                           territories=territories)
+        assert result['worst_frame_ms'] < 100
+
+    def test_silence_fog(self, hero_game):
+        """The red fog over the map while any player is silenced (a whole turn)."""
+        populate_map(hero_game, buildings_per_territory=1)
+        hero_game.game_state.hero_silence_status[1] = 2
+        hero_game.game_state.silence_activation_time = None   # fully faded in
+        sync_camera(hero_game, zoom=hero_game.camera.min_zoom)
+        result = self._run(hero_game, 'silence_fog', frames=60)
+        assert result['worst_frame_ms'] < 100
+
+
 class TestCrowdedMapPerformance:
     """
     Documents how frame cost scales with on-map entity count, so a future

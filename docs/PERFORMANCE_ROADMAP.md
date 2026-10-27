@@ -64,6 +64,55 @@ What to know before touching them:
 
 ---
 
+## Hero ability effects (2026-10-26, 1600x900)
+
+Every hero ability was redrawn as light (CHANGELOG 2026-10-26, "Hero ability effects as
+light"). `TestHeroAbilityFxPerformance`, before (the old effects) and after, measured back to
+back from two worktrees - the machine's speed drifted by up to 50% over the session, so only
+same-time pairs compare. Min zoom (the whole map on screen), 1.5 s from the cast, frames
+rendered before the cast so the camera's map rescale is not counted:
+
+| Scenario | Before avg / worst | After avg / worst | The cast itself |
+|---|---|---|---|
+| Reference, no effects | 6.20 / 7.8 ms | 6.23 / 11.0 ms | |
+| Extort Populace, 24 Keeps | 38.89 / 83.4 ms | 8.21 / 11.2 ms | 82.3 → 0.6 ms |
+| Levy | 13.62 / 21.0 ms | 7.32 / 14.6 ms | 11.2 → 0.9 ms |
+| Aggressive Diplomacy | 13.79 / 19.9 ms | 6.73 / 8.5 ms | 11.6 → 0.6 ms |
+| Master Negotiator | 12.72 / 17.9 ms | 10.67 / 13.4 ms | 22.7 → 0.7 ms |
+| Relentless Charge | 11.38 / 19.6 ms | 9.74 / 12.4 ms | |
+| Regicide | 9.02 / 11.9 ms | 6.93 ms avg | |
+| Embargo (border light over 38 territories, 1.6 s) | 6.90 / 8.7 ms | ~+3 ms over before | 8.3 → 1.4 ms |
+
+Decisive Strike, Reinforce, Valorous Charge, Royal Charisma and Vow of Silence cost about
+the same as before (within the run-to-run noise, ±1 ms).
+
+Persistent effects, measured alone (`tools/hero_fx_preview.py --bench` and direct timing):
+- **Passive aura** (selected hero): 0.32 ms at zoom 1.65, 0.65 ms at 4.0 for 4 territories;
+  ~0.4 ms while zooming (bead positions recomputed per camera move). The old bubbles cost
+  about the same static (~+0.3 ms) but did a point-in-polygon test per bubble per frame.
+- **Embargo embers**: ~0.55 ms with all 42 embargoed territories on screen (155 embers
+  after the level of detail; halos ~0.2 ms of it). Old bubbles: +0.3-1.0 ms. Per-firefly
+  sprite lookups and per-territory bookkeeping (count from area, seed hash) were most of
+  the cost until they were cached per zoom level (`HeroLight._mote_sprites` / `_mote_plan`).
+- **Silence fog**: one vignette blit, ~0.7 ms (the old fog filled and blitted a full-map
+  surface every frame, ~1.0 ms).
+
+What to know before touching them:
+- **Correction:** the phase 0 commit said every ability's first frame cost 50-62 ms. That
+  was the benchmark's own camera reset (a full map rescale on the first measured frame),
+  not the effects; the scenarios now render a few frames before casting.
+- The old effects' real cost was **per-instance full-screen surfaces**: each one-shot burst
+  cleared and blitted its own 1600x900 SRCALPHA surface every frame and built 130-350 sprite
+  copies in `__init__`. Extort Populace made ~2 per Keep, which is where its 38.9 ms came from.
+- Load: `HeroLight.prewarm()` takes ~0.2 s (territory raster, every territory's border beads,
+  aura and border-light sprites), at game start and on a resolution change. Without it an
+  Embargo cast spent 53 ms building borders.
+- **pygame alpha traps** (measured, 1600x700 per-pixel-alpha surface): no surface alpha or 255
+  ~0.7 ms; any other `set_alpha()` value 3-4 ms (slow path); `set_alpha(None)` ~0.3 ms because
+  it turns the per-pixel alpha off - the blit is an opaque copy.
+
+---
+
 ## Deferred: small, safe, low value
 
 These were investigated and consciously skipped. Doing them is not wrong, but do not expect

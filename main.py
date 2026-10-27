@@ -86,6 +86,7 @@ from display_utils import set_display_mode, resolve_frame_cap, current_surface
 # Import sparkle version of turn announcement (can switch back to turn_announcement_effect if needed)
 from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
 from ui.effects.chat_notification_effect import ChatNotificationEffect
+from ui.effects.light_fx import vignette_surface
 from global_sound import sound_manager, play_structure_sound  # Global sound manager instance
 from music_manager import music_manager, MUSIC_END_EVENT  # Background music system
 from tutorial_mission import CameraAnimation  # Reuse for Custom Game / Multiplayer start zoom
@@ -481,20 +482,6 @@ class Game:
             self.ingame_options_menu_bg = None
             self.main_menu_button_img = None
         
-        # Load PNG particle images for visual effects (white soft-glow, tinted per ability)
-        # Particle_Cropped.png: used for passive auras + embargo (smooth round glow)
-        # Particle2_Cropped.png: used for active ability effects (burst, arc, polygon burst)
-        try:
-            self._haste_particle_base = pygame.image.load("assets/Particle_Cropped.png").convert_alpha()
-        except pygame.error as e:
-            logger.warning(f"Could not load Particle_Cropped.png: {e}")
-            self._haste_particle_base = None
-        try:
-            self._active_particle_base = pygame.image.load("assets/Particle2_Cropped.png").convert_alpha()
-        except pygame.error as e:
-            logger.warning(f"Could not load Particle2_Cropped.png: {e}")
-            self._active_particle_base = None
-
         # Load right sidebar background image
         # Calculate sidebar height (map height between top and bottom panels)
         sidebar_height = WINDOW_HEIGHT - TOP_PANEL_HEIGHT - BOTTOM_UI_HEIGHT
@@ -1221,50 +1208,6 @@ class Game:
         self.selected_hero = None  # hero_name string
         self.hero_ability_buttons = {}  # {(hero_name, ability_index): pygame.Rect}
         self.hero_ability_images = {}  # {(hero_name, ability_index): pygame.Surface or None}
-
-        # Unified hero bubble animation system (Phase 2B dedup)
-        # Config-driven: each entry defines hero name(s), territory getter, color, rise speed
-        self._bubble_configs = {
-            'defiance': {
-                'heroes': ('Seledra Rennervail',),
-                'territory_getter': 'get_defiance_protected_territories',
-                'color': (150, 50, 200),   # Purple
-                'rise_speed': 7.5,
-                'check_polygon': True,     # Full polygon check in update
-                'spawn_interval': 0.07,    # Spawn cycle interval in seconds
-                'spawn_chance': 0.85,      # Probability of spawning per cycle per territory
-            },
-            'haste': {
-                'heroes': ('Vearen Asford',),
-                'territory_getter': 'get_haste_affected_territories',
-                'color': (255, 165, 0),    # Orange
-                'rise_speed': 7.5,
-                'check_polygon': True,
-                'spawn_interval': 0.07,
-                'spawn_chance': 0.85,
-            },
-            'safe_haven': {
-                'heroes': ('Darius Brennhen', 'Regnus Aevencourne'),
-                'territory_getter': 'get_safe_haven_territories',
-                'color': (135, 206, 250),  # Light blue
-                'rise_speed': 15,
-                'check_polygon': False,    # Only bbox check in update
-                'spawn_interval': 0.07,
-                'spawn_chance': 0.85,
-            },
-        }
-        # Per-effect state: bubbles list and spawn timer
-        self._bubble_state = {key: {'bubbles': [], 'spawn_timer': 0} for key in self._bubble_configs}
-
-        # PERFORMANCE: Surface cache for bubble effects (avoids per-frame allocations)
-        # Key: (radius, color_tuple) -> Surface
-        self._bubble_surface_cache = {}
-        self._bubble_surface_cache_max_size = 50  # Limit cache size to prevent memory bloat
-
-        # PERFORMANCE: Pre-built PNG particle caches for all aura effects
-        # Per-effect dict: (diameter, quantized_alpha) -> pre-scaled, pre-tinted, pre-alpha'd Surface
-        self._particle_caches = {}
-        self._build_particle_caches()
 
         # PERFORMANCE: Surface cache for hero UI overlays (avoids per-frame allocations)
         # Key: size (int) -> dict of overlay surfaces
@@ -2214,23 +2157,8 @@ class Game:
                             self.game_state.execute_valorous_charge(
                                 target, player_id, pre_selected_units=data.get('picked_units'))
 
-                        # Trigger visual particle effect for the ability (network replay)
-                        source_territory = None
-                        if ability_name in ('Royal Charisma', 'Valorous Charge'):
-                            hero_data = self.game_state.heroes.get(player_id, {}).get(hero_name)
-                            if hero_data:
-                                keep_terr = hero_data.get('keep_territory')
-                                if ability_name == 'Royal Charisma':
-                                    self.map_renderer.trigger_ability_effect(
-                                        ability_name, keep_terr, player_id,
-                                        source_territory=target)
-                                else:
-                                    self.map_renderer.trigger_ability_effect(
-                                        ability_name, target, player_id,
-                                        source_territory=keep_terr)
-                        else:
-                            self.map_renderer.trigger_ability_effect(
-                                ability_name, target, player_id)
+                        # Show the cast on the map (network replay)
+                        self.play_ability_effect(player_id, hero_name, ability_name, target)
 
                         # Set cooldown for targeted abilities (immediate abilities set their own via activate_hero_ability)
                         hero_info = self.game_state.HERO_TYPES.get(hero_name)
@@ -2282,9 +2210,8 @@ class Game:
                             result = self.game_state.activate_hero_ability(hero_name, ability_index)
                             logger.info(f"[NETWORK] activate_hero_ability result for {ability_name}: {result}")
 
-                        # Trigger visual effect for immediate abilities (network replay)
-                        self.map_renderer.trigger_ability_effect(
-                            ability_name, None, player_id)
+                        # Show the cast on the map (network replay)
+                        self.play_ability_effect(player_id, hero_name, ability_name)
 
                         # Set cooldown for immediate abilities
                         hero_info = self.game_state.HERO_TYPES.get(hero_name)
@@ -4671,7 +4598,6 @@ class Game:
             self._scaled_preview_border = None
             self._scaled_preview_border_size = None
             self.territory_preview_rect = None
-            self._build_particle_caches()  # Rebuild PNG particle caches for new display
             invalidate_cursor_cache()  # Reload custom cursor after display mode change
             pygame.mouse.set_visible(False)  # Re-hide system cursor after display recreation
 
@@ -5275,13 +5201,19 @@ class Game:
     
     def draw_silence_fog_overlay(self):
         """
-        Draw a dark red fog overlay on the entire map when silence is active.
+        Draw a dark red fog over the map while silence is active.
 
         This visual effect indicates when Vow of Silence is active.
         ALL players see the fog when ANY player has active silence effects.
         Features:
-        - Gradual fade-in from transparent to full strength over 1.5 seconds
-        - Continuous shimmering effect while active (pulsing alpha)
+        - A crimson vignette baked once per map size (light_fx.vignette_surface;
+          the look is hero_fx_style.SILENCE_FOG): no full-map fill per frame
+        - Gradual fade-in from transparent to full strength (1.5 seconds)
+
+        PERFORMANCE: the old flat fog pulsed its alpha all turn. A partial surface
+        alpha on a per-pixel-alpha surface takes pygame's slow blit path (~3-4 ms
+        at 1600x900, vs ~0.7 ms at 255), so the vignette only fades while it fades
+        in, then holds still at full strength.
         """
         # Check if ANY player is silenced (Vow of Silence is active)
         silence_active = False
@@ -5296,140 +5228,27 @@ class Game:
         # Get current time for animations
         current_time = pygame.time.get_ticks()
 
-        # Calculate fade-in progress
-        # Animation lasts 1.5 seconds (1500ms) - gradual fade from 0 to full strength
-        fade_duration = 1500
+        fog = self.map_renderer._hero_fx_style['silence_fog']
+
+        # Calculate fade-in progress: gradual fade from 0 to full strength
+        fade_duration = fog['fade'] * 1000
         if self.game_state.silence_activation_time:
             elapsed = current_time - self.game_state.silence_activation_time
             fade_progress = min(1.0, elapsed / fade_duration)
         else:
             fade_progress = 1.0  # Already fully visible
 
-        # Shimmer effect - oscillate alpha slightly over time
-        # Cycle every 2 seconds (2000ms)
-        shimmer_cycle = 2000
-        shimmer_offset = math.sin((current_time % shimmer_cycle) / shimmer_cycle * 2 * math.pi) * 15
-
-        # Base alpha target is 70, but we fade in from 0
-        target_alpha = 70
-        current_alpha = (target_alpha + shimmer_offset) * fade_progress
-
-        # PERFORMANCE: Reuse cached fog surface instead of allocating 5.44MB SRCALPHA every frame
-        if self._cached_silence_fog is None or self._cached_silence_fog.get_size() != (WINDOW_WIDTH, MAP_HEIGHT):
-            self._cached_silence_fog = pygame.Surface((WINDOW_WIDTH, MAP_HEIGHT), pygame.SRCALPHA)
-        self._cached_silence_fog.fill((120, 0, 0, int(current_alpha)))
+        # Baked once per map size (~5-10 ms)
+        size = (WINDOW_WIDTH, MAP_HEIGHT)
+        if self._cached_silence_fog is None or self._cached_silence_fog.get_size() != size:
+            self._cached_silence_fog = vignette_surface(
+                size, fog['colour'], fog['centre_alpha'], fog['edge_alpha'])
+        # A partial surface alpha only while fading in; 255 afterwards keeps the faster
+        # blit path. (Never None: that turns the per-pixel alpha off too - an opaque wall)
+        self._cached_silence_fog.set_alpha(int(255 * fade_progress) if fade_progress < 1.0 else 255)
 
         # Blit the fog over the map area (below top panel)
         self.screen.blit(self._cached_silence_fog, (0, TOP_PANEL_HEIGHT))
-
-    def _point_in_polygon(self, x, y, polygon):
-        """
-        Check if a point is inside a polygon using ray casting algorithm.
-
-        Args:
-            x, y: Point coordinates
-            polygon: List of (x, y) tuples representing polygon vertices
-
-        Returns:
-            bool: True if point is inside polygon
-        """
-        inside = False
-        n = len(polygon)
-        p1x, p1y = polygon[0]
-        for i in range(1, n + 1):
-            p2x, p2y = polygon[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x, p1y = p2x, p2y
-        return inside
-
-    # Additional particle colors for active ability effects (beyond passive auras)
-    _EXTRA_PARTICLE_COLORS = {
-        'embargo': (160, 20, 20),  # Dark red — matches MapRenderer.EMBARGO_COLOR
-    }
-
-    def _build_particle_caches(self):
-        """
-        Pre-build PNG particle surface caches for all aura and ability effects.
-
-        For each effect, pre-scales the white particle PNG to the effect's color
-        at every needed (diameter, alpha) combination. Eliminates runtime allocations.
-
-        Cache structure: self._particle_caches[effect_key][(diameter, alpha)] -> Surface
-        Per effect: 15 sizes x 16 alpha levels = 240 surfaces (~1MB total per effect).
-        """
-        self._particle_caches = {}
-        if self._haste_particle_base is None:
-            return
-
-        # Collect all colors to cache: passive auras + active ability effects
-        all_colors = {key: config['color'] for key, config in self._bubble_configs.items()}
-        all_colors.update(self._EXTRA_PARTICLE_COLORS)
-
-        for effect_key, color in all_colors.items():
-            cache = {}
-
-            # Screen diameters: world radii 1.5-3.9 * zoom 1.65-4.0 * 2x PNG scale = ~6 to ~32
-            for diameter in range(6, 34, 2):  # Even diameters: 6, 8, ..., 32
-                # Scale base PNG to target diameter, then tint to ability color
-                scaled = pygame.transform.smoothscale(self._haste_particle_base, (diameter, diameter))
-                scaled.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
-
-                # Pre-generate a surface for each quantized alpha level
-                for alpha in range(0, 160, 10):  # 0, 10, 20, ..., 150
-                    alpha_surface = scaled.copy()
-                    alpha_surface.set_alpha(alpha)
-                    cache[(diameter, alpha)] = alpha_surface
-
-            self._particle_caches[effect_key] = cache
-
-    def _get_bubble_surface(self, radius, base_color, alpha):
-        """
-        Get or create a cached bubble surface for the given parameters.
-
-        PERFORMANCE: This avoids creating new surfaces every frame by caching
-        bubble surfaces by their visual parameters. Surfaces are reused when
-        the same radius/color/alpha combination is needed.
-
-        Args:
-            radius (int): Bubble radius in pixels
-            base_color (tuple): RGB color tuple (r, g, b)
-            alpha (int): Alpha value 0-255
-
-        Returns:
-            pygame.Surface: Cached or newly created bubble surface
-        """
-        # Quantize alpha to reduce cache entries (bucket to nearest 10)
-        quantized_alpha = (alpha // 10) * 10
-        cache_key = (radius, base_color, quantized_alpha)
-
-        if cache_key not in self._bubble_surface_cache:
-            # Limit cache size by removing oldest entries if needed
-            if len(self._bubble_surface_cache) >= self._bubble_surface_cache_max_size:
-                # Remove first (oldest) entry
-                oldest_key = next(iter(self._bubble_surface_cache))
-                del self._bubble_surface_cache[oldest_key]
-
-            # Create new surface
-            surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
-
-            # Draw filled circle with alpha
-            color_with_alpha = base_color + (quantized_alpha,)
-            pygame.draw.circle(surface, color_with_alpha, (radius, radius), radius)
-
-            # Draw border for better visibility
-            border_alpha = min(255, quantized_alpha + 50)
-            border_color = base_color + (border_alpha,)
-            pygame.draw.circle(surface, border_color, (radius, radius), radius, 1)
-
-            self._bubble_surface_cache[cache_key] = surface
-
-        return self._bubble_surface_cache[cache_key]
 
     def _get_hero_overlay(self, size, overlay_type):
         """
@@ -5660,6 +5479,44 @@ class Game:
                 continue
             self.chat_notification_effect.add_system_notification(
                 format_action_error('hero_slain', hero=event[1], territory=event[2]))
+
+    def play_ability_effect(self, player_id, hero_name, ability_name, target=None):
+        """
+        Show a hero ability cast on the map (MapRenderer.trigger_ability_effect).
+
+        The one place every cast reaches the screen through: the local player's
+        cast, a network replay, and casts made without the UI (the AI, drained
+        from game_state.ability_fx_events). The arc abilities run between the
+        hero's Keep and the target.
+        """
+        renderer = self.map_renderer
+        hero_data = self.game_state.heroes.get(player_id, {}).get(hero_name)
+        if ability_name in ('Royal Charisma', 'Valorous Charge') and hero_data and target is not None:
+            keep_terr = hero_data.get('keep_territory')
+            if ability_name == 'Royal Charisma':
+                # From the target (units taken) to Narn's Keep
+                renderer.trigger_ability_effect(ability_name, keep_terr, player_id,
+                                                source_territory=target)
+            else:
+                # From the hero's Keep to the target (troops sent)
+                renderer.trigger_ability_effect(ability_name, target, player_id,
+                                                source_territory=keep_terr)
+            return
+        # Everything else (an arc without its ends just draws none of its pieces)
+        renderer.trigger_ability_effect(ability_name, target, player_id)
+
+    def _play_recorded_ability_effects(self):
+        """
+        Drain game_state.ability_fx_events - casts made without the UI (the AI,
+        sequential and simultaneous) - and show them. They used to play nothing.
+        """
+        events = getattr(self.game_state, 'ability_fx_events', None)
+        if not events:
+            return
+        # Swap the list out first so a cast recorded while we iterate isn't lost
+        self.game_state.ability_fx_events = []
+        for player_id, hero_name, ability_name, target in events:
+            self.play_ability_effect(player_id, hero_name, ability_name, target)
 
     def _sim_report_own_moves(self, accepted_orders):
         """SimPhaseManager.on_movement_finalized (single-player and the multiplayer host):
@@ -5898,164 +5755,6 @@ class Game:
 
         return self._text_cache[cache_key]
 
-    def _update_hero_bubbles(self, effect_key, delta_time):
-        """
-        Update hero ability bubble animations (Phase 2B: unified from 3 identical methods).
-
-        Parameterized by effect_key ('defiance', 'haste', 'safe_haven') which maps to
-        the config in self._bubble_configs for hero names, territory getter, rise speed, etc.
-        """
-        config = self._bubble_configs[effect_key]
-        state = self._bubble_state[effect_key]
-
-        # Only update if the matching hero is selected
-        if self.selected_hero not in config['heroes']:
-            state['bubbles'].clear()
-            state['spawn_timer'] = 0
-            return
-
-        # Get affected territories via the configured getter method
-        current_player = self.game_state.current_player
-        territory_getter = getattr(self.game_state, config['territory_getter'])
-        affected_territories = territory_getter(current_player)
-
-        if not affected_territories:
-            state['bubbles'].clear()
-            return
-
-        rise_speed = config['rise_speed']
-        check_polygon = config['check_polygon']
-        spawn_interval = config.get('spawn_interval', 0.1)
-        spawn_chance = config.get('spawn_chance', 0.7)
-        bubbles = state['bubbles']
-
-        # Update existing bubbles
-        bubbles_to_remove = []
-        for bubble in bubbles:
-            bubble['lifetime'] += delta_time
-            bubble_duration = 1.0
-
-            if bubble['lifetime'] >= bubble_duration:
-                bubbles_to_remove.append(bubble)
-            else:
-                progress = bubble['lifetime'] / bubble_duration
-                bubble['y'] -= rise_speed * delta_time
-
-                # PERFORMANCE: Bounding box rejection before expensive polygon check
-                territory = bubble['territory']
-                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
-                if bbox:
-                    min_x, min_y, max_x, max_y = bbox
-                    if not (min_x <= bubble['x'] <= max_x and min_y <= bubble['y'] <= max_y):
-                        bubbles_to_remove.append(bubble)
-                        continue
-
-                # Full polygon check only for effects that need it (defiance, haste)
-                if check_polygon:
-                    territory_polygon = self.scaled_polygons.get(territory)
-                    if territory_polygon:
-                        if not self._point_in_polygon(bubble['x'], bubble['y'], territory_polygon):
-                            bubbles_to_remove.append(bubble)
-                            continue
-
-                bubble['alpha'] = int(150 * (1.0 - progress))
-                bubble['radius'] = bubble['initial_radius'] * (1.0 + progress * 0.3)
-
-        for bubble in bubbles_to_remove:
-            bubbles.remove(bubble)
-
-        # Spawn new bubbles at configurable interval
-        state['spawn_timer'] += delta_time
-        if state['spawn_timer'] >= spawn_interval:
-            state['spawn_timer'] = 0
-
-            for territory in affected_territories:
-                territory_polygon = self.scaled_polygons.get(territory)
-                if not territory_polygon:
-                    continue
-
-                bbox = self.map_renderer.territory_bounding_boxes.get(territory)
-                if not bbox:
-                    continue
-                min_x, min_y, max_x, max_y = bbox
-
-                for attempt in range(10):
-                    x = random.uniform(min_x, max_x)
-                    y = random.uniform(min_y, max_y)
-
-                    if self._point_in_polygon(x, y, territory_polygon):
-                        if random.random() < spawn_chance:
-                            initial_radius = random.uniform(1.5, 3)
-                            bubbles.append({
-                                'territory': territory,
-                                'x': x, 'y': y,
-                                'radius': initial_radius,
-                                'initial_radius': initial_radius,
-                                'alpha': 150,
-                                'lifetime': 0
-                            })
-                            break
-
-    def _draw_hero_bubbles(self, effect_key):
-        """
-        Draw hero ability bubbles (Phase 2B: unified from 3 identical methods).
-
-        Uses the color from self._bubble_configs[effect_key].
-        """
-        state = self._bubble_state[effect_key]
-        if not state['bubbles']:
-            return
-
-        # PNG particle path for all auras (soft-glow particle instead of hard circles)
-        particle_cache = self._particle_caches.get(effect_key)
-        if particle_cache:
-            self._draw_png_particles(state['bubbles'], particle_cache)
-            return
-
-        # Fallback: procedural circle path if PNG failed to load
-        color = self._bubble_configs[effect_key]['color']
-
-        for bubble in state['bubbles']:
-            screen_x, screen_y = self.world_to_screen((bubble['x'], bubble['y']))
-
-            if 0 <= screen_x <= WINDOW_WIDTH and TOP_PANEL_HEIGHT <= screen_y <= BOTTOM_UI_Y:  # H5 fix: use BOTTOM_UI_Y not MAP_HEIGHT
-                scaled_radius = int(bubble['radius'] * self.camera_zoom)
-                if scaled_radius < 1:
-                    continue
-
-                bubble_surface = self._get_bubble_surface(scaled_radius, color, bubble['alpha'])
-                self.screen.blit(bubble_surface,
-                               (screen_x - scaled_radius, screen_y - scaled_radius))
-
-    def _draw_png_particles(self, bubbles, cache):
-        """
-        Draw aura bubbles using pre-cached PNG particle surfaces.
-
-        Uses soft-glow Particle_Cropped.png pre-scaled and pre-tinted per ability
-        at each (diameter, alpha) combination. Zero runtime allocations.
-        """
-        for bubble in bubbles:
-            screen_x, screen_y = self.world_to_screen((bubble['x'], bubble['y']))
-            if not (0 <= screen_x <= WINDOW_WIDTH and TOP_PANEL_HEIGHT <= screen_y <= BOTTOM_UI_Y):
-                continue
-
-            scaled_radius = int(bubble['radius'] * self.camera_zoom)
-            if scaled_radius < 1:
-                continue
-
-            # Snap to nearest even diameter within cached range [6, 32] (2x scale for soft-glow)
-            diameter = max(6, min(32, round(scaled_radius) * 4))
-            diameter = diameter + (diameter % 2)  # Ensure even
-            quantized_alpha = (int(bubble['alpha']) // 10) * 10
-
-            surface = cache.get((diameter, quantized_alpha))
-            if surface is None:
-                continue
-
-            # Blit centered on bubble position
-            half = diameter // 2
-            self.screen.blit(surface, (screen_x - half, screen_y - half))
-
     def draw_targeting_cursor(self):
         """
         Draw a targeting circle cursor when an ability is being targeted.
@@ -6281,29 +5980,9 @@ class Game:
                         ability = hero_info['abilities'][ability_index]
                         cooldown = ability.get('cooldown', 0)
 
-                        # Trigger visual particle effect for the ability
-                        source_territory = None
-                        if ability_name in ('Royal Charisma', 'Valorous Charge'):
-                            # Arc abilities need the hero's Keep territory as source/dest
-                            hero_data = self.game_state.heroes.get(current_player, {}).get(hero_name)
-                            if hero_data:
-                                keep_terr = hero_data.get('keep_territory')
-                                if ability_name == 'Royal Charisma':
-                                    # Particles arc from target to Narn's Keep (units stolen)
-                                    source_territory = clicked_territory
-                                    self.map_renderer.trigger_ability_effect(
-                                        ability_name, keep_terr, current_player,
-                                        source_territory=source_territory)
-                                else:
-                                    # Valorous Charge: particles arc from Keep to target
-                                    source_territory = keep_terr
-                                    self.map_renderer.trigger_ability_effect(
-                                        ability_name, clicked_territory, current_player,
-                                        source_territory=source_territory)
-                        else:
-                            # Burst abilities: effect at target territory
-                            self.map_renderer.trigger_ability_effect(
-                                ability_name, clicked_territory, current_player)
+                        # Show the cast on the map
+                        self.play_ability_effect(current_player, hero_name, ability_name,
+                                                 clicked_territory)
 
                         # Put on cooldown
                         if current_player not in self.game_state.hero_ability_cooldowns:
@@ -9977,8 +9656,8 @@ class Game:
                     'target': None  # No target for immediate abilities
                 })
                 logger.debug(f"[NETWORK] Sent SIM_HERO_ABILITY: {hero_name} - {ability_name}")
-            # Trigger visual effect for immediate abilities
-            self.map_renderer.trigger_ability_effect(ability_name, None, current_player)
+            # Show the cast on the map
+            self.play_ability_effect(current_player, hero_name, ability_name)
         elif isinstance(result, str):
             # An immediate ability refused with a reason (Reinforce: its Keep territory is
             # full). The refusal recorded its message code.
@@ -11659,19 +11338,67 @@ class Game:
         off_x, off_y = self._map_view_offset
         self.screen.blit(self._map_view_surface, (map_x + off_x, map_y + off_y))
 
+    def update_map_effects(self, delta_time):
+        """
+        Advance every animated map effect by delta_time (run() calls this in its
+        update section, which is skipped while paused; benchmarks call it too).
+        """
+        # Castle upgrade particle effects
+        self.map_renderer.update_castle_upgrade_effects(delta_time)
+
+        # Hero ability casts: the AI's, recorded by game state, start here
+        self._play_recorded_ability_effects()
+        self.map_renderer.update_ability_effects(delta_time)
+
+        # The selected hero's passive aura and the Embargo embers (synced from game state)
+        self.map_renderer.update_hero_effects(delta_time)
+
+        # Sync production glow effects (for buildings with active training) and
+        # advance the shared clock of the plot effects
+        self.map_renderer.sync_production_glow_effects()
+        self.map_renderer.update_plot_effects(delta_time)
+
+    def draw_map_layer(self):
+        """
+        Draw the map and everything on it: background, territories, plots, armies,
+        orders, markers and the map effects. Shared by run() and draw(), so the
+        benchmarks render exactly what the game does.
+        """
+        # Draw map (Phase 2D: transform with camera!)
+        # Viewport-only rescale — see _blit_map_background() for why this is not
+        # a full-map scale (it was 16-53ms per zoom change; now ~0.3-2.5ms).
+        self._blit_map_background()
+
+        # Draw territories (Phase 4D: inlined from delegate methods)
+        self.map_renderer.draw_territories()
+
+        # Draw silence fog overlay if any player is silenced
+        self.draw_silence_fog_overlay()
+
+        # Draw movement arrows (orders) (Phase 4D: inlined)
+        self.map_renderer.draw_movement_arrows()
+
+        # Draw battle markers (Phase 4D: inlined)
+        self.map_renderer.draw_battle_markers()
+
+        # SIMULTANEOUS MODE: Draw alliance markers and overflow indicators (Phase 4D: inlined)
+        self.map_renderer.draw_alliance_markers()
+        self.map_renderer.draw_overflow_indicators()
+
+        # Draw castle upgrade particle effects (after battle markers, before UI)
+        self.map_renderer.render_castle_upgrade_effects()
+
+        # Draw hero ability casts over the plots and armies (flares, rings, sparks,
+        # comets). Their under layer, the passive auras and the Embargo embers are
+        # drawn under the plots, in draw_territories()
+        self.map_renderer.render_ability_effects()
+
     def draw(self):
         """Render a single frame (core rendering pipeline extracted from run() for benchmarking)."""
         self.screen.fill(WHITE)
 
-        # Draw map with camera transform (viewport-only rescale)
-        self._blit_map_background()
-
-        # Draw map elements (Phase 4D: inlined from delegate methods)
-        self.map_renderer.draw_territories()
-        self.map_renderer.draw_movement_arrows()
-        self.map_renderer.draw_battle_markers()
-        self.map_renderer.draw_alliance_markers()
-        self.map_renderer.draw_overflow_indicators()
+        # Map, territories, plots, armies and the map effects (same as run())
+        self.draw_map_layer()
 
         # Draw UI panels (Phase 4D: inlined from delegate method)
         self.ui_renderer.draw_top_panel()
@@ -11811,24 +11538,8 @@ class Game:
                     logger.info(f"[MAIN] Animations complete in sim mode, calling on_animations_complete")
                     self.sim_state.phase_manager.on_animations_complete()
 
-                # Update hero ability bubble animations (unified system)
-                for effect_key in self._bubble_configs:
-                    self._update_hero_bubbles(effect_key, delta_time)
-
-                # Update castle upgrade particle effects
-                self.map_renderer.update_castle_upgrade_effects(delta_time)
-
-                # Update hero ability visual effects (burst + arc particles)
-                self.map_renderer.update_ability_effects(delta_time)
-
-                # Sync and update embargo persistent bubble effects
-                self.map_renderer.sync_embargo_effects()
-                self.map_renderer.update_embargo_effects(delta_time)
-
-                # Sync production glow effects (for buildings with active training) and
-                # advance the shared clock of the plot effects (skipped while paused)
-                self.map_renderer.sync_production_glow_effects()
-                self.map_renderer.update_plot_effects(delta_time)
+                # Map effects: hero abilities, auras, castle upgrades, plot effects
+                self.update_map_effects(delta_time)
 
                 # Update floating chat notifications (polls for new messages)
                 if self.chat_notification_effect:
@@ -12348,39 +12059,8 @@ class Game:
             # Drawing
             self.screen.fill(WHITE)
 
-            # Draw map (Phase 2D: transform with camera!)
-            # Viewport-only rescale — see _blit_map_background() for why this is not
-            # a full-map scale (it was 16-53ms per zoom change; now ~0.3-2.5ms).
-            self._blit_map_background()
-
-            # Draw territories (Phase 4D: inlined from delegate methods)
-            self.map_renderer.draw_territories()
-
-            # Draw silence fog overlay if any player is silenced
-            self.draw_silence_fog_overlay()
-
-            # Draw hero ability bubbles (unified system)
-            for effect_key in self._bubble_configs:
-                self._draw_hero_bubbles(effect_key)
-
-            # Draw movement arrows (orders) (Phase 4D: inlined)
-            self.map_renderer.draw_movement_arrows()
-
-            # Draw battle markers (Phase 4D: inlined)
-            self.map_renderer.draw_battle_markers()
-
-            # SIMULTANEOUS MODE: Draw alliance markers and overflow indicators (Phase 4D: inlined)
-            self.map_renderer.draw_alliance_markers()
-            self.map_renderer.draw_overflow_indicators()
-
-            # Draw castle upgrade particle effects (after battle markers, before UI)
-            self.map_renderer.render_castle_upgrade_effects()
-
-            # Draw hero ability visual effects (burst + arc particles, same layer as castle upgrades)
-            self.map_renderer.render_ability_effects()
-
-            # Draw embargo persistent bubble effects (on enemy territories while embargo active)
-            self.map_renderer.render_embargo_effects()
+            # Map, territories, plots, armies and the map effects
+            self.draw_map_layer()
 
             # Draw top panel (Phase 4D: inlined from delegate method)
             self.ui_renderer.draw_top_panel()

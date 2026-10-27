@@ -601,6 +601,10 @@ class GameState(GarrisonMixin, HeroMixin, BuildingMixin, EconomyMixin, MilitaryM
         # Regicide (HeroMixin._record_hero_death), drained every frame by main.py, which
         # shows the local player a "hero slain" toast. Not saved (transient UI news).
         self.hero_death_events = []
+        # Hero ability casts made without the UI (the AI): (player, hero, ability,
+        # target or None). main.py drains it every frame to show them on the map.
+        # Transient - not saved.
+        self.ability_fx_events = []
         # Heroes killed by the battle currently being resolved: (owner, hero_type, territory).
         # Reset at the top of every resolve_battle(); copied into that battle's Battle Report
         # ('heroes_slain') so a defending multiplayer client — which applies BATTLE_RESOLVE

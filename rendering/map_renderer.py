@@ -34,10 +34,8 @@ from ui.effects.alliance_marker_effect import AllianceMarkerEffect
 from ui.effects.production_glow_effect import ProductionGlowEffect, ProductionRays
 from ui.effects.construction_dust_effect import ConstructionDust, VARIANT_BUILD, VARIANT_UPGRADE
 from ui.effects.plot_fx_style import get_plot_fx_style, plot_phase
-from ui.effects.ability_burst_effect import AbilityBurstEffect
-from ui.effects.ability_arc_effect import AbilityArcEffect
-from ui.effects.ability_polygon_burst_effect import AbilityPolygonBurstEffect
-from ui.effects.ability_silence_wave_effect import AbilitySilenceWaveEffect
+from ui.effects.hero_fx_style import get_hero_fx_style
+from ui.effects.hero_fx_effect import HeroLight, HeroAura, HeroAbilityEffect, FxView, stable_seed
 
 logger = get_logger(__name__)
 
@@ -87,13 +85,16 @@ class MapRenderer:
         self._plot_fx_clock = 0.0
         self._plot_fx_style = get_plot_fx_style(map_data.get_current_look())
         self._plot_phases = {}   # (territory, plot_index) -> stable animation offset
+        # Hero ability effects as light (ui/effects/hero_fx_effect.py): one shared
+        # renderer, the passive auras of the selected hero and the Embargo embers,
+        # both synced from game state (see update_hero_effects)
+        self._hero_fx_style = get_hero_fx_style(map_data.get_current_look())
+        self._hero_aura_sync = None      # what the aura territories were computed for
+        self._embargo_sync = None        # what the ember territories were computed for
         self._build_plot_fx_renderers()
-        # List to store active hero ability visual effects (burst + arc particles)
+        # Active hero ability casts (HeroAbilityEffect), drawn in two layers
         self.ability_effects = []
-        # Embargo persistent effects: {territory_name: AbilityPolygonBurstEffect}
-        # Synced each frame with game_state.embargo_blocked_players
-        self.embargo_effects = {}
-        self._embargo_shared_surface = None  # Shared SRCALPHA surface for batched embargo rendering
+        self._ability_casts = 0          # makes each cast's random parts differ
 
         # Image caching system to avoid expensive transformations every frame
         # FPS OPT: Static glow circles replace old rotating ring system
@@ -269,10 +270,19 @@ class MapRenderer:
         self._build_plot_fx_renderers()
 
     def _build_plot_fx_renderers(self):
-        """(Re)create the shared plot effect renderers and pre-build their bases."""
+        """
+        (Re)create the shared plot and hero effect renderers and pre-build their
+        bases (their frames carry the display format and the map scale).
+        """
         self.production_rays = ProductionRays(self._plot_fx_style['rays'])
         self.production_rays.prewarm(self._plot_radius_range())
         self.construction_dust = ConstructionDust(self._plot_fx_style['dust'])
+        self.hero_light = HeroLight(self.game.scaled_polygons, self._hero_fx_style)
+        self.hero_light.prewarm(self._plot_radius_range())
+        self.hero_auras = {key: HeroAura(self.hero_light, key) for key in self._hero_fx_style['auras']}
+        self.embargo_embers = HeroAura(self.hero_light, 'embargo')
+        self._hero_aura_sync = None
+        self._embargo_sync = None
 
     def _plot_phase(self, territory, plot_index):
         """A plot's stable animation offset (plot_fx_style.plot_phase), cached."""
@@ -1108,6 +1118,8 @@ class MapRenderer:
         # Fifth pass: Draw building plots and their icons FIRST
         # Plots drawn before armies so army flags appear on top!
         # Draw production glow effects BEFORE plots (so glow appears behind building icons)
+        # Hero auras and Embargo embers under the plots, like the production rays
+        self.render_hero_effects_under()
         self.render_production_glow_effects()
         self.draw_plots()
 
@@ -2315,563 +2327,130 @@ class MapRenderer:
     # HERO ABILITY VISUAL EFFECTS
     # ========================================
 
-    # Color palettes for each targeted hero ability (5 shades each)
-    ABILITY_PALETTES = {
-        # Decisive Strike: blue shades (explosion shockwave)
-        'Decisive Strike': [
-            (30, 60, 150), (50, 100, 200), (80, 140, 255), (120, 170, 255), (170, 200, 255)
-        ],
-        # Decisive Strike secondary: lighter blue for delayed double-flash
-        'Decisive Strike Secondary': [
-            (80, 140, 255), (120, 180, 255), (160, 210, 255), (200, 230, 255), (230, 245, 255)
-        ],
-        # Regicide: dark purple shades (inward implosion, ominous)
-        'Regicide': [
-            (80, 0, 120), (120, 0, 180), (40, 0, 60), (150, 0, 200), (60, 0, 90)
-        ],
-        # Regicide aftermath: dark/black lingering particles
-        'Regicide Aftermath': [
-            (20, 0, 30), (30, 0, 45), (15, 0, 20), (40, 0, 55), (25, 0, 35)
-        ],
-        # Levy: gold shades (gold shimmer bursts)
-        'Levy': [
-            (184, 134, 11), (218, 165, 32), (255, 215, 0), (255, 223, 77), (255, 236, 139)
-        ],
-        # Relentless Charge: dust/brown shades (cavalry dust cloud)
-        'Relentless Charge': [
-            (160, 120, 60), (200, 170, 100), (140, 100, 40), (180, 150, 80), (220, 190, 140)
-        ],
-        # Royal Charisma: white/gold arc (units stolen from target to Narn's Keep)
-        'Royal Charisma': [
-            (255, 230, 150), (255, 215, 0), (255, 245, 220), (255, 255, 200), (255, 255, 255)
-        ],
-        # Valorous Charge: light blue/white arc (troops from Keep to target)
-        'Valorous Charge': [
-            (200, 220, 255), (150, 180, 220), (255, 255, 255), (170, 200, 240), (220, 235, 255)
-        ],
-        # Reinforce: silver/steel (brightened)
-        'Reinforce': [
-            (160, 170, 180), (192, 192, 192), (220, 220, 230),
-            (200, 205, 210), (240, 245, 255)
-        ],
-        # Master Negotiator: green/emerald (activation burst)
-        'Master Negotiator': [
-            (0, 120, 0), (30, 180, 30), (60, 220, 60), (100, 255, 100), (180, 255, 180)
-        ],
-        # Aggressive Diplomacy: fire orange (center burst)
-        'Aggressive Diplomacy': [
-            (200, 80, 0), (255, 120, 30), (255, 160, 60), (255, 180, 80), (255, 210, 130)
-        ],
-    }
-
-    # Aggressive Diplomacy bubble color (fire orange, polygon-filling bubble burst)
-    AGGRESSIVE_DIPLOMACY_COLOR = (255, 120, 30)
-
-    # Embargo bubble color (dark red, polygon-filling bubble burst on enemy territories)
-    EMBARGO_COLOR = (160, 20, 20)
-
-    # Master Negotiator bubble color (green, polygon-filling on owned territories)
-    MASTER_NEGOTIATOR_COLOR = (30, 180, 30)
+    # How many Keeps' worth of anchors one cast may light at most (Extort Populace
+    # fires at every Keep and Castle of the caster); the effects cull themselves
+    # off screen, so this only bounds a pathological case
+    MAX_ABILITY_POINTS = 40
 
     def trigger_ability_effect(self, ability_name, target_territory,
                                player_index, source_territory=None):
         """
-        Trigger enhanced visual effects for hero ability activations.
+        Show a hero ability cast as light (ui/effects/hero_fx_effect.py), styled
+        per ability in ui/effects/hero_fx_style.py 'abilities'.
 
-        All abilities have prominent, multi-layered effects with larger particles,
-        flash rings, and combo effects for maximum visibility.
+        Resolves the anchors the ability's cues use - the target, the caster
+        hero's Keep, the territory, points inside it, arc ends, the caster's
+        Keeps, the enemies' territories... - and starts one HeroAbilityEffect.
 
         Args:
             ability_name: Name of the ability
             target_territory: Territory where ability lands (None for immediate abilities)
             player_index: Player who activated the ability
-            source_territory: Source territory for arc effects (Royal Charisma, Valorous Charge)
+            source_territory: Where an arc starts (Royal Charisma: the target it
+                takes units from; Valorous Charge: the hero's Keep)
         """
-        # PNG particle image for soft-glow effects (None = fallback to procedural circles)
-        particle_img = getattr(self.game, '_active_particle_base', None)
-
-        # --- Vow of Silence: full-screen crimson wave sweeping left to right ---
-        if ability_name == 'Vow of Silence':
-            screen_w = self.game.screen.get_width()
-            screen_h = self.game.screen.get_height()
-            effect = AbilitySilenceWaveEffect(screen_w, screen_h, num_particles=400)
+        spec = self._hero_fx_style['abilities'].get(ability_name)
+        gs = self.game.game_state
+        if spec is None or gs is None:
+            return
+        seed = stable_seed(ability_name, target_territory, source_territory, player_index,
+                           self._ability_casts)
+        self._ability_casts += 1
+        anchors = self._ability_anchors(ability_name, spec, target_territory, player_index,
+                                        source_territory, seed)
+        effect = HeroAbilityEffect(self.hero_light, spec, anchors, seed)
+        if effect.cues:
             self.ability_effects.append(effect)
-            return
 
-        # --- Reinforce: enhanced silver burst with flash ring at Keep ---
-        if ability_name == 'Reinforce':
-            gs = self.game.game_state
-            if gs and player_index in gs.heroes:
-                for hero_name in ('Darius Brennhen', 'Regnus Aevencourne'):
-                    if hero_name in gs.heroes[player_index]:
-                        keep_terr = gs.heroes[player_index][hero_name].get('keep_territory')
-                        if keep_terr and keep_terr in self.game.scaled_centers:
-                            palette = self.ABILITY_PALETTES['Reinforce']
-                            effect = AbilityBurstEffect(
-                                center_pos=self.game.scaled_centers[keep_terr],
-                                color_palette=palette,
-                                num_particles=180,
-                                behavior='explode',
-                                world_coords=True,
-                                swirl_duration=0,
-                                float_duration=0.8,
-                                particle_size=2,
-                                flash_ring=True,
-                                particle_image=particle_img
-                            )
-                            self.ability_effects.append(effect)
-                        break
-            return
+    def _caster_keep(self, ability_name, player_index):
+        """(territory, world position of the Keep plot) of the player's hero with this ability."""
+        gs = self.game.game_state
+        for hero, data in sorted(gs.heroes.get(player_index, {}).items()):
+            abilities = gs.HERO_TYPES.get(hero, {}).get('abilities', [])
+            if not any(a.get('name') == ability_name for a in abilities):
+                continue
+            territory = data.get('keep_territory')
+            plots = self.game.scaled_plots.get(territory) or []
+            plot = data.get('keep_plot', 0)
+            if plot is not None and 0 <= plot < len(plots):
+                return territory, plots[plot]
+            if territory in self.game.scaled_centers:
+                return territory, self.game.scaled_centers[territory]
+        return None
 
-        # --- Extort Populace: gold bursts at plots + gold polygon shimmer per territory ---
-        if ability_name == 'Extort Populace':
-            gs = self.game.game_state
-            if not gs:
-                return
-            palette = self.ABILITY_PALETTES['Levy']
-            # Track which territories have Keeps/Castles for polygon shimmer
-            territories_with_keeps = set()
-            for territory, buildings in gs.buildings.items():
-                if gs.territory_owners.get(territory, -1) != player_index:
-                    continue
-                for plot_index, building_type in buildings.items():
-                    if building_type in ('Keep', 'Castle'):
-                        territories_with_keeps.add(territory)
-                        if (territory in self.game.scaled_plots
-                                and plot_index < len(self.game.scaled_plots[territory])):
-                            plot_pos = self.game.scaled_plots[territory][plot_index]
-                            # Enhanced: 40 particles, 2px, flash ring
-                            effect = AbilityBurstEffect(
-                                center_pos=plot_pos,
-                                color_palette=palette,
-                                num_particles=40,
-                                behavior='explode',
-                                world_coords=True,
-                                swirl_duration=0,
-                                float_duration=0.5,
-                                particle_size=2,
-                                flash_ring=True,
-                                particle_image=particle_img
-                            )
-                            self.ability_effects.append(effect)
-            # Add gold polygon shimmer for each territory with Keeps/Castles
-            for territory in territories_with_keeps:
-                polygon = self.game.scaled_polygons.get(territory)
-                if polygon:
-                    shimmer = AbilityPolygonBurstEffect(
-                        polygon=polygon,
-                        color=(255, 215, 0),  # Gold
-                        num_bubbles=40,
-                        world_coords=True,
-                        particle_image=particle_img
-                    )
-                    self.ability_effects.append(shimmer)
-            return
+    def _keep_plots(self, owners, territories=None):
+        """World positions of the Keep / Castle plots of these owners."""
+        gs = self.game.game_state
+        positions = []
+        for territory, buildings in sorted(gs.buildings.items()):
+            if gs.territory_owners.get(territory, -1) not in owners:
+                continue
+            if territories is not None and territory not in territories:
+                continue
+            plots = self.game.scaled_plots.get(territory) or []
+            for plot_index, building in sorted(buildings.items()):
+                if building in ('Keep', 'Castle') and plot_index < len(plots):
+                    positions.append(plots[plot_index])
+        return positions
 
-        # --- Embargo: persistent dark red bubbles on enemy territories + limited activation bursts ---
-        if ability_name == 'Embargo':
-            gs = self.game.game_state
-            if not gs:
-                return
-            # Persistent bubble effects on enemy territories (standard size for FPS)
-            for territory, owner in gs.territory_owners.items():
-                if owner >= 0 and owner != player_index:
-                    if territory not in self.embargo_effects:
-                        polygon = self.game.scaled_polygons.get(territory)
-                        if polygon:
-                            effect = AbilityPolygonBurstEffect(
-                                polygon=polygon,
-                                color=self.EMBARGO_COLOR,
-                                num_bubbles=0,
-                                world_coords=True,
-                                continuous=True
-                            )
-                            self.embargo_effects[territory] = effect
-            # One-shot activation burst: dark red implosion at up to 3 enemy Keeps (FPS guard)
-            import random as _rand
-            enemy_keep_positions = []
-            for territory, buildings in gs.buildings.items():
-                owner = gs.territory_owners.get(territory, -1)
-                if owner >= 0 and owner != player_index:
-                    for plot_index, building_type in buildings.items():
-                        if building_type in ('Keep', 'Castle'):
-                            if (territory in self.game.scaled_plots
-                                    and plot_index < len(self.game.scaled_plots[territory])):
-                                enemy_keep_positions.append(
-                                    self.game.scaled_plots[territory][plot_index])
-            # Limit to 3 bursts max to avoid FPS drop
-            if len(enemy_keep_positions) > 3:
-                enemy_keep_positions = _rand.sample(enemy_keep_positions, 3)
-            for plot_pos in enemy_keep_positions:
-                burst = AbilityBurstEffect(
-                    center_pos=plot_pos,
-                    color_palette=[(140, 10, 10), (160, 20, 20),
-                                   (180, 30, 30), (200, 40, 40), (220, 50, 50)],
-                    num_particles=50,
-                    behavior='implode',
-                    world_coords=True,
-                    swirl_duration=0,
-                    float_duration=0.5,
-                    particle_size=2,
-                    particle_image=particle_img
-                )
-                self.ability_effects.append(burst)
-            return
+    def _ability_anchors(self, ability_name, spec, target_territory, player_index,
+                         source_territory, seed):
+        """The world points / territory lists an ability's cues are anchored to."""
+        import random as _random
+        gs = self.game.game_state
+        centres = self.game.scaled_centers
+        polygons = self.game.scaled_polygons
+        rng = _random.Random(seed)
+        anchors = {}
 
-        # --- Master Negotiator: green burst at Keep + green bubbles on owned territories ---
-        if ability_name == 'Master Negotiator':
-            gs = self.game.game_state
-            if not gs:
-                return
-            palette = self.ABILITY_PALETTES['Master Negotiator']
-            # Green burst at hero's Keep
-            if player_index in gs.heroes:
-                for hero_name in ('Evain Nithieln',):
-                    if hero_name in gs.heroes[player_index]:
-                        keep_terr = gs.heroes[player_index][hero_name].get('keep_territory')
-                        if keep_terr and keep_terr in self.game.scaled_centers:
-                            effect = AbilityBurstEffect(
-                                center_pos=self.game.scaled_centers[keep_terr],
-                                color_palette=palette,
-                                num_particles=150,
-                                behavior='explode',
-                                world_coords=True,
-                                swirl_duration=0,
-                                float_duration=0.8,
-                                particle_size=2,
-                                flash_ring=True,
-                                particle_image=particle_img
-                            )
-                            self.ability_effects.append(effect)
-                        break
-            # Green polygon bubbles on up to 5 random owned territories
-            owned_territories = [t for t, o in gs.territory_owners.items()
-                                 if o == player_index]
-            import random as _rand
-            sample_count = min(5, len(owned_territories))
-            if sample_count > 0:
-                sampled = _rand.sample(owned_territories, sample_count)
-                for territory in sampled:
-                    polygon = self.game.scaled_polygons.get(territory)
-                    if polygon:
-                        shimmer = AbilityPolygonBurstEffect(
-                            polygon=polygon,
-                            color=self.MASTER_NEGOTIATOR_COLOR,
-                            num_bubbles=40,
-                            world_coords=True,
-                            particle_image=particle_img
-                        )
-                        self.ability_effects.append(shimmer)
-            return
+        keep = self._caster_keep(ability_name, player_index)
+        if keep is not None:
+            anchors['keep'] = keep[1]
 
-        # --- Aggressive Diplomacy: staggered dark orange bursts (Levy-style) + border flash ---
-        if ability_name == 'Aggressive Diplomacy':
-            polygon = self.game.scaled_polygons.get(target_territory)
-            if not polygon:
-                return
-            # Dark orange polygon shimmer overlay with border flash
-            effect = AbilityPolygonBurstEffect(
-                polygon=polygon,
-                color=(200, 90, 10),  # Darker orange
-                num_bubbles=50,
-                world_coords=True,
-                border_flash=True,
-                particle_image=particle_img
-            )
-            self.ability_effects.append(effect)
-            # Darker orange palette for staggered bursts
-            dark_orange_palette = [
-                (150, 60, 0), (180, 70, 0), (200, 90, 10),
-                (220, 110, 20), (240, 140, 40)
-            ]
-            # 8 staggered burst points across the territory (same as Levy)
-            points = self._random_points_in_polygon(polygon, count=8)
-            for i, point in enumerate(points):
-                burst = AbilityBurstEffect(
-                    center_pos=point,
-                    color_palette=dark_orange_palette,
-                    num_particles=40,
-                    behavior='explode',
-                    world_coords=True,
-                    swirl_duration=0,
-                    float_duration=0.5,
-                    particle_size=2,
-                    flash_ring=True,
-                    delay=i * 0.1,
-                    particle_image=particle_img
-                )
-                self.ability_effects.append(burst)
-            return
-
-        # --- Levy: 8 gold bursts with flash rings + gold polygon overlay ---
-        if ability_name == 'Levy':
-            palette = self.ABILITY_PALETTES['Levy']
-            polygon = self.game.scaled_polygons.get(target_territory)
-            if not polygon:
-                return
-            # Gold polygon shimmer overlay
-            shimmer = AbilityPolygonBurstEffect(
-                polygon=polygon,
-                color=(255, 215, 0),  # Gold
-                num_bubbles=50,
-                world_coords=True,
-                particle_image=particle_img
-            )
-            self.ability_effects.append(shimmer)
-            # 8 staggered burst points across the territory
-            points = self._random_points_in_polygon(polygon, count=8)
-            for i, point in enumerate(points):
-                effect = AbilityBurstEffect(
-                    center_pos=point,
-                    color_palette=palette,
-                    num_particles=40,
-                    behavior='explode',
-                    world_coords=True,
-                    swirl_duration=0,
-                    float_duration=0.5,
-                    particle_size=2,
-                    flash_ring=True,
-                    delay=i * 0.1,  # Stagger bursts 0.1s apart
-                    particle_image=particle_img
-                )
-                self.ability_effects.append(effect)
-            return
-
-        # --- Royal Charisma: enhanced white/gold arc + source implosion burst ---
-        if ability_name == 'Royal Charisma' and source_territory:
-            palette = self.ABILITY_PALETTES['Royal Charisma']
-            if source_territory not in self.game.scaled_centers:
-                return
-            if target_territory not in self.game.scaled_centers:
-                return
-            source_pos = self.game.scaled_centers[source_territory]
-            target_pos = self.game.scaled_centers[target_territory]
-            # Enhanced arc: more particles, larger, taller arc
-            arc = AbilityArcEffect(
-                source_pos=source_pos,
-                dest_pos=target_pos,
-                color_palette=palette,
-                num_particles=120,
-                world_coords=True,
-                particle_size=2,
-                arc_height=0.45,  # Taller arc for drama
-                particle_image=particle_img
-            )
-            self.ability_effects.append(arc)
-            # Source implosion burst (units being "pulled away")
-            burst = AbilityBurstEffect(
-                center_pos=source_pos,
-                color_palette=palette,
-                num_particles=60,
-                behavior='implode',
-                world_coords=True,
-                swirl_duration=0,
-                float_duration=0.5,
-                particle_size=2,
-                particle_image=particle_img
-            )
-            self.ability_effects.append(burst)
-            return
-
-        # --- Valorous Charge: enhanced arc + departure burst at Keep ---
-        if ability_name == 'Valorous Charge' and source_territory:
-            palette = self.ABILITY_PALETTES['Valorous Charge']
-            if source_territory not in self.game.scaled_centers:
-                return
-            if target_territory not in self.game.scaled_centers:
-                return
-            source_pos = self.game.scaled_centers[source_territory]
-            target_pos = self.game.scaled_centers[target_territory]
-            # Enhanced arc: more particles, larger
-            arc = AbilityArcEffect(
-                source_pos=source_pos,
-                dest_pos=target_pos,
-                color_palette=palette,
-                num_particles=120,
-                world_coords=True,
-                particle_size=2,
-                particle_image=particle_img
-            )
-            self.ability_effects.append(arc)
-            # Departure burst at source (troops leaving)
-            burst = AbilityBurstEffect(
-                center_pos=source_pos,
-                color_palette=palette,
-                num_particles=60,
-                behavior='explode',
-                world_coords=True,
-                swirl_duration=0,
-                float_duration=0.5,
-                particle_size=2,
-                flash_ring=True,
-                particle_image=particle_img
-            )
-            self.ability_effects.append(burst)
-            return
-
-        # --- Decisive Strike: blue shockwave + delayed secondary burst ---
-        if ability_name == 'Decisive Strike':
-            palette = self.ABILITY_PALETTES['Decisive Strike']
-            if target_territory not in self.game.scaled_centers:
-                return
-            target_pos = self.game.scaled_centers[target_territory]
-            # Primary shockwave burst with flash ring
-            effect = AbilityBurstEffect(
-                center_pos=target_pos,
-                color_palette=palette,
-                num_particles=180,
-                behavior='explode',
-                world_coords=True,
-                swirl_duration=0,
-                float_duration=0.8,
-                particle_size=2,
-                flash_ring=True,
-                particle_image=particle_img
-            )
-            self.ability_effects.append(effect)
-            # Delayed secondary burst in lighter blue for double-flash impact
-            secondary_palette = self.ABILITY_PALETTES['Decisive Strike Secondary']
-            secondary = AbilityBurstEffect(
-                center_pos=target_pos,
-                color_palette=secondary_palette,
-                num_particles=60,
-                behavior='explode',
-                world_coords=True,
-                swirl_duration=0,
-                float_duration=0.5,
-                particle_size=2,
-                delay=0.2,
-                particle_image=particle_img
-            )
-            self.ability_effects.append(secondary)
-            return
-
-        # --- Regicide: enhanced implosion with flash ring + dark aftermath ---
-        if ability_name == 'Regicide':
-            palette = self.ABILITY_PALETTES['Regicide']
-            if target_territory not in self.game.scaled_centers:
-                return
-            target_pos = self.game.scaled_centers[target_territory]
-            # Main implosion with contracting flash ring (tighter radius for focused effect)
-            effect = AbilityBurstEffect(
-                center_pos=target_pos,
-                color_palette=palette,
-                num_particles=160,
-                behavior='implode',
-                world_coords=True,
-                float_duration=1.5,
-                particle_size=2,
-                flash_ring=True,
-                particle_image=particle_img,
-                implode_radius=(25, 60)
-            )
-            self.ability_effects.append(effect)
-            # Dark aftermath: lingering black/purple particles (tighter radius)
-            aftermath_palette = self.ABILITY_PALETTES['Regicide Aftermath']
-            aftermath = AbilityBurstEffect(
-                center_pos=target_pos,
-                color_palette=aftermath_palette,
-                num_particles=30,
-                behavior='implode',
-                world_coords=True,
-                swirl_duration=1.0,
-                float_duration=1.5,
-                particle_size=2,
-                delay=0.3,
-                particle_image=particle_img,
-                implode_radius=(25, 60)
-            )
-            self.ability_effects.append(aftermath)
-            return
-
-        # --- Relentless Charge: enhanced dust burst + 4 satellite bursts ---
-        if ability_name == 'Relentless Charge':
-            palette = self.ABILITY_PALETTES['Relentless Charge']
-            if target_territory not in self.game.scaled_centers:
-                return
-            target_pos = self.game.scaled_centers[target_territory]
-            # Main dust burst with flash ring
-            effect = AbilityBurstEffect(
-                center_pos=target_pos,
-                color_palette=palette,
-                num_particles=160,
-                behavior='explode',
-                world_coords=True,
-                particle_size=2,
-                flash_ring=True,
-                particle_image=particle_img
-            )
-            self.ability_effects.append(effect)
-            # 4 satellite bursts around center (simulating 4 cavalry arriving)
-            import random as _rand
-            cx, cy = target_pos
+        if target_territory in centres:
+            anchors['target'] = centres[target_territory]
+            if target_territory in polygons:
+                anchors['territory'] = [target_territory]
+                if spec.get('points'):
+                    anchors['points'] = self.hero_light.points_inside(
+                        target_territory, spec['points'], seed)
+            # Four points around the target (Relentless Charge: cavalry arriving)
+            cx, cy = centres[target_territory]
+            anchors['satellites'] = []
             for i in range(4):
-                angle = (math.pi / 2) * i + _rand.uniform(-0.3, 0.3)
-                offset = _rand.uniform(20, 40)
-                sat_pos = (cx + offset * math.cos(angle),
-                           cy + offset * math.sin(angle))
-                sat = AbilityBurstEffect(
-                    center_pos=sat_pos,
-                    color_palette=palette,
-                    num_particles=30,
-                    behavior='explode',
-                    world_coords=True,
-                    swirl_duration=0,
-                    float_duration=0.5,
-                    particle_size=2,
-                    delay=0.15 * (i + 1),  # Stagger satellite bursts
-                    particle_image=particle_img
-                )
-                self.ability_effects.append(sat)
-            return
+                angle = (math.pi / 2) * i + rng.uniform(-0.3, 0.3)
+                offset = rng.uniform(14.0, 22.0)
+                anchors['satellites'].append((cx + offset * math.cos(angle),
+                                              cy + offset * math.sin(angle)))
 
-    @staticmethod
-    def _point_in_polygon(x, y, polygon):
-        """Ray-casting point-in-polygon test for random point sampling."""
-        inside = False
-        n = len(polygon)
-        p1x, p1y = polygon[0]
-        for i in range(1, n + 1):
-            p2x, p2y = polygon[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = ((y - p1y) * (p2x - p1x)
-                                       / (p2y - p1y) + p1x)
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x, p1y = p2x, p2y
-        return inside
+        # Arcs: the hero's Keep end lands on the Keep plot, the other on the centre
+        def place(territory):
+            if keep is not None and territory == keep[0]:
+                return keep[1]
+            return centres.get(territory)
 
-    def _random_points_in_polygon(self, polygon, count=5, max_attempts=20):
-        """
-        Generate random points inside a polygon via rejection sampling.
+        if source_territory is not None:
+            anchors['source'] = place(source_territory)
+            anchors['dest'] = place(target_territory)
 
-        Used by Levy to spawn explosion effects at random territory locations.
+        # The caster's own Keeps and Castles (Extort Populace)
+        anchors['keeps'] = self._keep_plots({player_index})[:self.MAX_ABILITY_POINTS]
 
-        Args:
-            polygon: List of (x, y) tuples defining polygon vertices
-            count: Number of points to generate
-            max_attempts: Max rejection sampling attempts per point
-        Returns:
-            List of (x, y) tuples inside the polygon
-        """
-        xs = [p[0] for p in polygon]
-        ys = [p[1] for p in polygon]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
+        # Up to five of the caster's territories (Master Negotiator)
+        owned = sorted(t for t, o in gs.territory_owners.items() if o == player_index and t in polygons)
+        anchors['territories'] = rng.sample(owned, min(5, len(owned)))
 
-        import random
-        points = []
-        for _ in range(count):
-            for _ in range(max_attempts):
-                x = random.uniform(min_x, max_x)
-                y = random.uniform(min_y, max_y)
-                if self._point_in_polygon(x, y, polygon):
-                    points.append((x, y))
-                    break
-        return points
+        # The players the caster's abilities hit (Embargo): their territories, and
+        # up to three of their Keeps
+        if hasattr(gs, 'ability_enemies'):
+            enemies = set(gs.ability_enemies(player_index))
+        else:
+            enemies = {o for o in gs.territory_owners.values() if o not in (-1, player_index)}
+        anchors['enemy_territories'] = sorted(
+            t for t, o in gs.territory_owners.items() if o in enemies and t in polygons)
+        enemy_keeps = self._keep_plots(enemies)
+        anchors['enemy_keeps'] = rng.sample(enemy_keeps, min(3, len(enemy_keeps)))
+        return anchors
 
     def update_ability_effects(self, delta_time):
         """Update all active hero ability visual effects."""
@@ -2881,160 +2460,90 @@ class MapRenderer:
                 self.ability_effects.remove(effect)
 
     def render_ability_effects(self):
-        """Render all active hero ability visual effects on screen."""
-        for effect in self.ability_effects:
-            effect.render(self.game.screen,
-                          world_to_screen_func=self.game.world_to_screen)
-
-    def sync_embargo_effects(self):
         """
-        Sync persistent embargo bubble effects with game state.
+        Render the hero ability effects' parts that go over the plots and armies
+        (flares, rings, sparks, comets, the Silence curtain). Their parts under
+        the plots are drawn by render_hero_effects_under().
+        """
+        if not self.ability_effects:
+            return
+        view = self._hero_fx_view()
+        for effect in self.ability_effects:
+            effect.render_over(view)
 
-        Creates continuous bubble effects on enemy territories when embargo is active.
-        Stops and removes effects when embargo expires (embargo_blocked_players empties).
-        Called each frame from the main update loop.
+    # Passive auras: the hero shown, its aura and the game_state getter of the
+    # territories it covers (for the viewing player)
+    HERO_AURAS = {
+        'Seledra Rennervail': ('defiance', 'get_defiance_protected_territories'),
+        'Vearen Asford': ('haste', 'get_haste_affected_territories'),
+        'Darius Brennhen': ('safe_haven', 'get_safe_haven_territories'),
+        'Regnus Aevencourne': ('safe_haven', 'get_safe_haven_territories'),
+    }
+
+    def update_hero_effects(self, delta_time):
+        """
+        Sync the passive aura and the Embargo embers with game state and ease
+        their fades. Called from the game loop's update section (skipped while
+        paused). Territory sets are recomputed only when what they depend on
+        changes (selection, player, the hero's Keep, ownership) - not per frame.
         """
         gs = self.game.game_state
-        if not gs:
+        if gs is None:
             return
+        shown = None
+        hero = self.game.selected_hero
+        entry = self.HERO_AURAS.get(hero)
+        if entry is not None:
+            key, getter = entry
+            player = gs.current_player
+            hero_data = gs.heroes.get(player, {}).get(hero) or {}
+            sync = (hero, player, hero_data.get('keep_territory'), gs._territory_owners_version)
+            if sync != self._hero_aura_sync:
+                self._hero_aura_sync = sync
+                covered = getattr(gs, getter)(player) if hero_data else ()
+                self.hero_auras[key].set_territories(
+                    t for t in covered if t in self.game.scaled_polygons)
+            shown = key
+        for key, aura in self.hero_auras.items():
+            aura.update(delta_time, key == shown)
 
-        embargo_active = len(gs.embargo_blocked_players) > 0
+        # Embargo: embers over every territory of the embargoed players
+        blocked = tuple(sorted(gs.embargo_blocked_players))
+        if blocked:
+            sync = (blocked, gs._territory_owners_version)
+            if sync != self._embargo_sync:
+                self._embargo_sync = sync
+                self.embargo_embers.set_territories(
+                    t for t, owner in gs.territory_owners.items()
+                    if owner in blocked and t in self.game.scaled_polygons)
+        self.embargo_embers.update(delta_time, bool(blocked))
 
-        if not embargo_active and self.embargo_effects:
-            # Embargo expired: stop all persistent effects (let bubbles fade out)
-            for territory, effect in list(self.embargo_effects.items()):
-                effect.stop()
-            # Remove finished effects
-            for territory in list(self.embargo_effects.keys()):
-                if self.embargo_effects[territory].is_finished():
-                    del self.embargo_effects[territory]
-
-    def update_embargo_effects(self, delta_time):
-        """Update all active embargo persistent effects."""
-        for territory in list(self.embargo_effects.keys()):
-            effect = self.embargo_effects[territory]
-            effect.update(delta_time)
-            if effect.is_finished():
-                del self.embargo_effects[territory]
-
-    def render_embargo_effects(self):
-        """
-        Render all active embargo persistent effects.
-
-        Uses pre-cached PNG particle surfaces from game._particle_caches['embargo']
-        for soft-glow visuals. Falls back to procedural circles if PNG unavailable.
-
-        FPS OPT: PNG path blits pre-cached surfaces directly to screen (no shared
-        SRCALPHA surface needed). Fallback path uses batched shared surface.
-        """
-        if not self.embargo_effects:
-            return
-
-        screen = self.game.screen
+    def _hero_fx_view(self):
+        """This frame's FxView: the camera's world_to_screen as an affine map."""
         world_to_screen = self.game.world_to_screen
+        ax, ay = world_to_screen((0.0, 0.0))
+        zoom = world_to_screen((1000.0, 0.0))[0] - ax
+        return FxView(self.game.screen, ax, ay, zoom / 1000.0, self._plot_radius())
 
-        # Try PNG particle path first
-        embargo_cache = self.game._particle_caches.get('embargo')
-        if embargo_cache:
-            self._render_embargo_png(screen, world_to_screen, embargo_cache)
+    def render_hero_effects_under(self):
+        """
+        The hero effects that belong under the plots and armies: the selected
+        hero's aura, the Embargo embers and the under layer of ability casts
+        (ray bursts, border light, fireflies, Regicide's drain). Called from
+        draw_territories() just before the production rays and the plots.
+        """
+        # Once per frame, before any hero light is drawn (the over layer comes later)
+        self.hero_light.begin_frame()
+        auras = [aura for aura in self.hero_auras.values() if aura.visible]
+        if self.embargo_embers.visible:
+            auras.append(self.embargo_embers)
+        if not auras and not self.ability_effects:
             return
-
-        # Fallback: procedural circle path if PNG cache unavailable
-        self._render_embargo_procedural(screen, world_to_screen)
-
-    def _render_embargo_png(self, screen, world_to_screen, cache):
-        """Render embargo bubbles using pre-cached PNG particle surfaces."""
-        screen_w = screen.get_width()
-        screen_h = screen.get_height()
-        camera_zoom = self.game.camera_zoom
-
-        for effect in self.embargo_effects.values():
-            if effect.is_complete or not effect.bubbles:
-                continue
-
-            for bubble in effect.bubbles:
-                if bubble['alpha'] <= 0:
-                    continue
-
-                world_x = bubble['world_x']
-                world_y = bubble['world_y'] + bubble['offset_y']
-
-                if effect.world_coords and world_to_screen:
-                    sx, sy = world_to_screen((world_x, world_y))
-                else:
-                    sx, sy = world_x, world_y
-
-                x = int(sx)
-                y = int(sy)
-
-                if x < -10 or x > screen_w + 10 or y < -10 or y > screen_h + 10:
-                    continue
-
-                # Scale radius by camera zoom for consistent size with passive auras
-                scaled_radius = max(1, int(bubble['radius'] * camera_zoom))
-
-                # Snap to nearest even diameter within cached range [6, 32] (2x scale for soft-glow)
-                diameter = max(6, min(32, round(scaled_radius) * 4))
-                diameter = diameter + (diameter % 2)  # Ensure even
-                quantized_alpha = (int(bubble['alpha']) // 10) * 10
-
-                surface = cache.get((diameter, quantized_alpha))
-                if surface is None:
-                    continue
-
-                half = diameter // 2
-                screen.blit(surface, (x - half, y - half))
-
-    def _render_embargo_procedural(self, screen, world_to_screen):
-        """Fallback: render embargo bubbles as procedural circles on shared surface."""
-        screen_size = (screen.get_width(), screen.get_height())
-
-        # Reuse a single shared SRCALPHA surface for all embargo bubbles
-        if (self._embargo_shared_surface is None
-                or self._embargo_shared_surface.get_size() != screen_size):
-            self._embargo_shared_surface = pygame.Surface(screen_size, pygame.SRCALPHA)
-        else:
-            self._embargo_shared_surface.fill((0, 0, 0, 0))
-
-        for effect in self.embargo_effects.values():
-            if effect.is_complete or not effect.bubbles:
-                continue
-
-            r, g, b = effect.color
-            border_r = max(0, r - 40)
-            border_g = max(0, g - 40)
-            border_b = max(0, b - 40)
-
-            for bubble in effect.bubbles:
-                if bubble['alpha'] <= 0:
-                    continue
-
-                world_x = bubble['world_x']
-                world_y = bubble['world_y'] + bubble['offset_y']
-
-                if effect.world_coords and world_to_screen:
-                    sx, sy = world_to_screen((world_x, world_y))
-                else:
-                    sx, sy = world_x, world_y
-
-                x = int(sx)
-                y = int(sy)
-
-                if (x < -10 or x > screen.get_width() + 10
-                        or y < -10 or y > screen.get_height() + 10):
-                    continue
-
-                alpha = bubble['alpha']
-                radius = max(1, int(bubble['radius']))
-
-                pygame.draw.circle(self._embargo_shared_surface,
-                                   (r, g, b, alpha), (x, y), radius)
-                border_alpha = min(255, alpha + 50)
-                pygame.draw.circle(self._embargo_shared_surface,
-                                   (border_r, border_g, border_b, border_alpha),
-                                   (x, y), radius, 1)
-
-        screen.blit(self._embargo_shared_surface, (0, 0))
+        view = self._hero_fx_view()
+        for aura in auras:
+            aura.render(view, self._plot_fx_clock)
+        for effect in self.ability_effects:
+            effect.render_under(view)
 
     def sync_production_glow_effects(self):
         """

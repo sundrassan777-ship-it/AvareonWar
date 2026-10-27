@@ -835,10 +835,8 @@ self._resolved_battle_info = {
 - Battle bar combat (volleys) → `ui/effects/battle_interface.py` (BattleBarVolleyEffect) — discrete blasts, pre-rendered sprites
 - Sparkle particles → `ui/effects/sparkle_effect.py`
 - Turn announcements → `ui/effects/turn_announcement_sparkle.py`
-- Hero ability bursts (explode/implode) → `ui/effects/ability_burst_effect.py` — configurable particles, phase durations, particle_size, flash_ring, delay
-- Hero ability arcs (territory-to-territory) → `ui/effects/ability_arc_effect.py` — configurable particle_size, arc_height
-- Hero ability polygon bubbles (territory fill) → `ui/effects/ability_polygon_burst_effect.py` — rising circles, bubble_scale, border_flash
-- Vow of Silence wave (full-screen sweep) → `ui/effects/ability_silence_wave_effect.py` — 400 crimson particles sweeping left→right
+- Hero abilities (every active cast, the passive auras, the Embargo embers) → `ui/effects/hero_fx_effect.py` on the shared light kit `ui/effects/light_fx.py` — light in the style of the production rays, each ability a timeline of cues in `ui/effects/hero_fx_style.py`; see "Change the hero ability effects" below
+- Vow of Silence fog → `main.py` `draw_silence_fog_overlay()` — a crimson vignette baked once (`light_fx.vignette_surface`)
 
 **Key techniques used across effects:**
 - `pygame.draw.circle` for particle rendering (1-4px sizes)
@@ -893,6 +891,68 @@ chips; a Keep being upgraded to a Castle shows the same dust with gold glints.
 
 **Tests:** `tests/test_plot_effects.py`; benchmarks `glow_static`, `glow_zoom`, `dust_static`,
 `dust_zoom`, `mixed_static`.
+
+#### ✅ Change the hero ability effects (casts, passive auras, Embargo embers)
+
+**What they are (2026-10-26):** every hero ability drawn as light, in the style of the
+production rays - additive light on opaque black frames, soft gradients, slow motion -
+each ability keeping its own colour (owner: ability colours, not player colours).
+Point effects (a Keep, a target) are flares, shock rings, spinning ray bursts and sparks;
+territory effects are light running along the border and fireflies; Royal Charisma and
+Valorous Charge fly comets along an arc, Regicide drains the light (a multiply blend),
+Relentless Charge throws up dust, Vow of Silence sweeps a curtain across the screen.
+Passive auras (Defiance, Haste, Safe Haven) light the outline of the covered territories
+with a running shimmer and fireflies while their hero is selected; while players are
+embargoed, embers drift over their territories.
+
+| To change | Where |
+|---|---|
+| An ability's look (colour, which pieces, timing, sizes) | `ui/effects/hero_fx_style.py` `ABILITIES`: one timeline of cues per ability (`rays`, `flare`, `ring`, `sparks`, `rim`, `motes`, `comets`, `drain`, `dust`, `curtain`, `each`) - the keys are documented at the top of the file |
+| An aura / the Embargo embers | `AURAS` (`_aura()`), `PERSISTENT['embargo']` |
+| Which hero shows which aura | `MapRenderer.HERO_AURAS` (hero → aura, `game_state` territory getter) |
+| Where an ability's pieces go (target, Keep, arc ends, points inside, the caster's Keeps, enemy territories...) | `MapRenderer._ability_anchors()` |
+| How a cast reaches the screen | Local cast, network replay and the AI all go through `main.py` `play_ability_effect()`; the AI records `game_state.ability_fx_events` (`ai_player.py`, `SimPhaseManager._record_ability_fx`), drained by `Game.update_map_effects()` |
+| The Silence fog | `hero_fx_style.SILENCE_FOG` (look), `main.py` `draw_silence_fog_overlay()` |
+| Preview / tune / measure | `py tools/hero_fx_preview.py` (live: keys cast at the territory under the mouse, A cycles the auras, C clears the Embargo embers / Silence fog a cast leaves behind, L 2D/3D), `--sheet out.png [--only Levy defiance ...]`, `--bench` |
+
+**Rules:**
+- **Two layers.** `render_hero_effects_under()` (from `draw_territories()`, just before the
+  production rays) draws auras, embers and every cue whose `layer = 'under'` (rays, border
+  light, fireflies, Regicide's drain); `render_ability_effects()` draws the rest over the
+  armies. `HeroLight.begin_frame()` runs once per frame in the first.
+- **Light on the parchment.** Pure additive light washes out toward white on the bright 2D
+  map, so the hue comes from a low `white_mix` plus normal-blend `tint` layers under the light
+  (bead bands, flare halos, ring halos). Additive red over a green territory turns yellow:
+  when a colour must survive on any territory, let the tint carry it (the Embargo rim).
+- **Sizes:** point effects in plot radii (`MapRenderer._plot_radius()`), like the plot effects;
+  territory effects in world px.
+- **Stateless where possible:** auras and embers are drawn from the shared plot effect clock
+  and only fade with `dt`; sparks, comets and fireflies are positions computed from time.
+  Territory sets are re-synced only when the selection, the hero's Keep or ownership change
+  (`update_hero_effects()`), never per frame.
+- **Nothing territory-sized per cast.** `HeroLight.prewarm()` (at load and in
+  `rebuild_scale_caches()`, ~0.2 s) builds the territory raster, every territory's border
+  beads with the territory just outside each bead, and the aura and border-light sprites.
+  An outline of any territory set is then a filter (~3 ms for half the map), cached per set.
+- **Sprites are cached, brightness baked in** (`GlowSprites` / `TintSprites` / `DarkSprites`,
+  bounded LRUs); new ones are built within a per-frame budget of 24 sprites AND 1 ms, the
+  first build always allowed. A border light shows only once all 12 brightness levels of its
+  bead exist, so prewarm what must appear on its first frame.
+- **Slow movers need sub-pixel placement.** Blits land on whole pixels: a firefly rising
+  0.2 px a frame stands still, then jumps - with many of them a visible crawl. `draw_motes()`
+  picks a copy shifted by quarter pixels down / half pixels across (`GlowSprites` `phase`,
+  `SUBPIXEL_PHASES`); fast pieces (sparks, comets) don't need it.
+- **No surface alpha on per-pixel-alpha surfaces in a steady state:** a partial `set_alpha()`
+  takes pygame's slow blit path (~3-4 ms full screen vs ~0.7 ms at 255), and `set_alpha(None)`
+  switches the per-pixel alpha OFF (an opaque wall). The Silence vignette fades in, then holds.
+- **Cost** (docs/PERFORMANCE_ROADMAP.md "Hero ability effects"): the selected hero's aura
+  ~0.3-0.65 ms, Embargo embers ~0.55 ms over the whole map, a one-shot cast ~0.5-2 ms while
+  it plays (Embargo's border light over half the map ~3 ms for 1.6 s), the cast itself under
+  1.5 ms. Measure before/after back to back: the machine's speed drifts.
+
+**Tests:** `tests/test_hero_fx.py`; benchmarks `TestHeroAbilityFxPerformance` in
+`tests/test_fps_benchmark.py` (`hero_aura_static` / `_zoom`, `ability_<name>` with the cast's
+own cost as `trigger_ms`, `silence_fog`, reference `hero_fx_none`).
 
 #### ✅ Modify Camera/Zoom
 
@@ -3014,6 +3074,12 @@ effects" under main.py → Add Visual Effect. In this file: `_build_plot_fx_rend
 `render_production_glow_effects()`, and the dust calls in `_render_construction_plot()` /
 `_render_completed_plot()`.
 
+✅ **Hero ability effects:** see "Change the hero ability effects" under main.py → Add
+Visual Effect. In this file: `hero_light` / `hero_auras` / `embargo_embers` (built in
+`_build_plot_fx_renderers()`), `HERO_AURAS`, `update_hero_effects()`,
+`render_hero_effects_under()`, `trigger_ability_effect()` / `_ability_anchors()`,
+`update_ability_effects()`, `render_ability_effects()`.
+
 ### rendering/ui_renderer.py (~2,553 lines)
 
 **What it does:** UI panels, buttons, info displays
@@ -3116,6 +3182,8 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `text_cache` (ui_renderer.py) - UIRenderer's own text cache: `self._get_cached_text(text, font, color)`
 - `ProductionRays._sets` (production_glow_effect.py) - Production light rays: per `(even plot radius, player colour)` the tinted layers plus one current frame per phase group, **shared by every producing plot** (bounded LRU, ~2 MB). Re-rotated into persistent canvases every 0.25°; colour-free bases pre-built for all plot radii at load (`prewarm()`).
 - `ConstructionDust._sprites` (construction_dust_effect.py) - Dust sprites keyed by `(diameter, colour, alpha, softness)`, scaled from one soft base per colour; at most `BUILDS_PER_FRAME` built per frame, LRU-bounded (~1.8 MB).
+- `HeroLight` (hero_fx_effect.py) - Hero ability effects: `glow` / `tint` / `dark` sprite caches (light_fx.py, bounded LRUs, build budget 24 sprites and 1 ms per frame, ~1-2 MB), a second `ProductionRays` for ray bursts, the `TerritoryRaster` (~2 MB), every territory's border beads (built at load), outlines per territory set (LRU 12) and bead screen positions per camera (LRU 24). Rebuilt in `rebuild_scale_caches()`.
+- `_cached_silence_fog` (main.py) - The Vow of Silence vignette, baked once per map size.
 - `_scaled_text_cache` (turn_announcement_effect.py) - Smoothscale cache by quantized (width, height)
 
 **Always `.convert()` / `.convert_alpha()` loaded images — including backgrounds:**
