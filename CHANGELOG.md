@@ -2,6 +2,44 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-27 - Selection rings and order arrows as light
+
+Branch `feature/order-fx`. Owner: after the production and hero ability effects, the
+selection ring (structures and banners) and the order arrows looked unpolished in
+comparison - redo the ring in the same glowy style, keeping its green and its pulses
+outward, and weigh two directions for the arrow: the same light style, or an arrow like the
+hero targeting circle (user input). Chosen: a light path, borrowing the targeting circle
+where the player targets something (the destination reticle); minimal FPS cost.
+- **Selection ring** (a selected banner, Barracks, Keep, plot or the selected hero's Keep):
+  a green ring of light just outside the plot / army circle with crests running round it,
+  and soft rings that really pulse outward (the old "pulses" were fixed circles whose
+  brightness blinked). The building ring applied ui_scale twice and floated off the plot
+  when zoomed in; it now sits on the plot's rim at every zoom.
+- **Order arrows**: a light path bowed slightly to the right of travel, so an arrow A->B and
+  one B->A run side by side instead of on top of each other; crests of light flow toward the
+  target; a chevron head and a flare at its tip. Arrows stop short of both banners (the old
+  head covered the target's banner) and scale with zoom (they were 4 px at every zoom). Same
+  colours as before: green own, cyan ally (simultaneous mode), gold while the order's card
+  is hovered. Owner review of the stills: "a tiny bit thinner" - done.
+- **Auto-cancelled orders**: the red arrow shakes and now really fades out (it darkened to
+  black), and the animation also shows during simultaneous planning (it was skipped there).
+- **Destination reticle** (the selected army's order destinations): a ring with four ticks at
+  N/E/S/W, from the hero targeting circle's spikes - red for an attack, cyan for a merge -
+  instead of pulsing red / cyan circles.
+- **Light kit**: `SoftRing.frame()` / `tint_frame()` (rings cached per radius and brightness,
+  build budget), `path_beads()` / `path_point()` (points along an open path).
+- **Renderer** (`ui/effects/order_fx_effect.py`, styled in `ui/effects/order_fx_style.py`):
+  `OrderLight` and `OrderArrow`. `MapRenderer` builds `OrderArrow`s (`_order_arrows`,
+  `_sim_order_arrows`, `_cancelling_order_arrows`; the arrow start in one helper,
+  `_order_source_world`) and draws them in one call: colour bands, light, then the badges.
+- **Removed**: `ARROW_LINE_WIDTH`, `ARROW_HEAD_SIZE`, `ARROW_HEAD_ANGLE_RAD`; the selection and
+  destination rings' per-frame pooled alpha surfaces. New `COLOR_ARROW_ALLY` (was inline).
+- **Dev tool**: `tools/order_fx_preview.py` (live, `--sheet`, `--bench`).
+- **Cost** (docs/PERFORMANCE_ROADMAP.md): 5 arrows 0.04 -> 0.18 ms, 20 arrows ~0.17 -> ~0.7 ms,
+  a selection ring ~0.05 ms, a reticle ~0.02 ms; the whole-frame benchmarks can't tell the
+  difference from their noise.
+- Tests: `tests/test_order_fx.py` (38); new benchmarks `TestOrderFxPerformance`.
+
 ## 2026-10-26 - Hero ability effects as light
 
 Branch `feature/hero-ability-fx`. Owner: after the plot effects, the hero ability effects

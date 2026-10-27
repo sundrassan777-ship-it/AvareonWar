@@ -837,6 +837,7 @@ self._resolved_battle_info = {
 - Turn announcements → `ui/effects/turn_announcement_sparkle.py`
 - Hero abilities (every active cast, the passive auras, the Embargo embers) → `ui/effects/hero_fx_effect.py` on the shared light kit `ui/effects/light_fx.py` — light in the style of the production rays, each ability a timeline of cues in `ui/effects/hero_fx_style.py`; see "Change the hero ability effects" below
 - Vow of Silence fog → `main.py` `draw_silence_fog_overlay()` — a crimson vignette baked once (`light_fx.vignette_surface`)
+- Selection rings, order arrows, destination reticles → `ui/effects/order_fx_effect.py` on the same light kit, styled in `ui/effects/order_fx_style.py`; see "Change the selection ring, order arrows and destination reticles" below
 
 **Key techniques used across effects:**
 - `pygame.draw.circle` for particle rendering (1-4px sizes)
@@ -953,6 +954,51 @@ embargoed, embers drift over their territories.
 **Tests:** `tests/test_hero_fx.py`; benchmarks `TestHeroAbilityFxPerformance` in
 `tests/test_fps_benchmark.py` (`hero_aura_static` / `_zoom`, `ability_<name>` with the cast's
 own cost as `trigger_ms`, `silence_fog`, reference `hero_fx_none`).
+
+#### ✅ Change the selection ring, order arrows and destination reticles
+
+**What they are (2026-10-27):** the map's input marks drawn as light, in the style of the
+production rays and hero abilities. Select → order → target read as one input language:
+- **Selection ring** (a selected banner, Barracks, Keep, plot or the selected hero's Keep):
+  a green ring of light just outside the plot / army circle with crests running round it,
+  and soft rings pulsing outward from it.
+- **Order arrows:** a light path bowed slightly to the right of travel (so A→B and B→A run
+  side by side), crests of light flowing toward the target, a chevron head and a flare at
+  its tip; it stops short of both banners and scales with zoom. Green for own orders, cyan
+  for an ally's (simultaneous mode), gold while the order's Action Queue card is under the
+  mouse, red (shaking, fading) for an auto-cancelled order. The count badge sits on top.
+- **Destination reticle** (the selected army's order destinations): a ring with four ticks
+  at N/E/S/W - the hero targeting circle's spikes - red for an attack, cyan for a merge.
+
+| To change | Where |
+|---|---|
+| Look (colours, sizes, pulse rate, flow, bow, gaps, head) | `ui/effects/order_fx_style.py` (`SELECTION`, `ARROWS`, `RETICLE`); arrow colours come from `config/constants.py` `COLOR_ARROW_*` |
+| Which orders become arrows, their kind and count | `MapRenderer._order_arrows()` (turn-by-turn), `_sim_order_arrows()` (simultaneous planning), `_cancelling_order_arrows()` (`game_state.cancelling_arrows`); where an arrow starts: `_order_source_world()` |
+| When a ring / reticle shows | `MapRenderer.draw_territories()` (army loop: selected army, its orders' destinations) and `_render_completed_plot()` (selected building) |
+| Preview / tune / measure | `py tools/order_fx_preview.py` (live: click selects, right-click orders, O / R / T / H / Y / K add orders, reverse, 2-hop, hover, ally, cancel; L 2D/3D), `--sheet out.png`, `--bench` |
+
+**Rules:**
+- **One renderer:** `MapRenderer.order_light` (`OrderLight`, built with the other light
+  renderers in `_build_plot_fx_renderers()`); `begin_frame()` runs at the top of
+  `draw_territories()`. Every mark is drawn from the shared plot effect clock.
+- **Light on the parchment,** as the hero effects: a normal-blend tint (bead band, tint ring)
+  carries the colour, additive light over it.
+- **Sizes in plot radii** (`MapRenderer._plot_radius()`); rings are placed round the drawn
+  plot (`scaled_empty_plot_radius`, which already carries ui_scale) or army circle (the
+  `ARMY_CIRCLE_DRAW_*` constants); arrows are lifted by the army circle's lift.
+- **Arrow geometry is cached per (route, zoom)** relative to the camera origin: panning only
+  adds an offset, zooming rebuilds it (~0.04 ms an arrow). The flow animates by picking
+  sprites from a 256-entry table, nothing moves.
+- **Rings are cached frames** (`SoftRing.frame()` / `tint_frame()`, per radius and brightness,
+  build budget): a pulse's brightness follows its radius, so a pulse is one cached frame per
+  radius after its first period.
+- **Cost** (docs/PERFORMANCE_ROADMAP.md "Selection rings and order arrows"): a selection ring
+  ~0.05 ms, 5 arrows ~0.2 ms, 20 arrows ~0.7 ms; the first frame of a new ring builds its
+  frames within the budget.
+
+**Tests:** `tests/test_order_fx.py`; benchmarks `TestOrderFxPerformance` in
+`tests/test_fps_benchmark.py` (`selection_army` / `_keep`, `arrows_5` / `_20`,
+`arrows_selected`, each static and `_zoom`, reference `order_fx_none`).
 
 #### ✅ Modify Camera/Zoom
 
@@ -3183,6 +3229,7 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `ProductionRays._sets` (production_glow_effect.py) - Production light rays: per `(even plot radius, player colour)` the tinted layers plus one current frame per phase group, **shared by every producing plot** (bounded LRU, ~2 MB). Re-rotated into persistent canvases every 0.25°; colour-free bases pre-built for all plot radii at load (`prewarm()`).
 - `ConstructionDust._sprites` (construction_dust_effect.py) - Dust sprites keyed by `(diameter, colour, alpha, softness)`, scaled from one soft base per colour; at most `BUILDS_PER_FRAME` built per frame, LRU-bounded (~1.8 MB).
 - `HeroLight` (hero_fx_effect.py) - Hero ability effects: `glow` / `tint` / `dark` sprite caches (light_fx.py, bounded LRUs, build budget 24 sprites and 1 ms per frame, ~1-2 MB), a second `ProductionRays` for ray bursts, the `TerritoryRaster` (~2 MB), every territory's border beads (built at load), outlines per territory set (LRU 12) and bead screen positions per camera (LRU 24). Rebuilt in `rebuild_scale_caches()`.
+- `OrderLight` (order_fx_effect.py) - Selection rings, order arrows, destination reticles: `glow` / `tint` sprite caches (light_fx.py, prewarmed at load for every plot radius), three `SoftRing`s whose `frame()` / `tint_frame()` cache rings per radius and brightness (LRU 96 each, build budget 4 frames and 0.5 ms per frame), arrow geometry per (route, zoom) relative to the camera origin (LRU 64) and 256-entry flow sprite tables (LRU 96). Rebuilt in `rebuild_scale_caches()`.
 - `_cached_silence_fog` (main.py) - The Vow of Silence vignette, baked once per map size.
 - `_scaled_text_cache` (turn_announcement_effect.py) - Smoothscale cache by quantized (width, height)
 

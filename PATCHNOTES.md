@@ -4,6 +4,29 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Orders in a New Light
+
+*27 October 2026*
+
+### Improvements
+
+- **New selection ring.** A selected army or building is ringed in green light, with soft
+  rings pulsing outward from it.
+- **New order arrows.** Orders are drawn as paths of light flowing toward their target.
+  Arrows curve slightly, so orders between the same two territories in opposite directions
+  no longer hide each other, and they stop before the target's banner instead of covering it.
+  They grow and shrink with the zoom.
+- **Targets marked.** With an army selected, the territories it is ordered to are marked
+  with a targeting reticle - red for an attack, cyan for reinforcing your own or an ally's
+  army.
+- A cancelled order's red arrow now fades out smoothly, in simultaneous turns too.
+
+### Fixes
+
+- The selection ring of a building no longer drifts away from it when zoomed in.
+
+---
+
 ## Heroes in a New Light
 
 *26 October 2026*

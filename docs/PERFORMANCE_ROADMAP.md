@@ -113,6 +113,37 @@ What to know before touching them:
 
 ---
 
+## Selection rings and order arrows (2026-10-27, 1600x900)
+
+The selection ring, the order arrows and the destination reticles were redrawn as light
+(CHANGELOG 2026-10-27). They cost too little to show in whole-frame benchmarks:
+`TestOrderFxPerformance` before / after, run back to back, moved by -2.6 to +3.9 ms with
+no pattern, as did its reference scenario (`order_fx_none`), which draws none of them. So
+the marks were timed alone in the game - `MapRenderer.draw_movement_arrows()` and
+`draw_territories()` with and without a selection, zoom 2.4, the two commits run in turns:
+
+| Marks | Before (flat lines / circles) | After (light) |
+|---|---|---|
+| 5 arrows | 0.04 ms | 0.18 ms |
+| 20 arrows | 0.15-0.2 ms | 0.67-0.74 ms |
+| Selection ring (banner or building) | within `draw_territories()` noise | within noise; 0.05 ms alone |
+| Reticle | | 0.02 ms alone |
+
+Measured alone (`tools/order_fx_preview.py --bench`, cold caches, average once warm):
+selection 0.08-0.12 ms with the preview's overhead, 5 arrows 0.2-0.3 ms, 20 arrows
+0.6-0.75 ms (the same while panning), a selected army with 7 orders and their reticles
+0.5-0.75 ms; 20 arrows while zooming ~1.9 ms (their geometry is rebuilt each frame, ~0.04 ms
+an arrow).
+
+What to know before touching them:
+- **First frames:** a new ring's pulses build ~60 cached frames over their first period,
+  within a budget of 4 frames / 0.5 ms per `SoftRing` per frame; with every cache's budget
+  spent at once, a first frame costs up to ~4 ms.
+- **Arrow cost is per bead:** the bead spacing (`spacing`, a share of the bead size) sets
+  how many blits an arrow takes. The flow is free (it picks sprites from a table).
+
+---
+
 ## Deferred: small, safe, low value
 
 These were investigated and consciously skipped. Doing them is not wrong, but do not expect
