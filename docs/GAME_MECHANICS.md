@@ -811,7 +811,7 @@ identical game. A player joins the slot the host's server assigned and keeps it.
 ### Teams & Alliances
 
 **Team Benefits:**
-- Shared vision of ally movement orders (cyan arrows)
+- Shared vision of ally movement orders (dimmer arrows in the order's colour)
 - Cannot attack allied territories
 - Allied captures trigger ownership choice popup
 - Allied defense combines all armies
@@ -947,7 +947,7 @@ hand a seat back yet; `RECONNECT_ENABLED` in `network_config.py` keeps it off.
 - Launch button (host only)
 
 **In-Game:**
-- Allied movement arrows (cyan)
+- Allied movement arrows (dimmer, in the order's colour: attack red, move blue, reinforce green)
 - Battle markers sync across clients
 - Timer synced in simultaneous mode
 - "Waiting for: X, Y" shows pending players

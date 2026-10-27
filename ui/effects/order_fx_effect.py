@@ -10,8 +10,9 @@ selected army's order destinations. Select (ring) -> order (arrow) -> target
 
 Pieces:
     OrderArrow   one arrow to draw: world points (source, [via,] target), kind
-                 ('own' / 'ally' / 'hovered' / 'cancelled'), army count, and the
-                 cancel animation's fade and shake
+                 ('attack' / 'own' / 'ally' / 'hovered' / 'cancelled'), army
+                 count, whether it is an ally's order, and the cancel
+                 animation's fade and shake
     OrderLight   the shared renderer (one per MapRenderer): sprite caches, ring
                  frames and arrow geometry. draw_selection(), draw_arrows(),
                  draw_reticle()
@@ -44,6 +45,16 @@ def _even(value):
     return max(2, int(value) & ~1)
 
 
+# A stable threshold per bead index for the cancel fizzle: a bead stays lit while
+# the arrow's fade is above its threshold, so the beads go out one by one
+_FIZZLE = [((i * 2654435761) & 0xFFFF) / 65536.0 for i in range(97)]
+
+
+def _fizzled(points, fade):
+    """The points (beads) still lit at this fade (0-1) of a fizzling arrow."""
+    return [p for i, p in enumerate(points) if _FIZZLE[i % 97] < fade]
+
+
 def _crest_shape(base, crest):
     """
     Brightness by u = phase ahead of a crest (0-255): a sharp front and a long
@@ -58,18 +69,21 @@ class OrderArrow:
 
     Args:
         points: world points - source, optional waypoint (a Captain's 2-hop), target
-        kind: 'own' | 'ally' | 'hovered' | 'cancelled' (order_fx_style ARROWS['kinds'])
+        kind: the order's kind - 'attack' | 'own' | 'ally' (GameState.order_kind) -
+            or 'hovered' / 'cancelled' (order_fx_style ARROWS['kinds'])
         count: armies on the route, shown on the badge (0 = no badge)
+        allied: an ally's order (simultaneous mode): dimmer, no flow (ARROWS['allied'])
         fade: brightness 0-1 (the cancel animation fades it out)
         shake: sideways screen offset in px (the cancel animation)
     """
 
-    __slots__ = ('points', 'kind', 'count', 'fade', 'shake')
+    __slots__ = ('points', 'kind', 'count', 'allied', 'fade', 'shake')
 
-    def __init__(self, points, kind='own', count=0, fade=1.0, shake=0.0):
+    def __init__(self, points, kind='own', count=0, allied=False, fade=1.0, shake=0.0):
         self.points = tuple((float(x), float(y)) for x, y in points)
         self.kind = kind
         self.count = count
+        self.allied = allied
         self.fade = fade
         self.shake = shake
 
@@ -268,8 +282,9 @@ class OrderLight:
 
     def draw_reticle(self, view, x, y, target_radius, kind, clock):
         """
-        The mark on an order's destination (kind 'attack' / 'merge') round an
-        army circle of target_radius px: a ring with four ticks easing in and out.
+        The mark on an order's destination round an army circle of target_radius
+        px: a ring in the order kind's colour ('attack' / 'own' / 'ally'), and on
+        an attack four ticks easing in and out.
         """
         reticle = self.style['reticle']
         ticks = reticle['ticks']
@@ -280,7 +295,9 @@ class OrderLight:
             return
         screen = view.screen
         x, y = int(x), int(y)
-        raw, colour = self.reticle_colours.get(kind, self.reticle_colours['attack'])
+        if kind not in self.reticle_colours:
+            kind = 'attack'
+        raw, colour = self.reticle_colours[kind]
         breath = 0.5 + 0.5 * math.sin(_TWO_PI * reticle['breath'] * clock)
 
         band = self.reticle_ring.tint_frame(int(r), raw, reticle['tint'])
@@ -292,6 +309,8 @@ class OrderLight:
         if light is not None:
             half = light.get_width() >> 1
             screen.blit(light, (x - half, y - half), special_flags=ADD)
+        if not reticle['kinds'][kind].get('ticks'):
+            return
 
         # Ticks at N / E / S / W: closest to the ring as the ring is brightest ("locking on")
         diameter = _even(ticks['size'] * radius)
@@ -419,6 +438,8 @@ class OrderLight:
         """
         Draw the arrows: every colour band first, then every arrow's light, then
         the army count badges on top (badge(pos, count, colour) draws one).
+        An ally's order is dimmer and doesn't flow; a fizzling kind (cancelled)
+        loses its beads one by one as it fades.
 
         Args:
             lift: px the arrow ends are raised above their world points (the army
@@ -438,6 +459,7 @@ class OrderLight:
         softness = tint.get('softness', 1.5)
         flow_shift = int(256.0 * clock * style['flow']) & 255
         steps = GlowSprites.LEVELS
+        allied = style['allied']
 
         shown = []
         for arrow in arrows:
@@ -454,10 +476,14 @@ class OrderLight:
         for arrow, path, ax in shown:
             kind = style['kinds'].get(arrow.kind, style['kinds']['own'])
             raw, _ = self.arrow_colours.get(arrow.kind, self.arrow_colours['own'])
-            sprite = self.tint.sprite(tint_diameter, raw, tint['alpha'] * arrow.fade, softness)
+            strength = arrow.fade * (allied['tint'] if arrow.allied else 1.0)
+            sprite = self.tint.sprite(tint_diameter, raw, tint['alpha'] * strength, softness)
             if sprite is not None:
-                seq = [(sprite, (x + ax, y + oy)) for x, y in path.tints]
-                seq += [(sprite, (x + ax, y + oy)) for x, y in path.head_tints]
+                tints, head_tints = path.tints, path.head_tints
+                if kind.get('fizzle') and arrow.fade < 1.0:
+                    tints, head_tints = _fizzled(tints, arrow.fade), _fizzled(head_tints, arrow.fade)
+                seq = [(sprite, (x + ax, y + oy)) for x, y in tints]
+                seq += [(sprite, (x + ax, y + oy)) for x, y in head_tints]
                 screen.blits(seq, doreturn=False)
 
         # Light: the shaft with its flowing crests, the head, the flare at the tip
@@ -467,15 +493,26 @@ class OrderLight:
             ladder = self.glow.ladder(diameter, colour, 'bead')
             if ladder is None:
                 continue   # sprites still being built (within the frame budget)
-            brightness = kind['intensity'] * arrow.fade
-            shift = flow_shift if kind.get('flowing', True) else 0
+            beads, head = path.beads, path.head
+            if kind.get('fizzle'):
+                # The beads still lit keep most of their light; the rest have gone out
+                brightness = kind['intensity'] * (0.5 + 0.5 * arrow.fade)
+                if arrow.fade < 1.0:
+                    beads, head = _fizzled(beads, arrow.fade), _fizzled(head, arrow.fade)
+            else:
+                brightness = kind['intensity'] * arrow.fade
+            flowing = kind.get('flowing', True)
+            if arrow.allied:
+                brightness *= allied['brightness']
+                flowing = False
+            shift = flow_shift if flowing else 0
             table = self._table(('shaft', diameter, colour), ladder, self._shaft_shape, brightness)
-            seq = [(table[(p - shift) & 255], (x + ax, y + oy), None, ADD) for x, y, p in path.beads]
+            seq = [(table[(p - shift) & 255], (x + ax, y + oy), None, ADD) for x, y, p in beads]
             u = (path.head_phase - shift) & 255
             head_level = min(steps, int(steps * brightness * self._head_shape[u] + 0.5))
             if head_level > 0:
                 sprite = ladder[head_level]
-                seq += [(sprite, (x + ax, y + oy), None, ADD) for x, y in path.head]
+                seq += [(sprite, (x + ax, y + oy), None, ADD) for x, y in head]
             flare_level = int(steps * brightness * head_style['flare_intensity'] * self._head_shape[u] + 0.5)
             if flare_level > 0:
                 sprite = self.glow.sprite(flare, colour, min(steps, flare_level))

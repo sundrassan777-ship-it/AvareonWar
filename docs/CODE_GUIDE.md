@@ -964,16 +964,21 @@ production rays and hero abilities. Select → order → target read as one inpu
   and soft rings pulsing outward from it.
 - **Order arrows:** a light path bowed slightly to the right of travel (so A→B and B→A run
   side by side), crests of light flowing toward the target, a chevron head and a flare at
-  its tip; it stops short of both banners and scales with zoom. Green for own orders, cyan
-  for an ally's (simultaneous mode), gold while the order's Action Queue card is under the
-  mouse, red (shaking, fading) for an auto-cancelled order. The count badge sits on top.
-- **Destination reticle** (the selected army's order destinations): a ring with four ticks
-  at N/E/S/W - the hero targeting circle's spikes - red for an attack, cyan for a merge.
+  its tip; it stops short of both banners and scales with zoom. Coloured by order kind
+  (2026-10-27), the same as the Action Queue cards: coral-red for an attack, blue for a move
+  into your own territory, green for reinforcing an ally; gold while the order's card is
+  under the mouse. Allies' orders (simultaneous mode) take their kind's colour, dimmer and
+  without the flow. An auto-cancelled order fizzles out in ash grey (shaking, its beads going
+  out one by one). The count badge sits on top.
+- **Destination reticle** (the selected army's order destinations): a ring in the order
+  kind's colour; an attack's has four ticks at N/E/S/W - the hero targeting circle's spikes -
+  so the shape tells an attack from a move, not only the colour.
 
 | To change | Where |
 |---|---|
 | Look (colours, sizes, pulse rate, flow, bow, gaps, head) | `ui/effects/order_fx_style.py` (`SELECTION`, `ARROWS`, `RETICLE`); arrow colours come from `config/constants.py` `COLOR_ARROW_*` |
 | Which orders become arrows, their kind and count | `MapRenderer._order_arrows()` (turn-by-turn), `_sim_order_arrows()` (simultaneous planning), `_cancelling_order_arrows()` (`game_state.cancelling_arrows`); where an arrow starts: `_order_source_world()` |
+| An order's kind (attack / own / ally) | `GameState.order_kind()` - one rule for the cards (`UIRenderer._order_kind`), the arrows and the reticles; a 2-hop takes its final target's kind |
 | When a ring / reticle shows | `MapRenderer.draw_territories()` (army loop: selected army, its orders' destinations) and `_render_completed_plot()` (selected building) |
 | Preview / tune / measure | `py tools/order_fx_preview.py` (live: click selects, right-click orders, O / R / T / H / Y / K add orders, reverse, 2-hop, hover, ally, cancel; L 2D/3D), `--sheet out.png`, `--bench` |
 

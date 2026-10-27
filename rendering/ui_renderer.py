@@ -1668,18 +1668,12 @@ class UIRenderer:
     CANCEL_TINT = (255, 108, 96)
 
     def _order_kind(self, player, to_territory):
-        """'own' / 'ally' / 'attack' — mirrors game_state/military.py (create order).
+        """'own' / 'ally' / 'attack' (GameState.order_kind, shared with the map arrows).
 
         The old card was red whenever the target owner differed from the player, so a
         reinforcement into an ally's territory looked like an attack.
         """
-        gs = self.game.game_state
-        owner = gs.territory_owners.get(to_territory, -1)
-        if owner == player:
-            return 'own'
-        if owner is not None and owner >= 0 and player is not None and player >= 0 and gs.are_allies(player, owner):
-            return 'ally'
-        return 'attack'
+        return self.game.game_state.order_kind(player, to_territory)
 
     def _order_composition(self, from_territory, player, unit_ids, army_count):
         """[(unit_type, count)] for an order, or [(None, army_count)] when unknown.

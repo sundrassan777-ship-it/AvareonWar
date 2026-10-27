@@ -21,8 +21,9 @@ Controls (live):
     right-click     order from the selected banner to the territory under the mouse
     O  5 orders near the view      X  clear orders      R  reverse of the last order (A <-> B)
     T  a 2-hop order (Captain) from the selected banner
-    H  hover the next order's card (gold)    Y  last order is an ally's (cyan)
-    K  cancel the last order (red shake)     mouse wheel  zoom     drag  pan
+    H  hover the next order's card (gold)    Y  last order is an ally's (dimmer, no flow)
+    G  cycle the last order's kind (attack / move / reinforce ally; by default from the owners)
+    K  cancel the last order (ash-grey fizzle)   mouse wheel  zoom     drag  pan
     L  2D / 3D look     Space  pause     Esc  quit
 """
 
@@ -59,7 +60,7 @@ class OrderPreview(HeroPreview):
 
     def __init__(self, screen, look):
         self.order_light = None
-        self.orders = []         # [{'route': (from, [via,] to), 'kind': ..., 'count': ...}]
+        self.orders = []         # [{'route': (from, [via,] to), 'kind', 'count', 'allied'}]
         self.cancelling = []     # [(order, preview clock when cancelled)]
         self.selected = None     # ('plot', territory, index) | ('army', territory)
         self.hovered = None      # index into orders
@@ -85,10 +86,14 @@ class OrderPreview(HeroPreview):
 
     # ---------- orders ----------
 
-    def add_order(self, route, kind='own', count=10):
+    def add_order(self, route, kind=None, count=10, allied=False):
+        """kind: 'attack' / 'own' / 'ally'; by default 'own' between same-coloured territories."""
         route = tuple(route)
         if len(route) >= 2 and route[0] != route[-1] and all(t in self.world_centres for t in route):
-            self.orders.append({'route': route, 'kind': kind, 'count': count})
+            if kind is None:
+                same = self.owner_colour.get(route[0]) == self.owner_colour.get(route[-1])
+                kind = 'own' if same else 'attack'
+            self.orders.append({'route': route, 'kind': kind, 'count': count, 'allied': allied})
 
     def orders_near_view(self, count=5):
         """Orders from the territories nearest the view centre to their nearest neighbours."""
@@ -113,7 +118,7 @@ class OrderPreview(HeroPreview):
         for i, order in enumerate(self.orders):
             kind = 'hovered' if i == self.hovered else order['kind']
             arrows.append(OrderArrow([self.world_centres[t] for t in order['route']], kind,
-                                     order['count']))
+                                     order['count'], allied=order['allied']))
         live = []
         for order, since in self.cancelling:
             elapsed = self.clock - since
@@ -223,9 +228,7 @@ class OrderPreview(HeroPreview):
         targets = {}
         for order in self.orders:
             if army is not None and order['route'][0] == army:
-                target = order['route'][-1]
-                friendly = self.owner_colour.get(target) == self.owner_colour.get(army)
-                targets[target] = 'merge' if friendly else 'attack'
+                targets[order['route'][-1]] = order['kind']
         for territory, centre in self.world_centres.items():
             x, y = view.to_screen(centre)
             if not (-margin * 2 < x < self.width + margin * 2 and -margin * 2 < y < self.height + margin * 2):
@@ -297,8 +300,11 @@ def run_live(look, size):
                     if preview.hovered >= len(preview.orders):
                         preview.hovered = None
                 elif event.key == pygame.K_y and preview.orders:
+                    preview.orders[-1]['allied'] = not preview.orders[-1]['allied']
+                elif event.key == pygame.K_g and preview.orders:
                     order = preview.orders[-1]
-                    order['kind'] = 'own' if order['kind'] == 'ally' else 'ally'
+                    kinds = ('attack', 'own', 'ally')
+                    order['kind'] = kinds[(kinds.index(order['kind']) + 1) % len(kinds)]
                 elif event.key == pygame.K_k:
                     preview.cancel_last()
                 elif event.key == pygame.K_l:
@@ -318,7 +324,7 @@ def run_live(look, size):
             f"look {preview.look}   zoom {preview.zoom:.2f}   selected {preview.selected}"
             f"{'   PAUSED' if preview.paused else ''}",
             'click select  right-click order  O orders  X clear  R reverse  T 2-hop  H hover'
-            '  Y ally  K cancel  L look',
+            '  Y ally order  G kind  K cancel  L look',
         ]
         for i, line in enumerate(lines):
             text = font.render(line, True, (255, 255, 255))
@@ -339,12 +345,13 @@ def _scene(preview, name, territory):
     elif name == 'select banner':
         preview.selected = ('army', territory)
     elif name in ('arrows', 'arrows selected'):
-        # Own orders to every neighbour, one of them hovered, one an ally's, a
-        # 2-hop, a pair A <-> B, and the reticles of the selected banner
-        for n in neighbours[:4]:
-            preview.add_order((territory, n))
+        # Orders to every neighbour (attacks and moves by owner, one reinforcing an
+        # ally), one of them hovered, an ally's order, a 2-hop, a pair A <-> B, and
+        # the reticles of the selected banner
+        for i, n in enumerate(neighbours[:4]):
+            preview.add_order((territory, n), kind='ally' if i == 2 else None)
         if len(neighbours) > 1:
-            preview.add_order((neighbours[1], territory), kind='ally')
+            preview.add_order((neighbours[1], territory), allied=True)
             preview.hovered = 1
         if neighbours:
             first = neighbours[0]

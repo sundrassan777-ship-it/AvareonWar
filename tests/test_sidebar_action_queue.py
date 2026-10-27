@@ -327,10 +327,13 @@ class TestRouteHighlight:
             [arrow.kind for arrow in arrows]) or real_draw(view, arrows, *a, **k))
         game.sidebar_hovered_route = None
         game.map_renderer.draw_movement_arrows()
-        assert sorted(kinds[-1]) == ['own', 'own']
+        unhovered = kinds[-1]
+        assert 'hovered' not in unhovered and len(unhovered) == 2
         game.sidebar_hovered_route = (first.from_territory, first.to_territory)
         game.map_renderer.draw_movement_arrows()
-        assert sorted(kinds[-1]) == ['hovered', 'own']
+        # Only that route turns gold; the other keeps its order kind
+        others = [k for k in kinds[-1] if k != 'hovered']
+        assert len(others) == 1 and others[0] in unhovered
 
 
 # ============================================================================
