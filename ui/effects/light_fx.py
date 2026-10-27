@@ -16,11 +16,14 @@ Pieces:
     TintSprites           the same for normal-blend colour halos (keeps a light's
                           hue readable on the bright parchment map)
     SoftRing              Gaussian ring of light, baked once in grey, scaled per frame
+                          (draw / draw_tint) or cached per radius and brightness
+                          (frame / tint_frame)
     TerritoryRaster       territory id per world pixel: inside tests in O(1)
     bead_chain            evenly spaced points along a territory border
+    path_beads            the same along an open path (path_point: a point on it)
 
 Users: production_glow_effect.py (production rays), hero_fx_effect.py (hero
-ability effects).
+ability effects), order_fx_effect.py (selection rings, order arrows).
 """
 
 import math
@@ -384,12 +387,26 @@ class SoftRing:
 
     REF_RADIUS = 96
     MAX_TINTED = 16
+    # Cached frames (frame / tint_frame): brightness steps, how many are kept, and
+    # how many may be built per frame (~0.1-0.3 ms each; a selection ring's pulses
+    # fill their ~60 frames within the first pulse period)
+    LEVELS = 24
+    MAX_FRAMES = 96
+    BUILDS_PER_FRAME = 4
+    BUILD_MS_PER_FRAME = 0.5
 
     def __init__(self, width=0.16):
         self.width = width                       # ring half-width, as a share of the radius
         self._grey = None
         self._tinted = OrderedDict()             # colour -> tinted ring at REF_RADIUS
         self._halos = OrderedDict()              # colour -> normal-blend colour ring (alpha)
+        self._frames = OrderedDict()             # (kind, radius, colour, level) -> scaled ring
+        self._budget = _BuildBudget(self.BUILDS_PER_FRAME, self.BUILD_MS_PER_FRAME)
+        self.frames_built = 0
+
+    def begin_frame(self):
+        """Call once per rendered frame when using frame() / tint_frame()."""
+        self._budget.reset()
 
     def _grey_ring(self):
         if self._grey is None:
@@ -466,6 +483,59 @@ class SoftRing:
             scaled.fill((255, 255, 255, int(alpha)), special_flags=pygame.BLEND_RGBA_MULT)
         half = size // 2
         screen.blit(scaled, (x - half, y - half))
+
+    def frame(self, radius, colour, level):
+        """
+        The additive ring at this radius (whole px) and brightness level
+        (1..LEVELS), cached: for rings drawn every frame, such as a selection
+        ring and its pulses. A pulse whose brightness follows its radius uses
+        one frame per radius. None when not cached and this frame's build
+        budget is spent. Blit with BLEND_RGB_ADD, centred.
+        """
+        if radius < 2 or level <= 0:
+            return None
+        return self._cached(('light', int(radius), colour, min(level, self.LEVELS)))
+
+    def tint_frame(self, radius, colour, alpha):
+        """The normal-blend colour ring (alpha 0-255, in LEVELS steps), cached like frame()."""
+        level = int(alpha * self.LEVELS / 255.0 + 0.5)
+        if radius < 2 or level <= 0:
+            return None
+        return self._cached(('tint', int(radius), colour, min(level, self.LEVELS)))
+
+    def _cached(self, key):
+        surface = self._frames.get(key)
+        if surface is not None:
+            self._frames.move_to_end(key)
+            return surface
+        if not self._budget.allows():
+            return None
+        started = time.perf_counter()
+        kind, radius, colour, level = key
+        if kind == 'light':
+            ring = self._tinted_ring(colour)
+        else:
+            ring = self._halo_ring(colour)
+        size = max(2, int(ring.get_width() * radius / float(self.REF_RADIUS)) | 1)
+        surface = pygame.transform.smoothscale(ring, (size, size))
+        if kind == 'light':
+            v = int(255 * level / float(self.LEVELS))
+            if v < 255:
+                surface.fill((v, v, v), special_flags=pygame.BLEND_RGB_MULT)
+            if pygame.display.get_surface() is not None:
+                surface = surface.convert()
+        else:
+            a = int(255 * level / float(self.LEVELS))
+            if a < 255:
+                surface.fill((255, 255, 255, a), special_flags=pygame.BLEND_RGBA_MULT)
+            if pygame.display.get_surface() is not None:
+                surface = surface.convert_alpha()
+        self._frames[key] = surface
+        self.frames_built += 1
+        if len(self._frames) > self.MAX_FRAMES:
+            self._frames.popitem(last=False)
+        self._budget.charge(started)
+        return surface
 
 
 # ========================================
@@ -655,3 +725,70 @@ def bead_chain(polygon, spacing, inset=0.0):
         nx, ny = sign * ty / length, -sign * tx / length
         chain.append((x - nx * inset, y - ny * inset, s, nx, ny))
     return chain
+
+
+# ========================================
+# PATHS (points along an open line)
+# ========================================
+
+def path_lengths(points):
+    """Arc length at each point of an open polyline: [0.0, ..., total]."""
+    lengths = [0.0]
+    for i in range(1, len(points)):
+        x1, y1 = points[i - 1]
+        x2, y2 = points[i]
+        lengths.append(lengths[-1] + math.hypot(x2 - x1, y2 - y1))
+    return lengths
+
+
+def path_point(points, lengths, s):
+    """
+    The point at arc length s along an open polyline (lengths from
+    path_lengths), clamped to its ends, as (x, y, unit tangent x, y).
+    """
+    n = len(points)
+    if n < 2:
+        x, y = points[0] if points else (0.0, 0.0)
+        return x, y, 1.0, 0.0
+    s = max(0.0, min(lengths[-1], s))
+    # Binary search for the segment holding s
+    lo, hi = 0, n - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if lengths[mid] <= s:
+            lo = mid
+        else:
+            hi = mid
+    x1, y1 = points[lo]
+    x2, y2 = points[hi]
+    seg = lengths[hi] - lengths[lo]
+    if seg <= 1e-9:
+        return x1, y1, 1.0, 0.0
+    t = (s - lengths[lo]) / seg
+    return x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, (x2 - x1) / seg, (y2 - y1) / seg
+
+
+def path_beads(points, spacing, start=0.0, stop=None):
+    """
+    Points every `spacing` along an open polyline, from arc length `start` to
+    `stop` (default: its end), as [(x, y, arc length), ...]. The open-path
+    sibling of bead_chain, for arrows and other routes.
+    """
+    if len(points) < 2 or spacing <= 0:
+        return []
+    lengths = path_lengths(points)
+    stop = lengths[-1] if stop is None else min(stop, lengths[-1])
+    beads = []
+    i = 1
+    s = max(0.0, start)
+    while s <= stop + 1e-9:
+        # Walk forward to the segment holding s (s only grows)
+        while i < len(points) - 1 and lengths[i] < s:
+            i += 1
+        x1, y1 = points[i - 1]
+        x2, y2 = points[i]
+        seg = lengths[i] - lengths[i - 1]
+        t = (s - lengths[i - 1]) / seg if seg > 1e-9 else 0.0
+        beads.append((x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, s))
+        s += spacing
+    return beads

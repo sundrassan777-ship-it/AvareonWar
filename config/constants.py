@@ -165,6 +165,8 @@ COLOR_ICON_BORDER: Color4 = (50, 50, 50, 255)
 COLOR_ARROW_MOVEMENT: Color3 = (0, 200, 0)
 # The order arrow whose Action Queue card is under the mouse (UIConstants.SIDEBAR_ROUTE_HIGHLIGHT)
 COLOR_ARROW_HOVERED: Color3 = (232, 186, 64)
+# An ally's queued order (simultaneous mode shows the team's orders)
+COLOR_ARROW_ALLY: Color3 = (0, 180, 200)
 
 # --- UI Colors: Tooltips ---
 COLOR_TOOLTIP_BG: Color3 = (50, 50, 50)
