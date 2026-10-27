@@ -1663,8 +1663,7 @@ class UIRenderer:
     }
     ORDER_KIND_ICONS = {'attack': 'assets/mapicons/BattleIcon1.png', 'ally': 'assets/mapicons/AllianceIcon1.png'}
     UNIT_ORDER = ('Swordsman', 'Archer', 'Pikeman', 'Cavalry', 'Captain')
-    UNIT_PLURALS = {'Swordsman': 'Swordsmen', 'Archer': 'Archers', 'Pikeman': 'Pikemen',
-                    'Cavalry': 'Cavalry', 'Captain': 'Captains'}
+    UNIT_PLURALS = UNIT_PLURALS   # config/constants.py (shared with the refusal toasts)
     CANCEL_TINT = (255, 108, 96)
 
     def _order_kind(self, player, to_territory):

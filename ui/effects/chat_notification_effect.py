@@ -71,15 +71,22 @@ class ChatNotificationEffect:
         notif['elapsed'] += delta_time
         return notif['elapsed'] < TOTAL_DURATION
 
-    def render(self, screen):
-        """Draw stacked notifications at top-left of map area."""
+    def render(self, screen, top=None):
+        """
+        Draw stacked notifications at top-left of map area.
+
+        Args:
+            top: screen y of the first one, or None for just below the top panel -
+                Game passes the bottom of a mission's speech board while one is shown
+                (it is drawn over the same corner)
+        """
         if not self._notifications:
             return
 
         # Update max text width based on current screen width
         self._max_text_width = int(screen.get_width() * 0.4)
 
-        y = self.top_panel_height + MARGIN_TOP
+        y = self.top_panel_height + MARGIN_TOP if top is None else int(top)
         for notif in self._notifications:
             elapsed = notif['elapsed']
 

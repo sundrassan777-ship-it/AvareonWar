@@ -687,9 +687,16 @@ class MilitaryMixin:
 
     def add_movement_order(self, from_territory, to_territory):
         """Create a movement order for the selected army"""
-        # Tutorial hook: check if movement action is allowed
+        # Reset the failure code first so a stale code is never reported for this attempt
+        self.last_action_error = None
+        self.last_action_error_args = None
+
+        # Mission hook: a route the mission doesn't allow yet (the tutorial's steps
+        # whitelist the routes they teach)
         if self.tutorial_mission and not self.tutorial_mission.is_action_allowed(
                 'move', from_territory=from_territory, to_territory=to_territory):
+            self.last_action_error = 'target_blocked'
+            self.last_action_error_args = {'territory': to_territory}
             return False
 
         # Validate: army must be selected
@@ -844,10 +851,14 @@ class MilitaryMixin:
         if player is None:
             player = self.current_player
 
-        # Tutorial hook: check if movement action is allowed (only for human player 0)
-        # AI player (1) movements during scripted sequences are not restricted
+        # Mission hook: a route the mission doesn't allow yet (only for human player 0;
+        # AI player (1) movements during scripted sequences are not restricted). The
+        # tutorial's steps whitelist the routes they teach, e.g. only Lunedale -> Free
+        # Cities while it asks for that attack
         if player == 0 and self.tutorial_mission and not self.tutorial_mission.is_action_allowed(
                 'move', from_territory=from_territory, to_territory=to_territory):
+            self.last_action_error = 'target_blocked'
+            self.last_action_error_args = {'territory': to_territory}
             return False
 
         # Validate: must have units selected
