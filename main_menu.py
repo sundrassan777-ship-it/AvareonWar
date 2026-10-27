@@ -516,6 +516,7 @@ class MainMenu:
         # corner (the only free corner), one version-text line above the version label
         self.wishlist_button_rect = None
         self.wishlist_button_icon_scaled = None
+        self.wishlist_glow = None
         if OPEN_BETA:
             self.wishlist_button_rect = pygame.Rect(
                 profile_button_margin,
@@ -526,6 +527,11 @@ class MainMenu:
             if self.wishlist_button_icon:
                 self.wishlist_button_icon_scaled = pygame.transform.smoothscale(
                     self.wishlist_button_icon, (profile_button_size, profile_button_size))
+            # The navy glow round it, idle and hovered (baked once per size)
+            self.wishlist_glow = {
+                hovered: self._wishlist_glow(profile_button_size, alpha)
+                for hovered, alpha in ((False, wishlist.WISHLIST_GLOW_ALPHA),
+                                       (True, wishlist.WISHLIST_GLOW_ALPHA_HOVER))}
 
         # Pre-scale reward icons for profile panel
         self.reward_icons_panel_scaled = {}
@@ -1957,6 +1963,22 @@ class MainMenu:
         if self.icon_border_button_scaled:
             self.screen.blit(self.icon_border_button_scaled, (rect.x - 1, rect.y - 1))
 
+    @staticmethod
+    def _wishlist_glow(size, alpha):
+        """OPEN BETA ONLY: a soft navy halo round a size x size button, alpha `alpha`
+        at its edge fading to nothing over the reach, with rounded corners. Returns
+        (surface, reach): blit it at the button's top-left minus (reach, reach)."""
+        reach = max(5, int(round(size * wishlist.WISHLIST_GLOW_REACH)))
+        glow = pygame.Surface((size + 2 * reach, size + 2 * reach), pygame.SRCALPHA)
+        r, g, b = wishlist.WISHLIST_GLOW_COLOUR
+        # Outermost ring first; each nearer one is drawn over it (pygame.draw writes
+        # the alpha, it doesn't blend), the middle is covered by the icon
+        for d in range(reach, 0, -1):
+            a = int(alpha * (1.0 - (d - 1) / float(reach)) ** 1.6)
+            pygame.draw.rect(glow, (r, g, b, a), pygame.Rect(reach - d, reach - d, size + 2 * d, size + 2 * d),
+                             border_radius=d + 2)
+        return glow, reach
+
     def _draw_wishlist_button(self):
         """OPEN BETA ONLY (remove at full release): the Wishlist button in the bottom-left
         corner - the owner's icon (wishlist.WISHLIST_ICON_PATH), or if it fails to load a
@@ -1964,6 +1986,10 @@ class MainMenu:
         rect = self.wishlist_button_rect
         is_hovered = (self.hovered_button == 'wishlist')
         is_clicked = (self.clicked_button == 'wishlist')
+
+        # The navy glow round it, a little stronger while hovered
+        glow, reach = self.wishlist_glow[is_hovered or is_clicked]
+        self.screen.blit(glow, (rect.x - reach, rect.y - reach))
 
         icon_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
         if self.wishlist_button_icon_scaled:

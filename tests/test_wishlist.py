@@ -247,6 +247,28 @@ def test_hover_and_click_feedback(monkeypatch, icon):
     assert levels[0] < levels[1] < levels[2]                                    # idle < hover < flash
 
 
+def test_navy_glow_round_the_button():
+    """A subtle navy halo just outside the button, fading out, stronger while hovered."""
+    menu = _menu((1600, 900))
+    rect = menu.wishlist_button_rect
+    reach = menu.wishlist_glow[False][1]
+
+    def glow_at(hovered, dx):
+        menu.screen.fill((0, 0, 0))
+        menu.hovered_button = 'wishlist' if hovered else None
+        menu.clicked_button = None
+        menu._draw_wishlist_button()
+        return menu.screen.get_at((rect.right + dx, rect.centery))[:3]
+
+    near = glow_at(False, 2)
+    r, g, b = near
+    assert b > 60 and b > r and b > g                                           # navy, not black
+    far = glow_at(False, reach - 1)
+    assert sum(far) < sum(near)                                                 # it fades out
+    assert glow_at(False, reach + 2) == (0, 0, 0)                               # and ends
+    assert glow_at(True, 2)[2] > b                                              # stronger on hover
+
+
 def test_tooltip(monkeypatch):
     menu = _menu((1600, 900))
     shown = []

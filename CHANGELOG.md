@@ -6,7 +6,9 @@ All notable changes to the AvareonWar project.
 
 Branch `feature/wishlist-icon`. The owner's icon for the main menu's Wishlist button (open
 beta only): `assets/wishlisticon.png`, a scroll with the Steam seal, in place of the drawn
-Steam-blue tile (still the fallback if the file fails to load). `WISHLIST_ICON_PATH` named
+Steam-blue tile (still the fallback if the file fails to load), with a subtle navy glow
+round it so it stands out a little (owner; `WISHLIST_GLOW_*` in `wishlist.py`), a bit
+stronger while hovered. `WISHLIST_ICON_PATH` named
 `WishlistIcon.png`: Windows found the file anyway, a build or another system might not, so
 the path now matches the file letter for letter and a test checks it.
 
