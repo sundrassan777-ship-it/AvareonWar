@@ -5105,8 +5105,11 @@ first-time-win list `campaign_missions_xp_claimed`, so tales count), and only if
 XP bar finish, counts as shown the moment it opens (whatever the player clicks), and is modal:
 **Wishlist** opens the page, **Not now** / Escape close it, nothing under it reacts.
 
-**Icon:** `assets/WishlistIcon.png` (the owner adds it). Until then the button draws a Steam-blue
-tile with a heart.
+**Icon:** `assets/wishlisticon.png` (the owner's art, 2026-10-27: a scroll with the Steam seal).
+If it fails to load, the button draws a Steam-blue tile with a heart. The file name must match
+`WISHLIST_ICON_PATH` exactly, case too (`tests/test_wishlist.py` checks). A subtle navy glow
+surrounds it (`WISHLIST_GLOW_*`, baked once per size in `MainMenu._wishlist_glow`), stronger
+while hovered.
 
 ### Removing it at full release
 Delete `wishlist.py`, `tests/test_wishlist.py`, `OPEN_BETA`, the main-menu button code, the

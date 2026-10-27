@@ -230,8 +230,12 @@ def test_button_sits_in_the_free_bottom_left_corner(size):
     assert not rect.colliderect(version_rect)                                   # above the version text
 
 
-def test_hover_and_click_feedback():
+@pytest.mark.parametrize('icon', ['shipped', 'missing'])
+def test_hover_and_click_feedback(monkeypatch, icon):
+    if icon == 'missing':
+        monkeypatch.setattr(wishlist, 'WISHLIST_ICON_PATH', 'assets/no-such-wishlist-icon.png')
     menu = _menu((1600, 900))
+    assert (menu.wishlist_button_icon_scaled is None) == (icon == 'missing')
     rect = menu.wishlist_button_rect
     levels = []
     for hovered, clicked in ((None, None), ('wishlist', None), ('wishlist', 'wishlist')):
@@ -239,8 +243,30 @@ def test_hover_and_click_feedback():
         menu.hovered_button, menu.clicked_button = hovered, clicked
         menu._draw_wishlist_button()
         levels.append(_brightness(menu.screen, rect))
-    assert levels[0] > 5                                                        # the fallback tile is drawn
+    assert levels[0] > 5                                                        # the icon or the fallback tile
     assert levels[0] < levels[1] < levels[2]                                    # idle < hover < flash
+
+
+def test_navy_glow_round_the_button():
+    """A subtle navy halo just outside the button, fading out, stronger while hovered."""
+    menu = _menu((1600, 900))
+    rect = menu.wishlist_button_rect
+    reach = menu.wishlist_glow[False][1]
+
+    def glow_at(hovered, dx):
+        menu.screen.fill((0, 0, 0))
+        menu.hovered_button = 'wishlist' if hovered else None
+        menu.clicked_button = None
+        menu._draw_wishlist_button()
+        return menu.screen.get_at((rect.right + dx, rect.centery))[:3]
+
+    near = glow_at(False, 2)
+    r, g, b = near
+    assert b > 60 and b > r and b > g                                           # navy, not black
+    far = glow_at(False, reach - 1)
+    assert sum(far) < sum(near)                                                 # it fades out
+    assert glow_at(False, reach + 2) == (0, 0, 0)                               # and ends
+    assert glow_at(True, 2)[2] > b                                              # stronger on hover
 
 
 def test_tooltip(monkeypatch):
@@ -259,7 +285,17 @@ def test_click_opens_the_store_page_once(clicks, opens):
     assert menu.result is None                                                  # the menu stays
 
 
-def test_icon_is_used_once_the_owner_adds_it(monkeypatch, tmp_path):
+def test_the_shipped_icon_is_in_assets_under_its_exact_name():
+    """Windows finds a file whatever the case of its name, a build or another system may
+    not: the name in WISHLIST_ICON_PATH must be the file's own, letter for letter."""
+    import os
+    folder, name = os.path.split(wishlist.WISHLIST_ICON_PATH)
+    assert name in os.listdir(folder)
+    icon = pygame.image.load(wishlist.WISHLIST_ICON_PATH)
+    assert icon.get_width() == icon.get_height() >= 256                         # square, sharp when scaled
+
+
+def test_icon_is_drawn_not_the_tile(monkeypatch, tmp_path):
     icon = tmp_path / 'WishlistIcon.png'
     surface = pygame.Surface((64, 64))
     surface.fill((200, 10, 10))

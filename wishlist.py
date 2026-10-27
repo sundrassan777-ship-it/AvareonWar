@@ -41,10 +41,18 @@ logger = get_logger(__name__)
 STEAM_STORE_URL = f"steam://store/{MAIN_GAME_APP_ID}"
 WEB_STORE_URL = f"https://store.steampowered.com/app/{MAIN_GAME_APP_ID}/"
 
-# The main menu button (bottom-left corner). The owner adds the icon later; until then
-# main_menu.py draws a fallback tile.
-WISHLIST_ICON_PATH = "assets/WishlistIcon.png"
+# The main menu button (bottom-left corner): the owner's icon (2026-10-27), a scroll with
+# the Steam seal. main_menu.py draws a fallback tile if it ever fails to load. The name is
+# matched exactly (case too): Windows forgives a wrong case, a build may not
+WISHLIST_ICON_PATH = "assets/wishlisticon.png"
 WISHLIST_TOOLTIP = "Wishlist the full game on Steam"
+# A subtle navy glow round the button, so it stands out a little (owner, 2026-10-27):
+# its colour, its alpha right at the button's edge (fading to nothing over the reach),
+# the reach as a share of the button size, and the alpha while hovered
+WISHLIST_GLOW_COLOUR = (40, 80, 190)
+WISHLIST_GLOW_ALPHA = 150
+WISHLIST_GLOW_REACH = 0.14
+WISHLIST_GLOW_ALPHA_HOVER = 205
 
 # The one-time prompt: shown after this many different missions won (campaign chapters
 # and Book of Tales scenarios alike; the first-time-win list player_level.py keeps)
