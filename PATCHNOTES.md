@@ -12,14 +12,16 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 - **New selection ring.** A selected army or building is ringed in green light, with soft
   rings pulsing outward from it.
-- **New order arrows.** Orders are drawn as paths of light flowing toward their target.
+- **New order arrows.** Orders are drawn as paths of light flowing toward their target,
+  coloured like their cards in the Action Queue: red for an attack, blue for a move into your
+  own land, green for reinforcing an ally. Your allies' orders show in the same colours,
+  dimmer.
   Arrows curve slightly, so orders between the same two territories in opposite directions
   no longer hide each other, and they stop before the target's banner instead of covering it.
   They grow and shrink with the zoom.
 - **Targets marked.** With an army selected, the territories it is ordered to are marked
-  with a targeting reticle - red for an attack, cyan for reinforcing your own or an ally's
-  army.
-- A cancelled order's red arrow now fades out smoothly, in simultaneous turns too.
+  with a ring in the order's colour; an attack's has crosshair marks.
+- An order cancelled by the army limit now fizzles out in grey, in simultaneous turns too.
 
 ### Fixes
 

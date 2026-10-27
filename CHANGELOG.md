@@ -2,6 +2,30 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-27 - Order arrows coloured by kind
+
+Branch `feature/order-kinds`. Owner: colour the order arrows by order type (attack vs
+move). Decisions: the colours of the Action Queue cards; an auto-cancelled order becomes an
+ash-grey fizzle (red now means attack); allies' orders keep their kind's colour, dimmer.
+- **One rule for an order's kind**: `GameState.order_kind(player, to_territory)` - 'own' (a
+  move into your own territory), 'ally' (reinforcing an ally), 'attack' (anything else,
+  neutral land included). The Action Queue cards (`UIRenderer._order_kind`), the arrows and
+  the reticles all use it, so they always agree; a 2-hop takes its final target's kind.
+- **Arrows**: coral-red attack, blue move, green reinforce (`COLOR_ARROW_ATTACK` / `_MOVE` /
+  `_REINFORCE`, replacing `COLOR_ARROW_MOVEMENT` / `COLOR_ARROW_ALLY`); gold while hovered.
+  Allies' orders in simultaneous mode: their kind's colour, dimmer, without the flow
+  (`OrderArrow.allied`, `ARROWS['allied']`) - they were all cyan.
+- **Cancel animation**: ash grey (`COLOR_ARROW_CANCELLED`), the flow stopped; while it shakes
+  its beads go out one by one (fizzle) and the rest dim.
+- **Destination reticle**: the order kind's colour; only an attack's has the four ticks, so
+  the shape tells an attack from a move as well as the colour (red / green colour blindness).
+  Merges were cyan.
+- **Preview**: `tools/order_fx_preview.py` takes kinds from the owners; G cycles the last
+  order's kind, Y marks it as an ally's.
+- Cost: unchanged (three more colours prewarmed at load).
+- Tests: `tests/test_order_fx.py` (kinds, ally's orders, fizzle, reticle ticks, kinds in the
+  game and on the cards).
+
 ## 2026-10-27 - Selection rings and order arrows as light
 
 Branch `feature/order-fx`. Owner: after the production and hero ability effects, the
