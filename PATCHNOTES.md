@@ -29,6 +29,10 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
   on, the Barracks to open, the Farm and Swordsman buttons, Select All, End Turn, the
   Technology tab - and the territory to attack is outlined in gold light. Two steps used to
   ask for a click with nothing on screen showing where.
+- **It tells you what's locked.** Clicking something the tutorial or a campaign mission
+  hasn't unlocked yet - attacking the wrong territory, a greyed building, End Turn too early -
+  now shows a short message instead of doing nothing. Messages no longer hide behind the
+  speech board either.
 
 ### Fixes
 
