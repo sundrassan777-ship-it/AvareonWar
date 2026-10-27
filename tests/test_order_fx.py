@@ -356,3 +356,108 @@ class TestStyles:
         light.begin_frame()
         light.draw_arrows(view, [OrderArrow([(40, 150), (360, 150)])], 0.0)
         assert light.glow.sprites_built == built
+
+
+# ========================================
+# Game integration
+# ========================================
+
+@pytest.fixture(scope='module')
+def game(display):
+    pygame.display.set_mode((1600, 900))
+    from main import Game
+    g = Game()
+    g.initialize_game({
+        'num_players': 3,
+        'player_is_ai': [False, True, True],
+        'player_ai_difficulty': [None, 'Normal', 'Normal'],
+    })
+    g.game_state.phase = 'playing'
+    g.game_state.current_player = 0
+    return g
+
+
+@pytest.fixture
+def home(game):
+    """A territory of player 0 near the screen centre with an army and a Barracks on plot 0,
+    and its neighbours with armies of player 1; the selection and orders are undone afterwards."""
+    import map_data
+    gs = game.game_state
+    width, height = game.screen.get_size()
+    territory = min((t for t in game.scaled_centers if game.scaled_plots.get(t)),
+                    key=lambda t: (game.world_to_screen(game.scaled_centers[t])[0] - width / 2) ** 2
+                    + (game.world_to_screen(game.scaled_centers[t])[1] - height / 2) ** 2)
+    for t, owner in [(territory, 0)] + [(n, 1) for n in map_data.get_neighbors(territory)]:
+        gs.territory_owners[t] = owner
+        gs.armies[t] = 6
+        gs.territory_garrisons[t] = {owner: {'unmoved': 6, 'moved': 0}}
+    gs.buildings.setdefault(territory, {})[0] = 'Barracks'
+    gs._territory_owners_version += 1
+    yield territory
+    gs.selected_army = None
+    gs.movement_orders.clear()
+    gs.cancelling_arrows.clear()
+    game.selected_barracks = None
+    game.sidebar_hovered_route = None
+
+
+def _spy(monkeypatch, light, name):
+    calls = []
+    real = getattr(light, name)
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(light, name, spy)
+    return calls
+
+
+def _zoom(game, zoom, centre=None):
+    """Set the camera zoom, centred on the world point `centre` (if given), as the game does."""
+    game.camera.zoom = zoom
+    if centre is not None:
+        width, height = game.screen.get_size()
+        game.camera.offset = [centre[0] - width / 2.0 / zoom, centre[1] - height / 2.0 / zoom]
+    game.camera.clamp_to_bounds()
+    game.camera_zoom = game.camera.zoom
+    game.camera_offset = list(game.camera.offset)
+    game.cached_zoom_level = None
+
+
+class TestSelectionInGame:
+
+    def test_selected_army_is_ringed_round_its_circle(self, game, home, monkeypatch):
+        from config.constants import ARMY_CIRCLE_RADIUS, ARMY_CIRCLE_DRAW_SCALE, ARMY_CIRCLE_DRAW_LIFT
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_selection')
+        game.game_state.selected_army = (home, 6)
+        game.draw()
+        assert len(calls) == 1
+        view, x, y, radius, clock = calls[0]
+        ui_scale = game.get_ui_scale_factor()
+        cx, cy = game.world_to_screen(game.scaled_centers[home])
+        assert (x, y) == (cx, cy - int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT))
+        assert radius == int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
+
+    @pytest.mark.parametrize('which', ['min', 'max'])
+    def test_selected_building_ring_follows_the_plot_radius(self, game, home, monkeypatch, which):
+        from config.constants import EMPTY_PLOT_RADIUS
+        _zoom(game, game.camera.min_zoom if which == 'min' else game.camera.max_zoom,
+              centre=game.scaled_plots[home][0])
+        try:
+            calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_selection')
+            game.selected_barracks = (home, 0)
+            game.draw()
+            assert len(calls) == 1
+            # The plot radius itself - no second ui_scale (the old ring floated off the plot)
+            assert calls[0][3] == int(EMPTY_PLOT_RADIUS * game.get_ui_scale_factor())
+        finally:
+            _zoom(game, game.camera.min_zoom)
+
+    def test_selection_ring_animates_from_the_plot_effect_clock(self, game, home, monkeypatch):
+        calls = _spy(monkeypatch, game.map_renderer.order_light, 'draw_selection')
+        game.game_state.selected_army = (home, 6)
+        game.draw()
+        game.update_map_effects(0.25)
+        game.draw()
+        assert calls[1][4] == pytest.approx(calls[0][4] + 0.25)

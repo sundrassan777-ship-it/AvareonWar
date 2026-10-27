@@ -36,6 +36,8 @@ from ui.effects.construction_dust_effect import ConstructionDust, VARIANT_BUILD,
 from ui.effects.plot_fx_style import get_plot_fx_style, plot_phase
 from ui.effects.hero_fx_style import get_hero_fx_style
 from ui.effects.hero_fx_effect import HeroLight, HeroAura, HeroAbilityEffect, FxView, stable_seed
+from ui.effects.order_fx_style import get_order_fx_style
+from ui.effects.order_fx_effect import OrderLight, OrderArrow
 
 logger = get_logger(__name__)
 
@@ -91,6 +93,9 @@ class MapRenderer:
         self._hero_fx_style = get_hero_fx_style(map_data.get_current_look())
         self._hero_aura_sync = None      # what the aura territories were computed for
         self._embargo_sync = None        # what the ember territories were computed for
+        # The selection ring, order arrows and destination reticles as light
+        # (ui/effects/order_fx_effect.py), drawn from the same clock
+        self._order_fx_style = get_order_fx_style(map_data.get_current_look())
         self._build_plot_fx_renderers()
         # Active hero ability casts (HeroAbilityEffect), drawn in two layers
         self.ability_effects = []
@@ -283,6 +288,8 @@ class MapRenderer:
         self.embargo_embers = HeroAura(self.hero_light, 'embargo')
         self._hero_aura_sync = None
         self._embargo_sync = None
+        self.order_light = OrderLight(self._order_fx_style)
+        self.order_light.prewarm(self._plot_radius_range())
 
     def _plot_phase(self, territory, plot_index):
         """A plot's stable animation offset (plot_fx_style.plot_phase), cached."""
@@ -921,6 +928,8 @@ class MapRenderer:
         self.game.screen.blit(cached[0], cached[1])
     def draw_territories(self):
         """Draw territory overlays, markers and ownership colors"""
+        # Once per frame, before any selection ring, reticle or order arrow
+        self.order_light.begin_frame()
         # H8 fix: Rebuild overlay surfaces if window was resized
         current_size = (self.game.screen.get_width(), self.game.screen.get_height())
         if current_size != self._overlay_size:
@@ -1222,28 +1231,13 @@ class MapRenderer:
                         flag_world_x, flag_world_y = flag_positions[garrison_position_idx]
                         glow_x, glow_y = self.game.world_to_screen((flag_world_x, flag_world_y))
 
-                # Align glow with the drawn army circle (SHARED constants)
+                # The selection ring round the drawn army circle (SHARED constants),
+                # under the circle and banner
                 circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
                 circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
-                glow_y = glow_y - circle_y_offset
+                self.order_light.draw_selection(self._hero_fx_view(), glow_x, glow_y - circle_y_offset,
+                                                circle_radius, self._plot_fx_clock)
 
-                # Pulsing green glow effect (scales with zoom!)
-                pulse = abs(math.sin(time.time() * 2))  # Pulse between 0 and 1
-                glow_alpha = int(100 + 100 * pulse)  # Between 100 and 200
-
-                # PERFORMANCE OPTIMIZATION: Reduce glow layers when zoomed out
-                glow_layers = 1 if ui_scale < 1.5 else 3
-
-                # Draw glow circles sized to match the smaller army circle
-                for i in range(glow_layers):
-                    glow_radius = circle_radius + int((3 + i * 3) * ui_scale)
-                    # PERFORMANCE: Use reusable surface from pool
-                    glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                    pygame.draw.circle(glow_surface, (0, 255, 0, glow_alpha // (i + 1)),
-                                     (glow_radius + 5, glow_radius + 5), glow_radius, 3)
-                    self.game.screen.blit(glow_surface, (int(glow_x) - glow_radius - 5, int(glow_y) - glow_radius - 5))
-                    self.return_surface_to_pool(glow_surface)
-            
             # Draw merge/attack destination highlight
             # Check if this territory is receiving an order from selected army OR composition UI
             selected_territory = None
@@ -1264,43 +1258,12 @@ class MapRenderer:
                         is_friendly = (dest_owner == order.player or
                                      (dest_owner >= 0 and self.game.game_state.are_allies(order.player, dest_owner)))
 
-                        if is_friendly:
-                            # This is a MERGE/REINFORCEMENT destination - draw cyan highlight
-                            pulse = abs(math.sin(time.time() * 3))  # Slightly faster pulse
-                            glow_alpha = int(120 + 80 * pulse)  # Between 120 and 200
-
-                            # PERFORMANCE: Reduce glow layers when zoomed out (same as selection glow)
-                            glow_layers = 1 if ui_scale < 1.5 else 3  # FPS OPTIMIZATION: More aggressive threshold
-
-                            # Draw cyan glow rings (M6 fix: scale with zoom like red glow)
-                            for i in range(glow_layers):
-                                glow_radius = int((20 + i * 4) * ui_scale)
-                                # PERFORMANCE: Use reusable surface from pool
-                                glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                                pygame.draw.circle(glow_surface, (0, 200, 200, glow_alpha // (i + 1)),
-                                                 (glow_radius + 5, glow_radius + 5), glow_radius, 4)
-                                self.game.screen.blit(glow_surface, (int(x) - glow_radius - 5, int(y) - glow_radius - 5))
-                                self.return_surface_to_pool(glow_surface)
-                        else:
-                            # This is an ATTACK destination - draw red highlight
-                            pulse = abs(math.sin(time.time() * 3))  # Slightly faster pulse
-                            glow_alpha = int(120 + 80 * pulse)  # Between 120 and 200
-
-                            # PERFORMANCE: Use cached ui_scale (pre-computed above)
-                            # Removed redundant: ui_scale = self.game.get_ui_scale_factor()
-
-                            # PERFORMANCE: Reduce glow layers when zoomed out (same as selection glow)
-                            glow_layers = 1 if ui_scale < 1.5 else 3  # FPS OPTIMIZATION: More aggressive threshold
-
-                            # Draw red glow rings (scaled with zoom)
-                            for i in range(glow_layers):
-                                glow_radius = int((20 + i * 4) * ui_scale)
-                                # PERFORMANCE: Use reusable surface from pool
-                                glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                                pygame.draw.circle(glow_surface, (200, 0, 0, glow_alpha // (i + 1)),
-                                                 (glow_radius + 5, glow_radius + 5), glow_radius, 4)
-                                self.game.screen.blit(glow_surface, (int(x) - glow_radius - 5, int(y) - glow_radius - 5))
-                                self.return_surface_to_pool(glow_surface)
+                        # The reticle round the army circle the arrow points at: cyan for a
+                        # merge / reinforcement, red for an attack
+                        circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
+                        circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
+                        self.order_light.draw_reticle(self._hero_fx_view(), x, y - circle_y_offset, circle_radius,
+                                                      'merge' if is_friendly else 'attack', self._plot_fx_clock)
                         break
 
             # PERFORMANCE: Use cached ui_scale (pre-computed above)
@@ -2861,7 +2824,7 @@ class MapRenderer:
             self.construction_dust.draw_front(self.game.screen, x, y, scaled_empty_plot_radius,
                                               self._plot_fx_clock, phase, VARIANT_UPGRADE)
 
-        # Selection glow
+        # Selection ring
         is_selected_hero_keep = False
         if self.game.selected_hero and building == 'Keep':
             if current_player in self.game.game_state.heroes:
@@ -2880,15 +2843,9 @@ class MapRenderer:
         )
 
         if is_plot_selected:
-            pulse = abs(math.sin(time.time() * 2))
-            glow_alpha = int(100 + 100 * pulse)
-            for i in range(3):
-                glow_radius = int((scaled_empty_plot_radius + i * 5) * ui_scale)
-                glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                pygame.draw.circle(glow_surface, (0, 255, 0, glow_alpha // (i + 1)),
-                                 (glow_radius + 5, glow_radius + 5), glow_radius, 3)
-                self.game.screen.blit(glow_surface, (x - glow_radius - 5, y - glow_radius - 5))
-                self.return_surface_to_pool(glow_surface)
+            # Round the plot's rim (scaled_empty_plot_radius already carries ui_scale)
+            self.order_light.draw_selection(self._hero_fx_view(), x, y, scaled_empty_plot_radius,
+                                            self._plot_fx_clock)
 
     def _render_construction_plot(self, territory, plot_index, under_construction, owner, x, y,
                                   ui_scale, scaled_empty_plot_radius, scaled_plot_surface_size,
