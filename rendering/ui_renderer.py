@@ -2824,8 +2824,7 @@ class UIRenderer:
                         base_color = (100, 50, 50)  # Red tint to match normal "unavailable" appearance
                     # Check if button should be highlighted
                     elif self.game.tutorial_mission.should_highlight_button(btn_id):
-                        tutorial_highlight = True
-                        base_color = (80, 180, 80)  # Green for highlighted
+                        tutorial_highlight = True   # the gold glow round it, below
 
                 # Draw button with feedback (hover, click)
                 final_color, is_hovering, is_clicking = self.game.helpers.draw_feedback_button(
@@ -2839,13 +2838,8 @@ class UIRenderer:
 
                 # Tutorial highlight: draw pulsing green glow border
                 if tutorial_highlight:
-                    pulse = 0.5 + 0.5 * math.sin(time.time() * 4.0)
-                    glow_alpha = int(150 + 100 * pulse)
-                    glow_rect = button_rect.inflate(6, 6)
-                    # One cached ring, alpha set per frame (was a new Surface every frame)
-                    ring = w.pulse_ring(glow_rect.size)
-                    ring.set_alpha(glow_alpha)
-                    self.game.screen.blit(ring, glow_rect.topleft)
+                    # Tutorial hook: the gold glow round the technology the mission points at
+                    self.game.tutorial_glow.rect(self.game.screen, button_rect, corner=2)
 
                 # Store button rect for click detection
                 self.game.technology_buttons[tech['id']] = button_rect
@@ -3408,13 +3402,9 @@ class UIRenderer:
             # Keep the shared rotated-label cache populated (other code inspects it)
             self.game._rotated_tab_text_cache.setdefault(tab_id, sprite)
 
-            # Tutorial highlight: pulsing ring from ONE cached surface (alpha set per
-            # frame) instead of a new Surface every frame
+            # Tutorial highlight: the gold glow round the tab (its trim is gold too)
             if highlight:
-                pulse = 0.5 + 0.5 * math.sin(time.time() * 4.0)
-                ring = widgets.pulse_ring(tab_rect.inflate(4, 4).size)
-                ring.set_alpha(int(150 + 100 * pulse))
-                self.game.screen.blit(ring, tab_rect.inflate(4, 4).topleft)
+                self.game.tutorial_glow.rect(self.game.screen, tab_rect, corner=3)
 
             # Store for click detection
             self.game.sidebar_tab_buttons[tab_id] = tab_rect

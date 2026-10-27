@@ -217,24 +217,32 @@ class TestInnerTint:
             assert tinted.get_at(px) == art.get_at(px)
 
 
-class TestTutorialOutline:
+class TestTutorialGlow:
 
-    def test_band_traces_the_button_shape(self, game):
-        """The highlight hugs the pointed caps: corners empty, tips covered, inside empty."""
+    def test_glow_traces_the_button_shape(self, game):
+        """The gold highlight hugs the pointed caps: box corners dark, tips lit, nothing on the button."""
         size = (220, 44)
-        t = 3
-        band = game.bottom_panel_kit.button_outline(size, thickness=t)
-        assert band.get_size() == (size[0] + 2 * t, size[1] + 2 * t)
-        w, h = band.get_size()
-        # A box ring would colour the corners; the traced band leaves them empty
-        assert band.get_at((1, 1)).a == 0 and band.get_at((w - 2, h - 2)).a == 0
-        # ...but does run around the left and right points (they sit above mid-height)
-        assert any(band.get_at((x, y)).a for x in range(0, 2 * t + 2) for y in range(h))
-        assert any(band.get_at((x, y)).a for x in range(w - 2 * t - 2, w) for y in range(h))
-        # The button itself is not covered
-        assert band.get_at((w // 2, h // 2)).a == 0
-        # Cached per size
-        assert game.bottom_panel_kit.button_outline(size, thickness=t) is band
+        sprite = game.sidebar_widgets.button_sprite('campaign', size)
+        glow, pad = game.tutorial_glow.frames.frame(size, (255, 190, 60), 12, 'sprite', sprite=sprite,
+                                                    sprite_key=('campaign',) + size)
+        w, h = glow.get_size()
+        assert (w, h) == (size[0] + 2 * pad, size[1] + 2 * pad)
+
+        def light(x, y):
+            return sum(glow.get_at((x, y))[:3])
+
+        # A box ring would light the corners; the traced glow leaves them dark
+        assert light(1, 1) < 40 and light(w - 2, h - 2) < 40
+        # ...but does run round the left and right points
+        assert max(light(x, y) for x in range(0, pad + 4) for y in range(h)) > 200
+        assert max(light(x, y) for x in range(w - pad - 4, w) for y in range(h)) > 200
+        # Nothing lands on the button itself, and it is gold, not green
+        assert light(w // 2, h // 2) == 0
+        r, g, b, _ = glow.get_at((pad - 1, h // 2))
+        assert r >= g > b
+        # Cached per size and brightness
+        assert game.tutorial_glow.frames.frame(size, (255, 190, 60), 12, 'sprite', sprite=sprite,
+                                               sprite_key=('campaign',) + size)[0] is glow
 
 
 # ===========================================================================

@@ -21,6 +21,8 @@ Pieces:
     TerritoryRaster       territory id per world pixel: inside tests in O(1)
     bead_chain            evenly spaced points along a territory border
     path_beads            the same along an open path (path_point: a point on it)
+    GlowFrame             soft light hugging a rectangle, circle or sprite outline
+                          (UI highlights), cached per shape, size and brightness
 
 Users: production_glow_effect.py (production rays), hero_fx_effect.py (hero
 ability effects), order_fx_effect.py (selection rings, order arrows).
@@ -792,3 +794,102 @@ def path_beads(points, spacing, start=0.0, stop=None):
         beads.append((x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, s))
         s += spacing
     return beads
+
+
+# ========================================
+# GLOW FRAME (UI highlights)
+# ========================================
+
+class GlowFrame:
+    """
+    Soft light hugging the outside of a shape - a rounded rectangle, a circle or a
+    sprite's silhouette (an ornate button) - for UI highlights. Additive, on
+    black, and nothing inside the shape, so the control itself is untouched: a
+    crisp line of light on the outline and a halo fading outward.
+
+    Baked once per shape and size in grey (rings by distance from the outline, the
+    shape grown a pixel at a time), tinted per brightness level and cached, so a
+    breathing highlight is one cached blit a frame.
+
+    frame(size, colour, level, ...) -> (surface, pad): blit it at the shape's
+    top-left minus (pad, pad) with BLEND_RGB_ADD.
+    """
+
+    LEVELS = 12
+    MAX_GREYS = 32
+    MAX_FRAMES = 192
+
+    def __init__(self, reach=9):
+        self.reach = max(3, int(reach))
+        self._greys = OrderedDict()    # (shape key, w, h) -> grey glow
+        self._frames = OrderedDict()   # (grey key, colour, level) -> tinted glow
+        self.built = 0
+
+    def frame(self, size, colour, level, shape='rect', corner=4, sprite=None, sprite_key=None):
+        """
+        The glow round a shape of this size at brightness level 1..LEVELS.
+
+        Args:
+            shape: 'rect' (rounded by corner px), 'circle' (inscribed in size) or
+                'sprite' (the silhouette of sprite, alpha > 100; sprite_key names it
+                in the cache)
+        """
+        w, h = max(1, int(size[0])), max(1, int(size[1]))
+        grey_key = (shape, w, h, corner if shape == 'rect' else sprite_key)
+        level = max(1, min(self.LEVELS, int(level)))
+        key = (grey_key, colour, level)
+        tinted = self._frames.get(key)
+        if tinted is None:
+            grey = self._grey(grey_key, w, h, shape, corner, sprite)
+            tinted = grey.copy()
+            tinted.fill(scaled_colour(colour, level / float(self.LEVELS)), special_flags=pygame.BLEND_RGB_MULT)
+            if pygame.display.get_surface() is not None:
+                tinted = tinted.convert()
+            self._frames[key] = tinted
+            self.built += 1
+            if len(self._frames) > self.MAX_FRAMES:
+                self._frames.popitem(last=False)
+        else:
+            self._frames.move_to_end(key)
+        return tinted, self.reach + 2
+
+    def _grey(self, key, w, h, shape, corner, sprite):
+        grey = self._greys.get(key)
+        if grey is not None:
+            self._greys.move_to_end(key)
+            return grey
+        pad = self.reach + 2
+        size = (w + 2 * pad, h + 2 * pad)
+        silhouette = pygame.Surface(size, pygame.SRCALPHA)
+        if shape == 'circle':
+            pygame.draw.circle(silhouette, (255, 255, 255, 255), (pad + w // 2, pad + h // 2), min(w, h) // 2)
+        elif shape == 'sprite' and sprite is not None:
+            silhouette.blit(sprite, (pad, pad))
+        else:
+            pygame.draw.rect(silhouette, (255, 255, 255, 255), pygame.Rect(pad, pad, w, h),
+                             border_radius=corner)
+        inside = pygame.mask.from_surface(silhouette, 100)
+        # Rings by distance from the outline: the shape grown 1 px a step (8
+        # neighbours), so a rectangle, a circle and a pointed button all get the
+        # same halo however big they are
+        rings = [inside]
+        for _ in range(self.reach):
+            grown = rings[-1].copy()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                grown.draw(rings[-1], (dx, dy))
+            rings.append(grown)
+        grey = new_black_surface(size)
+        # Outermost first, each nearer ring drawn over it: a crisp line of light on
+        # the outline (2 px), then a halo fading out over the reach
+        for t in range(self.reach, 0, -1):
+            if t <= 2:
+                v = 255
+            else:
+                v = int(200 * (1.0 - (t - 2) / float(self.reach - 1)) ** 1.5)
+            rings[t].to_surface(grey, setcolor=(v, v, v), unsetcolor=None)
+        # Nothing over the control itself
+        inside.to_surface(grey, setcolor=(0, 0, 0), unsetcolor=None)
+        self._greys[key] = grey
+        if len(self._greys) > self.MAX_GREYS:
+            self._greys.popitem(last=False)
+        return grey

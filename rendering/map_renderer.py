@@ -1114,15 +1114,13 @@ class MapRenderer:
         if self.game.game_state.selected_territory and self.game.game_state.selected_territory in self.game.scaled_polygons:
             self.draw_territory_overlay(self.game.game_state.selected_territory, (255, 255, 0), alpha=100, outline=True)
 
-        # Tutorial highlight: bright pulsing overlay on target territory
-        if (hasattr(self.game, 'tutorial_mission') and self.game.tutorial_mission
-                and self.game.tutorial_mission.active):
-            hl_territory = self.game.tutorial_mission.get_highlight_territory()
-            if hl_territory and hl_territory in self.game.scaled_polygons:
-                # Pulsing green highlight using sine wave
-                pulse = 0.5 + 0.5 * math.sin(time.time() * 3.0)
-                alpha = int(40 + 60 * pulse)  # 40-100 alpha range
-                self.draw_territory_overlay(hl_territory, (100, 255, 100), alpha=alpha, outline=True)
+        # Tutorial / campaign target territory: a faint gold wash (cached: a steady
+        # alpha); the gold light running round its border is drawn under the plots
+        # (render_hero_effects_under -> _draw_objective_rim)
+        objective = self._objective_territory()
+        if objective:
+            style = self._order_fx_style['objective']
+            self.draw_territory_overlay(objective, style['colour'], alpha=style['fill_alpha'])
 
         # Fifth pass: Draw building plots and their icons FIRST
         # Plots drawn before armies so army flags appear on top!
@@ -2312,6 +2310,7 @@ class MapRenderer:
         """
         # Once per frame, before any hero light is drawn (the over layer comes later)
         self.hero_light.begin_frame()
+        self._draw_objective_rim()
         auras = [aura for aura in self.hero_auras.values() if aura.visible]
         if self.embargo_embers.visible:
             auras.append(self.embargo_embers)
@@ -2399,6 +2398,30 @@ class MapRenderer:
 
         for key in to_remove:
             del self.production_glow_effects[key]
+
+    def _objective_territory(self):
+        """The territory a tutorial / campaign step points at (get_highlight_territory), or None."""
+        mission = getattr(self.game, 'tutorial_mission', None)
+        if not mission or not getattr(mission, 'active', False):
+            return None
+        territory = mission.get_highlight_territory()
+        return territory if territory in self.game.scaled_polygons else None
+
+    def _draw_objective_rim(self):
+        """
+        Gold light running round the target territory's border - the hero aura
+        border light (HeroLight.draw_outline) in the guidance gold, under the plots.
+        """
+        territory = self._objective_territory()
+        if not territory:
+            return
+        style = self._order_fx_style['objective']
+        rim = style['rim']
+        light = self.hero_light
+        levels = light.shimmer_levels(rim['base'], rim['wave'], rim['intensity'])
+        shift = int(self._plot_fx_clock * rim['wave_speed'] * 256.0) & 255
+        light.draw_outline(self._hero_fx_view(), light.outline((territory,)), tuple(style['colour']),
+                           light.light_colour(style['colour'], style['white_mix']), rim, levels, shift, 1.0)
 
     def update_plot_effects(self, delta_time):
         """
@@ -2661,6 +2684,9 @@ class MapRenderer:
             # Round the plot's rim (scaled_empty_plot_radius already carries ui_scale)
             self.order_light.draw_selection(self._hero_fx_view(), x, y, scaled_empty_plot_radius,
                                             self._plot_fx_clock)
+        elif self._mission_beckons(territory, plot_index, building):
+            self.order_light.draw_beckon(self._hero_fx_view(), x, y, scaled_empty_plot_radius,
+                                         self._plot_fx_clock)
 
     def _render_construction_plot(self, territory, plot_index, under_construction, owner, x, y,
                                   ui_scale, scaled_empty_plot_radius, scaled_plot_surface_size,
@@ -2808,13 +2834,24 @@ class MapRenderer:
         pygame.draw.circle(self.game.screen, player_color, (x, y), scaled_empty_plot_radius - 1, 3)
         pygame.draw.circle(self.game.screen, BLACK, (x, y), scaled_empty_plot_radius - 4, 1)
 
-        # Tutorial hook: draw pulsing green highlight on plots that should be selected
-        if (self.game.game_state.tutorial_mission
-                and self.game.game_state.tutorial_mission.should_highlight_plot(territory, plot_index)):
-            import math
-            pulse = int(180 + 75 * math.sin(pygame.time.get_ticks() / 200.0))
-            glow_radius = scaled_empty_plot_radius + 4
-            pygame.draw.circle(self.game.screen, (50, 255, 50), (x, y), glow_radius, 3)
+        # Tutorial / campaign hook: the gold "click here" on the plot a step points at
+        # (not while it is selected - the panel's highlighted button takes over)
+        if (self.game.selected_plot != (territory, plot_index)
+                and self._mission_beckons(territory, plot_index)):
+            self.order_light.draw_beckon(self._hero_fx_view(), x, y, scaled_empty_plot_radius,
+                                         self._plot_fx_clock)
+
+    def _mission_beckons(self, territory, plot_index, building=None):
+        """
+        Whether a tutorial / campaign step points at this plot: a highlighted plot,
+        or a Barracks the step's 'barracks_<territory>' button highlight names.
+        """
+        mission = getattr(self.game, 'tutorial_mission', None)
+        if not mission or not getattr(mission, 'active', False):
+            return False
+        if mission.should_highlight_plot(territory, plot_index):
+            return True
+        return building == 'Barracks' and mission.should_highlight_button(f'barracks_{territory}')
 
     def _draw_completed_building_plots(self, ui_scale, scaled_empty_plot_radius,
                                        building_letter_font):
@@ -3481,6 +3518,11 @@ class MapRenderer:
                         self.game.screen.blit(icon_surface, (icon_x - scaled_plot_center_offset, icon_y - scaled_plot_center_offset))
                         self.return_surface_to_pool(icon_surface)
 
+                        # Tutorial hook: the gold glow round the icon the mission points at
+                        if (self.game._is_tutorial_active()
+                                and self.game.tutorial_mission.should_highlight_button(f'building_{building_name}')):
+                            self.game.tutorial_glow.circle(self.game.screen, (icon_x, icon_y), scaled_icon_click_radius)
+
                         # Draw building icon PNG or fallback to letter
                         if building_name in self.game.building_icons and self.game.building_icons[building_name]:
                             building_icon = self.game.building_icons[building_name]
@@ -3612,6 +3654,11 @@ class MapRenderer:
                     is_clicking = (self.game.clicked_element and
                                   self.game.clicked_element[0] == 'map_training' and
                                   self.game.clicked_element[1] == unit_type)
+
+                    # Tutorial hook: the gold glow round the icon the mission points at
+                    if (self.game._is_tutorial_active()
+                            and self.game.tutorial_mission.should_highlight_button(f'training_{unit_type}')):
+                        self.game.tutorial_glow.circle(self.game.screen, (icon_x, icon_y), scaled_icon_click_radius)
 
                     # Draw unit icon PNG or fallback to letter
                     unit_icon = self.game.unit_icons.get(unit_type)
