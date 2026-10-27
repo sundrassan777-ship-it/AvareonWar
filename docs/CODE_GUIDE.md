@@ -827,16 +827,16 @@ self._resolved_battle_info = {
 #### ✅ Add Visual Effect
 
 **Effect types:**
-- Battle map markers (hurricane spiral) → `ui/effects/battleeffect.py` — 1000 particles in 4 spiral arms
-- Alliance markers (blue hurricane) → `ui/effects/alliance_marker_effect.py` — 600 particles in 3 spiral arms
+- Battle markers, alliance arrival markers, army overflow warning → `ui/effects/marker_fx_effect.py` (`MarkerLight`) on the light kit, styled in `ui/effects/marker_fx_style.py`; see "Change the map markers and the turn banner" below
 - Production light rays (producing Barracks / Keeps / Castles) → `ui/effects/production_glow_effect.py` — two counter-rotating layers of soft additive beams; see "Change the plot effects" below
 - Construction dust (plots under construction, Keep → Castle upgrades with gold glints) → `ui/effects/construction_dust_effect.py` — stateless particles; see "Change the plot effects" below
-- Castle upgrades (golden explosion) → `ui/effects/castle_upgrade_effect.py` — 140 gold particles, 3 phases
+- Castle upgrade finishing (a burst of gold light) → `plot_fx_style.py` `'castle_complete'`, a cue timeline played by `HeroAbilityEffect` (`MapRenderer.trigger_castle_upgrade_effect()`)
 - Battle bar combat (volleys) → `ui/effects/battle_interface.py` (BattleBarVolleyEffect) — discrete blasts, pre-rendered sprites
-- Sparkle particles → `ui/effects/sparkle_effect.py`
-- Turn announcements → `ui/effects/turn_announcement_sparkle.py`
+- Turn announcements → `ui/effects/turn_announcement_effect.py` — vignette, bronze-framed Cinzel banner, gold glow and motes
 - Hero abilities (every active cast, the passive auras, the Embargo embers) → `ui/effects/hero_fx_effect.py` on the shared light kit `ui/effects/light_fx.py` — light in the style of the production rays, each ability a timeline of cues in `ui/effects/hero_fx_style.py`; see "Change the hero ability effects" below
 - Vow of Silence fog → `main.py` `draw_silence_fog_overlay()` — a crimson vignette baked once (`light_fx.vignette_surface`)
+- Master Negotiator glow (while its discount lasts, caster only) → `main.py` `draw_negotiator_glow()` — a green vignette round the map and `light_fx.RisingMotes`; style `hero_fx_style.py` `NEGOTIATOR_GLOW`
+- Ruthless Ingenuity (Erec Silvyr, tech tree open) → `rendering/ui_renderer.py` `_draw_ingenuity_motes()` — blue `RisingMotes` over the panel; style `INGENUITY_MOTES`
 - Selection rings, order arrows, destination reticles → `ui/effects/order_fx_effect.py` on the same light kit, styled in `ui/effects/order_fx_style.py`; see "Change the selection ring, order arrows and destination reticles" below
 
 **Key techniques used across effects:**
@@ -1004,6 +1004,57 @@ production rays and hero abilities. Select → order → target read as one inpu
 **Tests:** `tests/test_order_fx.py`; benchmarks `TestOrderFxPerformance` in
 `tests/test_fps_benchmark.py` (`selection_army` / `_keep`, `arrows_5` / `_20`,
 `arrows_selected`, each static and `_zoom`, reference `order_fx_none`).
+
+#### ✅ Change the map markers and the turn banner
+
+**What they are (2026-10-27, event FX pass):** the last particle effects redone as light.
+- **Battle markers** (battles phase / simultaneous resolving): crossed swords over a
+  coral-red halo, a breathing ring with pulses running outward and motes of light
+  spiralling in on four arms. **Alliance arrival markers** (simultaneous mode, allies
+  arriving at one territory): one sword over the allies' green, three arms. Red = attack,
+  green = ally, as the order arrows (owner, 2026-10-27). Not yours to click (another player
+  resolves / chooses): ash grey, dimmer, no pulses, the icon in greyscale. The "#N" battle
+  label has a dark shadow. Markers fade in as they appear and scale with the zoom - so do
+  their click areas (`MarkerLight.click_radius()`).
+- **Army overflow warning** (simultaneous mode): an amber ring breathing fast round the
+  army circle, pulses running outward.
+- **Castle upgrade finishing:** a burst of gold light at the plot - rays, a flare, two rings,
+  sparks popping up - continuing the upgrade's gold glints.
+- **Turn banner** ("X's Turn" / "Turn N"): the screen darkens toward its edges (a vignette),
+  a carved bronze frame round dark parchment grows in with the name in Cinzel gold, gold
+  light glows round the frame, gold motes drift up; it fades after the hold. A very long
+  name goes on two lines and, if still too wide, gets a smaller font. Timing unchanged.
+- **Master Negotiator glow** (while its discount lasts): a green wash round the edges of the
+  map and green motes rising there - for its caster only, by its spell sound's rule.
+- **Ruthless Ingenuity** (Erec Silvyr, tech tree open): blue motes rising over the panel.
+
+| To change | Where |
+|---|---|
+| Marker look (colours, icons, ring, pulses, motes, click area, label) | `ui/effects/marker_fx_style.py` (`KINDS`, `GREYED`, `MARKER`, `OVERFLOW`) |
+| When markers show, greyed or not | `MapRenderer.draw_battle_markers()` / `draw_alliance_markers()` / `draw_overflow_indicators()`; marker state: `battle_effects` / `alliance_effects` (`MarkerState`) |
+| Castle burst | `ui/effects/plot_fx_style.py` `CASTLE_COMPLETE_STYLE` (hero ability cue vocabulary); `MapRenderer.trigger_castle_upgrade_effect()` |
+| Turn banner | constants at the top of `ui/effects/turn_announcement_effect.py` |
+| Master Negotiator glow / Ruthless Ingenuity motes | `ui/effects/hero_fx_style.py` `NEGOTIATOR_GLOW` / `INGENUITY_MOTES`; who sees the glow: `Game._negotiator_glow_shown()` |
+| Preview / tune / measure | `py tools/event_fx_preview.py` (live: B / A battle / alliance marker, again greyed, W overflow, C castle, N banner, G negotiator; L 2D/3D), `--sheet out.png`, `--bench` |
+
+**Rules:**
+- **One marker renderer:** `MapRenderer.marker_light` (`MarkerLight`, built with the other
+  light renderers in `_build_plot_fx_renderers()`); `begin_frame()` with the order light's
+  at the top of `draw_territories()`. Markers animate from the shared plot effect clock.
+- **The castle burst is an ability effect:** it goes into `MapRenderer.ability_effects`, so
+  `update_ability_effects()` / `render_hero_effects_under()` / `render_ability_effects()`
+  drive and layer it - there is no castle effect list any more.
+- **Screen and panel motes** (banner, Negotiator, Ingenuity) are `light_fx.RisingMotes`:
+  closed form from a clock, a spawn function per user, nothing stored per mote.
+- **Vignettes fade with `set_alpha`** only while fading; a held vignette blits at 255 (the
+  fast path). The turn banner's vignette is the one per-frame full-screen cost left
+  (~0.5 ms more than the old flat overlay, during the banner's 1.5 s).
+- **Cost** (old particle effects -> light, 1600x900): 6 battle markers 5.2 -> 0.9 ms,
+  2 alliance markers 3.3 -> 0.3 ms, 4 Castle bursts 5.2 -> 1.0 ms; turn banner 2.4 -> 3.0 ms.
+
+**Tests:** `tests/test_event_fx.py`; benchmarks `TestEventFxPerformance` in
+`tests/test_fps_benchmark.py` (`battle_markers_6`, `castle_complete_4`, `negotiator_glow`,
+`turn_banner`, reference `event_fx_none`).
 
 #### ✅ Change the tutorial / campaign highlights (gold)
 
@@ -1245,7 +1296,8 @@ clamp and culling use the window width), so collapsing it needs no viewport chan
 - `_handle_sidebar_hotkey()` ignores F2 while chat input, a menu, the save dialog, the Players
   window, a battle UI/popup, Battle Report detail, the alliance popup or the victory sequence is
   up, or the game has ended.
-- Toggling clears `ui_renderer.tech_particles` (they store absolute screen positions).
+- The Ruthless Ingenuity motes over the tech panel are drawn relative to the panel from a
+  clock, so they follow it while it slides (nothing to clear on a toggle).
 
 **Drawing** (`draw_order_sidebar()`): panel at `layout.panel_x` → bookmarks
 (`ui_renderer._draw_sidebar_tab_buttons(panel_x, …)`) → round button
@@ -3267,8 +3319,10 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `ConstructionDust._sprites` (construction_dust_effect.py) - Dust sprites keyed by `(diameter, colour, alpha, softness)`, scaled from one soft base per colour; at most `BUILDS_PER_FRAME` built per frame, LRU-bounded (~1.8 MB).
 - `HeroLight` (hero_fx_effect.py) - Hero ability effects: `glow` / `tint` / `dark` sprite caches (light_fx.py, bounded LRUs, build budget 24 sprites and 1 ms per frame, ~1-2 MB), a second `ProductionRays` for ray bursts, the `TerritoryRaster` (~2 MB), every territory's border beads (built at load), outlines per territory set (LRU 12) and bead screen positions per camera (LRU 24). Rebuilt in `rebuild_scale_caches()`.
 - `OrderLight` (order_fx_effect.py) - Selection rings, order arrows, destination reticles: `glow` / `tint` sprite caches (light_fx.py, prewarmed at load for every plot radius), three `SoftRing`s whose `frame()` / `tint_frame()` cache rings per radius and brightness (LRU 96 each, build budget 4 frames and 0.5 ms per frame), arrow geometry per (route, zoom) relative to the camera origin (LRU 64) and 256-entry flow sprite tables (LRU 96). Rebuilt in `rebuild_scale_caches()`.
+- `MarkerLight` (marker_fx_effect.py) - Battle / alliance markers and the overflow warning: `glow` / `tint` sprite caches (light_fx.py, mote sprites prewarmed at load for every plot radius), two `SoftRing`s per colour scheme (ring and pulses: each pulse is a cached frame per radius, so schemes don't evict each other), mote sprite sets per (kind, scheme, radius) (LRU 32) and icons cut to their opaque part, scaled per (kind, greyed, radius) (LRU 48). Rebuilt in `rebuild_scale_caches()`.
 - `_cached_silence_fog` (main.py) - The Vow of Silence vignette, baked once per map size.
-- `_scaled_text_cache` (turn_announcement_effect.py) - Smoothscale cache by quantized (width, height)
+- `_cached_negotiator_glow` / `_negotiator_motes` (main.py) - The Master Negotiator vignette (once per map size) and its mote table.
+- Turn banner (turn_announcement_effect.py) - Module-level: the darkening vignette (one screen size), Cinzel fonts per size, the glow sprites and `GlowFrame` (rebuilt when the display changes). Per announcement: the banner, and its growing sizes in `SCALE_STEPS` steps.
 
 **Always `.convert()` / `.convert_alpha()` loaded images — including backgrounds:**
 - An unconverted surface stays in *file* pixel format, so **every blit** of it (or of anything
@@ -3329,19 +3383,19 @@ The codebase uses several performance patterns. Follow these when adding new ren
   8 rays that repeat every 45° — only 2 distinct poses, so its "rotation" was a flip every
   ~2.6 s. Rotation frames only need to cover 360° / ray count, and must be fine enough
   (≲0.5 px per step where the image is bright) to read as motion.
-- Known remaining instances of this bug: `battleeffect.py` and `alliance_marker_effect.py`
-  cache on a continuously-animated scale float, so they `smoothscale` every frame.
+- (The battle and alliance markers had this bug - an icon cached on its animated scale float,
+  smoothscaled every frame - until the event FX pass replaced them with `MarkerLight`, whose
+  icons are cached per plot radius and don't scale with the pulse.)
 
 **Surface reuse:**
 - `_get_overlay_surface()` (ui_renderer.py) - Reusable full-screen SRCALPHA surface for modals
-- Small clipped SRCALPHA surfaces instead of full-screen where possible (hover overlay ~200x150, battle hurricane ~120x120)
+- Small clipped SRCALPHA surfaces instead of full-screen where possible (hover overlay ~200x150)
 - Never create `pygame.Surface((width, height), SRCALPHA)` in a per-frame method without reuse
 - Prefer non-SRCALPHA + `set_alpha()` over SRCALPHA when per-pixel alpha isn't needed (faster blit)
 
 **Algorithmic:**
 - Pre-index lookups (e.g., `route_first_order` dict in map_renderer.py) instead of nested loops
 - AABB bounding box pre-check in `get_territory_at_pos()` before expensive polygon ray-casting
-- Pre-computed sin/cos lookup table in battleeffect.py (360 entries, avoids 1400+ trig calls per frame)
 - `crop_to_circle()` uses BLEND_RGBA_MULT (never per-pixel get_at/set_at)
 
 **Benchmarking:**

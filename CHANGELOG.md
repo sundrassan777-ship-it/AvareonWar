@@ -2,6 +2,45 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-27 - Event effects as light
+
+Branch `feature/event-fx`. Owner: some events still used the old particle effects. A review
+found eight; this round moves seven onto the light kit (the recap screen's glitter stays).
+Decisions: alliance markers in the 'ally' arrows' green, battle markers in the attack
+coral-red; the Master Negotiator glow for its caster only; the turn banner a bronze frame
+with Cinzel text.
+- **Map markers** (`ui/effects/marker_fx_style.py`, `marker_fx_effect.py`, `MarkerLight`):
+  battle and alliance arrival markers - the icon (cut to its opaque part) over a colour halo,
+  a breathing ring with pulses, motes spiralling in; greyed = ash grey, dimmer, no pulses.
+  Sizes and click areas in plot radii (they were a fixed 40-60 px); they fade in and animate
+  from the plot effect clock (they used to keep running while paused). "#N" labels get a
+  shadow. `battle_effects` / `alliance_effects` hold a `MarkerState`.
+- **Army overflow warning**: an amber ring round the army circle (was flat red circles at
+  the territory centre).
+- **Castle upgrade finishing**: `plot_fx_style.py` `CASTLE_COMPLETE_STYLE`, a gold cue
+  timeline played by `HeroAbilityEffect` through `ability_effects`; the castle effect list
+  and its update / render calls are gone.
+- **Turn banner** (`ui/effects/turn_announcement_effect.py`, same class and timing): vignette,
+  bronze nine-slice frame with Cinzel gold text, `GlowFrame` gold light, gold motes; a long
+  name gets a smaller font until it fits (it ran off the screen). Banner sizes cached.
+- **Master Negotiator glow** (`main.py` `draw_negotiator_glow()`, `hero_fx_style.py`
+  `NEGOTIATOR_GLOW`): a green vignette round the map and rising motes, drawn over the map
+  (under the UI), for its caster only (`_negotiator_glow_shown()`, the spell sound's rule) -
+  everyone used to see green particles round the whole screen.
+- **Ruthless Ingenuity** (`ui_renderer.py` `_draw_ingenuity_motes()`, `INGENUITY_MOTES`):
+  blue motes relative to the tech panel, clipped to it; the toggle no longer clears particles.
+- **`light_fx.RisingMotes`**: closed-form rising motes for screen and panel effects.
+- **Removed**: `battleeffect.py`, `alliance_marker_effect.py`, `castle_upgrade_effect.py`,
+  `sparkle_effect.py`, `turn_announcement_sparkle.py`, the dead green banner
+  (`edge_wave_effect.py` and the old `turn_announcement_effect.py`) and the dead plot passes
+  `_draw_completed_building_plots` / `_draw_under_construction_plots` /
+  `_draw_empty_plot_markers` (~520 lines; `_draw_all_plots_unified` replaced them).
+- Cost at 1600x900: 6 battle markers 5.2 -> 0.9 ms, 2 alliance markers 3.3 -> 0.3 ms,
+  4 Castle bursts 5.2 -> 1.0 ms; the turn banner 2.4 -> 3.0 ms (its vignette fade).
+- Preview: `tools/event_fx_preview.py`. Tests: `tests/test_event_fx.py`,
+  `TestEventFxPerformance`; `test_sidebar_collapse.py`'s particle test is now
+  `test_ingenuity_motes_stay_on_the_panel`.
+
 ## 2026-10-27 - "Not yet" toasts for what a mission has locked
 
 Branch `feature/mission-refusal-toasts`. Owner: in the tutorial, ordering an attack on

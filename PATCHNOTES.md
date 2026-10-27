@@ -4,6 +4,26 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Events in a New Light
+
+*27 October 2026*
+
+### Improvements
+
+- **New turn banner.** Each turn opens with the nation's name in gold in a carved bronze
+  frame, glowing, over a darkened map. Very long nation names now fit on screen.
+- **New battle markers.** Battles to resolve show crossed swords over red light, with motes
+  of light spiralling in; battles another player resolves are grey. Allies arriving together
+  (simultaneous turns) are marked in green. Markers grow and shrink with the zoom, and so
+  does the area you can click.
+- **Castle upgrades** now finish in a burst of gold light.
+- **Too many armies** after an alliance arrival is marked with an amber ring round the army.
+- **Master Negotiator** now shows its green glow round the map only to the player who cast it.
+- **Erec Silvyr's Ruthless Ingenuity** shows as blue light rising over the Technology Tree,
+  and it now stays on the panel while the sidebar slides.
+
+---
+
 ## Orders in a New Light
 
 *27 October 2026*
