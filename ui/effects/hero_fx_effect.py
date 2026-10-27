@@ -39,7 +39,8 @@ from collections import OrderedDict
 import pygame
 
 from ui.effects import light_fx
-from ui.effects.light_fx import GlowSprites, TintSprites, SoftRing, TerritoryRaster, bead_chain
+from ui.effects.light_fx import (GlowSprites, TintSprites, DarkSprites, SoftRing, TerritoryRaster,
+                                 bead_chain)
 from ui.effects.production_glow_effect import ProductionRays
 from ui.effects.hero_fx_style import HERO_FX_STYLE
 
@@ -146,11 +147,12 @@ class HeroLight:
         self.warm_white = style['warm_white']
         self.glow = GlowSprites()
         self.tint = TintSprites()
+        self.dark = DarkSprites()
         self.ring = SoftRing(self.kit['ring_width'])
         self.rays = ProductionRays(style['rays'])
         self.polygons = polygons
         self._raster = None
-        self._fine = {}                  # territory -> bead_chain at fine spacing
+        self._fine = {}                  # territory -> its border beads (_border)
         self._bboxes = {}                # territory -> world bbox
         self._outlines = OrderedDict()   # frozenset(territories) -> outline
         self._spawns = {}                # (territory, rise) -> [(x, y), ...]
@@ -167,25 +169,42 @@ class HeroLight:
         """Once per rendered frame: resets the sprite build budgets."""
         self.glow.begin_frame()
         self.tint.begin_frame()
+        self.dark.begin_frame()
 
     def prewarm(self, radii):
         """
-        Build what the first frames would otherwise pay for (at load): the ray
-        bases for every plot radius, the ring, the territory raster, and the aura
-        sprites at every size the zoom range gives.
+        Build what the first frames would otherwise pay for (at load, ~0.1 s):
+        the ray bases for every plot radius, the ring, the territory raster,
+        every territory's border beads, and the border-light and firefly sprites
+        of the auras and abilities at every size the zoom range gives (a border
+        light shows only once all its brightness levels exist).
         """
         self.rays.prewarm(radii)
         self.ring.prewarm()
         self.raster()
-        for aura in self.style['auras'].values():
-            colour = self.light_colour(aura['colour'], aura['white_mix'])
-            rim = aura['rim']
-            for radius in sorted(set(radii)):
+        for territory in self.polygons:
+            self._border(territory)
+        radii = sorted(set(radii))
+        rims = []   # (rim style, raw colour, light colour)
+        styles = list(self.style['auras'].values()) + list(self.style.get('persistent', {}).values())
+        for aura in styles:
+            if aura.get('rim'):
+                rims.append((aura['rim'], tuple(aura['colour']),
+                             self.light_colour(aura['colour'], aura['white_mix'])))
+        for spec in self.style['abilities'].values():
+            for cue in _rim_cues(spec['cues']):
+                raw = tuple(cue.get('colour', spec['colour']))
+                rims.append((cue, raw, self.light_colour(raw, cue.get('white_mix', spec.get('white_mix', 0.3)))))
+        for rim, raw, colour in rims:
+            tint = rim.get('tint')
+            for radius in radii:
                 self.glow.prewarm([_even(rim['size'] * radius)], colour, profile='bead')
-                tint = rim.get('tint')
                 if tint and tint.get('alpha', 0) > 0:
-                    self.tint.prewarm([_even(tint['size'] * radius)], tuple(aura['colour']),
-                                      [tint['alpha']], tint.get('softness', 1.5))
+                    # Every alpha level: a one-shot border light fades in and out
+                    self.tint.prewarm([_even(tint['size'] * radius)], raw,
+                                      range(0, tint['alpha'] + 1, 255 // TintSprites.LEVELS),
+                                      tint.get('softness', 1.5))
+        for aura in styles:
             motes = aura['motes']
             lo, hi = motes['size']
             mote_colour = self.light_colour(aura['colour'], motes.get('white_mix', aura['white_mix']))
@@ -210,12 +229,26 @@ class HeroLight:
             box = self._bboxes[territory] = (min(xs), min(ys), max(xs), max(ys))
         return box
 
-    def _fine_chain(self, territory):
-        chain = self._fine.get(territory)
-        if chain is None:
-            chain = self._fine[territory] = bead_chain(
-                self.polygons.get(territory) or [], self.kit['fine_spacing'])
-        return chain
+    def _border(self, territory):
+        """
+        A territory's border beads, built once (~1 ms each; all of them at load,
+        prewarm): ([(x, y, outward nx, ny, shimmer phase, sweep phase), ...],
+        [the territory just outside each bead, or None]). Outlines of any set
+        are then a filter over these, with no territory lookups at cast time.
+        """
+        border = self._fine.get(territory)
+        if border is None:
+            chain = bead_chain(self.polygons.get(territory) or [], self.kit['fine_spacing'])
+            raster = self.raster()
+            probe = self.kit['probe']
+            wave_units = 256.0 / self.kit['wave_length']
+            perimeter = (chain[-1][2] + self.kit['fine_spacing']) if chain else 1.0
+            sweep_units = 256.0 / perimeter
+            beads = [(x, y, nx, ny, int(s * wave_units) & 255, int(s * sweep_units) & 255)
+                     for x, y, s, nx, ny in chain]
+            outside = [raster.at(x + nx * probe, y + ny * probe) for x, y, s, nx, ny in chain]
+            border = self._fine[territory] = (beads, outside)
+        return border
 
     def outline(self, territories):
         """
@@ -229,23 +262,15 @@ class HeroLight:
         if outline is not None:
             self._outlines.move_to_end(key)
             return outline
-        raster = self.raster()
-        probe = self.kit['probe']
-        wave_units = 256.0 / self.kit['wave_length']
         parts = []
         for territory in sorted(key):
-            chain = self._fine_chain(territory)
-            if not chain:
+            beads, outside = self._border(territory)
+            if not beads:
                 continue
-            perimeter = chain[-1][2] + self.kit['fine_spacing']
-            sweep_units = 256.0 / perimeter
-            beads = []
-            for x, y, s, nx, ny in chain:
-                neighbour = raster.at(x + nx * probe, y + ny * probe)
-                if neighbour is not None and neighbour != territory and neighbour in key:
-                    continue   # a border shared with another lit territory
-                beads.append((x, y, nx, ny, int(s * wave_units) & 255, int(s * sweep_units) & 255))
-            parts.append((territory, self.bbox(territory), beads))
+            # Drop the beads on a border shared with another lit territory
+            kept = [bead for bead, other in zip(beads, outside)
+                    if other is None or other == territory or other not in key]
+            parts.append((territory, self.bbox(territory), kept))
         self._serial += 1
         outline = Outline(self._serial, parts)
         self._outlines[key] = outline
@@ -425,15 +450,20 @@ class HeroLight:
             area = self._areas[territory] = abs(total) / 2.0
         return area
 
-    def mote_count(self, territory, style, available):
+    def mote_count(self, territory, style, available, radius=None):
         """
         Fireflies in one territory: style['density'] per 1000 world px^2 (the
         same density in big and small territories), clamped to min..available.
+        With a style['lod'] the density drops on small (zoomed-out) plots, down to
+        min_share at the smallest - when the most territories are on screen.
         Without a density every firefly of the table is used.
         """
         density = style.get('density')
         if density is None:
             return available
+        lod = style.get('lod')
+        if lod and radius:
+            density *= max(lod['min_share'], min(1.0, radius / float(lod['full_radius'])))
         count = int(round(self.area(territory) * density / 1000.0))
         return max(min(style.get('min', 1), available), min(available, count))
 
@@ -474,7 +504,8 @@ class HeroLight:
             count = len(points)
             tsalt = stable_seed(territory) & 0xFFFF
             tphase = tsalt / 65536.0
-            for inv_life, offset, size, sway_phase, salt in motes[:self.mote_count(territory, style, len(motes))]:
+            for inv_life, offset, size, sway_phase, salt in motes[:self.mote_count(territory, style, len(motes),
+                                                                                   radius)]:
                 u = clock * inv_life + offset + tphase
                 cycle = int(u)
                 age = u - cycle
@@ -505,6 +536,15 @@ class HeroLight:
             view.screen.blits(halos, doreturn=False)
         if seq:
             view.screen.blits(seq, doreturn=False)
+
+
+def _rim_cues(cues):
+    """Every 'rim' cue of an ability, nested 'each' cues included."""
+    for cue in cues:
+        if cue['kind'] == 'rim':
+            yield cue
+        elif cue['kind'] == 'each':
+            yield from _rim_cues(cue['cues'])
 
 
 def mote_table(style, seed):
@@ -756,7 +796,295 @@ class _MotesCue(_Cue):
                              self.raw_colour)
 
 
-_POINT_CUES = {'rays': _RaysCue, 'flare': _FlareCue, 'ring': _RingCue, 'sparks': _SparksCue}
+class _CometsCue(_Cue):
+    """
+    Comets of light flying an arc from one point to another: a bright head with
+    a trail of fading motes behind it (Royal Charisma, Valorous Charge).
+    Closed form: each comet's place on the curve is a function of time.
+    """
+
+    def __init__(self, spec, effect, source, dest):
+        super().__init__(spec, effect)
+        self.count = spec.get('count', 3)
+        self.travel = spec.get('travel', 1.0)
+        self.stagger = spec.get('stagger', 0.15)
+        self.trail = spec.get('trail', 9)
+        self.trail_gap = spec.get('trail_gap', 0.03)
+        self.head = spec.get('size', 0.9)
+        self.tint = spec.get('tint', 0)
+        sx, sy = source
+        dx, dy = dest
+        length = math.hypot(dx - sx, dy - sy) or 1.0
+        # Control point raised above the middle (screen up = -y) by `arc` of the distance
+        lift = spec.get('arc', 0.35) * length
+        self.curve = (sx, sy, (sx + dx) / 2.0, (sy + dy) / 2.0 - lift, dx, dy)
+        # Perpendicular to the flight, for each comet's sideways weave
+        self.normal = (-(dy - sy) / length, (dx - sx) / length)
+        rng = random.Random(effect.seed ^ stable_seed('comets', self.at))
+        spread = spec.get('spread', 4.0)
+        self.weaves = [(rng.uniform(-spread, spread), rng.uniform(0.0, _TWO_PI))
+                       for _ in range(self.count)]
+        self.duration = (self.count - 1) * self.stagger + self.travel + self.trail * self.trail_gap
+        self.fade_out = min(self.fade_out, self.duration * 0.5)
+
+    def _point(self, u, weave, phase):
+        sx, sy, cx, cy, dx, dy = self.curve
+        a, b, c = (1.0 - u) ** 2, 2.0 * (1.0 - u) * u, u * u
+        side = weave * math.sin(u * _TWO_PI + phase) * math.sin(u * math.pi)
+        return (a * sx + b * cx + c * dx + self.normal[0] * side,
+                a * sy + b * cy + c * dy + self.normal[1] * side)
+
+    def render(self, light, view, t):
+        if not 0.0 <= t < self.duration:
+            return
+        steps = GlowSprites.LEVELS
+        radius = view.radius
+        glow = light.glow
+        z, ax, ay = view.zoom, view.ax, view.ay
+        halos = []
+        seq = []
+        for i, (weave, phase) in enumerate(self.weaves):
+            start = i * self.stagger
+            for k in range(self.trail + 1):
+                tk = t - start - k * self.trail_gap
+                if tk < 0.0 or tk > self.travel:
+                    continue
+                u = _smooth(tk / self.travel)
+                fade = (1.0 - k / float(self.trail + 1)) ** 1.3
+                level = int(steps * self.intensity * fade + 0.5)
+                if level <= 0:
+                    continue
+                wx, wy = self._point(u, weave, phase)
+                x, y = ax + wx * z, ay + wy * z
+                diameter = _even(self.head * radius * (1.0 - 0.45 * k / float(self.trail + 1)))
+                if k % 3 == 0 and self.tint:
+                    # A colour halo under the head and every third trail mote
+                    halo_d = max(4, int(diameter * 2.2) & ~3)
+                    halo = light.tint.sprite(halo_d, self.raw_colour, self.tint * self.intensity * fade)
+                    if halo is not None:
+                        halos.append((halo, (int(x) - (halo_d >> 1), int(y) - (halo_d >> 1))))
+                sprite = glow.sprite(diameter, self.colour, min(steps, level))
+                if sprite is not None:
+                    half = diameter >> 1
+                    seq.append((sprite, (int(x) - half, int(y) - half), None, ADD))
+        if halos:
+            view.screen.blits(halos, doreturn=False)
+        if seq:
+            view.screen.blits(seq, doreturn=False)
+
+
+class _DrainCue(_Cue):
+    """
+    Anti-light (Regicide): a soft dark stain that swells over the point, as if
+    the light were drawn out of it. Drawn with BLEND_RGB_MULT.
+    """
+
+    layer = 'under'
+
+    def __init__(self, spec, effect, point):
+        super().__init__(spec, effect)
+        self.point = point
+        self.size = spec.get('size', (2.0, 4.0))
+        self.grow = max(0.01, spec.get('grow', 0.4))
+        # The multiply colour at full depth: the raw colour, darkened
+        darkness = spec.get('darkness', 0.45)
+        self.dark = tuple(int(c * darkness) for c in self.raw_colour)
+
+    def render(self, light, view, t):
+        b = self.brightness(t)
+        if b <= 0.02:
+            return
+        s0, s1 = self.size
+        g = 1.0 - (1.0 - min(1.0, t / self.grow)) ** 2
+        diameter = _ladder_size((s0 + (s1 - s0) * g) * view.radius)
+        x, y = view.to_screen(self.point)
+        if not view.visible(x, y, diameter):
+            return
+        level = int(GlowSprites.LEVELS * b + 0.5)
+        sprite = light.dark.sprite(diameter, self.dark, level, 'flare') if level > 0 else None
+        if sprite is not None:
+            half = diameter >> 1
+            view.screen.blit(sprite, (int(x) - half, int(y) - half), special_flags=MULT)
+
+
+class _DustCue(_Cue):
+    """
+    Dust clouds thrown out from a point (Relentless Charge: cavalry arriving).
+    Normal-blend soft puffs that swell, drift outward and thin out.
+    """
+
+    def __init__(self, spec, effect, point):
+        super().__init__(spec, effect)
+        self.point = point
+        rng = random.Random(effect.seed ^ stable_seed('dust', self.at, point))
+        d0, d1 = spec.get('distance', (0.8, 2.4))
+        l0, l1 = spec.get('life', (0.9, 1.6))
+        colours = [tuple(c) for c in spec.get('colours', ((170, 108, 62),))]
+        self.size = spec.get('size', (0.8, 2.2))
+        self.alpha = spec.get('alpha', 200)
+        self.softness = spec.get('softness', 0.6)
+        spread = spec.get('spread', 0.1)
+        # (angle, distance, 1 / life, delay, colour)
+        self.puffs = [(rng.uniform(0.0, _TWO_PI), rng.uniform(d0, d1), 1.0 / rng.uniform(l0, l1),
+                       rng.uniform(0.0, spread), colours[rng.randrange(len(colours))])
+                      for _ in range(spec.get('count', 10))]
+        self.duration = spread + l1
+
+    def brightness(self, t):
+        return 1.0 if 0.0 <= t < self.duration else 0.0
+
+    def render(self, light, view, t):
+        if not 0.0 <= t < self.duration:
+            return
+        x0, y0 = view.to_screen(self.point)
+        radius = view.radius
+        if not view.visible(x0, y0, radius * 6):
+            return
+        s0, s1 = self.size
+        tint = light.tint
+        seq = []
+        for angle, dist, inv_life, delay, colour in self.puffs:
+            u = (t - delay) * inv_life
+            if u < 0.0 or u >= 1.0:
+                continue
+            r = dist * (1.0 - (1.0 - u) ** 2) * radius
+            alpha = self.alpha * min(1.0, u * 6.0) * (1.0 - u) ** 1.2
+            diameter = max(4, int((s0 + (s1 - s0) * u) * radius) & ~3)
+            sprite = tint.sprite(diameter, colour, alpha, self.softness)
+            if sprite is None:
+                continue
+            half = diameter >> 1
+            x = x0 + math.cos(angle) * r
+            y = y0 + math.sin(angle) * r * 0.6 - 0.4 * u * radius   # flattened, rising
+            seq.append((sprite, (int(x) - half, int(y) - half)))
+        if seq:
+            view.screen.blits(seq, doreturn=False)
+
+
+class _CurtainCue(_Cue):
+    """
+    A wavy curtain of colour sweeping across the whole screen, left to right,
+    with embers flaring where its front passes (Vow of Silence). Screen space:
+    it does not follow the camera. The strip is baked once per cue (~2-4 ms);
+    a frame is one or two strip blits plus the embers.
+    """
+
+    def __init__(self, spec, effect):
+        super().__init__(spec, effect)
+        self.sweep = spec.get('sweep', 1.4)
+        self.width_share = spec.get('width', 0.2)
+        self.wave = spec.get('wave', 0.05)
+        self.alpha = spec.get('alpha', 150)
+        self.embers_spec = spec.get('embers', 60)
+        self._strip = None
+        self._glow = None
+        self._embers = None
+        self._seed = effect.seed
+
+    def _front(self, t, width, strip_w):
+        """Where the curtain's front is at time t (it starts off the left edge)."""
+        u = _smooth(min(1.0, t / self.sweep))
+        return -strip_w + (width + 2 * strip_w) * u
+
+    def _bake(self, width, height):
+        strip_w = max(40, int(width * self.width_share))
+        amp = int(height * self.wave)
+        # One row: transparent at the back (left), the colour building toward the front
+        row_w = strip_w + 2 * amp
+        row = pygame.Surface((row_w, 1), pygame.SRCALPHA)
+        r, g, b = self.raw_colour
+        for x in range(strip_w):
+            a = int(self.alpha * (x / float(strip_w)) ** 1.6)
+            row.set_at((x, 0), (r, g, b, a))
+        strip = pygame.Surface((row_w, height), pygame.SRCALPHA)
+        # The front's glow: additive light along the front edge
+        glow_w = max(8, strip_w // 6)
+        glow_row = light_fx.new_black_surface((glow_w + 2 * amp, 1))
+        lr, lg, lb = self.colour
+        for x in range(glow_w):
+            v = math.sin(math.pi * x / float(glow_w)) ** 2
+            glow_row.set_at((x, 0), (int(lr * v), int(lg * v), int(lb * v)))
+        glow = light_fx.new_black_surface((glow_w + 2 * amp, height))
+        rng = random.Random(self._seed)
+        phases = (rng.uniform(0, _TWO_PI), rng.uniform(0, _TWO_PI))
+        for y in range(height):
+            # Wavy front: two sine waves, so it doesn't look mechanical
+            off = int(amp + amp * 0.6 * math.sin(_TWO_PI * 2.0 * y / height + phases[0])
+                      + amp * 0.4 * math.sin(_TWO_PI * 5.0 * y / height + phases[1]))
+            off = max(0, min(2 * amp, off))
+            strip.blit(row, (off, y))
+            glow.blit(glow_row, (off, y))
+        if pygame.display.get_surface() is not None:
+            strip = strip.convert_alpha()
+        self._strip, self._glow = strip, glow
+        self._size = (width, height, strip_w, amp, glow_w)
+        # Embers: (x px, y share, size, life, when the front passes x)
+        self._embers = []
+        for _ in range(self.embers_spec):
+            ex = rng.random() * width
+            self._embers.append((ex, rng.random(), rng.uniform(0.5, 1.0), rng.uniform(0.6, 1.1),
+                                 self._passed_time(ex, width, strip_w)))
+
+    def render(self, light, view, t):
+        b = self.brightness(t)
+        if b <= 0.02:
+            return
+        width, height = view.width, view.height
+        if self._strip is None or self._size[:2] != (width, height):
+            self._bake(width, height)
+        _, _, strip_w, amp, glow_w = self._size
+        front = self._front(t, width, strip_w)
+        x = int(front - strip_w - amp)
+        screen = view.screen
+        alpha = int(255 * b)
+        self._strip.set_alpha(alpha if alpha < 252 else 255)
+        screen.blit(self._strip, (x, 0))
+        if b > 0.05:
+            if b < 0.99:
+                # Fade the front's light: a darkened copy (the glow strip is narrow)
+                faded = self._glow.copy()
+                v = int(255 * b)
+                faded.fill((v, v, v), special_flags=MULT)
+                screen.blit(faded, (int(front - glow_w // 2 - amp), 0), special_flags=ADD)
+            else:
+                screen.blit(self._glow, (int(front - glow_w // 2 - amp), 0), special_flags=ADD)
+        # Embers flare where the front has passed, then rise and fade
+        steps = GlowSprites.LEVELS
+        radius = view.radius
+        seq = []
+        for ex, ys, size, life, passed in self._embers:
+            if ex > front:
+                continue
+            u = (t - passed) / life
+            if u < 0.0 or u >= 1.0:
+                continue
+            level = int(steps * b * (1.0 - u) ** 1.5 + 0.5)
+            if level <= 0:
+                continue
+            diameter = _even(size * radius)
+            sprite = light.glow.sprite(diameter, self.colour, min(steps, level))
+            if sprite is None:
+                continue
+            half = diameter >> 1
+            seq.append((sprite, (int(ex) - half, int(ys * height - u * radius * 2.5) - half),
+                        None, ADD))
+        if seq:
+            screen.blits(seq, doreturn=False)
+
+    def _passed_time(self, x, width, strip_w):
+        """When the front reached screen x (inverse of _front, by bisection)."""
+        lo, hi = 0.0, self.sweep
+        for _ in range(12):
+            mid = (lo + hi) / 2.0
+            if self._front(mid, width, strip_w) < x:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
+
+_POINT_CUES = {'rays': _RaysCue, 'flare': _FlareCue, 'ring': _RingCue, 'sparks': _SparksCue,
+               'drain': _DrainCue, 'dust': _DustCue}
 _TERRITORY_CUES = {'rim': _RimCue, 'motes': _MotesCue}
 
 
@@ -806,6 +1134,13 @@ class HeroAbilityEffect:
                 territories = anchors.get(spec.get('anchor', 'territory'))
                 if territories:
                     self.cues.append(_TERRITORY_CUES[kind](shifted, self, territories))
+            elif kind == 'comets':
+                source = anchors.get(spec.get('from', 'source'))
+                dest = anchors.get(spec.get('to', 'dest'))
+                if source is not None and dest is not None:
+                    self.cues.append(_CometsCue(shifted, self, source, dest))
+            elif kind == 'curtain':
+                self.cues.append(_CurtainCue(shifted, self))
 
     def update(self, delta_time):
         self.elapsed += delta_time
@@ -833,17 +1168,24 @@ class HeroAbilityEffect:
 class HeroAura:
     """
     A passive aura (Defiance, Haste, Safe Haven) over a set of territories, shown
-    while its hero is selected. Fades in and out over the style's 'fade'.
+    while its hero is selected; also persistent effects drawn the same way (the
+    Embargo embers: fireflies without the outline light). Fades in and out over
+    the style's 'fade'.
 
     Stateless apart from the fade: the shimmer and the fireflies are drawn from
     the clock passed to render(), and the outline and spawn points are cached
     in the shared HeroLight per territory set.
+
+    Args:
+        key: an aura in style['auras'], or a persistent effect in style['persistent']
     """
 
     def __init__(self, light, key, style=None):
         self.light = light
         self.key = key
-        self.style = style or light.style['auras'][key]
+        if style is None:
+            style = light.style['auras'].get(key) or light.style['persistent'][key]
+        self.style = style
         self.colour = light.light_colour(self.style['colour'], self.style['white_mix'])
         # Fireflies: a brighter, whiter core than the outline (a spark), coloured by
         # their halo
@@ -861,7 +1203,8 @@ class HeroAura:
         territories = tuple(sorted(territories))
         if territories != self.territories:
             self.territories = territories
-            self.outline = self.light.outline(territories) if territories else []
+            has_rim = 'rim' in self.style
+            self.outline = self.light.outline(territories) if territories and has_rim else []
 
     def update(self, delta_time, shown):
         self.shown = shown and bool(self.territories)
@@ -879,11 +1222,12 @@ class HeroAura:
         if not self.visible:
             return
         strength = _smooth(self.strength)
-        rim = self.style['rim']
-        levels = self.light.shimmer_levels(rim['base'], rim['wave'], strength * rim['intensity'])
-        shift = int(clock * rim['wave_speed'] * 256.0) & 255
-        self.light.draw_outline(view, self.outline, self.style['colour'], self.colour, rim, levels,
-                                shift, strength)
+        rim = self.style.get('rim')
+        if rim:
+            levels = self.light.shimmer_levels(rim['base'], rim['wave'], strength * rim['intensity'])
+            shift = int(clock * rim['wave_speed'] * 256.0) & 255
+            self.light.draw_outline(view, self.outline, self.style['colour'], self.colour, rim,
+                                    levels, shift, strength)
         motes = self.style['motes']
         self.light.draw_motes(view, self.territories, self.mote_colour, self.motes, motes, clock,
                               strength * motes['intensity'], self.style['colour'])

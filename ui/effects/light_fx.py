@@ -198,6 +198,35 @@ class GlowSprites:
         return sprites if complete else None
 
 
+class DarkSprites(GlowSprites):
+    """
+    Anti-light: soft dots that darken what is under them, drawn with
+    BLEND_RGB_MULT (white = no change). The centre multiplies by `colour`
+    (e.g. a dark purple) at full level; level 0 would change nothing.
+    Same caching and build budget as GlowSprites.
+    """
+
+    MAX_SPRITES = 400
+
+    def _build(self, key):
+        diameter, colour, level, profile = key
+        grey = pygame.transform.smoothscale(self._base(profile), (diameter, diameter))
+        # How much each channel is taken away at the centre, scaled by the level
+        depth = tuple(int((255 - c) * level / float(self.LEVELS)) for c in colour[:3])
+        grey.fill(depth, special_flags=pygame.BLEND_RGB_MULT)
+        sprite = pygame.Surface((diameter, diameter), 0, 32)
+        sprite.fill((255, 255, 255))
+        sprite.blit(grey, (0, 0), special_flags=pygame.BLEND_RGB_SUB)
+        if pygame.display.get_surface() is not None:
+            sprite = sprite.convert()
+        self._sprites[key] = sprite
+        self.sprites_built += 1
+        if len(self._sprites) > self.MAX_SPRITES:
+            for _ in range(self.MAX_SPRITES // 10):
+                self._sprites.popitem(last=False)
+        return sprite
+
+
 # ========================================
 # TINT SPRITES (normal blend)
 # ========================================
@@ -217,7 +246,7 @@ class TintSprites:
 
     def __init__(self):
         self._sprites = OrderedDict()   # (diameter, colour, alpha level, softness) -> Surface
-        self._bases = {}                # (colour, softness) -> full-alpha soft dot
+        self._bases = {}                # (colour, softness) -> full-alpha soft dot (~1 ms each)
         self._budget = _BuildBudget(self.BUILDS_PER_FRAME, self.BUILD_MS_PER_FRAME)
         self.sprites_built = 0
 
@@ -377,6 +406,43 @@ class SoftRing:
             scaled.fill((255, 255, 255, int(alpha)), special_flags=pygame.BLEND_RGBA_MULT)
         half = size // 2
         screen.blit(scaled, (x - half, y - half))
+
+
+# ========================================
+# VIGNETTE
+# ========================================
+
+def vignette_surface(size, colour, centre_alpha, edge_alpha, inner=0.3, outer=1.3):
+    """
+    A colour wash that is faint in the middle and strong toward the edges
+    (per-pixel alpha), for a whole-map mood such as the Vow of Silence.
+
+    Baked once per size: concentric ellipses at 1/8 resolution, smoothscaled up
+    (~5-10 ms). Draw with set_alpha() for a global fade or shimmer - no
+    per-frame fill.
+
+    Args:
+        inner / outer: where the alpha starts rising / reaches edge_alpha, as a
+            share of the half-size (1.0 = the middle of an edge; corners ~1.41)
+    """
+    width, height = size
+    small_w, small_h = max(8, width // 8), max(8, height // 8)
+    small = pygame.Surface((small_w, small_h), pygame.SRCALPHA)
+    small.fill((colour[0], colour[1], colour[2], edge_alpha))
+    cx, cy = small_w / 2.0, small_h / 2.0
+    steps = 120
+    reach = 1.45
+    for k in range(steps, 0, -1):
+        s = reach * k / steps
+        t = max(0.0, min(1.0, (s - inner) / (outer - inner)))
+        alpha = int(centre_alpha + (edge_alpha - centre_alpha) * t * t * (3.0 - 2.0 * t))
+        rect = pygame.Rect(0, 0, max(1, int(2 * s * cx)), max(1, int(2 * s * cy)))
+        rect.center = (int(cx), int(cy))
+        pygame.draw.ellipse(small, (colour[0], colour[1], colour[2], alpha), rect)
+    surface = pygame.transform.smoothscale(small, (width, height))
+    if pygame.display.get_surface() is not None:
+        surface = surface.convert_alpha()
+    return surface
 
 
 # ========================================

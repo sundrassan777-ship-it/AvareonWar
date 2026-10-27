@@ -104,19 +104,54 @@ class HeroPreview(Preview):
 
     # ---------- effects ----------
 
-    def anchors(self, ability, territory):
-        """What MapRenderer.trigger_ability_effect() resolves for a cast on this territory."""
-        spec = self.hero_style['abilities'][ability]
+    def _plot_world(self, territory, index=0):
         plots = map_data.TERRITORY_PLOTS.get(territory) or []
-        keep = ((plots[0][0] * self.map_scale, plots[0][1] * self.map_scale) if plots
-                else self.world_centres[territory])
+        if index < len(plots):
+            return plots[index][0] * self.map_scale, plots[index][1] * self.map_scale
+        return self.world_centres[territory]
+
+    def _nearest_neighbours(self, territory):
+        cx, cy = self.world_centres[territory]
+        return sorted((t for t in map_data.get_neighbors(territory) if t in self.world_polygons),
+                      key=lambda t: (self.world_centres[t][0] - cx) ** 2
+                      + (self.world_centres[t][1] - cy) ** 2)
+
+    def anchors(self, ability, territory):
+        """
+        What MapRenderer._ability_anchors() resolves, for a cast on this territory
+        by a hero whose Keep is on its first plot: arcs run to / from its nearest
+        neighbour, Keeps are the first plots of it and its neighbours, enemies
+        are the territories two steps away.
+        """
+        import math
+        import random
+        spec = self.hero_style['abilities'][ability]
         seed = stable_seed(ability, territory)
-        return {
-            'target': self.world_centres[territory],
+        rng = random.Random(seed)
+        keep = self._plot_world(territory)
+        neighbours = self._nearest_neighbours(territory)
+        other = neighbours[0] if neighbours else territory
+        cx, cy = self.world_centres[territory]
+        far = sorted({t for n in neighbours for t in self._nearest_neighbours(n)}
+                     - set(neighbours) - {territory})
+        anchors = {
+            'target': (cx, cy),
             'keep': keep,
             'territory': [territory],
             'points': self.light.points_inside(territory, spec.get('points', 0), seed),
-        }, seed
+            'satellites': [(cx + d * math.cos(a), cy + d * math.sin(a))
+                           for a, d in ((math.pi / 2 * i + rng.uniform(-0.3, 0.3), rng.uniform(14, 22))
+                                        for i in range(4))],
+            'keeps': [self._plot_world(t) for t in [territory] + neighbours],
+            'territories': [territory] + neighbours[:2],
+            'enemy_territories': far,
+            'enemy_keeps': [self._plot_world(t) for t in far[:3]],
+        }
+        if ability == 'Royal Charisma':          # from the target to the hero's Keep
+            anchors['source'], anchors['dest'] = self.world_centres[other], keep
+        else:                                    # Valorous Charge: Keep to target
+            anchors['source'], anchors['dest'] = keep, self.world_centres[other]
+        return anchors, seed
 
     def cast(self, ability, territory):
         if territory is None:
@@ -293,7 +328,9 @@ def run_sheet(path, look, size, zoom=2.4, magnify=2, only=None):
     rows += [('ability', name) for name in preview.hero_style['abilities']]
     if only:
         rows = [r for r in rows if r[1] in only]
-    times = (0.05, 0.15, 0.3, 0.6, 1.0, 1.5)
+    aura_times = (0.05, 0.15, 0.3, 0.6, 1.0, 1.5)
+    ability_times = (0.08, 0.25, 0.5, 0.9, 1.3, 1.8)   # arcs and Regicide run ~2 s
+    times = aura_times
     sheet = pygame.Surface((cell_w * len(times), (cell_h + 20) * len(rows)))
     sheet.fill((30, 30, 30))
     for row, (kind, name) in enumerate(rows):
@@ -304,6 +341,7 @@ def run_sheet(path, look, size, zoom=2.4, magnify=2, only=None):
         preview.centre = list(raw_centre)
         preview.clamp()
         cx, cy = preview.to_screen(*raw_centre)
+        times = aura_times if kind == 'aura' else ability_times
         for col, t in enumerate(times):
             preview.effects = []
             preview.aura = None

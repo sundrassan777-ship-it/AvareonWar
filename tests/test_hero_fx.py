@@ -268,6 +268,10 @@ def _anchors(light, spec):
         'points': light.points_inside('Mid', spec.get('points', 0), 1),
         'source': (50.0, 50.0),
         'dest': (250.0, 50.0),
+        'keeps': [(130.0, 60.0), (230.0, 60.0)],
+        'enemy_territories': ['East', 'South'],
+        'enemy_keeps': [(250.0, 50.0)],
+        'satellites': [(165.0, 50.0), (150.0, 65.0), (135.0, 50.0), (150.0, 35.0)],
     }
 
 
@@ -419,7 +423,8 @@ class TestStyles:
         assert get_hero_fx_style('unknown') is HERO_FX_STYLES['2d']
 
     def test_cue_kinds_are_known(self):
-        known = {'rays', 'flare', 'ring', 'sparks', 'rim', 'motes', 'each'}
+        known = {'rays', 'flare', 'ring', 'sparks', 'rim', 'motes', 'each', 'comets', 'drain',
+                 'dust', 'curtain'}
 
         def kinds(cues):
             for cue in cues:
@@ -454,3 +459,289 @@ def test_production_rays_unchanged_by_the_shared_helpers():
     assert pge._new_black_surface is light_fx.new_black_surface
     assert pge.light_colour((100, 150, 255)) == light_fx.light_colour(
         (100, 150, 255), pge.RAY_STYLE['white_mix'], pge.RAY_STYLE['warm_white'])
+
+
+# ========================================
+# Game integration (real Game)
+# ========================================
+
+@pytest.fixture(scope='module')
+def game(display):
+    pygame.display.set_mode((1600, 900))
+    from main import Game
+    g = Game()
+    g.initialize_game({
+        'num_players': 3,
+        'player_is_ai': [False, True, True],
+        'player_ai_difficulty': [None, 'Normal', 'Normal'],
+    })
+    g.game_state.phase = 'playing'
+    g.game_state.current_player = 0
+    return g
+
+
+def _keep_with_neighbours(game, player=0):
+    """Give `player` a territory on screen and all its neighbours; returns the territory."""
+    import map_data
+    gs = game.game_state
+    width, height = game.screen.get_size()
+    for territory, centre in sorted(game.scaled_centers.items()):
+        x, y = game.world_to_screen(centre)
+        if 300 < x < width - 300 and 250 < y < height - 250 and game.scaled_plots.get(territory):
+            for t in [territory] + list(map_data.get_neighbors(territory)):
+                gs.territory_owners[t] = player
+            gs._territory_owners_version += 1
+            return territory
+    pytest.skip('no territory on screen at the starting camera')
+
+
+@pytest.fixture
+def seledra(game):
+    """Seledra Rennervail (Defiance) in a Keep of player 0, selected; undone afterwards."""
+    gs = game.game_state
+    keep = _keep_with_neighbours(game)
+    gs.heroes.setdefault(0, {})['Seledra Rennervail'] = {
+        'keep_territory': keep, 'keep_plot': 0, 'status': 'active'}
+    game.selected_hero = 'Seledra Rennervail'
+    yield keep
+    game.selected_hero = None
+    gs.heroes.get(0, {}).pop('Seledra Rennervail', None)
+    for _ in range(40):
+        game.update_map_effects(1 / 30)
+
+
+class TestGameIntegration:
+
+    def test_selected_hero_shows_its_aura_over_the_covered_territories(self, game, seledra):
+        renderer = game.map_renderer
+        for _ in range(20):
+            game.update_map_effects(1 / 30)
+        aura = renderer.hero_auras['defiance']
+        expected = game.game_state.get_defiance_protected_territories(0)
+        assert aura.visible and aura.strength == 1.0
+        assert set(aura.territories) == set(expected)
+        assert not renderer.hero_auras['haste'].visible
+
+    def test_aura_fades_out_when_the_hero_is_deselected(self, game, seledra):
+        for _ in range(20):
+            game.update_map_effects(1 / 30)
+        game.selected_hero = None
+        game.update_map_effects(0.1)
+        aura = game.map_renderer.hero_auras['defiance']
+        assert 0.0 < aura.strength < 1.0
+        for _ in range(20):
+            game.update_map_effects(1 / 30)
+        assert not aura.visible
+
+    def test_aura_territories_are_not_recomputed_every_frame(self, game, seledra, monkeypatch):
+        gs = game.game_state
+        calls = []
+        original = gs.get_defiance_protected_territories
+        monkeypatch.setattr(gs, 'get_defiance_protected_territories',
+                            lambda p: calls.append(p) or original(p))
+        game.map_renderer._hero_aura_sync = None
+        for _ in range(30):
+            game.update_map_effects(1 / 30)
+        assert len(calls) == 1
+        gs._territory_owners_version += 1          # ownership changed: recomputed once
+        game.update_map_effects(1 / 30)
+        assert len(calls) == 2
+
+    def test_aura_is_drawn_under_the_plots(self, game, seledra):
+        for _ in range(20):
+            game.update_map_effects(1 / 30)
+        game.draw()
+        with_aura = pygame.image.tostring(game.screen, 'RGB')
+        game.selected_hero = None
+        for _ in range(30):
+            game.update_map_effects(1 / 30)
+        game.draw()
+        assert pygame.image.tostring(game.screen, 'RGB') != with_aura
+
+    def test_embargo_embers_follow_the_blocked_players(self, game):
+        gs = game.game_state
+        renderer = game.map_renderer
+        for territory in sorted(game.scaled_polygons)[:3]:
+            gs.territory_owners[territory] = 1
+        gs._territory_owners_version += 1
+        gs.embargo_blocked_players[:] = [1]
+        try:
+            for _ in range(30):
+                game.update_map_effects(1 / 30)
+            embers = renderer.embargo_embers
+            owned_by_1 = {t for t, o in gs.territory_owners.items() if o == 1}
+            assert embers.visible and set(embers.territories) == owned_by_1
+            game.draw()   # draws without error
+        finally:
+            gs.embargo_blocked_players[:] = []
+        for _ in range(40):
+            game.update_map_effects(1 / 30)
+        assert not renderer.embargo_embers.visible
+
+    def test_embargo_embers_cover_ai_casts_too(self, game):
+        """The embers come from game state, so an Embargo cast by the AI (which
+        never reaches trigger_ability_effect) shows them as well."""
+        gs = game.game_state
+        gs._activate_embargo(1)                    # player 1 (AI) embargoes its enemies
+        try:
+            for _ in range(30):
+                game.update_map_effects(1 / 30)
+            assert game.map_renderer.embargo_embers.visible
+            assert {gs.territory_owners[t] for t in game.map_renderer.embargo_embers.territories} \
+                <= set(gs.embargo_blocked_players)
+        finally:
+            gs.embargo_blocked_players[:] = []
+            for _ in range(40):
+                game.update_map_effects(1 / 30)
+
+    def test_silence_fog_is_baked_once(self, game):
+        gs = game.game_state
+        gs.hero_silence_status[1] = 2
+        gs.silence_activation_time = None
+        try:
+            game.draw_silence_fog_overlay()
+            fog = game._cached_silence_fog
+            game.screen.fill((200, 200, 200))
+            game.draw_silence_fog_overlay()
+            assert game._cached_silence_fog is fog
+            # Faded in: alpha 255 (a partial alpha would put every blit on pygame's slow
+            # path; None would switch the per-pixel alpha off: an opaque red wall)
+            assert fog.get_alpha() == 255
+            from main import TOP_PANEL_HEIGHT
+            middle = game.screen.get_at((fog.get_width() // 2, TOP_PANEL_HEIGHT + fog.get_height() // 2))
+            assert middle.r > 150 and middle.g > 120   # the map still shows through
+            # A vignette: the edge of the map is redder than its middle
+            assert fog.get_at((2, fog.get_height() // 2)).a > fog.get_at(
+                (fog.get_width() // 2, fog.get_height() // 2)).a
+        finally:
+            gs.hero_silence_status[1] = 0
+
+    def test_display_change_rebuilds_the_hero_light(self, game):
+        renderer = game.map_renderer
+        light = renderer.hero_light
+        renderer.rebuild_scale_caches()
+        assert renderer.hero_light is not light
+        assert renderer.hero_auras['defiance'].light is renderer.hero_light
+
+
+# ========================================
+# Every cast through the game (phase 3)
+# ========================================
+
+def _give(game, player, hero, keep):
+    gs = game.game_state
+    gs.buildings.setdefault(keep, {})[0] = 'Keep'
+    gs.heroes.setdefault(player, {})[hero] = {'keep_territory': keep, 'keep_plot': 0, 'status': 'active'}
+
+
+class TestCastsInGame:
+
+    @pytest.fixture
+    def board(self, game):
+        """Player 0 owns a territory and its neighbours, the rest belongs to 1 and 2."""
+        import map_data
+        gs = game.game_state
+        saved = (dict(gs.territory_owners), {k: dict(v) for k, v in gs.buildings.items()},
+                 {k: dict(v) for k, v in gs.heroes.items()}, gs.hero_ability_cooldowns)
+        gs.hero_ability_cooldowns = {}     # no ability on cooldown from an earlier test
+        keep = _keep_with_neighbours(game)
+        mine = {keep} | set(map_data.get_neighbors(keep))
+        for i, t in enumerate(sorted(game.scaled_polygons)):
+            if t not in mine:
+                gs.territory_owners[t] = 1 + i % 2
+        gs._territory_owners_version += 1
+        target = next(t for t in sorted(map_data.get_neighbors(keep)) if t in game.scaled_centers)
+        enemy = next(t for t, o in sorted(gs.territory_owners.items()) if o == 1 and t in game.scaled_centers)
+        game.map_renderer.ability_effects = []
+        yield keep, target, enemy
+        gs.territory_owners.clear()
+        gs.territory_owners.update(saved[0])
+        gs.buildings.clear()
+        gs.buildings.update(saved[1])
+        gs.heroes.clear()
+        gs.heroes.update(saved[2])
+        gs.hero_ability_cooldowns = saved[3]
+        gs._territory_owners_version += 1
+        gs.embargo_blocked_players[:] = []
+        game.map_renderer.ability_effects = []
+
+    def test_every_active_ability_shows_an_effect(self, game, board):
+        """Every active ability in HERO_TYPES has a style and shows on the map when cast."""
+        gs = game.game_state
+        keep, target, enemy = board
+        for hero, info in gs.HERO_TYPES.items():
+            _give(game, 0, hero, keep)
+        actives = sorted({a['name'] for info in gs.HERO_TYPES.values()
+                          for a in info['abilities'] if a['type'] == 'active'})
+        for ability in actives:
+            assert ability in HERO_FX_STYLE['abilities'], ability
+            hero = next(h for h, info in gs.HERO_TYPES.items()
+                        if any(a['name'] == ability for a in info['abilities']))
+            game.map_renderer.ability_effects = []
+            game.play_ability_effect(0, hero, ability, enemy if ability != 'Levy' else keep)
+            effects = game.map_renderer.ability_effects
+            assert len(effects) == 1 and effects[0].cues, ability
+            for _ in range(6):                        # draws without error
+                game.update_map_effects(1 / 30)
+                game.draw()
+
+    def test_arcs_run_between_the_keep_plot_and_the_target(self, game, board):
+        keep, target, enemy = board
+        _give(game, 0, 'Aidam Narn', keep)
+        game.play_ability_effect(0, 'Aidam Narn', 'Royal Charisma', enemy)
+        comets = next(c for c in game.map_renderer.ability_effects[-1].cues
+                      if type(c).__name__ == '_CometsCue')
+        sx, sy, _, _, dx, dy = comets.curve
+        assert (sx, sy) == tuple(game.scaled_centers[enemy])          # from the target...
+        assert (dx, dy) == tuple(game.scaled_plots[keep][0])          # ...to the Keep plot
+
+    def test_a_cast_builds_no_territory_borders(self, game, board):
+        """Borders are built at load: an Embargo over half the map must not hitch."""
+        keep, target, enemy = board
+        _give(game, 0, 'Evain Nithieln', keep)
+        light = game.map_renderer.hero_light
+        built = dict(light._fine)
+        start = time.perf_counter()
+        game.play_ability_effect(0, 'Evain Nithieln', 'Embargo')
+        assert light._fine == built
+        assert (time.perf_counter() - start) * 1000 < 40
+
+    def test_ai_cast_sequential_is_shown(self, game, board):
+        """The AI calls game_state directly (ai_player.py): its casts used to show nothing."""
+        from ai_player import AIPlayer
+        gs = game.game_state
+        keep, target, enemy = board
+        _give(game, 1, 'Evain Nithieln', enemy)
+        gs.ability_fx_events = []
+        AIPlayer(1, 1)._execute_action_internal(
+            gs, 'hero_ability', {'hero_type': 'Evain Nithieln', 'ability_name': 'Embargo', 'target': None})
+        assert gs.ability_fx_events == [(1, 'Evain Nithieln', 'Embargo', None)]
+        game.update_map_effects(1 / 30)
+        assert gs.ability_fx_events == []
+        assert len(game.map_renderer.ability_effects) == 1
+
+    def test_ai_cast_simultaneous_is_shown_once(self, game, board):
+        from simultaneous.sim_phase_manager import SimPhaseManager
+        gs = game.game_state
+        keep, target, enemy = board
+        _give(game, 1, 'Evain Nithieln', enemy)
+        _give(game, 0, 'Evain Nithieln', keep)
+        manager = SimPhaseManager.__new__(SimPhaseManager)
+        manager.gs = gs
+        gs.ability_fx_events = []
+        manager._apply_hero_ability_order({'player_id': 1, 'hero_type': 'Evain Nithieln',
+                                           'ability_name': 'Embargo', 'target': None})
+        assert gs.ability_fx_events == [(1, 'Evain Nithieln', 'Embargo', None)]
+        # A human's order is never recorded here (their cast shows when it is made)
+        gs.ability_fx_events = []
+        manager._apply_hero_ability_order({'player_id': 0, 'hero_type': 'Evain Nithieln',
+                                           'ability_name': 'Embargo', 'target': None})
+        assert gs.ability_fx_events == []
+
+    def test_casts_finish_and_are_removed(self, game, board):
+        keep, target, enemy = board
+        _give(game, 0, 'Serthus Diarcess', keep)
+        game.play_ability_effect(0, 'Serthus Diarcess', 'Decisive Strike', enemy)
+        for _ in range(120):
+            game.update_map_effects(1 / 30)
+        assert game.map_renderer.ability_effects == []

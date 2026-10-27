@@ -844,6 +844,11 @@ class TestHeroAbilityFxPerformance:
         if ability == 'Vow of Silence':
             gs.hero_silence_status[1] = 2
         sync_camera(hero_game, zoom=hero_game.camera.min_zoom)
+        # Frames before the cast: the camera change above makes the next frame rescale
+        # the map (~50 ms), which is not the effect's cost
+        for _ in range(5):
+            hero_game.update_map_effects(1.0 / 60.0)
+            hero_game.draw()
 
         renderer = hero_game.map_renderer
         start = time.perf_counter()
@@ -862,6 +867,20 @@ class TestHeroAbilityFxPerformance:
         result = self._run(hero_game, name, frames=90, warmup=0,
                            trigger_ms=round(trigger_ms, 3), keeps=keeps)
         assert result['worst_frame_ms'] < 150
+
+    def test_embargo_persistent(self, hero_game):
+        """What an Embargo leaves for the rest of the turn, after its cast effect is over."""
+        populate_map(hero_game, buildings_per_territory=1)
+        gs = hero_game.game_state
+        give_hero(hero_game, 'Evain Nithieln', best_keep_territory(hero_game))
+        gs._activate_embargo(0)
+        hero_game.map_renderer.trigger_ability_effect('Embargo', None, 0)
+        sync_camera(hero_game, zoom=hero_game.camera.min_zoom)
+        territories = sum(1 for o in gs.territory_owners.values() if o in gs.embargo_blocked_players)
+        # 4 s of warm-up: the cast effect has finished, only what persists is left
+        result = self._run(hero_game, 'embargo_persistent', frames=60, warmup=240,
+                           territories=territories)
+        assert result['worst_frame_ms'] < 100
 
     def test_silence_fog(self, hero_game):
         """The red fog over the map while any player is silenced (a whole turn)."""

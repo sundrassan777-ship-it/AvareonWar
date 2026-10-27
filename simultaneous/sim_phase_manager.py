@@ -760,6 +760,16 @@ class SimPhaseManager:
 
         self.gs.current_player = original_player
 
+    def _record_ability_fx(self, player_id, hero_type, ability_name, target):
+        """
+        Have the cast shown on the map (main.py drains game_state.ability_fx_events).
+        Only AI orders come through here - a human's cast shows when it is made -
+        but only the AI's are recorded, so none can ever show twice.
+        """
+        events = getattr(self.gs, 'ability_fx_events', None)
+        if events is not None and self.gs.is_ai_player(player_id):
+            events.append((player_id, hero_type, ability_name, target))
+
     def _apply_hero_ability_order(self, order: dict):
         """Apply a hero ability order to game state."""
         player_id = order.get('player_id')
@@ -823,10 +833,12 @@ class SimPhaseManager:
                         self.gs.hero_ability_cooldowns.setdefault(player_id, {}) \
                             .setdefault(hero_type, {})[ability_name] = cooldown
                         sim_log.order(player_id, "hero_ability", f"{ability_name} on {target}")
+                        self._record_ability_fx(player_id, hero_type, ability_name, target)
                     else:
                         sim_log.error(f"Hero ability {ability_name} on {target} failed: {outcome}")
             elif result is True:
                 sim_log.order(player_id, "hero_ability", f"{hero_type}'s {ability_name}")
+                self._record_ability_fx(player_id, hero_type, ability_name, None)
             elif isinstance(result, str) and result != 'requires_targeting':
                 # Error message returned
                 sim_log.error(f"Hero ability failed: {result}")
