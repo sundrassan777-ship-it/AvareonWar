@@ -11,7 +11,8 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 ### Improvements
 
 - **New turn banner.** Each turn opens with the nation's name in gold in a carved bronze
-  frame, glowing, over a darkened map. Very long nation names now fit on screen.
+  frame, glowing, over a darkened map. Very long nation names now fit on screen, on two
+  evenly split lines.
 - **New battle markers.** Battles to resolve show crossed swords over red light, with motes
   of light spiralling in; battles another player resolves are grey. Allies arriving together
   (simultaneous turns) are marked in green. Markers grow and shrink with the zoom, and so

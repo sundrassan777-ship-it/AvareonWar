@@ -35,8 +35,26 @@ with Cinzel text.
   (`edge_wave_effect.py` and the old `turn_announcement_effect.py`) and the dead plot passes
   `_draw_completed_building_plots` / `_draw_under_construction_plots` /
   `_draw_empty_plot_markers` (~520 lines; `_draw_all_plots_unified` replaced them).
+- **After the owner's in-game test** (markers stuttered, the banner and its glow lagged,
+  "'s Turn" started a line):
+  - Marker pulses move out in at most `PULSE_STEPS` (40) steps with one brightness each,
+    so a pulse fits its ring cache at any zoom. At mid and max zoom it used to need
+    100-200 frames for a cache of 96: it rebuilt rings every frame and skipped a pulse in
+    20-25% of frames. Now nothing is rebuilt after the first pulse period, and a step not
+    built yet shows the one before (`SoftRing.denied`).
+  - Turn banner: the darkening is a multiply, and while it fades a blend of the darkened
+    frame copy (2.3 ms, was a 4.2 ms faded per-pixel-alpha vignette, same pixels). The
+    gold glow is tinted every frame on four strips (`GlowFrame.grey()`) and fades
+    without the 10 visible steps (and their 1.7 ms rebuilds). It shows with the box from
+    the start, scaled with it while it grows (it used to wait ~0.3 s for the full-size
+    box; owner). The banner grows by a smoothscale each frame (was 12 size steps of
+    ~36 px).
+  - A long name splits into two balanced lines between words ("Empire of North" /
+    "Angarfen Forest's Turn"; was the name / "'s Turn").
+  - `GlowFrame` tints by a multiply blit (2.5x faster than a fill, same pixels).
 - Cost at 1600x900: 6 battle markers 5.2 -> 0.9 ms, 2 alliance markers 3.3 -> 0.3 ms,
-  4 Castle bursts 5.2 -> 1.0 ms; the turn banner 2.4 -> 3.0 ms (its vignette fade).
+  4 Castle bursts 5.2 -> 1.0 ms. The turn banner was 2.4 ms; it is ~1 ms held, ~3 ms
+  fading and ~4 ms growing (0.3 s).
 - Preview: `tools/event_fx_preview.py`. Tests: `tests/test_event_fx.py`,
   `TestEventFxPerformance`; `test_sidebar_collapse.py`'s particle test is now
   `test_ingenuity_motes_stay_on_the_panel`.

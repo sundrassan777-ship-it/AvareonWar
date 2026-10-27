@@ -1023,7 +1023,9 @@ production rays and hero abilities. Select → order → target read as one inpu
 - **Turn banner** ("X's Turn" / "Turn N"): the screen darkens toward its edges (a vignette),
   a carved bronze frame round dark parchment grows in with the name in Cinzel gold, gold
   light glows round the frame, gold motes drift up; it fades after the hold. A very long
-  name goes on two lines and, if still too wide, gets a smaller font. Timing unchanged.
+  name goes on two balanced lines, split between words so "'s" stays with the name
+  ("Empire of North" / "Angarfen Forest's Turn"), and, if still too wide, gets a smaller
+  font. Timing unchanged.
 - **Master Negotiator glow** (while its discount lasts): a green wash round the edges of the
   map and green motes rising there - for its caster only, by its spell sound's rule.
 - **Ruthless Ingenuity** (Erec Silvyr, tech tree open): blue motes rising over the panel.
@@ -1046,11 +1048,26 @@ production rays and hero abilities. Select → order → target read as one inpu
   drive and layer it - there is no castle effect list any more.
 - **Screen and panel motes** (banner, Negotiator, Ingenuity) are `light_fx.RisingMotes`:
   closed form from a clock, a spawn function per user, nothing stored per mote.
-- **Vignettes fade with `set_alpha`** only while fading; a held vignette blits at 255 (the
-  fast path). The turn banner's vignette is the one per-frame full-screen cost left
-  (~0.5 ms more than the old flat overlay, during the banner's 1.5 s).
+- **A marker pulse is a bounded number of steps** (`marker_fx_effect.PULSE_STEPS`, 40): its
+  brightness is worked back from its step, so a whole pulse is 2 cached ring frames a step
+  and stays in its `SoftRing` cache at any zoom. A frame per radius and brightness was
+  100-200 frames at mid and max zoom: the cache thrashed, and a pulse missed a frame
+  whenever the build budget ran out (the owner saw the markers stutter). A step not cached
+  yet when the budget is spent shows the step before it (`SoftRing.denied`).
+- **Full-screen vignettes:** a per-pixel-alpha surface faded with `set_alpha()` takes a slow
+  blend (4.2 ms at 1600x900, against 1.0 ms at 255). The turn banner darkens with a
+  multiply instead (0.75 ms) and, while it fades, blends the darkened copy of the frame
+  over it with a whole-surface alpha (~2.3 ms): the same pixels. The map's vignettes
+  (Silence, Negotiator) still use `set_alpha()`, only during their fade-in.
+- **Large glows that fade are tinted every frame:** the banner's gold glow multiplies the
+  grey glow (`GlowFrame.grey()`) on its four strips each frame (~0.1 ms) - cached
+  `GlowFrame` levels stepped visibly over a large area and cost ~1.7 ms and ~1 MB each.
+  The growing banner is smoothscaled each frame (~0.7 ms, ~0.3 s), not cached in steps,
+  and its glow is scaled with it (nearest, ~0.7 ms), so the glow shows with the box from
+  the start (owner: waiting for the full-size box looked off).
 - **Cost** (old particle effects -> light, 1600x900): 6 battle markers 5.2 -> 0.9 ms,
-  2 alliance markers 3.3 -> 0.3 ms, 4 Castle bursts 5.2 -> 1.0 ms; turn banner 2.4 -> 3.0 ms.
+  2 alliance markers 3.3 -> 0.3 ms, 4 Castle bursts 5.2 -> 1.0 ms. Turn banner 2.4 ms ->
+  ~1 ms held, ~3 ms fading, ~4 ms growing.
 
 **Tests:** `tests/test_event_fx.py`; benchmarks `TestEventFxPerformance` in
 `tests/test_fps_benchmark.py` (`battle_markers_6`, `castle_complete_4`, `negotiator_glow`,
@@ -3319,10 +3336,10 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `ConstructionDust._sprites` (construction_dust_effect.py) - Dust sprites keyed by `(diameter, colour, alpha, softness)`, scaled from one soft base per colour; at most `BUILDS_PER_FRAME` built per frame, LRU-bounded (~1.8 MB).
 - `HeroLight` (hero_fx_effect.py) - Hero ability effects: `glow` / `tint` / `dark` sprite caches (light_fx.py, bounded LRUs, build budget 24 sprites and 1 ms per frame, ~1-2 MB), a second `ProductionRays` for ray bursts, the `TerritoryRaster` (~2 MB), every territory's border beads (built at load), outlines per territory set (LRU 12) and bead screen positions per camera (LRU 24). Rebuilt in `rebuild_scale_caches()`.
 - `OrderLight` (order_fx_effect.py) - Selection rings, order arrows, destination reticles: `glow` / `tint` sprite caches (light_fx.py, prewarmed at load for every plot radius), three `SoftRing`s whose `frame()` / `tint_frame()` cache rings per radius and brightness (LRU 96 each, build budget 4 frames and 0.5 ms per frame), arrow geometry per (route, zoom) relative to the camera origin (LRU 64) and 256-entry flow sprite tables (LRU 96). Rebuilt in `rebuild_scale_caches()`.
-- `MarkerLight` (marker_fx_effect.py) - Battle / alliance markers and the overflow warning: `glow` / `tint` sprite caches (light_fx.py, mote sprites prewarmed at load for every plot radius), two `SoftRing`s per colour scheme (ring and pulses: each pulse is a cached frame per radius, so schemes don't evict each other), mote sprite sets per (kind, scheme, radius) (LRU 32) and icons cut to their opaque part, scaled per (kind, greyed, radius) (LRU 48). Rebuilt in `rebuild_scale_caches()`.
+- `MarkerLight` (marker_fx_effect.py) - Battle / alliance markers and the overflow warning: `glow` / `tint` sprite caches (light_fx.py, mote sprites prewarmed at load for every plot radius), two `SoftRing`s per colour scheme (ring and pulses: a pulse is 2 cached frames for each of its `PULSE_STEPS` steps, so a whole pulse fits the LRU 96 and schemes don't evict each other), mote sprite sets per (kind, scheme, radius) (LRU 32) and icons cut to their opaque part, scaled per (kind, greyed, radius) (LRU 48). Rebuilt in `rebuild_scale_caches()`.
 - `_cached_silence_fog` (main.py) - The Vow of Silence vignette, baked once per map size.
 - `_cached_negotiator_glow` / `_negotiator_motes` (main.py) - The Master Negotiator vignette (once per map size) and its mote table.
-- Turn banner (turn_announcement_effect.py) - Module-level: the darkening vignette (one screen size), Cinzel fonts per size, the glow sprites and `GlowFrame` (rebuilt when the display changes). Per announcement: the banner, and its growing sizes in `SCALE_STEPS` steps.
+- Turn banner (turn_announcement_effect.py) - Module-level `_shared`, rebuilt when the display or screen size changes: the darkening vignette as a multiply surface plus a scratch copy of the frame (~6 MB each at 1600x900), the glow sprites and `GlowFrame` (grey glows per banner size, LRU 32). Fonts are not kept (one used after `pygame.font` restarts crashes). Per announcement: the banner and its glow strips' scratch surfaces.
 
 **Always `.convert()` / `.convert_alpha()` loaded images — including backgrounds:**
 - An unconverted surface stays in *file* pixel format, so **every blit** of it (or of anything
