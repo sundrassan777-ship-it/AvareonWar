@@ -2,6 +2,35 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-27 - Tutorial guidance in gold, thinner arrows
+
+Branch `feature/tutorial-guidance`. From a review of the tutorial (a new player's first
+contact): two steps asked for an action with nothing on screen pointing at it, the Farm
+button's highlight was lost, and the highlights were static neon-green circles and boxes next
+to the new light effects. Owner decisions: gold for every tutorial highlight (the colour of
+the player's input: the targeting circle, the hovered route); the arrows thinner still.
+- **"Click here" on a plot** (`OrderLight.draw_beckon`, style `BECKON`): a gold ring with pulses
+  closing in and a chevron of light bobbing above it, instead of a static 3 px green circle
+  whose pulse was computed and never used. It gives way while the plot is selected.
+- **Step 18 marks the Barracks**: its `barracks_<territory>` highlight was declared but nothing
+  drew it. **Step 26 marks Select All** (gold, until units are selected): also never drawn.
+- **Build buttons**: the highlight colour only reached the fallback letter buttons, not the
+  round icon buttons; they get the gold glow now, as do the map's quick-access icons.
+- **Target territory**: gold light running round its border (the hero aura border light) over
+  a faint gold wash, instead of a pulsing green wash with a jagged 3 px outline.
+- **One gold glow for the UI** (`rendering/tutorial_glow.py`, `light_fx.GlowFrame`): training
+  portraits (was a static 3 px box - its pulse went into an alpha the screen ignored),
+  technologies and sidebar tabs (were green boxes), End Turn and Select All (traces their
+  pointed caps; `TINT_TUTORIAL_HIGHLIGHT` gold wood). Removed: `BottomPanelKit.button_outline`,
+  `SidebarWidgets.pulse_ring`, `TINT_END_TURN_HIGHLIGHT`.
+- **Arrows thinner** (owner, after testing on main): light beads 0.42 -> 0.34 plot radii,
+  colour band 0.9 -> 0.74, tip flare 1.2 -> 1.05.
+- **Test fix**: `tests/test_tutorial_mission.py::test_initial_setup` failed whenever an earlier
+  test module had left a pygame display open (its mock game had no map picture for the cloud
+  cover); the full suite only passed by test order.
+- Tests: `tests/test_tutorial_guidance.py` - including a guard that every highlight a tutorial
+  step declares has a renderer.
+
 ## 2026-10-27 - Order arrows coloured by kind
 
 Branch `feature/order-kinds`. Owner: colour the order arrows by order type (attack vs
