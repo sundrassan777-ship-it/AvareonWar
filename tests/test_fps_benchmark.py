@@ -892,6 +892,84 @@ class TestHeroAbilityFxPerformance:
         assert result['worst_frame_ms'] < 100
 
 
+class TestOrderFxPerformance:
+    """
+    Selection rings and order arrows (order FX pass, 2026-10): the ring round a
+    selected banner or building, the arrows of the turn's movement orders and the
+    markers on a selected army's destinations.
+
+    Same per-frame work as the hero scenarios (update_map_effects() + draw()).
+    Compare against order_fx_none (the same map, nothing selected, no orders).
+    """
+
+    SCENARIOS = ('order_fx_none', 'selection_army', 'selection_keep', 'arrows_5', 'arrows_20',
+                 'arrows_selected')
+
+    _run = staticmethod(TestHeroAbilityFxPerformance._run)
+
+    @pytest.fixture
+    def order_game(self, pygame_init):
+        from main import Game
+        game = Game()
+        game.initialize_game({
+            'num_players': 4,
+            'player_is_ai': [False, True, True, True],
+            'player_ai_difficulty': [None, 'Normal', 'Normal', 'Normal'],
+        })
+        game.game_state.phase = 'playing'
+        game.game_state.current_player = 0
+        populate_map(game, buildings_per_territory=1)
+        return game
+
+    @staticmethod
+    def _routes(game, player=0):
+        """Movement routes out of the player's territories, at most 2 per territory."""
+        import map_data
+        gs = game.game_state
+        routes = []
+        for territory in sorted(t for t, o in gs.territory_owners.items() if o == player):
+            if territory not in game.scaled_centers:
+                continue
+            targets = [n for n in sorted(map_data.get_neighbors(territory)) if n in game.scaled_centers]
+            routes.extend((territory, n) for n in targets[:2])
+        return routes
+
+    @staticmethod
+    def _give_orders(game, routes, player=0):
+        from game_state import MovementOrder
+        for source, target in routes:
+            game.game_state.movement_orders.append(MovementOrder(
+                from_territory=source, to_territory=target, army_count=10, player=player))
+
+    @pytest.mark.parametrize('zoom_sweep', [False, True], ids=['static', 'zoom'])
+    @pytest.mark.parametrize('scenario', SCENARIOS)
+    def test_scenario(self, order_game, scenario, zoom_sweep):
+        import map_data
+        gs = order_game.game_state
+        home = best_keep_territory(order_game)
+        extra = {}
+        if scenario == 'selection_army':
+            gs.selected_army = (home, gs.armies[home])
+        elif scenario == 'selection_keep':
+            gs.buildings[home][0] = 'Keep'
+            order_game.selected_keep = (home, 0)
+        elif scenario in ('arrows_5', 'arrows_20'):
+            routes = self._routes(order_game)[:int(scenario.split('_')[1])]
+            self._give_orders(order_game, routes)
+            extra['routes'] = len(routes)
+        elif scenario == 'arrows_selected':
+            # A selected army with orders to up to 5 neighbours: arrows plus the
+            # destination markers
+            targets = [n for n in sorted(map_data.get_neighbors(home)) if n in order_game.scaled_centers]
+            self._give_orders(order_game, [(home, n) for n in targets[:5]])
+            gs.selected_army = (home, gs.armies[home])
+            extra['routes'] = len(targets[:5])
+        sync_camera(order_game, zoom=order_game.camera.min_zoom)
+        name = scenario + ('_zoom' if zoom_sweep else '')
+        result = self._run(order_game, name, frames=60, warmup=70, zoom_sweep=zoom_sweep, **extra)
+        assert result['worst_frame_ms'] < 100
+
+
 class TestCrowdedMapPerformance:
     """
     Documents how frame cost scales with on-map entity count, so a future
