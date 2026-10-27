@@ -471,37 +471,54 @@ class HeroLight:
         count = int(round(self.area(territory) * density / 1000.0))
         return max(min(style.get('min', 1), available), min(available, count))
 
-    def _mote_sprites(self, motes, radius, colour, halo_colour, tint_size, with_halo):
+    def _mote_sprites(self, motes, radius, colour, halo_colour, tint_size, tint_alpha):
         """
-        Per firefly of a mote table at this plot radius: (core ladder, core half
-        size, halo ladder or None, halo half size) - the ladders indexed by
-        brightness / alpha level. Cached per (table, radius, colours); None while
-        a ladder is still being built within the frame budget.
+        Per firefly of a mote table at this plot radius: (core ladders by sub-pixel
+        phase, core half size, halo ladder or None, halo half size) - the ladders
+        indexed by brightness level (the halo's spread over 0..tint_alpha). Cached
+        per (table, radius, colours) once complete; None while the unshifted core
+        or the halo ladders are still being built within the frame budget. Until
+        a shifted copy exists its phase uses the unshifted ladder.
         """
-        key = (id(motes), radius, colour, halo_colour, tint_size, with_halo)
+        key = (id(motes), radius, colour, halo_colour, tint_size, tint_alpha)
         entry = self._mote_cache.get(key)
         if entry is not None and entry[0] is motes:
             return entry[1]
         prepared = []
+        complete = True
+        phases_by_diameter = {}
+        halos_by_diameter = {}
         for _, _, size, _, _ in motes:
             diameter = _even(size * radius)
-            cores = self.glow.ladder(diameter, colour)
-            if cores is None:
-                return None
+            phases = phases_by_diameter.get(diameter)
+            if phases is None:
+                unshifted = self.glow.ladder(diameter, colour)
+                if unshifted is None:
+                    return None
+                phases = [unshifted]
+                for phase in range(1, GlowSprites.SUBPIXEL_PHASES):
+                    shifted = self.glow.ladder(diameter, colour, 'mote', phase)
+                    if shifted is None:
+                        complete = False
+                        shifted = unshifted
+                    phases.append(shifted)
+                phases_by_diameter[diameter] = phases
             halo_ladder, halo_half = None, 0
-            if with_halo:
+            if tint_alpha:
                 # Halo sizes in steps of 4 px: fewer sprites to build
                 halo_d = max(4, int(size * radius * tint_size) & ~3)
-                halo_ladder = [None] + [self.tint.sprite(halo_d, halo_colour,
-                                                         level * 255.0 / TintSprites.LEVELS)
-                                        for level in range(1, TintSprites.LEVELS + 1)]
-                if None in halo_ladder[1:]:
-                    return None
+                halo_ladder = halos_by_diameter.get(halo_d)
+                if halo_ladder is None:
+                    halo_ladder = self.tint.alpha_ladder(halo_d, halo_colour, tint_alpha)
+                    if halo_ladder is None:
+                        return None
+                    halos_by_diameter[halo_d] = halo_ladder
                 halo_half = halo_d >> 1
-            prepared.append((cores, diameter >> 1, halo_ladder, halo_half))
-        self._mote_cache[key] = (motes, prepared)
-        if len(self._mote_cache) > 64:
-            self._mote_cache.popitem(last=False)
+            prepared.append((phases, diameter >> 1, halo_ladder, halo_half))
+        if complete:
+            self._mote_cache[key] = (motes, prepared)
+            if len(self._mote_cache) > 64:
+                self._mote_cache.popitem(last=False)
         return prepared
 
     def _mote_plan(self, territories, style, motes, sprites, radius):
@@ -531,13 +548,20 @@ class HeroLight:
             self._mote_plans.popitem(last=False)
         return plan
 
-    def prewarm_motes(self, motes, colour, halo_colour, tint_size, with_halo):
-        """Build a mote table's sprites for every prewarmed plot radius now (at load)."""
+    def prewarm_motes(self, motes, colour, halo_colour, tint_size, tint_alpha):
+        """
+        Build a mote table's unshifted and halo sprites for every prewarmed plot
+        radius now (at load); the sub-pixel copies follow within the frame budget.
+        """
         budgets = (self.glow._budget, self.tint._budget)
         self.glow._budget = self.tint._budget = light_fx._BuildBudget(10 ** 9, 10 ** 9)
         try:
             for radius in self.prewarm_radii:
-                self._mote_sprites(motes, radius, colour, halo_colour, tint_size, with_halo)
+                for _, _, size, _, _ in motes:
+                    self.glow.ladder(_even(size * radius), colour)
+                    if tint_alpha:
+                        self.tint.alpha_ladder(max(4, int(size * radius * tint_size) & ~3),
+                                               halo_colour, tint_alpha)
         finally:
             self.glow._budget, self.tint._budget = budgets
 
@@ -565,10 +589,11 @@ class HeroLight:
         steps = GlowSprites.LEVELS
         # Each firefly's core and halo sprites for this plot size, looked up once
         # (a per-firefly cache lookup was most of the cost with hundreds of them)
-        sprites = self._mote_sprites(motes, radius, colour, halo_colour, tint_size, bool(tint_alpha))
+        sprites = self._mote_sprites(motes, radius, colour, halo_colour, tint_size, tint_alpha)
         if sprites is None:
             return   # still being built (within the frame budget)
-        halo_scale = TintSprites.LEVELS * tint_alpha * brightness / 255.0
+        halo_scale = TintSprites.LEVELS * brightness
+        halo_top = TintSprites.LEVELS
         core_scale = steps * brightness
         z = view.zoom
         ax, ay = view.ax, view.ay
@@ -584,7 +609,7 @@ class HeroLight:
             if (ax + bx1 * z < -radius or ax + bx0 * z > w + radius
                     or ay + by1 * z < -radius or ay + by0 * z > h + radius):
                 continue
-            for (inv_life, offset, size, sway_phase, salt), (cores, core_half, halo_ladder, halo_half) \
+            for (inv_life, offset, size, sway_phase, salt), (phases, core_half, halo_ladder, halo_half) \
                     in active:
                 u = clock * inv_life + offset + tphase
                 cycle = int(u)
@@ -598,14 +623,20 @@ class HeroLight:
                 hsh = ((cycle * 73856093) ^ salt ^ tsalt) & 0xFFFFFFFF
                 hsh = ((hsh ^ (hsh >> 13)) * 1274126177) & 0xFFFFFFFF
                 px, py = points[(hsh >> 8) % count]
-                x = int(ax + (px + sway * sin(age * 6.0 + sway_phase)) * z)
-                y = int(ay + (py - rise * age) * z)
+                # Sub-pixel placement: the position rounded to half pixels across and
+                # quarter pixels down (offset by 4096 to stay positive), split into the
+                # whole pixel and the shifted copy of the sprite to draw there
+                xq = int((ax + (px + sway * sin(age * 6.0 + sway_phase)) * z + 4096.0) * 2.0 + 0.5)
+                yq = int((ay + (py - rise * age) * z + 4096.0) * 4.0 + 0.5)
+                x = (xq >> 1) - 4096
+                y = (yq >> 2) - 4096
                 if halo_ladder is not None:
                     halo_level = int(halo_scale * env + 0.5)
                     if halo_level > 0:
-                        halo_append((halo_ladder[halo_level], (x - halo_half, y - halo_half)))
-                append((cores[level if level < steps else steps], (x - core_half, y - core_half),
-                        None, ADD))
+                        halo_append((halo_ladder[halo_level if halo_level < halo_top else halo_top],
+                                     (x - halo_half, y - halo_half)))
+                append((phases[(yq & 3) + ((xq & 1) << 2)][level if level < steps else steps],
+                        (x - core_half, y - core_half), None, ADD))
         if halos:
             view.screen.blits(halos, doreturn=False)
         if seq:
@@ -1272,7 +1303,7 @@ class HeroAura:
         # Its fireflies' sprites now, so the first selection doesn't wait for them
         light.prewarm_motes(self.motes, self.mote_colour,
                             tuple(motes.get('tint_colour', self.style['colour'])),
-                            motes.get('tint_size', 2.0), bool(motes.get('tint', 0)))
+                            motes.get('tint_size', 2.0), motes.get('tint', 0))
         self.territories = ()
         self.outline = []
         self.strength = 0.0      # 0-1, eased toward 1 while shown

@@ -938,6 +938,10 @@ embargoed, embers drift over their territories.
   bounded LRUs); new ones are built within a per-frame budget of 24 sprites AND 1 ms, the
   first build always allowed. A border light shows only once all 12 brightness levels of its
   bead exist, so prewarm what must appear on its first frame.
+- **Slow movers need sub-pixel placement.** Blits land on whole pixels: a firefly rising
+  0.2 px a frame stands still, then jumps - with many of them a visible crawl. `draw_motes()`
+  picks a copy shifted by quarter pixels down / half pixels across (`GlowSprites` `phase`,
+  `SUBPIXEL_PHASES`); fast pieces (sparks, comets) don't need it.
 - **No surface alpha on per-pixel-alpha surfaces in a steady state:** a partial `set_alpha()`
   takes pygame's slow blit path (~3-4 ms full screen vs ~0.7 ms at 255), and `set_alpha(None)`
   switches the per-pixel alpha OFF (an opaque wall). The Silence vignette fades in, then holds.

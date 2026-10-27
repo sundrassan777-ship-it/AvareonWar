@@ -441,16 +441,68 @@ class TestStyles:
 
 
 def test_prewarm_builds_the_aura_sprites(light):
-    """Selecting a hero never waits for sprites: the aura's are built at load."""
+    """Selecting a hero never waits for sprites: the aura's outline and fireflies are
+    built at load, so they draw on their first frame even with no build budget."""
     light.prewarm(range(16, 25))
-    built = light.glow.sprites_built
     aura = HeroAura(light, 'defiance')
-    aura.set_territories(['West'])
+    aura.set_territories(['West', 'Mid'])
     aura.update(5.0, True)
+    light.glow._budget = light_fx._BuildBudget(0, 0)
+    light.tint._budget = light_fx._BuildBudget(0, 0)
     for radius in (16, 20, 24):
         light.begin_frame()
-        aura.render(_view(radius=radius), 0.0)
-    assert light.glow.sprites_built == built
+        assert light._mote_sprites(aura.motes, radius, aura.mote_colour,
+                                   tuple(aura.style['colour']), aura.style['motes']['tint_size'],
+                                   aura.style['motes']['tint']) is not None
+        screen = _blank()
+        aura.render(_view(screen, radius=radius), 0.0)
+        assert sum(_pixels(screen)) > 0
+
+
+def _centroid(sprite):
+    total = sx = sy = 0
+    for y in range(sprite.get_height()):
+        for x in range(sprite.get_width()):
+            v = sum(tuple(sprite.get_at((x, y)))[:3])
+            total += v
+            sx += v * x
+            sy += v * y
+    return sx / total, sy / total
+
+
+def test_shifted_sprites_move_by_sub_pixels():
+    """A dot rising 0.2 px a frame jumped a whole pixel every few frames (owner,
+    2026-10-27: the embers stuttered); shifted copies place it within a quarter pixel."""
+    glow = GlowSprites()
+    glow._budget.ms = glow._budget.count = 10 ** 6
+    x0, y0 = _centroid(glow.sprite(16, GOLD, 12))
+    for phase, (dx, dy) in ((1, (0, 0.25)), (2, (0, 0.5)), (3, (0, 0.75)), (4, (0.5, 0)),
+                            (6, (0.5, 0.5))):
+        x, y = _centroid(glow.sprite(16, GOLD, 12, 'mote', phase))
+        assert x - x0 == pytest.approx(dx, abs=0.08) and y - y0 == pytest.approx(dy, abs=0.08)
+
+
+def test_fireflies_use_their_sub_pixel_copies_once_built(light):
+    aura = HeroAura(light, 'haste')
+    args = (aura.motes, 20, aura.mote_colour, tuple(aura.style['colour']),
+            aura.style['motes']['tint_size'], aura.style['motes']['tint'])
+    for _ in range(200):                 # within the frame budget, a few frames' work
+        light.begin_frame()
+        prepared = light._mote_sprites(*args)
+    phases = prepared[0][0]
+    assert len(phases) == GlowSprites.SUBPIXEL_PHASES
+    assert all(ladder is not phases[0] for ladder in phases[1:])
+    assert light._mote_sprites(*args) is prepared          # cached once complete
+
+
+def test_halo_steps_span_the_halos_own_range():
+    """12 alpha steps up to the halo's peak (175), not 8 (255 / 12 quantization)."""
+    tint = TintSprites()
+    tint._budget.ms = tint._budget.count = 10 ** 6
+    ladder = tint.alpha_ladder(24, GOLD, 175)
+    alphas = [sprite.get_at((12, 12)).a for sprite in ladder[1:]]
+    assert len(set(alphas)) == 12 and alphas == sorted(alphas)
+    assert 165 <= alphas[-1] <= 176
 
 
 def test_production_rays_unchanged_by_the_shared_helpers():

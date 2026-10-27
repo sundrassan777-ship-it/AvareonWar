@@ -129,8 +129,9 @@ class GlowSprites:
     BASE_SIZE = 128        # grey base per profile, every sprite is scaled from it
 
     def __init__(self):
-        self._sprites = OrderedDict()   # (diameter, colour, level, profile) -> Surface
+        self._sprites = OrderedDict()   # (diameter, colour, level, profile[, phase]) -> Surface
         self._bases = {}                # profile -> grey base
+        self._shifted = OrderedDict()   # (diameter, profile, phase) -> grey, sub-pixel shifted
         self._budget = _BuildBudget(self.BUILDS_PER_FRAME, self.BUILD_MS_PER_FRAME)
         self.sprites_built = 0
         # Every base up front (~1-2 ms each), so no frame's budget pays for one
@@ -150,16 +151,53 @@ class GlowSprites:
             self._bases[profile] = base
         return base
 
-    def sprite(self, diameter, colour, level, profile='mote'):
-        key = (diameter, colour, level, profile)
+    # Sub-pixel placement for slow-moving dots: copies shifted by quarter pixels down
+    # and half pixels right. phase = quarter_y + 4 * half_x (0 = not shifted). A dot
+    # rising 0.2 px a frame otherwise jumps a whole pixel every few frames - with
+    # many of them, a visible crawl
+    SUBPIXEL_PHASES = 8
+
+    def sprite(self, diameter, colour, level, profile='mote', phase=0):
+        key = (diameter, colour, level, profile, phase) if phase else (diameter, colour, level, profile)
         sprite = self._sprites.get(key)
         if sprite is not None:
             return sprite
         if not self._budget.allows():
             return None
         started = time.perf_counter()
-        sprite = self._build(key)
+        sprite = self._build_shifted(key) if phase else self._build(key)
         self._budget.charge(started)
+        return sprite
+
+    def _shifted_base(self, diameter, profile, phase):
+        """
+        The grey dot at this diameter, moved by phase's sub-pixel offset, on a
+        (diameter + 1) square: drawn 4x larger at the offset, then smoothscaled down.
+        """
+        key = (diameter, profile, phase)
+        grey = self._shifted.get(key)
+        if grey is None:
+            sub = 4
+            big = pygame.transform.smoothscale(self._base(profile), (diameter * sub, diameter * sub))
+            canvas = new_black_surface((diameter + 1) * sub)
+            canvas.blit(big, ((phase // 4) * (sub // 2), phase % 4))
+            grey = pygame.transform.smoothscale(canvas, (diameter + 1, diameter + 1))
+            self._shifted[key] = grey
+            if len(self._shifted) > 400:
+                self._shifted.popitem(last=False)
+        return grey
+
+    def _build_shifted(self, key):
+        diameter, colour, level, profile, phase = key
+        sprite = self._shifted_base(diameter, profile, phase).copy()
+        sprite.fill(scaled_colour(colour, level / float(self.LEVELS)), special_flags=pygame.BLEND_RGB_MULT)
+        if pygame.display.get_surface() is not None:
+            sprite = sprite.convert()
+        self._sprites[key] = sprite
+        self.sprites_built += 1
+        if len(self._sprites) > self.MAX_SPRITES:
+            for _ in range(self.MAX_SPRITES // 10):
+                self._sprites.popitem(last=False)
         return sprite
 
     def prewarm(self, diameters, colour, levels=None, profile='mote'):
@@ -182,16 +220,16 @@ class GlowSprites:
                 self._sprites.popitem(last=False)   # oldest first
         return sprite
 
-    def ladder(self, diameter, colour, profile='mote'):
+    def ladder(self, diameter, colour, profile='mote', phase=0):
         """
-        [None, level 1 sprite, ..., level LEVELS sprite] for one size and colour, or
-        None while any is still missing (built within the frame budget meanwhile).
-        Lets a loop over many dots pick a sprite by index.
+        [None, level 1 sprite, ..., level LEVELS sprite] for one size and colour
+        (and sub-pixel phase), or None while any is still missing (built within the
+        frame budget meanwhile). Lets a loop over many dots pick a sprite by index.
         """
         sprites = [None]
         complete = True
         for level in range(1, self.LEVELS + 1):
-            sprite = self.sprite(diameter, colour, level, profile)
+            sprite = self.sprite(diameter, colour, level, profile, phase)
             if sprite is None:
                 complete = False
             sprites.append(sprite)
@@ -292,11 +330,33 @@ class TintSprites:
         self._budget.charge(started)
         return sprite
 
+    def alpha_ladder(self, diameter, colour, max_alpha, softness=1.5):
+        """
+        [None, ...LEVELS sprites from max_alpha / LEVELS up to max_alpha], or None
+        while any is still missing. All the steps fall within the halo's own range:
+        quantized to 255 / LEVELS, a halo that peaks at alpha 175 would only get 8
+        steps, and each shows as a small pop on a big soft glow.
+        """
+        sprites = [None]
+        for level in range(1, self.LEVELS + 1):
+            alpha = int(max_alpha * level / float(self.LEVELS) + 0.5)
+            key = (diameter, colour, ('alpha', alpha), softness)
+            sprite = self._sprites.get(key)
+            if sprite is None:
+                if not self._budget.allows():
+                    return None
+                started = time.perf_counter()
+                sprite = self._build(key)
+                self._budget.charge(started)
+            sprites.append(sprite)
+        return sprites
+
     def _build(self, key):
         diameter, colour, level, softness = key
         sprite = pygame.transform.smoothscale(self._base(colour, softness), (diameter, diameter))
-        if level < self.LEVELS:
-            a = int(255 * level / self.LEVELS)
+        # level: 1..LEVELS (alpha level * 255 / LEVELS), or ('alpha', exact alpha)
+        a = level[1] if isinstance(level, tuple) else int(255 * level / self.LEVELS)
+        if a < 255:
             sprite.fill((255, 255, 255, a), special_flags=pygame.BLEND_RGBA_MULT)
         if pygame.display.get_surface() is not None:
             sprite = sprite.convert_alpha()

@@ -65,6 +65,13 @@ before), and the AI's casts get effects too.
   look their sprites and per-territory plan up once per zoom level, not per firefly: embers
   over 42 territories ~0.55 ms. Aura fireflies are built at load, spawn points when an aura's
   territories are set (not in a frame).
+- **Follow-up (owner, 2026-10-27: "Embargo embers seem to stutter very very subtly ... notable
+  when there is a lot of them")**: an ember rises ~0.17 px a frame, so blitted at whole pixels
+  it stood still for several frames and then jumped a pixel. Fireflies and embers now pick a
+  copy of their sprite shifted by quarter pixels down and half pixels across
+  (`GlowSprites.SUBPIXEL_PHASES`, built within the frame budget; measured: largest step 1.0 ->
+  0.28 px). Their halos fade in 12 steps within their own alpha range (`TintSprites.alpha_ladder`),
+  not 8 of 255's. ~12% more per firefly.
 
 ## 2026-10-26 - Plot effects: production light rays and construction dust
 
