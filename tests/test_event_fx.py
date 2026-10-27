@@ -152,6 +152,41 @@ class TestMarkers:
         assert (pygame.image.tostring(_marker(light, 'battle', False, clock=1.0), 'RGB')
                 != pygame.image.tostring(_marker(light, 'battle', False, clock=1.4), 'RGB'))
 
+    @pytest.mark.parametrize('radius', [16, 24, 36])
+    def test_a_pulse_fits_the_ring_cache_at_any_zoom(self, light, radius):
+        """
+        A pulse takes a bounded number of steps, each with one brightness, so after
+        one period nothing more is built. (A frame per radius and brightness was
+        100-200 frames at mid and max zoom: the cache thrashed and pulses missed
+        frames whenever the build budget ran out - the markers stuttered.)
+        """
+        period = MARKER_FX_STYLE['marker']['pulses']['period']
+        pulse = light._schemes['battle'].pulse
+        screen = _blank((600, 600))
+
+        def one_period(start):
+            for i in range(240):
+                light.begin_frame()
+                light.draw_marker(_view(screen, radius), 300, 300, 'battle', False, start + period * i / 240.0)
+
+        one_period(0.0)
+        built = pulse.frames_built
+        one_period(period)
+        assert pulse.frames_built == built and pulse.denied == 0
+
+    def test_a_pulse_step_not_built_yet_shows_the_step_before(self, light):
+        """With this frame's build budget spent, a pulse draws its last cached step, not nothing."""
+        scheme = light._schemes['battle']
+        pulses = MARKER_FX_STYLE['marker']['pulses']
+        r = MARKER_FX_STYLE['marker']['ring']['radius'] * RADIUS
+        light._pulses(_blank(), scheme, *CENTRE, r, pulses, 0.2 * pulses['period'], 1.0)
+        scheme.pulse._budget.left = 0
+        denied = scheme.pulse.denied
+        screen = _blank()
+        light._pulses(screen, scheme, *CENTRE, r, pulses, 0.22 * pulses['period'], 1.0)
+        assert scheme.pulse.denied > denied
+        assert _total(screen) > 0
+
     def test_off_screen_markers_draw_nothing(self, light):
         screen = _blank()
         light.draw_marker(_view(screen), -500, 150, 'battle', False, 1.0)
@@ -269,6 +304,20 @@ class TestTurnBanner:
     def test_text_rules(self, kwargs, text):
         assert TurnAnnouncementEffect(1600, 900, **kwargs).text == text
 
+    def test_a_long_name_takes_two_balanced_lines(self):
+        effect = TurnAnnouncementEffect(1600, 900, player_name='Empire of North Angarfen Forest')
+        assert effect.lines == ['Empire of North', "Angarfen Forest's Turn"]
+
+    @pytest.mark.parametrize('name', ['Empire of North Angarfen Forest',
+                                      'The Most Serene Republic of the Azincournean Highlands',
+                                      'Naragonthidarianempireofthewesternreachesandbeyond'])
+    def test_the_possessive_stays_with_the_name(self, name):
+        """A line never starts with "'s" (it used to: "Name" / "'s Turn"; owner, 2026-10-27)."""
+        effect = TurnAnnouncementEffect(1600, 900, player_name=name)
+        assert len(effect.lines) == 2
+        assert not any(line.startswith("'") for line in effect.lines)
+        assert ' '.join(effect.lines) == effect.text
+
     @pytest.mark.parametrize('width', [1280, 1600, 1920])
     def test_a_very_long_name_still_fits_on_screen(self, width):
         name = 'The Most Serene Republic of the Azincournean Highlands'
@@ -285,6 +334,72 @@ class TestTurnBanner:
         fading = effect._phase()
         assert growing[0] < 1.0 and held == (1.0, 1.0, 1.0)
         assert fading[0] == 1.0 and fading[1] < 0.5 and fading[2] < 0.5
+
+    def test_the_banner_grows_smoothly(self):
+        """Smoothscaled each frame while it grows (12 cached sizes jumped ~36 px)."""
+        effect = TurnAnnouncementEffect(1600, 900, player_name='Empire')
+        widths = {effect._banner_at(0.6 + 0.4 * i / 100.0).get_width() for i in range(100)}
+        assert len(widths) > 60
+        assert effect._banner_at(1.0) is effect.banner
+
+    @pytest.mark.parametrize('darkness', [1.0, 0.67, 0.3])
+    def test_the_darkening_matches_the_faded_vignette(self, darkness):
+        """The multiply-and-blend darkening (half the cost while it fades) gives the
+        pixels of the per-pixel-alpha vignette faded with set_alpha()."""
+        from ui.effects import light_fx
+        size = (400, 225)
+        vignette = light_fx.vignette_surface(size, (0, 0, 0), turn_announcement_effect.OVERLAY_CENTRE_ALPHA,
+                                             turn_announcement_effect.OVERLAY_EDGE_ALPHA, inner=0.2, outer=1.25)
+        vignette.set_alpha(int(255 * darkness) if darkness < 1.0 else 255)
+        expected = _blank(size, (220, 200, 150))
+        expected.blit(vignette, (0, 0))
+        actual = _blank(size, (220, 200, 150))
+        TurnAnnouncementEffect(*size, player_number=1)._darken(actual, darkness)
+        for point in ((2, 2), (200, 112), (100, 56), (395, 220)):
+            assert all(abs(a - b) <= 2 for a, b in zip(actual.get_at(point)[:3], expected.get_at(point)[:3]))
+
+    def test_the_glow_grows_in_and_fades_with_the_banner(self, monkeypatch):
+        """It shows with the box from the start, at the box's size and opacity (it
+        used to wait for the full-size box, ~0.3 s; owner, 2026-10-28)."""
+        effect = TurnAnnouncementEffect(800, 450, player_name='Empire')
+        calls = []
+        monkeypatch.setattr(effect, '_draw_glow', lambda screen, rect, strength, scale: calls.append((strength, scale)))
+
+        def glow_at(t):
+            del calls[:]
+            effect.elapsed = t
+            effect.render(_blank((800, 450)))
+            return calls[0]
+
+        growing = [glow_at(0.3 * i / 10.0) for i in range(1, 10)]
+        assert all(0.6 <= scale < 1.0 and strength > 0.0 for strength, scale in growing)
+        assert [s for s, _ in growing] == sorted(s for s, _ in growing)
+        assert glow_at(0.5) == (1.0, 1.0)
+        fading = [glow_at(0.75 + 0.75 * i / 30.0)[0] for i in range(1, 30)]
+        assert fading == sorted(fading, reverse=True) and fading[-1] < 0.05
+
+    def test_the_growing_glow_sits_round_the_growing_box(self):
+        effect = TurnAnnouncementEffect(800, 450, player_name='Empire')
+        effect.elapsed = 0.15
+        scale = effect._phase()[0]
+        banner = effect._banner_at(scale)
+        rect = banner.get_rect(center=(400, 225))
+        screen = _blank((800, 450))
+        effect._draw_glow(screen, rect, 1.0, banner.get_width() / float(effect.banner.get_width()))
+        assert sum(screen.get_at((rect.x - 2, rect.centery))[:3]) > 150       # the line at the box's edge
+        assert screen.get_at(rect.center)[:3] == (0, 0, 0)                     # nothing over the box
+
+    def test_the_glow_has_no_brightness_steps(self):
+        """Tinted every frame: as many brightnesses as strengths asked for (12 cached
+        levels stepped visibly as it faded)."""
+        effect = TurnAnnouncementEffect(800, 450, player_name='Empire')
+        rect = effect.banner.get_rect(center=(400, 225))
+        lit = set()
+        for i in range(1, 41):
+            screen = _blank((800, 450))
+            effect._draw_glow(screen, rect, i / 40.0)
+            lit.add(tuple(screen.get_at((rect.x - 1, rect.centery))[:3]))
+        assert len(lit) > 30
 
     def test_it_darkens_the_screen_and_draws_the_banner(self):
         screen = _blank((800, 450), (200, 180, 140))

@@ -410,6 +410,7 @@ class SoftRing:
         self._frames = OrderedDict()             # (kind, radius, colour, level) -> scaled ring
         self._budget = _BuildBudget(self.BUILDS_PER_FRAME, self.BUILD_MS_PER_FRAME)
         self.frames_built = 0
+        self.denied = 0          # frames wanted but not built (budget spent): a caller can fall back
 
     def begin_frame(self):
         """Call once per rendered frame when using frame() / tint_frame()."""
@@ -516,6 +517,7 @@ class SoftRing:
             self._frames.move_to_end(key)
             return surface
         if not self._budget.allows():
+            self.denied += 1
             return None
         started = time.perf_counter()
         kind, radius, colour, level = key
@@ -846,8 +848,10 @@ class GlowFrame:
         tinted = self._frames.get(key)
         if tinted is None:
             grey = self._grey(grey_key, w, h, shape, corner, sprite)
-            tinted = grey.copy()
-            tinted.fill(scaled_colour(colour, level / float(self.LEVELS)), special_flags=pygame.BLEND_RGB_MULT)
+            # The colour times the grey (a blit multiplies ~2.5x faster than a fill)
+            tinted = pygame.Surface(grey.get_size(), 0, grey)
+            tinted.fill(scaled_colour(colour, level / float(self.LEVELS)))
+            tinted.blit(grey, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
             if pygame.display.get_surface() is not None:
                 tinted = tinted.convert()
             self._frames[key] = tinted
@@ -857,6 +861,16 @@ class GlowFrame:
         else:
             self._frames.move_to_end(key)
         return tinted, self.reach + 2
+
+    def grey(self, size, shape='rect', corner=4, sprite=None, sprite_key=None):
+        """
+        The untinted glow (grey on black) round a shape of this size, and its pad:
+        for a glow that is tinted every frame instead of in cached levels (a large
+        one that fades, where LEVELS steps show and a level per frame costs ~1 MB).
+        """
+        w, h = max(1, int(size[0])), max(1, int(size[1]))
+        grey_key = (shape, w, h, corner if shape == 'rect' else sprite_key)
+        return self._grey(grey_key, w, h, shape, corner, sprite), self.reach + 2
 
     def _grey(self, key, w, h, shape, corner, sprite):
         grey = self._greys.get(key)

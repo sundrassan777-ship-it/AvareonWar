@@ -11,9 +11,9 @@ the turn begins. (It replaced a flat black overlay, a grey box and 1200 one-pixe
 sparkles a second.)
 
 Timeline (unchanged from the sparkle version):
-    0.0   - 0.375 s  the screen darkens, the banner grows in
+    0.0   - 0.375 s  the screen darkens, the banner grows in with its gold glow
     0.375 - 0.75 s   hold
-    0.75  - 1.5 s    the banner and the darkness fade
+    0.75  - 1.5 s    the banner, the glow and the darkness fade
     1.5 s            complete: on_complete() is called once
 
 Integration:
@@ -22,9 +22,17 @@ Integration:
       simultaneous round ("Turn N"); input is blocked until it completes
     - cleanup() is kept for its callers (campaign missions cut an AI's short)
 
-Cost: the vignette is baked once per screen size and the gold glow once per
-banner size, both kept between turns; the banner is baked once per announcement
-and its growing sizes once each; a frame is a few blits and one blits() call.
+Cost (1600x900): ~1 ms a frame while held, ~3 ms while fading, ~4 ms while growing.
+    - The darkening is a multiply by a baked vignette (0.75 ms). While it fades,
+      the darkened copy of the frame is blended over it with a whole-surface
+      alpha (~2.3 ms); a per-pixel-alpha vignette with set_alpha() was 4.2 ms.
+    - The gold glow is tinted every frame on the four strips round the frame
+      (~0.1 ms), so it fades smoothly; cached brightness levels stepped visibly
+      and cost ~1.7 ms and ~1 MB each.
+    - The banner is smoothscaled each frame while it grows (~0.7 ms, ~0.3 s), and
+      its glow scaled with it (~0.7 ms); cached size steps jumped ~36 px at a time.
+    - Baked once: the vignette per screen size and the grey glow per banner size
+      (kept between turns), the banner per announcement.
 """
 
 import pygame
@@ -32,6 +40,9 @@ import pygame
 from ui.effects import light_fx
 from ui.effects.light_fx import GlowSprites, GlowFrame, RisingMotes
 from ui.effects.order_fx_style import GUIDE_GOLD
+
+MULT = pygame.BLEND_RGB_MULT
+ADD = pygame.BLEND_RGB_ADD
 
 # ========================================
 # CONSTANTS
@@ -60,13 +71,15 @@ FILL_BOTTOM = (31, 25, 17)
 FRAME_BORDER = (22, 18)               # bronze frame thickness (left/right, top/bottom)
 PADDING = (60, 34)                    # text to frame
 LINE_SPACING = 6
+WRAP_WIDTH = 0.7                      # share of the screen width: a longer "Name's Turn" takes two lines
 MAX_BANNER_WIDTH = 0.9                # share of the screen width (a long name gets a smaller font)
 GROW_FROM = 0.6                       # the banner's scale as it starts growing in
-SCALE_STEPS = 12                      # cached sizes while it grows
+FULL_SIZE_PX = 1.5                    # the growing banner snaps to full size this close to it
 
 # The gold light round the frame (order_fx_style GUIDE gold, the tutorial glow's)
 GLOW_COLOUR = GUIDE_GOLD
 GLOW_REACH = 16                       # px outside the frame
+GLOW_CORNER = 6                       # the glow's corner rounding, px
 GLOW_INTENSITY = 0.85
 
 # Motes of gold light drifting up: half round the banner, half along the bottom
@@ -87,19 +100,37 @@ MOTES = {
 # SHARED (kept between turns)
 # ========================================
 
+# Rebuilt when the display or the screen size changes (they carry its format):
+# 'key', 'glow' (GlowSprites), 'frames' (GlowFrame, its grey glows),
+# 'darken' (the multiply vignette and a scratch copy of the frame).
 # (Fonts are not kept: a Font used after pygame.font is shut down and started again
 # crashes the process - the multiplayer test harness does that between games)
-_vignettes = {}      # (w, h) -> darkening vignette
-_light = {}          # 'display': its size, 'glow': GlowSprites, 'frames': GlowFrame
+_shared = {}
 
 
-def _vignette(size):
-    surface = _vignettes.get(size)
-    if surface is None:
-        _vignettes.clear()   # one screen size at a time
-        surface = _vignettes[size] = light_fx.vignette_surface(
-            size, (0, 0, 0), OVERLAY_CENTRE_ALPHA, OVERLAY_EDGE_ALPHA, inner=0.2, outer=1.25)
-    return surface
+def _shared_for(size):
+    display = pygame.display.get_surface()
+    key = (display.get_size() if display is not None else None, size)
+    if _shared.get('key') != key:
+        _shared.clear()
+        _shared['key'] = key
+        _shared['glow'] = GlowSprites()
+        _shared['frames'] = GlowFrame(reach=GLOW_REACH)
+    return _shared
+
+
+def _darkening(screen, size):
+    """(the vignette as a multiply surface, a scratch surface) at this size, in the screen's format."""
+    shared = _shared_for(size)
+    pair = shared.get('darken')
+    if pair is None:
+        vignette = light_fx.vignette_surface(size, (0, 0, 0), OVERLAY_CENTRE_ALPHA, OVERLAY_EDGE_ALPHA,
+                                             inner=0.2, outer=1.25)
+        darken = pygame.Surface(size, 0, screen)
+        darken.fill((255, 255, 255))
+        darken.blit(vignette, (0, 0))      # white under the black wash: 255 - its alpha
+        pair = shared['darken'] = (darken, pygame.Surface(size, 0, screen))
+    return pair
 
 
 def _font(size):
@@ -109,15 +140,31 @@ def _font(size):
         return pygame.font.Font(None, int(size * 1.15))
 
 
-def _shared_light():
-    """The glow sprites and frames, rebuilt when the display changes (they carry its format)."""
-    display = pygame.display.get_surface()
-    size = display.get_size() if display is not None else None
-    if _light.get('display', False) != size:
-        _light['display'] = size
-        _light['glow'] = GlowSprites()
-        _light['frames'] = GlowFrame(reach=GLOW_REACH)
-    return _light['glow'], _light['frames']
+def _two_lines(font, text):
+    """
+    The text in two lines, split between words where the wider line is narrowest
+    ("Empire of North" / "Angarfen Forest's Turn"): "'s" stays with the name.
+    """
+    words = text.split()
+    best = None
+    for i in range(1, len(words)):
+        lines = [' '.join(words[:i]), ' '.join(words[i:])]
+        widest = max(font.size(line)[0] for line in lines)
+        if best is None or widest < best[0]:
+            best = (widest, lines)
+    return best[1] if best else [text]
+
+
+def _strips(grey, depth):
+    """
+    The four sides of a glow surface, depth px deep (inside them is the shape,
+    black): their areas and a scratch surface each, for tinting every frame.
+    """
+    w, h = grey.get_size()
+    depth = max(1, min(depth, w // 2, h // 2))
+    areas = (pygame.Rect(0, 0, w, depth), pygame.Rect(0, h - depth, w, depth),
+             pygame.Rect(0, depth, depth, h - 2 * depth), pygame.Rect(w - depth, depth, depth, h - 2 * depth))
+    return [(area, pygame.Surface(area.size, 0, grey)) for area in areas if area.width > 0 and area.height > 0]
 
 
 def _ease_out(p):
@@ -172,10 +219,10 @@ class TurnAnnouncementEffect:
 
         size = max(16, int(TEXT_SIZE * self.scale))
         font = _font(size)
-        # Too wide for the screen: the name on one line, "'s Turn" below it
+        # Too wide for the screen: two balanced lines
         lines = [self.text]
-        if custom_text is None and player_name and font.size(self.text)[0] > screen_width * 0.7:
-            lines = [player_name, "'s Turn"]
+        if custom_text is None and player_name and font.size(self.text)[0] > screen_width * WRAP_WIDTH:
+            lines = _two_lines(font, self.text)
         # Still too wide (a very long name): a smaller font until the framed banner fits
         room = screen_width * MAX_BANNER_WIDTH - 2 * (FRAME_BORDER[0] + PADDING[0]) * self.scale
         widest = max(font.size(line)[0] for line in lines)
@@ -183,15 +230,22 @@ class TurnAnnouncementEffect:
             size = max(16, min(size - 2, int(size * room / widest)))
             font = _font(size)
             widest = max(font.size(line)[0] for line in lines)
+        self.lines = lines
         self.banner = self._bake_banner(font, lines)
-        self._sizes = {}     # scale step -> the banner at that size
 
-        self.glow, frames = _shared_light()
-        # The glow round the frame, baked now: the first frame at full size shouldn't pay for it
-        self._glow_size = self.banner.get_size()
-        self._glow_frames = frames
-        frames.frame(self._glow_size, GLOW_COLOUR, GlowFrame.LEVELS, 'rect', 6)
-        self._glow_colour = light_fx.light_colour(MOTES['colour'], MOTES['white_mix'])
+        shared = _shared_for((screen_width, screen_height))
+        self.glow = shared['glow']
+        # The darkening too (the first turn's), rather than in the first frame
+        display = pygame.display.get_surface()
+        if display is not None:
+            _darkening(display, (screen_width, screen_height))
+        # The grey glow round the frame, baked now (kept for later turns): the first
+        # frame at full size shouldn't pay for it
+        self._glow_grey, self._glow_pad = shared['frames'].grey(self.banner.get_size(), 'rect', GLOW_CORNER)
+        self._glow_strips = _strips(self._glow_grey, self._glow_pad + GLOW_CORNER + 1)
+        # The growing banner snaps to full size within FULL_SIZE_PX of it
+        self._full_scale = 1.0 - FULL_SIZE_PX / float(self.banner.get_width())
+        self._mote_colour = light_fx.light_colour(MOTES['colour'], MOTES['white_mix'])
 
         self._motes = RisingMotes(MOTES, self.text, self.scale)
         self._from_banner = int(MOTES['count'] * MOTES['banner_share'])
@@ -253,7 +307,7 @@ class TurnAnnouncementEffect:
 
     def render(self, screen):
         """
-        Render the turn announcement effect: the vignette, the gold glow and the
+        Render the turn announcement effect: the darkening, the gold glow and the
         motes of light, then the banner.
 
         Args:
@@ -263,21 +317,14 @@ class TurnAnnouncementEffect:
             return
         scale, opacity, darkness = self._phase()
 
-        # 1. The darkening vignette. A partial surface alpha only while it fades
-        # (255 keeps the faster blit path during the hold)
-        vignette = _vignette((self.screen_width, self.screen_height))
-        vignette.set_alpha(int(255 * darkness) if darkness < 1.0 else 255)
-        screen.blit(vignette, (0, 0))
+        # 1. The darkening vignette
+        self._darken(screen, darkness)
 
         banner = self._banner_at(scale)
         rect = banner.get_rect(center=(int(self.center_x), int(self.center_y)))
 
-        # 2. Gold light round the frame, once the banner is full size
-        if scale >= 1.0:
-            level = int(GlowFrame.LEVELS * GLOW_INTENSITY * opacity + 0.5)
-            if level > 0:
-                glow, pad = self._glow_frames.frame(self._glow_size, GLOW_COLOUR, level, 'rect', 6)
-                screen.blit(glow, (rect.x - pad, rect.y - pad), special_flags=pygame.BLEND_RGB_ADD)
+        # 2. Gold light round the frame, growing in and fading with it
+        self._draw_glow(screen, rect, opacity, banner.get_width() / float(self.banner.get_width()))
 
         # 3. Motes of light
         self._draw_motes(screen, rect, darkness)
@@ -286,18 +333,58 @@ class TurnAnnouncementEffect:
         banner.set_alpha(int(255 * opacity))
         screen.blit(banner, rect)
 
+    def _darken(self, screen, darkness):
+        """
+        The vignette at this darkness (0-1): a multiply when full; while it comes
+        and goes, the darkened copy of the frame blended over it with a
+        whole-surface alpha (the fast blend; a per-pixel-alpha surface with
+        set_alpha() takes a path ~4x slower).
+        """
+        if darkness <= 0.0:
+            return
+        darken, scratch = _darkening(screen, (self.screen_width, self.screen_height))
+        if darkness >= 1.0:
+            screen.blit(darken, (0, 0), special_flags=MULT)
+            return
+        scratch.blit(screen, (0, 0))
+        scratch.blit(darken, (0, 0), special_flags=MULT)
+        scratch.set_alpha(int(255 * darkness))
+        screen.blit(scratch, (0, 0))
+
+    def _draw_glow(self, screen, rect, strength, scale=1.0):
+        """
+        The gold light round the banner (at rect, drawn at this scale of its full
+        size) at strength 0-1, tinted this frame (no brightness steps): the grey
+        glow times the colour, added. At full size only its four strips are tinted
+        (~0.1 ms); while the banner grows, the whole glow is scaled with it (nearest,
+        ~0.7 ms - the glow is soft, it looks the same as a smoothscale at half the cost).
+        """
+        colour = light_fx.scaled_colour(GLOW_COLOUR, GLOW_INTENSITY * strength)
+        if not any(colour):
+            return
+        grey = self._glow_grey
+        if scale < 1.0:
+            w, h = grey.get_size()
+            glow = pygame.transform.scale(grey, (max(1, int(w * scale + 0.5)), max(1, int(h * scale + 0.5))))
+            tinted = pygame.Surface(glow.get_size(), 0, glow)
+            tinted.fill(colour)
+            tinted.blit(glow, (0, 0), special_flags=MULT)
+            screen.blit(tinted, tinted.get_rect(center=rect.center), special_flags=ADD)
+            return
+        x0, y0 = rect.x - self._glow_pad, rect.y - self._glow_pad
+        for area, scratch in self._glow_strips:
+            scratch.fill(colour)
+            scratch.blit(grey, (0, 0), area, special_flags=MULT)
+            screen.blit(scratch, (x0 + area.x, y0 + area.y), special_flags=ADD)
+
     def _banner_at(self, scale):
-        """The banner at this scale, in SCALE_STEPS cached sizes (no per-frame smoothscale)."""
-        step = min(SCALE_STEPS, int(round((scale - GROW_FROM) / (1.0 - GROW_FROM) * SCALE_STEPS)))
-        if step >= SCALE_STEPS:
+        """The banner at this scale: smoothscaled each frame while it grows (~0.7 ms
+        for ~0.3 s), the baked one once it is within FULL_SIZE_PX of full size."""
+        if scale >= self._full_scale:
             return self.banner
-        surface = self._sizes.get(step)
-        if surface is None:
-            s = GROW_FROM + (1.0 - GROW_FROM) * step / SCALE_STEPS
-            w, h = self.banner.get_size()
-            surface = self._sizes[step] = pygame.transform.smoothscale(
-                self.banner, (max(1, int(w * s)), max(1, int(h * s))))
-        return surface
+        w, h = self.banner.get_size()
+        return pygame.transform.smoothscale(self.banner, (max(1, int(w * scale + 0.5)),
+                                                          max(1, int(h * scale + 0.5))))
 
     def _draw_motes(self, screen, rect, strength):
         """
@@ -325,7 +412,7 @@ class TurnAnnouncementEffect:
                 return outline.right - (d - w - h), outline.bottom
             return outline.x, outline.bottom - (d - 2 * w - h)
 
-        self._motes.draw(screen, glow, self._glow_colour, self.elapsed, strength, spawn)
+        self._motes.draw(screen, glow, self._mote_colour, self.elapsed, strength, spawn)
 
     def is_finished(self):
         """

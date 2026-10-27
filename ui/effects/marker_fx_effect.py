@@ -43,6 +43,10 @@ _TWO_PI = 2.0 * math.pi
 # zoom's icon is scaled from that (a fraction of a millisecond, not the 1024x1536 art)
 ICON_BASE_SIZE = 192
 
+# Steps a pulse takes on its way out (2 cached ring frames each, a colour band and
+# its light: a whole pulse fits SoftRing.MAX_FRAMES)
+PULSE_STEPS = 40
+
 
 def _even(value):
     return max(2, int(value) & ~1)
@@ -229,28 +233,49 @@ class MarkerLight:
 
     @staticmethod
     def _ring(screen, ring, x, y, r, scheme, tint_alpha, brightness):
-        """A ring of radius r: its colour band (normal blend), then its light."""
+        """
+        A ring of radius r: its colour band (normal blend), then its light. False,
+        with nothing drawn, when a piece isn't cached yet and this frame's build
+        budget is spent.
+        """
+        denied = ring.denied
         band = ring.tint_frame(r, scheme.raw, tint_alpha)
+        level = int(SoftRing.LEVELS * brightness + 0.5)
+        frame = ring.frame(r, scheme.light, level) if level > 0 else None
+        if ring.denied != denied:
+            return False
         if band is not None:
             half = band.get_width() >> 1
             screen.blit(band, (x - half, y - half))
-        level = int(SoftRing.LEVELS * brightness + 0.5)
-        if level > 0:
-            frame = ring.frame(r, scheme.light, level)
-            if frame is not None:
-                half = frame.get_width() >> 1
-                screen.blit(frame, (x - half, y - half), special_flags=ADD)
+        if frame is not None:
+            half = frame.get_width() >> 1
+            screen.blit(frame, (x - half, y - half), special_flags=ADD)
+        return True
 
     def _pulses(self, screen, scheme, x, y, r, pulses, t, strength):
-        """Soft rings leaving a ring of radius r and growing outward while they fade."""
+        """
+        Soft rings leaving a ring of radius r and growing outward while they fade.
+
+        A pulse moves out in at most PULSE_STEPS steps and each step has one
+        brightness (worked back from the step), so a whole pulse is 2 cached frames
+        a step at any zoom and stays in the ring cache. (A frame per radius and
+        brightness was 100-200 frames at mid and max zoom: the cache thrashed and a
+        pulse missed a frame whenever the build budget ran out - a stutter.) A step
+        not cached yet when the budget is spent shows the step before it.
+        """
         count = pulses['count']
+        span = r * (pulses['reach'] - 1.0)
+        steps = max(1, min(PULSE_STEPS, int(span)))
         for k in range(count):
             u = (t / pulses['period'] + k / float(count)) % 1.0
-            grow = 1.0 - (1.0 - u) ** 2
-            pulse_r = int(r * (1.0 + (pulses['reach'] - 1.0) * grow))
-            fade = min(1.0, u / 0.08) * (1.0 - u) ** 1.5 * strength
-            self._ring(screen, scheme.pulse, x, y, pulse_r, scheme, pulses['tint'] * fade,
-                       pulses['intensity'] * fade)
+            step = int((1.0 - (1.0 - u) ** 2) * steps + 0.5)
+            for s in (step, step - 1):
+                grow = s / float(steps)
+                u_step = 1.0 - math.sqrt(max(0.0, 1.0 - grow))
+                fade = min(1.0, u_step / 0.08) * (1.0 - u_step) ** 1.5 * strength
+                if self._ring(screen, scheme.pulse, x, y, int(r + span * grow), scheme,
+                              pulses['tint'] * fade, pulses['intensity'] * fade):
+                    break
 
     def _mote_table(self, kind, arms):
         """
