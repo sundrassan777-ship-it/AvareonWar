@@ -368,7 +368,7 @@ class MainMenu:
             logger.warning(f"Error loading replays icon: {e}")
 
         # OPEN BETA ONLY (wishlist.py - remove at full release): the Wishlist button icon
-        # (bottom-left corner). The owner adds the icon later; until then None = a drawn tile.
+        # (bottom-left corner), the owner's art; None (it failed to load) = a drawn tile.
         self.wishlist_button_icon = None
         if OPEN_BETA:
             try:
@@ -1959,7 +1959,7 @@ class MainMenu:
 
     def _draw_wishlist_button(self):
         """OPEN BETA ONLY (remove at full release): the Wishlist button in the bottom-left
-        corner - the owner's icon (wishlist.WISHLIST_ICON_PATH), or until it exists a
+        corner - the owner's icon (wishlist.WISHLIST_ICON_PATH), or if it fails to load a
         Steam-blue tile with a heart. Hover / click like the other corner buttons."""
         rect = self.wishlist_button_rect
         is_hovered = (self.hovered_button == 'wishlist')
