@@ -286,6 +286,134 @@ class TestSkip:
         assert ui.state == BattleInterfaceState.SETUP
 
 
+def _button_pixels(ui, rect):
+    """The button's pixels drawn alone on black (the backdrop and effects left out)."""
+    ui.screen.fill((0, 0, 0))
+    ui._render_button(rect, "Skip", 'skip', mark='skip')
+    return pygame.image.tobytes(ui.screen.subsurface(rect), 'RGB')
+
+
+class TestSkipButton:
+    """
+    A Skip button under the bars while they fight (owner, 2026-10-28: a click or Space
+    skipped the fight, but nothing on screen said so). It skips to the splash, which
+    still plays.
+    """
+
+    def test_sits_centred_under_the_bars(self, battle_ui):
+        ui, _, _ = battle_ui
+        rect = ui.skip_button_rect
+        fill_bottom = ui.attacker_bar_rect.top + ui.bar_fill_offset + ui.bar_fill_height
+        assert rect.top > fill_bottom
+        assert rect.centerx == ui.icon_center_x
+        assert ui.attacker_bar_rect.right < rect.centerx < ui.defender_bar_rect.left
+        assert ui.screen.get_rect().contains(rect)
+        assert ui.skip_hint_top > rect.bottom
+
+    def test_resolve_battle_shares_its_slot(self, battle_ui):
+        """Owner, 2026-10-28: unified - the button stays put from Resolve to Skip."""
+        ui, _, _ = battle_ui
+        assert ui.resolve_button_rect == ui.skip_button_rect
+        assert ui.resolve_button_rect is not ui.skip_button_rect
+
+    @pytest.mark.parametrize('size', [(1280, 720), (1920, 1080), (2560, 1440)])
+    def test_fits_every_resolution(self, battle_ui, size):
+        _, game, _ = battle_ui
+        ui = EnhancedBattleInterface(screen=pygame.Surface(size), game_state=game, battle_index=0,
+                                     font_manager=FontManager(), current_player_index=0)
+        fill_bottom = ui.attacker_bar_rect.top + ui.bar_fill_offset + ui.bar_fill_height
+        assert ui.skip_button_rect.top > fill_bottom
+        assert ui.skip_hint_top + ui.hint_font.get_height() < size[1]
+        ui.handle_click(ui.resolve_button_rect.center)
+        ui.update(0.5)
+        ui.render()
+
+    def test_drawn_only_while_the_bars_fight(self, battle_ui):
+        ui, _, _ = battle_ui
+        drawn = []
+        ui._render_skip_button = lambda: drawn.append(ui.state)
+        ui.render()
+        assert drawn == []                                   # setup
+        ui.handle_click(ui.resolve_button_rect.center)
+        ui.update(0.5)
+        ui.render()
+        assert drawn == [BattleInterfaceState.ANIMATING]
+        run_animation(ui)
+        while ui.state != BattleInterfaceState.REPORT:
+            ui.update(0.1)
+            ui.render()
+        ui.render()
+        assert drawn == [BattleInterfaceState.ANIMATING]     # no skip: no flash on the splash
+
+    def test_clicking_it_skips_to_the_splash(self, battle_ui):
+        ui, _, _ = battle_ui
+        ui.handle_click(ui.resolve_button_rect.center)
+        ui.update(0.5)
+        assert ui.handle_click(ui.skip_button_rect.center) == 'skip'
+        assert ui.particle_effect.is_finished()
+        ui.update(1.0 / 60.0)
+        assert ui.state == BattleInterfaceState.SPLASH       # the splash still plays
+
+    @pytest.mark.parametrize('how', ['button', 'click anywhere', 'space', 'escape'])
+    def test_the_splash_clears_it(self, battle_ui, how):
+        """Owner, 2026-10-28: it lingered over the splash (its click flash) - gone at once."""
+        ui, _, _ = battle_ui
+        ui.handle_click(ui.resolve_button_rect.center)
+        ui.update(0.5)
+        if how == 'button':
+            ui.handle_click(ui.skip_button_rect.center)
+        elif how == 'click anywhere':
+            ui.handle_click((10, 10))
+        else:
+            key = pygame.K_SPACE if how == 'space' else pygame.K_ESCAPE
+            ui.handle_key(pygame.event.Event(pygame.KEYDOWN, key=key))
+        ui.update(1.0 / 60.0)
+        assert ui.state == BattleInterfaceState.SPLASH
+        drawn = []
+        ui._render_skip_button = lambda: drawn.append(ui.state)
+        ui.render()
+        assert drawn == []
+
+    def test_hover_and_flash_show(self, battle_ui):
+        ui, _, _ = battle_ui
+        rect = ui.skip_button_rect
+        ui.mouse_pos = (0, 0)
+        idle = _button_pixels(ui, rect)
+        ui.mouse_pos = rect.center
+        hovered = _button_pixels(ui, rect)
+        ui.mouse_pos = (0, 0)
+        ui._trigger_flash('skip')
+        flashed = _button_pixels(ui, rect)
+        assert hovered != idle
+        assert flashed != idle and flashed != hovered
+
+    def test_nothing_is_built_once_it_shows(self, battle_ui):
+        """Its sprites and labels are baked once - and kept for the next battle."""
+        from ui import battle_screen_kit
+        ui, _, _ = battle_ui
+        ui.handle_click(ui.resolve_button_rect.center)
+        ui.update(0.2)
+        ui.render()
+        ui.mouse_pos = ui.skip_button_rect.center
+        ui.render()
+        kit = battle_screen_kit._kit()
+        baked = (len(kit['labels']), len(kit['widgets']._sprites))
+        for _ in range(5):
+            ui.update(1.0 / 60.0)
+            ui.render()
+        assert (len(kit['labels']), len(kit['widgets']._sprites)) == baked
+        # The next battle opens a new interface: the same sprites serve it
+        _, game, _ = battle_ui
+        again = EnhancedBattleInterface(screen=ui.screen, game_state=game, battle_index=0,
+                                        font_manager=ui.font_manager, current_player_index=0)
+        again.handle_click(again.resolve_button_rect.center)
+        again.update(0.2)
+        again.render()
+        again.mouse_pos = again.skip_button_rect.center
+        again.render()
+        assert (len(kit['labels']), len(kit['widgets']._sprites)) == baked
+
+
 class TestPulsedIconCache:
     """The pulsing battle icon must not smoothscale every frame."""
 

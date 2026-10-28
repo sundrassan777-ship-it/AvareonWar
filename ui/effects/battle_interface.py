@@ -22,9 +22,9 @@ import math
 import random
 from enum import Enum, auto
 
-from config.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WHITE, BLACK
+from config.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WHITE, BLACK, CLICK_FLASH_DURATION_MS
 from utils.logger import get_logger
-from utils.surface_utils import crop_to_opaque
+from ui import battle_screen_kit
 from ui.effects.battle_fx_effect import BattleLight, Shot, spear_tip, tip_x
 from ui.effects.battle_fx_style import (BAR_STYLE, BOLT_STYLE, BURN_STYLE, CHARGE_STYLE, FINALE_STYLE,
                                         ICON_GLOW_STYLE, charge_time)
@@ -65,10 +65,14 @@ ICON_PULSE_SCALE_STEPS = 64  # Pulse scale is quantised to 1/64 so it can be cac
 ICON_PULSE_CACHE_MAX = 32  # Upper bound on cached pulsed-icon sizes
 
 # Button dimensions (reference resolution)
-RESOLVE_BUTTON_WIDTH_REF = 180
-RESOLVE_BUTTON_HEIGHT_REF = 50
 CLOSE_BUTTON_WIDTH_REF = 150
 CLOSE_BUTTON_HEIGHT_REF = 45
+# Resolve Battle (setup) and Skip (the fight) share one slot centred under the bars
+# (owner, 2026-10-28: a click or Space skipped the fight but nothing said so; then the
+# two unified). Its height follows the art's aspect.
+ACTION_BUTTON_WIDTH_REF = 220
+ACTION_BUTTON_GAP_REF = 34  # Below the bars' fill
+SKIP_HINT_GAP_REF = 8  # The Skip button's "Space" keycap below it
 
 # Animation timing
 # Bounds the volley schedule is clamped into (the duration is derived from the
@@ -1080,7 +1084,7 @@ class EnhancedBattleInterface:
 
         # UI state
         self.mouse_pos = (0, 0)
-        self.clicked_button = None
+        self._flash = (None, 0)  # (button id, ticks) of the last click, see clicked_element
 
         # Load assets
         self._load_assets()
@@ -1182,15 +1186,6 @@ class EnhancedBattleInterface:
             self.battle_icon_base_h = 0
 
         try:
-            # Button background
-            btn_full = pygame.image.load("assets/CampaignBTN.png").convert_alpha()
-            # Crop to opaque content
-            self.button_bg = crop_to_opaque(btn_full, threshold=128)
-        except (pygame.error, FileNotFoundError) as e:
-            logger.warning(f"Could not load CampaignBTN.png: {e}")
-            self.button_bg = None
-
-        try:
             # Victory/defeat splash images
             self.victory_img = pygame.image.load("assets/victoryscrn.png").convert_alpha()
             self.defeat_img = pygame.image.load("assets/defeatscrn.png").convert_alpha()
@@ -1214,7 +1209,8 @@ class EnhancedBattleInterface:
         self.title_font = self.font_manager.get_bold_font(int(24 * ui_scale))
         self.text_font = self.font_manager.get_font(int(16 * ui_scale))
         self.small_font = self.font_manager.get_font(int(14 * ui_scale))
-        self.button_font = self.font_manager.get_font(int(14 * ui_scale))  # Smaller button text
+        self.button_font = self.font_manager.get_bold_font(int(15 * ui_scale))
+        self.hint_font = self.font_manager.get_font(int(12 * ui_scale))  # The Skip button's keycap
 
     def _calculate_layout(self):
         """Calculate positions and sizes for all UI elements.
@@ -1242,8 +1238,6 @@ class EnhancedBattleInterface:
         self.bar_png_height = s(BAR_PNG_HEIGHT_REF)
         self.bar_top_margin = s(BAR_TOP_MARGIN_REF)
         self.bar_fill_offset = int(BAR_FILL_OFFSET_REF * self.scale)  # Keep sign
-        resolve_button_width = s(RESOLVE_BUTTON_WIDTH_REF)
-        resolve_button_height = s(RESOLVE_BUTTON_HEIGHT_REF)
         close_button_width = s(CLOSE_BUTTON_WIDTH_REF)
         close_button_height = s(CLOSE_BUTTON_HEIGHT_REF)
         self.text_line_height = s(TEXT_LINE_HEIGHT_REF)
@@ -1282,20 +1276,9 @@ class EnhancedBattleInterface:
                 gap_center_x - self.battle_icon.get_width() // 2,
                 icon_y
             )
-            # Resolve button positioned below battle icon (reduced gap)
-            button_y = icon_y + self.battle_icon.get_height() + s(8)
         else:
             self.battle_icon_pos = (gap_center_x, panel_top_margin + s(50))
             self.icon_center_y = panel_top_margin + s(80)
-            button_y = panel_top_margin + s(130)
-
-        # Resolve button (below battle icon in gap)
-        self.resolve_button_rect = pygame.Rect(
-            gap_center_x - resolve_button_width // 2,
-            button_y,
-            resolve_button_width,
-            resolve_button_height
-        )
 
         # Strength bars (below panels)
         # Fill and PNG can have independent widths
@@ -1318,6 +1301,20 @@ class EnhancedBattleInterface:
             bar_fill_width,
             self.bar_fill_height
         )
+
+        # The action button: Resolve Battle in setup, Skip in the fight, one slot centred
+        # under the bars - clear of the bolts' level line and of the chunks, which fall
+        # under their own bar. The Skip button's keycap goes below it.
+        action_width = s(ACTION_BUTTON_WIDTH_REF)
+        bar_fill_bottom = bar_y + self.bar_fill_offset + self.bar_fill_height
+        self.resolve_button_rect = pygame.Rect(
+            gap_center_x - action_width // 2,
+            bar_fill_bottom + s(ACTION_BUTTON_GAP_REF),
+            action_width,
+            battle_screen_kit.button_height(action_width)
+        )
+        self.skip_button_rect = self.resolve_button_rect.copy()
+        self.skip_hint_top = self.skip_button_rect.bottom + s(SKIP_HINT_GAP_REF)
 
         # Report panel (centered, used in REPORT state)
         report_width = int(self.screen_width * 0.4)
@@ -1880,21 +1877,23 @@ class EnhancedBattleInterface:
             pos: (x, y) tuple of click position
 
         Returns:
-            str or None: 'resolve', 'close', or None if no button clicked
+            str or None: 'resolve', 'skip', 'close', or None if no button clicked
         """
         if self.state == BattleInterfaceState.SETUP:
             if self.resolve_button_rect.collidepoint(pos):
+                self._trigger_flash('resolve')
                 self._pre_calculate_battle_result()
                 self._start_animation()
                 return 'resolve'
 
         elif self.state == BattleInterfaceState.ANIMATING:
-            # Clicking anywhere cuts a long battle short
+            # The Skip button - or a click anywhere - cuts a long battle short
             if self.skip_animation():
                 return 'skip'
 
         elif self.state == BattleInterfaceState.REPORT:
             if self.close_button_rect.collidepoint(pos):
+                self._trigger_flash('close')
                 self.is_finished_flag = True
                 return 'close'
 
@@ -1909,6 +1908,8 @@ class EnhancedBattleInterface:
         """
         if self.state != BattleInterfaceState.ANIMATING or self.particle_effect is None:
             return False
+        # (No click flash: the splash replaces the Skip button on the next frame - owner,
+        # 2026-10-28: it lingered over the splash while it flashed)
         self.particle_effect.skip()
         # Push past the post-animation hold so update() moves on to the splash
         # on the next frame.
@@ -2081,54 +2082,36 @@ class EnhancedBattleInterface:
         strength_surface = self.text_font.render(strength_text, True, WHITE)
         self.screen.blit(strength_surface, (content_x, y))
 
-    def _render_button(self, rect, text, bg_image=None):
+    @property
+    def clicked_element(self):
+        """The button flashing after its click ('resolve' / 'skip' / 'close'), else None."""
+        name, ticks = self._flash
+        if name is not None and pygame.time.get_ticks() - ticks < CLICK_FLASH_DURATION_MS:
+            return name
+        return None
+
+    def _trigger_flash(self, name):
+        self._flash = (name, pygame.time.get_ticks())
+
+    def _render_button(self, rect, text, key, mark=None):
         """
-        Render a button with hover/click effects.
+        Draw an ornate button (ui/battle_screen_kit.py): brighter under the cursor,
+        flashing for a moment after its click. Every sprite is baked once.
 
         Args:
             rect: pygame.Rect for button bounds
-            text: Text to display on button
-            bg_image: Optional background image
+            text: Label
+            key: The button's click-flash id ('resolve' / 'skip' / 'close')
+            mark: Optional mark after the label ('skip': fast-forward)
         """
-        is_hovering = rect.collidepoint(self.mouse_pos)
+        state = battle_screen_kit.button_state(rect, self.mouse_pos, self.clicked_element == key)
+        battle_screen_kit.draw_button(self.screen, rect, text, self.button_font, state, mark)
 
-        if bg_image:
-            # FPS OPT: Cache scaled+darkened base button image (avoids smoothscale+copy+Surface every frame)
-            if not hasattr(self, '_button_base_cache'):
-                self._button_base_cache = {}
-            btn_key = (id(bg_image), rect.width, rect.height)
-            if btn_key not in self._button_base_cache:
-                scaled_img = pygame.transform.smoothscale(bg_image, (rect.width, rect.height))
-                darkened = scaled_img.copy()
-                dark_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-                dark_surface.fill((100, 100, 100, 255))
-                darkened.blit(dark_surface, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                self._button_base_cache[btn_key] = darkened
-
-            if is_hovering:
-                # Only .copy() + brighten for the hovered button (rare — 1 at a time)
-                modified_img = self._button_base_cache[btn_key].copy()
-                bright_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-                bright_surface.fill((40, 40, 40, 0))
-                modified_img.blit(bright_surface, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
-                self.screen.blit(modified_img, rect.topleft)
-            else:
-                # FPS OPT: Blit directly from cache — no .copy() needed
-                self.screen.blit(self._button_base_cache[btn_key], rect.topleft)
-        else:
-            # Fallback solid color button
-            color = (80, 80, 120) if not is_hovering else (100, 100, 150)
-            pygame.draw.rect(self.screen, color, rect)
-            pygame.draw.rect(self.screen, WHITE, rect, 2)
-
-        # FPS OPT: Cache button text render (avoids font.render() every frame)
-        if not hasattr(self, '_button_text_cache'):
-            self._button_text_cache = {}
-        if text not in self._button_text_cache:
-            self._button_text_cache[text] = self.button_font.render(text, True, WHITE)
-        text_surface = self._button_text_cache[text]
-        text_rect = text_surface.get_rect(center=rect.center)
-        self.screen.blit(text_surface, text_rect)
+    def _render_skip_button(self):
+        """The Skip button under the bars, and its "Space" keycap (Esc and a click skip too)."""
+        self._render_button(self.skip_button_rect, "Skip", 'skip', mark='skip')
+        hint = battle_screen_kit.key_hint("Space", self.hint_font)
+        self.screen.blit(hint, hint.get_rect(midtop=(self.skip_button_rect.centerx, self.skip_hint_top)))
 
     def _render_pulsed_icon(self):
         """
@@ -2256,11 +2239,11 @@ class EnhancedBattleInterface:
         # Render battle icon with pulsation animation
         self._render_pulsed_icon()
 
-        # Render resolve button
-        self._render_button(self.resolve_button_rect, "Resolve Battle", self.button_bg)
-
         # Render strength bars
         self._render_strength_bars()
+
+        # Resolve button, under the bars (the Skip button takes its place in the fight)
+        self._render_button(self.resolve_button_rect, "Resolve Battle", 'resolve')
 
     def _render_animating(self):
         """Render the ANIMATING state (particle combat)."""
@@ -2296,6 +2279,8 @@ class EnhancedBattleInterface:
         # Render particle effect (includes animated bars)
         if self.particle_effect:
             self.particle_effect.render(self.screen)
+
+        self._render_skip_button()
 
     def _render_splash(self):
         """Render the SPLASH state (victory/defeat image)."""
@@ -2412,7 +2397,7 @@ class EnhancedBattleInterface:
             self.screen.blit(total_surface, (content_x, y))
 
         # Close button
-        self._render_button(self.close_button_rect, "Close", self.button_bg)
+        self._render_button(self.close_button_rect, "Close", 'close')
 
     def render(self):
         """Render the current state of the interface."""

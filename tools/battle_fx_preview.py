@@ -24,6 +24,8 @@ Controls (live):
     C    colours: bright / dark / neutral grey defender
     Space  resolve (during the fight: skip)     R  reopen the battle
     S    slow motion (x0.25)     P  pause     Esc  quit
+    Mouse  the screen's own buttons: Resolve Battle, Skip (or click anywhere in the
+           fight), Close (reopens the battle)
 """
 
 import argparse
@@ -150,6 +152,14 @@ def run_live(size):
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 pygame.quit()
                 return
+            if event.type == pygame.MOUSEMOTION:
+                ui.handle_mouse_motion(event.pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if ui.state == BattleInterfaceState.SETUP:
+                    if ui.resolve_button_rect.collidepoint(event.pos):
+                        resolve(ui)
+                elif ui.handle_click(event.pos) == 'close':
+                    ui, open_ms = open_battle(screen, battle, colours)
             if event.type == pygame.KEYDOWN:
                 reopen = False
                 if pygame.K_1 <= event.key <= pygame.K_4:
@@ -185,7 +195,7 @@ def run_live(size):
             + (f"   sprites {counters[0]} skipped {counters[1]}" if counters else ''),
             f"{battle}   colours {colours}   {ui.state.name}"
             f"{'   SLOW' if slow else ''}{'   PAUSED' if paused else ''}",
-            '1-4 battle  C colours  Space resolve/skip  R reopen  S slow  P pause',
+            '1-4 battle  C colours  Space resolve/skip  R reopen  S slow  P pause  mouse: buttons',
         ]
         for i, line in enumerate(lines):
             text = font.render(line, True, (255, 255, 255))
