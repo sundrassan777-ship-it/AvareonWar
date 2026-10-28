@@ -29,7 +29,8 @@ Pieces:
 Users: production_glow_effect.py (production rays), hero_fx_effect.py (hero
 ability effects), order_fx_effect.py (selection rings, order arrows),
 marker_fx_effect.py (map markers), turn_announcement_effect.py (turn banner),
-main.py (Master Negotiator glow), ui_renderer.py (Ruthless Ingenuity motes).
+battle_fx_effect.py (the battle screen), main.py (Master Negotiator glow),
+ui_renderer.py (Ruthless Ingenuity motes).
 """
 
 import math

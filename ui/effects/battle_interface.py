@@ -3,7 +3,8 @@ Enhanced Battle Interface
 
 A cinematic multi-phase battle interface featuring:
 - Side-by-side attacker/defender panels with BattlePlayerScreen.png backgrounds
-- Strength comparison bars with particle combat animation
+- Strength comparison bars trading bolts of light (the light itself is drawn by
+  ui/effects/battle_fx_effect.py, styled in battle_fx_style.py)
 - Victory/defeat splash screens with zoom animation
 - Battle report summary
 
@@ -24,16 +25,16 @@ from enum import Enum, auto
 from config.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WHITE, BLACK
 from utils.logger import get_logger
 from utils.surface_utils import crop_to_opaque
-from utils.colors import lighten_color
+from ui.effects.battle_fx_effect import BattleLight, Shot, spear_tip, tip_x
+from ui.effects.battle_fx_style import (BAR_STYLE, BOLT_STYLE, BURN_STYLE, CHARGE_STYLE, FINALE_STYLE,
+                                        ICON_GLOW_STYLE, charge_time)
+from ui.effects.hero_fx_effect import stable_seed
 
 logger = get_logger(__name__)
 
 # ========================================
 # CONSTANTS
 # ========================================
-
-# Overlay darkness (semi-transparent black)
-OVERLAY_ALPHA = 180
 
 # Reference resolution for scaling (all pixel values tuned for this)
 REFERENCE_WIDTH = 1600
@@ -73,7 +74,7 @@ CLOSE_BUTTON_HEIGHT_REF = 45
 # Bounds the volley schedule is clamped into (the duration is derived from the
 # volley count, not drawn directly)
 ANIMATION_MIN_DURATION = 2.0  # Minimum animation duration (seconds)
-ANIMATION_MAX_DURATION = 6.0  # Maximum animation duration (seconds)
+ANIMATION_MAX_DURATION = 8.0  # Maximum (one shot at a time takes longer - owner, 2026-10-28: fine)
 
 # Splash timing (seconds)
 SPLASH_GROW_DURATION = 0.5
@@ -81,39 +82,32 @@ SPLASH_HOLD_DURATION = 2.0
 SPLASH_SHRINK_DURATION = 0.5
 SPLASH_TARGET_SCALE = 0.75  # 75% of original size
 
-# Volley settings - each volley is one blast per side, and each hit removes a
-# visible chunk of the target bar (BFME2 auto-resolve style)
+# Volley settings - each volley is one shot per side, and each hit removes a
+# visible chunk of the target bar (BFME2 auto-resolve style). The sides take
+# turns, one shot at a time: a shot is fired once the one before has landed.
 VOLLEY_MIN = 3  # Fewest volleys, however small the skirmish
-VOLLEY_MAX = 14  # Cap so huge stacks do not trade blows forever
+VOLLEY_MAX = 10  # Cap so huge stacks do not trade blows forever (fewer if they would not fit the duration)
 VOLLEY_SIZE_LOG_COEFF = 1.6  # volleys = 2 + coeff * ln(total armies), then clamped
-VOLLEY_INTERVAL_MIN = 0.28  # Seconds between volleys (clamped to fit the duration window)
-VOLLEY_INTERVAL_MAX = 0.42
-VOLLEY_STAGGER_MIN = 0.06  # Offset between the two sides' shots within one volley
-VOLLEY_STAGGER_MAX = 0.14
+SHOT_PAUSE = 0.05  # Seconds after a bolt lands before the other side starts charging its reply
 VOLLEY_LEAD_IN = 0.35  # Pause before the first shot
 VOLLEY_TAIL = 0.60  # Pause after the last hit settles
-CHUNK_JITTER_MIN = 0.6  # Per-volley damage weight, normalised so chunks sum exactly
-CHUNK_JITTER_MAX = 1.4
+CHUNK_JITTER_MIN = 0.5  # A hit's random weight, normalised so a side's hits sum exactly
+CHUNK_JITTER_MAX = 1.6  # (wider than the first 0.6-1.4: more varied pieces - owner, 2026-10-28)
+# A hit is as heavy as the army firing it is strong at that moment (its fill),
+# so a strong army keeps hitting hard while a weakening one's hits shrink
+# (owner, 2026-10-28: show the armies' strength). 0 turns it off.
+HIT_STRENGTH_POWER = 1.0
+HIT_STRENGTH_FLOOR = 0.15  # A nearly beaten army still hits at least this hard (share of a full bar's)
 
-# Travelling blast (one streak per shot, not a stream)
-PROJECTILE_TRAVEL = 0.10  # Seconds to cross the gap
-PROJECTILE_LENGTH_REF = 130  # Streak length at reference resolution
-PROJECTILE_THICKNESS_REF = 10
-
-# Impact burst
-FLASH_DURATION = 0.22  # Seconds the burst is visible
-FLASH_SIZE_REF = 90  # Burst sprite size at reference resolution
-FLASH_FRAMES = 6  # Pre-rendered frames per side
-FLASH_SPIKES = 8  # Radiating spikes per burst
-FLASH_GLOW_RINGS = 5  # Concentric rings faking a radial gradient
+# Shots (battle_fx_style.py): each gathers light (charge_time()), then one bolt
+# flies to the enemy bar; the chunk it destroys breaks off as it lands
+PROJECTILE_TRAVEL = BOLT_STYLE['travel']  # Seconds a bolt takes to reach the enemy bar
 
 # Hit reaction on the struck bar
-BURN_DURATION = 0.13  # Seconds the doomed chunk glows white-hot before vanishing
+# Seconds from a bolt's landing until its chunk is gone and the fill steps down
+BURN_DURATION = BURN_STYLE['cool']
 FRAME_GLOW_DURATION = 0.30  # Seconds the bar frame keeps flaring
-FRAME_GLOW_INTENSITY = 0.55  # How hard the flare brightens the frame artwork
-
-# Bar background (empty portion of a strength bar)
-DARK_GRAY = (60, 60, 60)
+FRAME_GLOW_INTENSITY = 0.35  # How hard the flare brightens the frame artwork (the impacts carry the hit)
 
 # Text settings (reference resolution)
 TEXT_LINE_HEIGHT_REF = 34  # Vertical spacing between lines (reduced from 38 for 5 unit types)
@@ -250,10 +244,12 @@ class BattleBarVolleyEffect:
     """
     Volley-based strength bar combat animation (BFME2 auto-resolve style).
 
-    Instead of both bars sliding continuously to their final value, each side
-    fires a discrete blast at the other. When a blast lands, the chunk of the
-    target bar it destroyed flashes white-hot in place and then burns away, so
-    the bar depletes in visible steps - one step per hit.
+    Instead of both bars sliding continuously to their final value, the sides
+    take turns, one shot at a time: light gathers from the shooter's remaining
+    bar into its front (the charge), a bolt of light flies from there to the
+    enemy bar, and the chunk it destroys breaks off glowing hot and falls out of
+    the bar, embers bursting from it - the fill steps down one step per shot. A
+    hit is as heavy as the army firing it is strong at the time.
 
     The two bars are mirrored: the attacker bar is anchored at its left edge and
     the defender bar at its right edge, so both erode inward toward the centre.
@@ -262,7 +258,13 @@ class BattleBarVolleyEffect:
     chunk is) is built once in __init__ from a seeded private RNG, so the
     animation is identical on every client in multiplayer. The chunk sizes are
     normalised to sum exactly to the damage each side takes, so the bars always
-    land precisely on their final fill.
+    land precisely on their final fill. What a shot looks like (where exactly
+    it lands, its sparks, charge motes and embers) is drawn from a separate RNG
+    per shot when it is armed, so it never touches the schedule.
+
+    When the last bolt has landed, the bar left standing gets a finale (a sweep
+    of light, gold light round its frame) that plays on after is_finished(),
+    until the interface moves on to the splash.
     """
 
     # Side indices into self.sides
@@ -275,7 +277,7 @@ class BattleBarVolleyEffect:
                  attacker_final_fill, defender_final_fill,
                  seed=None, bar_border_img=None, bar_png_width=None,
                  bar_fill_offset=None, bar_png_height=None, ui_scale=1.0,
-                 attacker_count=0, defender_count=0):
+                 attacker_count=0, defender_count=0, light=None, ambient_clock=0.0):
         """
         Initialize the volley combat effect.
 
@@ -293,9 +295,13 @@ class BattleBarVolleyEffect:
             bar_png_width: Optional width for PNG (if different from fill width)
             bar_fill_offset: Scaled offset for fill positioning
             bar_png_height: Scaled height for PNG overlay
-            ui_scale: Scale factor for sprite sizes
+            ui_scale: Scale factor (light sizes follow the bar height instead)
             attacker_count: Attacker army count (drives how many volleys are fired)
             defender_count: Defender army count (drives how many volleys are fired)
+            light: The interface's BattleLight (its sprites prepared during setup);
+                a new one is made if None
+            ambient_clock: The interface's clock at the start, so the bars'
+                shimmer and sheen carry on from the setup screen without a jump
 
         Note:
             There is no `duration` argument - the duration falls out of the
@@ -340,11 +346,8 @@ class BattleBarVolleyEffect:
                 'final': attacker_final_fill,
                 'current': attacker_initial_fill,
                 'chunks': [],
-                'burn': None,            # {'t0', 'chunk'} - chunk burning white-hot
-                'flash': None,           # {'t0', 'x', 'y'} - impact burst
+                'burn': None,            # {'t0', 'chunk', 'fx'} - chunk being destroyed
                 'glow_t0': None,         # frame flare start time
-                'lance': None,           # sprite this side FIRES (own colour)
-                'flash_frames': [],      # sprites for hits taken (attacker colour)
                 'glow': None,            # frame flare overlay for hits taken
             },
             {
@@ -357,27 +360,40 @@ class BattleBarVolleyEffect:
                 'current': defender_initial_fill,
                 'chunks': [],
                 'burn': None,
-                'flash': None,
                 'glow_t0': None,
-                'lance': None,
-                'flash_frames': [],
                 'glow': None,
             },
         ]
 
-        # Pre-render every sprite once. A blast fired BY a side carries that
-        # side's colour, so the flashes a side RECEIVES are tinted with its
-        # opponent's colour.
+        # The frame flare a side shows when hit carries its opponent's colour
+        png_offset_y = (self.attacker_rect.height - self.bar_png_height) // 2
         for i, side in enumerate(self.sides):
             other = self.sides[1 - i]
-            side['lance'] = self._build_lance_sprite(side['color'], side['anchor_right'])
-            side['flash_frames'] = self._build_flash_sprites(other['color'])
             side['glow'] = self._build_frame_glow_sprite(side['border'], other['color'])
+            side['png_pos'] = (side['rect'].centerx - self.bar_png_width // 2, side['rect'].top + png_offset_y)
+            # Where this side's bolts leave from: the point of its frame's inner end cap
+            side['tip'] = spear_tip(side['border'], side['png_pos'], side['rect'], self.fill_y,
+                                    side['anchor_right'])
+
+        # The light (bolts, impacts, the bars' look). The interface hands over the
+        # one whose sprites it prepared during setup.
+        self.light = light if light is not None else BattleLight(attacker_bar_rect.height)
+        if light is None:
+            self.light.prepare_battle(attacker_color, defender_color)
+        self.ambient_clock = ambient_clock
+        # A side's turn: the pause after the bolt that hit it, its charge, its own
+        # bolt's flight
+        self.charge = charge_time()
+        self.turn = SHOT_PAUSE + self.charge + PROJECTILE_TRAVEL
 
         self.elapsed = 0.0
         self.is_complete = False
+        self.skipped = False
         self.volleys = []
         self.duration = ANIMATION_MIN_DURATION
+        # The finale: when it starts (the last bolt's landing) and its emptied bar's embers
+        self.finale_t0 = None
+        self.finale_embers = []
 
         self._build_schedule(attacker_final_fill, defender_final_fill)
 
@@ -389,9 +405,16 @@ class BattleBarVolleyEffect:
         """
         Build the deterministic volley schedule.
 
+        The sides take turns, one shot at a time (owner, 2026-10-28: easier to
+        follow than both firing at once): a side starts charging its shot
+        SHOT_PAUSE after the bolt before has landed. The side that loses opens and the winner has the
+        last word, so an emptied bar never fires again. The fire times do not
+        depend on who wins, only who fires each one - so retarget() can flip the
+        winner without moving a single shot.
+
         Uses a private random.Random so it never disturbs the global RNG that
         game logic draws from. Re-running it with the same seed reproduces the
-        identical timing, which is what retarget() relies on.
+        identical chunks, which is what retarget() relies on.
 
         Args:
             attacker_final_fill: Fill ratio the attacker bar must end on
@@ -407,99 +430,131 @@ class BattleBarVolleyEffect:
         # very large battles do not run away.
         total_armies = max(2, self.attacker_count + self.defender_count)
         count = int(round(2 + VOLLEY_SIZE_LOG_COEFF * math.log(total_armies)))
-        count = max(VOLLEY_MIN, min(VOLLEY_MAX, count))
+        # As many as fit the duration: 2 * count turns (the first without its pause)
+        fixed = VOLLEY_LEAD_IN - SHOT_PAUSE + VOLLEY_TAIL
+        fits = int((ANIMATION_MAX_DURATION - fixed) / (2 * self.turn))
+        count = max(VOLLEY_MIN, min(VOLLEY_MAX, fits, count))
+        last_land = VOLLEY_LEAD_IN - SHOT_PAUSE + 2 * count * self.turn
+        self.duration = max(ANIMATION_MIN_DURATION, last_land + VOLLEY_TAIL)
 
-        # Pick the gap between volleys, then clamp it so the resulting total
-        # duration stays inside the allowed window for any volley count.
-        interval = rng.uniform(VOLLEY_INTERVAL_MIN, VOLLEY_INTERVAL_MAX)
-        fixed = VOLLEY_LEAD_IN + VOLLEY_TAIL
-        min_interval = (ANIMATION_MIN_DURATION - fixed) / count
-        max_interval = (ANIMATION_MAX_DURATION - fixed) / count
-        interval = max(min_interval, min(max_interval, interval))
-        self.duration = fixed + count * interval
+        # Turns alternate, the loser first, the winner last (no winner yet -
+        # both bars emptied by the estimate: the attacker opens)
+        winner, _ = self.finale_sides()
+        first = (1 - winner) if winner is not None else self.ATTACKER
 
-        # Split each side's damage into chunks that sum exactly to the damage.
-        atk_chunks = self._split_damage(
-            rng, self.sides[self.ATTACKER]['initial'] - attacker_final_fill, count)
-        def_chunks = self._split_damage(
-            rng, self.sides[self.DEFENDER]['initial'] - defender_final_fill, count)
-        self.sides[self.ATTACKER]['chunks'] = atk_chunks
-        self.sides[self.DEFENDER]['chunks'] = def_chunks
+        # Split each side's damage into the hits it takes, summing exactly to
+        # the damage. Each hit weighs its random draw times the strength of the
+        # army firing it when it fires. The draws come first, in a fixed order,
+        # whatever the damage: retarget() depends on it.
+        jitters = {self.ATTACKER: self._draw_weights(rng, count),
+                   self.DEFENDER: self._draw_weights(rng, count)}
+        damage = {side: self.sides[side]['initial'] - self.sides[side]['final'] for side in jitters}
+        chunks_taken = {side: self._spread(damage[side], jitters[side]) for side in jitters}
+        # The strengths follow the chunks and the chunks the strengths: two
+        # rounds settle it (the second sees the first's trajectories)
+        for _ in range(2):
+            strengths = self._shooter_strengths(first, count, chunks_taken)
+            chunks_taken = {side: self._spread(damage[side], [j * s for j, s in zip(jitters[side], strengths[side])])
+                            for side in jitters}
+        self.sides[self.ATTACKER]['chunks'] = chunks_taken[self.ATTACKER]
+        self.sides[self.DEFENDER]['chunks'] = chunks_taken[self.DEFENDER]
 
-        # Build the shot list. Each volley is two shots - one per side - fired
-        # a fraction of a second apart so the hits interleave rather than
-        # landing on top of each other.
+        # Build the shot list. A shot fired by the attacker damages the defender,
+        # and vice versa.
         self.volleys = []
-        for i in range(count):
-            base_t = VOLLEY_LEAD_IN + i * interval
-            stagger = rng.uniform(VOLLEY_STAGGER_MIN, VOLLEY_STAGGER_MAX)
-            attacker_leads = rng.random() < 0.5
-
-            atk_fire = base_t if attacker_leads else base_t + stagger
-            def_fire = base_t + stagger if attacker_leads else base_t
-
-            # A shot fired by the attacker damages the defender, and vice versa.
-            self.volleys.append(self._make_shot(self.ATTACKER, self.DEFENDER,
-                                                atk_fire, def_chunks[i]))
-            self.volleys.append(self._make_shot(self.DEFENDER, self.ATTACKER,
-                                                def_fire, atk_chunks[i]))
-
-        self.volleys.sort(key=lambda v: v['fire_t'])
+        for turn in range(2 * count):
+            shooter = first if turn % 2 == 0 else 1 - first
+            target = 1 - shooter
+            fire_t = VOLLEY_LEAD_IN + self.charge + turn * self.turn
+            self.volleys.append(self._make_shot(shooter, target, fire_t,
+                                                chunks_taken[target][turn // 2], self.charge))
 
     @staticmethod
-    def _make_shot(shooter, target, fire_t, chunk):
+    def _make_shot(shooter, target, fire_t, chunk, charge):
         """
         Build one shot record.
 
         Args:
-            shooter: Side index firing the blast
+            shooter: Side index firing the shot
             target: Side index taking the hit
-            fire_t: Time (seconds into the animation) the lance leaves the bar
-            chunk: Fill ratio this hit removes from the target
+            fire_t: Time (seconds into the animation) the bolt leaves
+            chunk: Fill ratio this shot removes from the target
+            charge: Seconds the shot gathers light before the bolt leaves
 
         Returns:
-            Shot dict
+            Shot dict ('arm_t' is when its charge begins, 'land_t' when the bolt
+            lands and the chunk breaks off)
         """
         return {
             'shooter': shooter,
             'target': target,
+            'arm_t': fire_t - charge,
             'fire_t': fire_t,
             'land_t': fire_t + PROJECTILE_TRAVEL,
             'chunk': chunk,
             'fired': False,
             'landed': False,
-            'start_x': 0.0,   # filled in at fire time
-            'end_x': 0.0,
+            'aim': None,      # the target's fill it was aimed at (_aim_fill), set when armed
+            'end_x': 0.0,     # ...and that fill's front x
+            'fx': None,       # its look (battle_fx_effect.Shot), built when armed
         }
 
     @staticmethod
-    def _split_damage(rng, damage, count):
+    def _draw_weights(rng, count):
         """
-        Split a total damage amount into `count` jittered chunks.
+        `count` random hit weights. Drawn unconditionally, so the RNG stream
+        advances by the same number of steps whatever the damage - retarget()
+        depends on it.
+        """
+        return [rng.uniform(CHUNK_JITTER_MIN, CHUNK_JITTER_MAX) for _ in range(count)]
+
+    @staticmethod
+    def _spread(damage, weights):
+        """
+        Split a total damage amount into chunks in proportion to `weights`.
 
         The chunks are normalised so they sum to exactly `damage`, which is what
         lets the bar land precisely on its final fill instead of drifting.
 
         Args:
-            rng: random.Random instance
             damage: Total fill ratio to remove (may be 0 or negative)
-            count: Number of chunks
+            weights: One positive weight per chunk
 
         Returns:
             List of chunk sizes
         """
-        if count <= 0:
+        if not weights:
             return []
-        # Draw the weights unconditionally so the RNG stream advances by the
-        # same number of steps regardless of damage - retarget() depends on it.
-        weights = [rng.uniform(CHUNK_JITTER_MIN, CHUNK_JITTER_MAX) for _ in range(count)]
         if damage <= 0:
-            return [0.0] * count
+            return [0.0] * len(weights)
         total = sum(weights)
         chunks = [damage * w / total for w in weights]
         # Fold any float residue into the last chunk
         chunks[-1] += damage - sum(chunks)
         return chunks
+
+    @classmethod
+    def _split_damage(cls, rng, damage, count):
+        """Split a total damage amount into `count` randomly weighted chunks (no strengths)."""
+        return cls._spread(damage, cls._draw_weights(rng, count))
+
+    def _shooter_strengths(self, first, count, chunks_taken):
+        """
+        For each side, the strength of the army behind each hit it takes: its
+        fill when it fires (played through in turn order with these chunks),
+        to HIT_STRENGTH_POWER, at least HIT_STRENGTH_FLOOR.
+
+        Returns:
+            {side: [strength of the shooter of each hit it takes, in order]}
+        """
+        fills = {side: self.sides[side]['initial'] for side in (self.ATTACKER, self.DEFENDER)}
+        strengths = {self.ATTACKER: [], self.DEFENDER: []}
+        for turn in range(2 * count):
+            shooter = first if turn % 2 == 0 else 1 - first
+            target = 1 - shooter
+            strengths[target].append(max(HIT_STRENGTH_FLOOR, fills[shooter]) ** HIT_STRENGTH_POWER)
+            fills[target] -= chunks_taken[target][turn // 2]
+        return strengths
 
     def retarget(self, attacker_final_fill, defender_final_fill):
         """
@@ -517,7 +572,7 @@ class BattleBarVolleyEffect:
         self._build_schedule(attacker_final_fill, defender_final_fill)
 
     # ------------------------------------------------------------------
-    # Sprite pre-rendering
+    # Frame flare sprite
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -526,7 +581,7 @@ class BattleBarVolleyEffect:
         Blend between two RGB colours.
 
         utils.colors.lighten_color is multiplicative, so it barely moves a dark
-        player colour toward white. These blasts need a true linear blend.
+        player colour toward white. The frame flare needs a true linear blend.
 
         Args:
             a: RGB tuple at t=0
@@ -542,97 +597,6 @@ class BattleBarVolleyEffect:
             int(a[1] + (b[1] - a[1]) * t),
             int(a[2] + (b[2] - a[2]) * t),
         )
-
-    def _build_lance_sprite(self, color, fires_left):
-        """
-        Pre-render the travelling blast as a tapered, motion-blurred streak.
-
-        Built once per side at init, then blitted - nothing is drawn per frame.
-
-        Args:
-            color: RGB tuple of the firing player
-            fires_left: True if this side shoots right-to-left (the defender)
-
-        Returns:
-            pygame.Surface with per-pixel alpha, head pointing in travel direction
-        """
-        length = max(8, int(PROJECTILE_LENGTH_REF * self.ui_scale))
-        thickness = max(3, int(PROJECTILE_THICKNESS_REF * self.ui_scale))
-        surf = pygame.Surface((length, thickness), pygame.SRCALPHA)
-
-        # Build it pointing right: faint, thin tail at x=0 growing into a hot,
-        # white-tipped head at x=length-1.
-        for x in range(length):
-            p = x / max(1, length - 1)
-            alpha = int(255 * (p ** 1.6))
-            # Whiten only the last few pixels - a gentler curve here washed the
-            # whole streak out and both sides' blasts looked identical.
-            col = self._lerp_color(color, WHITE, p ** 8)
-            height = max(1, int(thickness * (0.35 + 0.65 * p)))
-            top = (thickness - height) // 2
-            pygame.draw.line(surf, (*col, alpha), (x, top), (x, top + height - 1))
-
-        if fires_left:
-            surf = pygame.transform.flip(surf, True, False)
-        return surf
-
-    def _build_flash_sprites(self, color):
-        """
-        Pre-render the impact burst as a short sprite sequence.
-
-        Frame 0 is the bright, tight burst; the last frame is the faded, spread
-        remnant. Same pre-rendered-frames approach as ProductionGlowEffect.
-
-        Args:
-            color: RGB tuple of the player whose blast lands here
-
-        Returns:
-            List of FLASH_FRAMES pygame.Surfaces with per-pixel alpha
-        """
-        size = max(12, int(FLASH_SIZE_REF * self.ui_scale))
-        centre = size // 2
-        spike_color = lighten_color(color, 0.5)
-        frames = []
-
-        for frame in range(FLASH_FRAMES):
-            p = frame / max(1, FLASH_FRAMES - 1)   # 0 at impact, 1 at the end
-            fade = (1.0 - p) ** 1.6
-            surf = pygame.Surface((size, size), pygame.SRCALPHA)
-
-            # Soft radial glow in the shooter's colour. pygame.draw does not
-            # blend onto SRCALPHA, it overwrites - so draw the widest, faintest
-            # ring first and work inward to build a stepped gradient.
-            glow_radius = size * (0.22 + 0.34 * p)
-            for ring in range(FLASH_GLOW_RINGS, 0, -1):
-                r = int(glow_radius * ring / FLASH_GLOW_RINGS)
-                if r < 1:
-                    continue
-                ring_alpha = int(200 * fade * (1.0 - (ring - 1) / FLASH_GLOW_RINGS))
-                if ring_alpha > 0:
-                    pygame.draw.circle(surf, (*color, ring_alpha), (centre, centre), r)
-
-            # Radiating spikes, lengthening and thinning as the burst expands
-            spike_len = size * (0.34 + 0.26 * p)
-            spike_width = max(1, int((1.0 - p * 0.6) * 3 * self.ui_scale))
-            spike_alpha = int(220 * fade)
-            if spike_alpha > 0:
-                for s in range(FLASH_SPIKES):
-                    angle = 2 * math.pi * s / FLASH_SPIKES
-                    ex = centre + math.cos(angle) * spike_len
-                    ey = centre + math.sin(angle) * spike_len
-                    pygame.draw.line(surf, (*spike_color, spike_alpha),
-                                     (centre, centre), (int(ex), int(ey)), spike_width)
-
-            # White-hot core, shrinking as it cools
-            core_radius = max(1, int(size * 0.10 * (1.0 - p * 0.8)))
-            core_alpha = int(255 * fade)
-            if core_alpha > 0:
-                pygame.draw.circle(surf, (255, 255, 255, core_alpha),
-                                   (centre, centre), core_radius)
-
-            frames.append(surf)
-
-        return frames
 
     def _build_frame_glow_sprite(self, border, color):
         """
@@ -693,7 +657,7 @@ class BattleBarVolleyEffect:
         """
         X coordinate of the inner (centre-facing) end of a side's fill.
 
-        This is where incoming blasts land and where chunks burn away.
+        This is where incoming bolts land and where chunks break off.
 
         Args:
             side: Side dict
@@ -702,11 +666,7 @@ class BattleBarVolleyEffect:
         Returns:
             float x coordinate
         """
-        rect = side['rect']
-        width = rect.width * max(0.0, min(1.0, fill))
-        if side['anchor_right']:
-            return rect.right - width
-        return rect.left + width
+        return tip_x(side['rect'], side['anchor_right'], fill)
 
     def _chunk_rect(self, side, from_fill, to_fill):
         """
@@ -726,18 +686,80 @@ class BattleBarVolleyEffect:
         return pygame.Rect(int(left), self.fill_y,
                            max(0, int(right) - int(left)), side['rect'].height)
 
-    def _muzzle_x(self, side):
+    # ------------------------------------------------------------------
+    # Shots
+    # ------------------------------------------------------------------
+
+    def _aim_fill(self, target_index):
         """
-        X coordinate a side's blasts are fired from (its inner bar edge).
+        The fill a shot armed now should hit: the target's front once the chunk
+        still burning and the chunks of shots already on their way to it are
+        gone - the front the bar shows, since a chunk breaks off as it is hit.
+        (Also where a side's own bolt leaves from.)
 
         Args:
-            side: Side dict
+            target_index: Side index of the target
 
         Returns:
-            float x coordinate
+            Fill ratio
         """
+        target = self.sides[target_index]
+        fill = target['current']
+        if target['burn'] is not None:
+            fill -= target['burn']['chunk']
+        for shot in self.volleys:
+            if shot['target'] == target_index and shot['fired'] and not shot['landed']:
+                fill -= shot['chunk']
+        return max(0.0, fill)
+
+    def _plan_shot(self, index, shot, aim):
+        """
+        Build the look of a shot as it is armed (battle_fx_effect.Shot).
+
+        With the charge on, light gathers from the shooter's remaining bar and
+        the bolt leaves from its front; off, from the frame's spear tip. It
+        flies level along the bars' centre line and lands near the chunk's
+        front. The RNG is the shot's own (seeded from the effect's seed and the
+        shot's place in the schedule), never the schedule's or the global one.
+
+        Args:
+            index: The shot's place in self.volleys
+            shot: Shot dict
+            aim: Fill ratio aimed at (_aim_fill)
+
+        Returns:
+            Shot
+        """
+        rng = random.Random(stable_seed('battle shot', self.seed, index))
+        shooter = self.sides[shot['shooter']]
+        target = self.sides[shot['target']]
+        chunk = min(shot['chunk'], aim)
+        h = target['rect'].height
+        centre_y = self.fill_y + h / 2.0
+        share = max(0.0, min(1.0, BOLT_STYLE['land_at'] + rng.uniform(-1.0, 1.0) * BOLT_STYLE['land_spread']))
+        landing = (self._fill_tip_x(target, aim - chunk * share), centre_y)
+        span = (self._fill_tip_x(target, aim), self._fill_tip_x(target, aim - chunk))
+        inward = -1 if target['anchor_right'] else 1
+        colours = (self.light.colours(shooter['color']), self.light.colours(target['color']))
+        # The chunk it breaks off, on the bar painter's pixels (BattleLight.draw_bar),
+        # so the piece leaves exactly the hole
+        edges = (self._fill_edge(target, aim), self._fill_edge(target, aim - chunk))
+        piece = (min(edges), abs(edges[1] - edges[0]))
+        bar = pygame.Rect(target['rect'].left, self.fill_y, target['rect'].width, h)
+        if self.charge > 0.0:
+            front = self._fill_tip_x(shooter, self._aim_fill(shot['shooter']))
+            muzzle = (front, centre_y)
+            gather = (front, self._fill_tip_x(shooter, 0.0))
+        else:
+            muzzle, gather = shooter['tip'], None
+        return Shot(rng, shot['arm_t'], shot['fire_t'], muzzle, landing, span, piece, inward, bar, colours,
+                    gather)
+
+    def _fill_edge(self, side, fill):
+        """The pixel column where a side's fill ends, as BattleLight.draw_bar() paints it."""
         rect = side['rect']
-        return rect.left if side['anchor_right'] else rect.right
+        width = int(rect.width * max(0.0, min(1.0, fill)))
+        return rect.right - width if side['anchor_right'] else rect.left + width
 
     # ------------------------------------------------------------------
     # Update
@@ -760,24 +782,26 @@ class BattleBarVolleyEffect:
         """
         Advance the volley schedule.
 
+        Once complete, only the clock moves on (for the finale's light); the
+        bars stay on their final fill.
+
         Args:
             delta_time: Time since last update in seconds
         """
+        self.elapsed += delta_time
         if self.is_complete:
             return
 
-        self.elapsed += delta_time
-
         # Fire and land shots that have come due
-        for shot in self.volleys:
-            if not shot['fired'] and self.elapsed >= shot['fire_t']:
+        for index, shot in enumerate(self.volleys):
+            if not shot['fired'] and self.elapsed >= shot['arm_t']:
+                # Aim before marking it fired: it must not count itself in flight.
+                # The point is held for the flight, so the bolts do not chase the bar.
+                aim = self._aim_fill(shot['target'])
                 shot['fired'] = True
-                shooter = self.sides[shot['shooter']]
-                target = self.sides[shot['target']]
-                shot['start_x'] = self._muzzle_x(shooter)
-                # Aim at where the target's fill tip is right now and hold that
-                # point for the flight, so the lance does not chase the bar.
-                shot['end_x'] = self._fill_tip_x(target, target['current'])
+                shot['aim'] = aim
+                shot['end_x'] = self._fill_tip_x(self.sides[shot['target']], aim)
+                shot['fx'] = self._plan_shot(index, shot, aim)
 
             if shot['fired'] and not shot['landed'] and self.elapsed >= shot['land_t']:
                 shot['landed'] = True
@@ -785,31 +809,61 @@ class BattleBarVolleyEffect:
                 # A second hit arriving mid-burn settles the first one, so no
                 # chunk is ever silently dropped.
                 self._settle_burn(target)
-                target['burn'] = {'t0': shot['land_t'], 'chunk': shot['chunk']}
-                target['flash'] = {'t0': shot['land_t'],
-                                   'x': shot['end_x'],
-                                   'y': self.fill_y + target['rect'].height / 2}
+                target['burn'] = {'t0': shot['land_t'], 'chunk': shot['chunk'], 'fx': shot['fx']}
                 target['glow_t0'] = shot['land_t']
 
-        # Close burns whose window has elapsed, and expire flashes/glows
+        # Close burns whose window has elapsed, and expire frame flares
         for side in self.sides:
             burn = side['burn']
             if burn is not None and self.elapsed - burn['t0'] >= BURN_DURATION:
                 self._settle_burn(side)
-            if side['flash'] is not None and self.elapsed - side['flash']['t0'] >= FLASH_DURATION:
-                side['flash'] = None
             if side['glow_t0'] is not None and self.elapsed - side['glow_t0'] >= FRAME_GLOW_DURATION:
                 side['glow_t0'] = None
 
+        # The finale starts as the last bolt lands
+        if self.finale_t0 is None and all(shot['fired'] for shot in self.volleys):
+            last = max([shot['fx'].land_t for shot in self.volleys] or [self.elapsed])
+            if self.elapsed >= last:
+                self._start_finale(last)
+
         if self.elapsed >= self.duration:
             self._finish()
+
+    def finale_sides(self):
+        """
+        (side left standing, side emptied) for the finale; either may be None.
+
+        The winner is the side ending with the longer fill, if any is left -
+        set_actual_battle_result() empties the loser's bar, so with the real
+        result exactly one bar is left. Both empty (a drawn estimate): no finale.
+        """
+        attacker, defender = self.sides[self.ATTACKER]['final'], self.sides[self.DEFENDER]['final']
+        if attacker > defender and attacker > 0:
+            winner = self.ATTACKER
+        elif defender > attacker and defender > 0:
+            winner = self.DEFENDER
+        else:
+            return None, None
+        loser = 1 - winner
+        emptied = self.sides[loser]['final'] <= 0 < self.sides[loser]['initial']
+        return winner, (loser if emptied else None)
+
+    def _start_finale(self, t0):
+        """Start the finale at t0 (the last bolt's landing): the emptied bar's last embers."""
+        self.finale_t0 = t0
+        winner, loser = self.finale_sides()
+        if loser is not None:
+            side = self.sides[loser]
+            rng = random.Random(stable_seed('battle finale', self.seed))
+            self.finale_embers = self.light.finale_embers(
+                rng, t0, self._fill_tip_x(side, 0.0), self.fill_y + side['rect'].height / 2.0,
+                -1 if side['anchor_right'] else 1)
 
     def _finish(self):
         """Settle everything and snap both bars exactly onto their final fill."""
         for side in self.sides:
             self._settle_burn(side)
             side['current'] = side['final']
-            side['flash'] = None
             side['glow_t0'] = None
         self.is_complete = True
 
@@ -818,12 +872,30 @@ class BattleBarVolleyEffect:
         Jump straight to the end of the animation.
 
         Used by the click/Space skip so a player can cut a long battle short.
+        Nothing more is drawn in flight, and there is no finale: the interface
+        goes straight on to the splash.
         """
         self.elapsed = self.duration
+        self.skipped = True
         for shot in self.volleys:
             shot['fired'] = True
             shot['landed'] = True
         self._finish()
+
+    def shot_kick(self):
+        """
+        0-1: how recently a bolt left (1 the moment it leaves, fading) - the
+        battle icon's glow flares with each one.
+        """
+        if self.skipped:
+            return 0.0
+        decay = ICON_GLOW_STYLE['shot_decay']
+        kick = 0.0
+        for shot in self.volleys:
+            age = self.elapsed - shot['fire_t']
+            if shot['fx'] is not None and 0.0 <= age < decay * 6.0:
+                kick = max(kick, math.exp(-age / decay))
+        return kick
 
     # ------------------------------------------------------------------
     # Render
@@ -831,80 +903,89 @@ class BattleBarVolleyEffect:
 
     def render(self, screen):
         """
-        Render both bars, the blasts in flight and the impacts.
+        Render both bars, the shots and the finale.
 
-        Nothing is allocated per frame: the fills and the burning chunk are
-        drawn straight to the screen, and the lances, frame flares and impact
-        bursts are all sprites pre-rendered in __init__.
+        Order: under the frames the bars themselves (track, fill, the seam of
+        light at each front) and the pieces broken off them, falling; then the
+        frames and their flares; then one layer of light over everything -
+        charges, bolts, impacts, embers and the finale's gold frame light. Nothing is built here: the
+        light's sprites were prepared during setup (any still missing are built
+        within the frame budget, skipping a frame).
 
         Args:
             screen: pygame.Surface to render to
         """
-        # 1. Bar backgrounds and the surviving fill
-        for side in self.sides:
-            rect = side['rect']
-            pygame.draw.rect(screen, DARK_GRAY,
-                             pygame.Rect(rect.left, self.fill_y, rect.width, rect.height))
-            if side['current'] > 0:
-                pygame.draw.rect(screen, side['color'],
-                                 self._fill_rect(side, side['current']))
+        light = self.light
+        light.begin_frame()
+        t = self.elapsed
+        clock = self.ambient_clock + t
+        finale = None if self.finale_t0 is None or self.skipped else t - self.finale_t0
+        winner, loser = self.finale_sides() if finale is not None else (None, None)
+        seam_style = BAR_STYLE['seam']
+        decay = seam_style['decay']
+        # Shots with something on screen (none once skipped)
+        active = [] if self.skipped else [shot for shot in self.volleys
+                                          if shot['fx'] is not None and shot['arm_t'] <= t < shot['fx'].end]
 
-        # 2. The chunk currently burning away: white-hot, cooling to empty
-        for side in self.sides:
+        # 1. The bars, under their frames
+        for i, side in enumerate(self.sides):
+            # The seam flares as a bolt lands on this bar, builds as it charges
+            # and kicks as its bolt leaves; a band of light sweeps it to its
+            # front while it charges
+            kick = 0.0
+            charging = None
+            for shot in active:
+                if shot['target'] == i:
+                    kick += seam_style['hit_kick'] * shot['fx'].hit_kick(t, decay)
+                else:
+                    kick += seam_style['fire_kick'] * shot['fx'].fire_kick(t, decay)
+                    if shot['fx'].charge(t) is not None:
+                        charging = shot['fx'].charge(t)
+            eaten = 0.0
             burn = side['burn']
-            if burn is None or burn['chunk'] <= 0:
-                continue
-            p = max(0.0, min(1.0, (self.elapsed - burn['t0']) / BURN_DURATION))
-            chunk_rect = self._chunk_rect(
-                side, side['current'] - burn['chunk'], side['current'])
-            if chunk_rect.width > 0:
-                pygame.draw.rect(screen, self._lerp_color(WHITE, DARK_GRAY, p), chunk_rect)
+            if burn is not None and burn['fx'] is not None:
+                eaten = burn['chunk'] * burn['fx'].broken(t)
+            standing = side['current'] - eaten
+            if charging is not None:
+                kick += CHARGE_STYLE['seam'] * charging * charging
+            seam = light.seam_level(clock, 1.7 * i, kick)
+            # The seam fades out as a bar empties...
+            seam *= min(1.0, max(0.0, standing) / seam_style['empty_fade'])
+            sheen = light.idle_sheen(clock, i * BAR_STYLE['sheen']['period'] / 2.0)
+            if charging is not None:
+                sheen = (charging, CHARGE_STYLE['sweep'] * min(1.0, 2.0 * charging))
+            if finale is not None:
+                if i == winner:
+                    # ...the bar left standing is swept with light, its seam held bright
+                    seam = max(seam, FINALE_STYLE['seam'] * min(1.0, finale / 0.08))
+                    p = finale / FINALE_STYLE['sweep']
+                    if p < 1.0:
+                        sheen = (p, FINALE_STYLE['sweep_intensity'] * math.sin(math.pi * p) ** 0.5)
+                elif i == loser:
+                    # ...and an emptied bar's last light goes out
+                    out = 1.0 - finale / FINALE_STYLE['out']
+                    seam = light.seam_level(clock, 1.7 * i) * max(0.0, out) if out > 0.0 else None
+            light.draw_bar(screen, side['rect'], self.fill_y, side['anchor_right'], side['color'],
+                           side['current'], eaten, seam, sheen)
 
-        # 3. Lances in flight. Drawn BEFORE the frame so the tail, which is
-        #    still inside the firing bar at launch, is hidden by the frame's
-        #    solid end cap instead of poking out over it.
-        for shot in self.volleys:
-            if not shot['fired'] or shot['landed']:
-                continue
-            p = max(0.0, min(1.0, (self.elapsed - shot['fire_t']) / PROJECTILE_TRAVEL))
-            x = shot['start_x'] + (shot['end_x'] - shot['start_x']) * p
-            shooter = self.sides[shot['shooter']]
-            sprite = shooter['lance']
-            # Anchor the sprite's head on the travelling point; the tail trails
-            # back toward the bar that fired it.
-            sprite_x = x if shooter['anchor_right'] else x - sprite.get_width()
-            sprite_y = self.fill_y + (shooter['rect'].height - sprite.get_height()) / 2
+        # 2. The chunks the bolts broke off, falling out of the bars (under the
+        #    frames: they leave the bar as it showed them, and fall out below)
+        for shot in active:
+            light.draw_pieces(screen, shot['fx'], t)
 
-            # Clip to everything beyond the muzzle. At launch the tail is still
-            # inside the firing bar, and without this it renders as a streak
-            # lying across the bar's own fill.
-            muzzle = int(self._muzzle_x(shooter))
-            screen_rect = screen.get_rect()
-            if shooter['anchor_right']:
-                clip = pygame.Rect(0, 0, muzzle, screen_rect.height)
-            else:
-                clip = pygame.Rect(muzzle, 0, screen_rect.width - muzzle, screen_rect.height)
-            previous_clip = screen.get_clip()
-            screen.set_clip(clip.clip(screen_rect))
-            screen.blit(sprite, (int(sprite_x), int(sprite_y)))
-            screen.set_clip(previous_clip)
-
-        # 4. Decorative frame (defender's copy is mirrored)
-        png_offset_y = (self.attacker_rect.height - self.bar_png_height) // 2
+        # 3. Decorative frame (defender's copy is mirrored)
         for side in self.sides:
-            rect = side['rect']
             if side['border']:
-                png_x = rect.centerx - self.bar_png_width // 2
-                screen.blit(side['border'], (png_x, rect.top + png_offset_y))
+                screen.blit(side['border'], side['png_pos'])
             else:
-                pygame.draw.rect(screen, WHITE, rect, BAR_BORDER_WIDTH)
+                pygame.draw.rect(screen, WHITE, side['rect'], BAR_BORDER_WIDTH)
 
-        # 5. Frame flare on a bar that was just hit - a hot copy of the frame
+        # 4. Frame flare on a bar that was just hit - a hot copy of the frame
         #    laid over the normal one at the exact same position.
         for side in self.sides:
             if side['glow_t0'] is None or side['glow'] is None:
                 continue
-            p = max(0.0, min(1.0, (self.elapsed - side['glow_t0']) / FRAME_GLOW_DURATION))
+            p = max(0.0, min(1.0, (t - side['glow_t0']) / FRAME_GLOW_DURATION))
             fade = (1.0 - p) ** 1.5
             sprite = side['glow']
             # pygame multiplies surface alpha with per-pixel alpha, so one hot
@@ -913,23 +994,21 @@ class BattleBarVolleyEffect:
             # is set unconditionally on every blit, so the sprite never carries
             # a stale value.
             sprite.set_alpha(int(255 * fade))
-            rect = side['rect']
-            png_x = rect.centerx - self.bar_png_width // 2
-            screen.blit(sprite, (png_x, rect.top + png_offset_y))
+            screen.blit(sprite, side['png_pos'])
 
-        # 6. Impact bursts
-        for side in self.sides:
-            flash = side['flash']
-            if flash is None:
-                continue
-            p = max(0.0, min(1.0, (self.elapsed - flash['t0']) / FLASH_DURATION))
-            frames = side['flash_frames']
-            if not frames:
-                continue
-            index = min(len(frames) - 1, int(p * len(frames)))
-            sprite = frames[index]
-            screen.blit(sprite, (int(flash['x'] - sprite.get_width() / 2),
-                                 int(flash['y'] - sprite.get_height() / 2)))
+        # 5. Light over everything: the shots, an emptied bar's last embers, and
+        #    the gold light round the frame of the bar left standing
+        for shot in active:
+            light.draw_shot(screen, shot['fx'], t)
+        if finale is not None:
+            if loser is not None:
+                light.draw_embers(screen, self.finale_embers, t, light.colours(self.sides[loser]['color'])['ember'])
+            if winner is not None:
+                side = self.sides[winner]
+                style = FINALE_STYLE
+                strength = style['frame_intensity'] * min(1.0, finale / style['frame_fade_in'])
+                strength *= 1.0 + style['frame_breathe'] * math.sin(2.0 * math.pi * style['frame_breathe_hz'] * finale)
+                light.draw_frame_glow(screen, side['border'], side['anchor_right'], side['png_pos'], strength)
 
     def is_finished(self):
         """Check if animation is complete."""
@@ -985,6 +1064,9 @@ class EnhancedBattleInterface:
         # Initialize state
         self.state = BattleInterfaceState.SETUP
         self.elapsed = 0.0
+        # Never reset (self.elapsed restarts with each state): drives the icon's
+        # pulse and the bars' shimmer, so neither jumps when Resolve is clicked
+        self._ambient_clock = 0.0
         self.is_finished_flag = False
 
         # Pre-calculated battle result (populated when Resolve is clicked)
@@ -1009,11 +1091,30 @@ class EnhancedBattleInterface:
         # producer of report_panel_rect / close_button_rect / _scaled_report_bg and the
         # text metrics _render_report() needs, so report-only mode still runs them.
 
+        # The light (battle_fx_effect.py): the backdrop in every state, and for a
+        # battle the bars, the shots and the icon's glow
+        self.light = BattleLight(self.bar_fill_height)
+        self.light.prepare_backdrop(self.screen)
+
         if report_snapshot is not None:
             self._apply_report_snapshot(report_snapshot)
         else:
             # Extract battle data for display
             self._extract_battle_data()
+            self._prepare_light()
+
+    def _prepare_light(self):
+        """
+        Bake the light the battle will show before its first frame: the gold
+        light round the battle icon (it glows from the start) and round the bar
+        frames (the finale), the flare greys, and queue the shots' sprites for
+        both colours, built while the setup screen shows (prewarm_step). Every
+        bake is kept between battles, so this is only paid once a session.
+        """
+        self.light.prepare_battle(self.attacker_color, self.defender_color)
+        self.light.prepare_icon(self.battle_icon)
+        self.light.prepare_frame(self._scaled_bar_border, False)
+        self.light.prepare_frame(self._scaled_bar_border_flipped, True)
 
     def _apply_report_snapshot(self, report):
         """
@@ -1589,7 +1690,9 @@ class EnhancedBattleInterface:
             bar_png_height=self.bar_png_height,
             ui_scale=self.scale,
             attacker_count=self.attacker_count,
-            defender_count=self.defender_count
+            defender_count=self.defender_count,
+            light=self.light,
+            ambient_clock=self._ambient_clock
         )
 
         # The duration now falls out of the volley schedule rather than being
@@ -1631,6 +1734,7 @@ class EnhancedBattleInterface:
             delta_time: Time since last update in seconds
         """
         self.elapsed += delta_time
+        self._ambient_clock += delta_time
 
         if self.state == BattleInterfaceState.ANIMATING:
             if self.particle_effect:
@@ -1890,12 +1994,8 @@ class EnhancedBattleInterface:
         return lines if lines else [text]
 
     def _render_overlay(self):
-        """Render the semi-transparent dark overlay."""
-        # FPS OPT: Cache overlay surface (avoids fullscreen SRCALPHA alloc every frame)
-        if not hasattr(self, '_cached_overlay') or self._cached_overlay.get_size() != (self.screen_width, self.screen_height):
-            self._cached_overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
-            self._cached_overlay.fill((0, 0, 0, OVERLAY_ALPHA))
-        self.screen.blit(self._cached_overlay, (0, 0))
+        """Darken the map behind the battle screen: a vignette, deeper toward the edges."""
+        self.light.darken(self.screen)
 
     def _render_panel(self, rect, title, title_color, territory, composition,
                       effective_strength, is_defender=False):
@@ -2039,12 +2139,17 @@ class EnhancedBattleInterface:
         ICON_PULSE_SCALE_STEPS steps and the results cached, so each distinct
         size is only ever built once. Shared by both states so the two copies
         cannot drift apart.
+
+        Gold light glows with it: a soft bloom behind the swords and light round
+        their outline, brighter as the icon swells and flaring with each shot.
+        The pulse runs on the never-reset ambient clock, so it carries on through
+        the Resolve click instead of restarting.
         """
         if not self.battle_icon or self.battle_icon_base_w <= 0:
             return
 
         # Calculate pulse scale using sine wave for smooth animation
-        pulse_progress = (math.sin(self.elapsed * ICON_PULSE_SPEED * 2 * math.pi) + 1) / 2
+        pulse_progress = (math.sin(self._ambient_clock * ICON_PULSE_SPEED * 2 * math.pi) + 1) / 2
         current_scale = ICON_PULSE_MIN_SCALE + (ICON_PULSE_MAX_SCALE - ICON_PULSE_MIN_SCALE) * pulse_progress
 
         # Quantise so a continuously-varying float does not defeat the cache
@@ -2064,49 +2169,38 @@ class EnhancedBattleInterface:
         # Center it at the stored center position
         icon_x = self.icon_center_x - scaled_icon.get_width() // 2
         icon_y = self.icon_center_y - scaled_icon.get_height() // 2
+
+        style = ICON_GLOW_STYLE
+        kick = 0.0
+        if self.state == BattleInterfaceState.ANIMATING and self.particle_effect is not None:
+            kick = style['shot_kick'] * self.particle_effect.shot_kick()
+        bloom_lo, bloom_hi = style['bloom_level']
+        self.light.draw_icon_bloom(self.screen, self.battle_icon, (self.icon_center_x, self.icon_center_y),
+                                   bloom_lo + (bloom_hi - bloom_lo) * pulse_progress + kick * 0.5)
         self.screen.blit(scaled_icon, (icon_x, icon_y))
+        outline_lo, outline_hi = style['outline']
+        self.light.draw_icon_outline(self.screen, self.battle_icon, step / ICON_PULSE_SCALE_STEPS, step,
+                                     (icon_x, icon_y),
+                                     outline_lo + (outline_hi - outline_lo) * pulse_progress + kick)
 
     def _render_strength_bars(self):
         """Render the strength comparison bars using BattleBar.png as border."""
         # Calculate fill Y position (offset from bar rect for independent positioning)
         fill_y = self.attacker_bar_rect.top + self.bar_fill_offset
 
-        # Draw bar backgrounds (dark fill area) at offset position
-        attacker_fill_rect = pygame.Rect(
-            self.attacker_bar_rect.left, fill_y,
-            self.attacker_bar_rect.width, self.attacker_bar_rect.height
-        )
-        defender_fill_rect = pygame.Rect(
-            self.defender_bar_rect.left, fill_y,
-            self.defender_bar_rect.width, self.defender_bar_rect.height
-        )
-        pygame.draw.rect(self.screen, DARK_GRAY, attacker_fill_rect)
-        pygame.draw.rect(self.screen, DARK_GRAY, defender_fill_rect)
-
-        # Draw fills at offset position. The bars are mirrored - the attacker
-        # fills from its left edge, the defender from its right - so both erode
-        # inward toward the centre once the volleys start. This must match
-        # BattleBarVolleyEffect._fill_rect() or the bar would jump when the
-        # animation begins.
-        if self.attacker_fill > 0:
-            fill_width = int(self.attacker_bar_rect.width * self.attacker_fill)
-            fill_rect = pygame.Rect(
-                self.attacker_bar_rect.left,
-                fill_y,
-                fill_width,
-                self.attacker_bar_rect.height
-            )
-            pygame.draw.rect(self.screen, self.attacker_color, fill_rect)
-
-        if self.defender_fill > 0:
-            fill_width = int(self.defender_bar_rect.width * self.defender_fill)
-            fill_rect = pygame.Rect(
-                self.defender_bar_rect.right - fill_width,
-                fill_y,
-                fill_width,
-                self.defender_bar_rect.height
-            )
-            pygame.draw.rect(self.screen, self.defender_color, fill_rect)
+        # The bars are mirrored - the attacker fills from its left edge, the
+        # defender from its right - so both erode inward toward the centre once
+        # the volleys start. They are painted by the same BattleLight.draw_bar()
+        # as BattleBarVolleyEffect.render(), at the same ambient clock, so
+        # nothing jumps when the animation begins.
+        sheen_period = BAR_STYLE['sheen']['period']
+        bars = ((self.attacker_bar_rect, False, self.attacker_color, self.attacker_fill),
+                (self.defender_bar_rect, True, self.defender_color, self.defender_fill))
+        for i, (rect, anchor_right, colour, fill) in enumerate(bars):
+            seam = self.light.seam_level(self._ambient_clock, 1.7 * i)
+            seam *= min(1.0, max(0.0, fill) / BAR_STYLE['seam']['empty_fade'])
+            self.light.draw_bar(self.screen, rect, fill_y, anchor_right, colour, fill, seam=seam,
+                                sheen=self.light.idle_sheen(self._ambient_clock, i * sheen_period / 2.0))
 
         # Draw borders using BattleBar.png if available
         # P2 fix: use pre-scaled bar border instead of smoothscale per frame
@@ -2126,6 +2220,11 @@ class EnhancedBattleInterface:
 
     def _render_setup(self):
         """Render the SETUP state (panels, icon, resolve button)."""
+        # While the player reads the panels, build the shots' light sprites
+        # within the frame budget, so the fight itself builds nothing
+        self.light.begin_frame()
+        self.light.prewarm_step()
+
         # Render panels
         attacker_name = self.game_state.get_player_name(self.attacker_player) if self.attacker_player is not None else "Unknown"
         self._render_panel(
