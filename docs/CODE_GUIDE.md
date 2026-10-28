@@ -853,10 +853,26 @@ screen effects" below.
   is never reset (`self.elapsed` restarts with each state); the effect gets it at the start
   (`ambient_clock`), so the icon's pulse and the bars' shimmer carry on through the click.
 
-**Skip:** clicking anywhere during ANIMATING, or pressing Space/ESC, calls
-`skip_animation()` → `BattleBarVolleyEffect.skip()`. `handle_click()` returns `'skip'`, which
-main.py's existing fall-through consumes; the key is wired in main.py's KEYDOWN branch ahead
-of the campaign-transmission skip.
+**Skip:** clicking anywhere during ANIMATING (the Skip button included), or pressing
+Space/ESC, calls `skip_animation()` → `BattleBarVolleyEffect.skip()`. `handle_click()` returns
+`'skip'`, which main.py's existing fall-through consumes; the key is wired in main.py's
+KEYDOWN branch ahead of the campaign-transmission skip. A skip goes to the splash, which
+still plays (owner's choice, 2026-10-28).
+
+**The action button (owner, 2026-10-28):** one slot centred under the bars
+(`resolve_button_rect` == `skip_button_rect`, `ACTION_BUTTON_*`): **Resolve Battle** in
+SETUP, **Skip** with a fast-forward mark and a "Space" keycap (`skip_hint_top`) in
+ANIMATING (`_render_skip_button()`), so the button stays put from one to the other. Clear
+of the bolts' level line and of the chunks, which fall under their own bar. Not drawn on
+the splash - the splash clears it at once (its click flash used to linger there).
+Resolve, Skip and Close are drawn by `_render_button(rect, label, key, mark)` through
+`ui/battle_screen_kit.py`: CampaignBTN with baked hover / flash states
+(`SidebarWidgets.button_sprite`, as the bottom panel's buttons) and a light Cinzel label
+with a drop shadow in the battle screen's own size (the sidebar / bottom panel kits cap
+their text at their panels' size). The kit's sprites and labels live in a module cache
+kept between battles and rebuilt only when the display changes, so opening a battle
+bakes nothing twice. `clicked_element` / `_trigger_flash()` give the interface its own
+click flash (`CLICK_FLASH_DURATION_MS`).
 
 **Tests:** `tests/test_battle_bar_volley.py`, `tests/test_battle_interface_integration.py`
 
@@ -1168,7 +1184,7 @@ in the light style of the other passes - it was the last combat effect in the ol
 | The chunk falling (heat, pop, gravity, push, spin, fade time), the embers | `BURN_STYLE` (`'fall'`, `'embers'`) |
 | Finale, battle icon glow, backdrop | `FINALE_STYLE`, `ICON_GLOW_STYLE`, `BACKDROP_STYLE` |
 | The turns (pause, how many, battle length), how big each hit is | constants at the top of `ui/effects/battle_interface.py`: `SHOT_PAUSE`, `VOLLEY_*`, `ANIMATION_MAX_DURATION`, `CHUNK_JITTER_*`, `HIT_STRENGTH_*` (see "Bar animation" above) |
-| Preview / tune / measure | `py tools/battle_fx_preview.py` (live: 1-4 battle, C colours, Space resolve / skip, R reopen, S slow motion, P pause; `--size 1280x720`), `--sheet out.png` (setup, a shot exchange, the finale; `--battles`, `--colours`), `--bench` |
+| Preview / tune / measure | `py tools/battle_fx_preview.py` (live: 1-4 battle, C colours, Space resolve / skip, R reopen, S slow motion, P pause, the mouse on the screen's own buttons; `--size 1280x720`), `--sheet out.png` (setup, a shot exchange, the finale; `--battles`, `--colours`), `--bench` |
 
 **Rules:**
 - **Sizes are in bar heights** (H, the fill's height: 40 px at 1600x900), so the light

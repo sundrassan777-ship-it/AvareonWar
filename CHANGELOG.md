@@ -2,6 +2,39 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-28 - Battle screen: a Skip button, Resolve and Skip unified (Phase 1)
+
+Branch `feature/battle-screens`, phase 1 of the battle preview / report modernization.
+Owner: skipping the fight (a click anywhere, Space, Esc) worked but nothing on screen said
+so. Decisions along the way: the skip keeps the 3 s Victory/Defeat splash; the splash
+clears the button at once (its click flash lingered over it); then Resolve Battle moved
+into the Skip button's slot, so the two are one button that stays put.
+- **The action button** (`ui/effects/battle_interface.py`): one slot centred under the bars
+  (`ACTION_BUTTON_*`, height from the art's aspect; `resolve_button_rect` ==
+  `skip_button_rect`), clear of the bolts' level line and of the chunks falling under each
+  bar. SETUP shows **Resolve Battle** (was a small, darkened button under the battle icon,
+  180x50); ANIMATING shows **Skip** with a fast-forward mark and a "Space" keycap under it
+  (`_render_skip_button()`). Skipping works as before (`skip_animation()`); the button is
+  one more place to click.
+- **`ui/battle_screen_kit.py`** (new): the battle screen's ornate buttons - CampaignBTN with
+  baked hover / flash states (`SidebarWidgets.button_sprite`, as the bottom panel's), a
+  light Cinzel label with a drop shadow in the battle screen's own size (bold 15 at 900p),
+  the fast-forward mark (drawn; Cinzel has no arrow glyphs) and `key_hint()`. Sprites and
+  labels sit in a module cache kept between battles, rebuilt when the display changes.
+  Close uses it too. `_render_button(rect, label, key, mark)`; the interface has its own
+  click flash (`clicked_element`, `_trigger_flash()`). The darkened CampaignBTN copy and
+  its per-interface caches are gone.
+- **Tools**: `tools/battle_fx_preview.py` live mode takes the mouse (the screen's own
+  buttons: Resolve, Skip, Close reopens the battle).
+- **Cost** (1600x900, `--bench` back to back with the old code): ~2.5 ms a frame through a
+  fight either way; opening a battle unchanged.
+- Tests: `tests/test_battle_interface_integration.py` `TestSkipButton` (13): under the bars
+  and centred, fits 720p-1440p, Resolve shares the slot, drawn only in the fight, clicking
+  it goes to the splash, the splash clears it however the fight was skipped (button, a
+  click, Space, Esc), hover and flash show, nothing baked twice (also for the next battle).
+- Docs: CODE_GUIDE "Modify Battle Interface" (Skip, the action button, the kit), the
+  preview tool's row; `.claude/CLAUDE.md`; PATCHNOTES ("Skip Button for Battles").
+
 ## 2026-10-28 - Fix: the game hung on a battle left after the win
 
 Branch `fix/battle-after-victory`. Owner's game (simultaneous, vs 1 AI): the AI marched its

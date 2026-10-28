@@ -4,6 +4,21 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Skip Button for Battles
+
+*28 October 2026*
+
+### Improvements
+
+- **A Skip button for the battle animation.** While the armies' bars fight, a Skip button
+  sits under them, with a reminder that Space skips too. Clicking anywhere or pressing Esc
+  still works. The Victory or Defeat screen still follows.
+- **Resolve Battle moved under the bars,** into the same spot as Skip: one button that
+  starts the battle and then lets you skip it. The battle screen's buttons have the same
+  look as the buttons in the bottom panel.
+
+---
+
 ## Final Battle Fix
 
 *28 October 2026*

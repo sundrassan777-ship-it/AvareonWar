@@ -69,6 +69,7 @@ AvareonWar/
 
 **Battle Reports:**
 - [ui/battle_report_popup.py](ui/battle_report_popup.py) - On-map defender-side battle summary popups (DEFENDED/LOST, Detail + Close buttons)
+- [ui/battle_screen_kit.py](ui/battle_screen_kit.py) - The battle screen's ornate buttons (Resolve Battle / Skip / Close: CampaignBTN with baked hover / flash, light labels, the Skip mark and "Space" keycap), cached between battles
 
 **Game Setup Screens (shared by Custom Game + multiplayer lobby):**
 - [ui/additional_options_overlay.py](ui/additional_options_overlay.py) - Additional Options modal (Neutral Armies, Randomize Bonuses, Gold Transfer, Starting Gold); read-only view for multiplayer clients
@@ -153,7 +154,7 @@ AvareonWar/
 - [tools/plot_fx_preview.py](tools/plot_fx_preview.py) - Plot effects preview on the real map (production light rays, construction dust): live window with zoom / 2D-3D look / FPS, `--sheet` contact sheets, `--bench` frame cost
 - [tools/hero_fx_preview.py](tools/hero_fx_preview.py) - Hero ability effects preview on the real map: keys cast each ability at the territory under the mouse (with the Embargo embers / Silence fog they leave behind, C clears), A cycles the passive auras, `--sheet` stills over time (`--only` some effects), `--bench` frame cost
 - [tools/order_fx_preview.py](tools/order_fx_preview.py) - Selection ring / order arrows / destination reticle preview on the real map: click selects, right-click orders, keys add orders, reverse pairs, 2-hops, hover (gold), ally's order (dimmer), order kind (G), cancel (ash-grey fizzle); `--sheet` stills, `--bench` frame cost
-- [tools/battle_fx_preview.py](tools/battle_fx_preview.py) - Battle screen preview (the real `EnhancedBattleInterface` over the map): keys pick a battle (skirmish / large / close / defender wins) and colours (bright / dark / neutral grey), Space resolves or skips, S slow motion; `--sheet` stills (setup, a shot exchange, the finale), `--bench` render cost per frame with sprite builds / skips in the fight
+- [tools/battle_fx_preview.py](tools/battle_fx_preview.py) - Battle screen preview (the real `EnhancedBattleInterface` over the map): keys pick a battle (skirmish / large / close / defender wins) and colours (bright / dark / neutral grey), Space resolves or skips, the mouse clicks the screen's own buttons, S slow motion; `--sheet` stills (setup, a shot exchange, the finale), `--bench` render cost per frame with sprite builds / skips in the fight
 
 **Performance Tests:**
 - [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow, construction-dust and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
