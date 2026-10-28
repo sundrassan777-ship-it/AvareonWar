@@ -470,7 +470,18 @@ if hasattr(self, 'player_teams') and self.player_teams:
 **Images:** `assets/victoryscrn.png`, `assets/defeatscrn.png`
 
 **Input blocking:** Event loop blocks all input during `victory_sequence_active`
-**Mouse handler:** `mouse_handler.py` line 86 guards `phase=='ended'` to allow battle clicks during pending state
+**Mouse handler:** `mouse_handler.py` Priority 1 guards `phase=='ended'` to allow battle clicks during pending state
+
+**Battles left after the win:** a win can land mid-round (the last enemy territory taken
+while a battle is queued, or the same arrivals queueing one right after - an army that
+marched out of its last territory). The cinematic waits for them (`_all_animations_complete()`
+checks `pending_battles`), so `Game._battles_open_after_victory()` (`phase=='ended'`,
+`victory_sequence_pending`, not yet `victory_sequence_active`, battles pending in the battle
+phase) keeps them fightable: `handle_battle_marker_click()` accepts it as a battle phase and
+the top panel still draws the Resolve Remaining Battles button. **A new gate on
+`phase == 'playing'` for anything a pending battle needs must accept this state too**, or a
+human resolver hangs the game (owner's game of 2026-10-28;
+`tests/test_battle_after_victory.py`).
 
 **Campaign missions** have their own victory system (tutorial_mission hook) - the cinematic is skipped when a campaign mission is active.
 
@@ -868,7 +879,7 @@ self._resolved_battle_info = {
 - **Click handling:** `input/mouse_handler.py` (Priority 5.5) → `main.py` `_handle_resolve_all_battles_click()`
 - **Core resolution:** `main.py` `_resolve_all_pending_battles()` — loops resolving battles, handles multiplayer sync, alliance markers, Capital Assault elimination, turn/round advancement
 - **Hover/tooltip:** `main.py` `handle_hover()` — suppresses territory/army hover, tracks button hover for tooltip
-- **Visibility:** Only during battle phase, when local player has resolvable battles, no battle UI open, not tutorial
+- **Visibility:** Only during battle phase, when local player has resolvable battles, no battle UI open, not tutorial. Also after a win while the victory cinematic waits for battles (`_battles_open_after_victory()`, drawn from the top panel's not-playing branch)
 
 #### ✅ Add Visual Effect
 

@@ -2,6 +2,32 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-28 - Fix: the game hung on a battle left after the win
+
+Branch `fix/battle-after-victory`. Owner's game (simultaneous, vs 1 AI): the AI marched its
+last army out of its last territory into a neutral one while the player took that
+territory. `_process_arrivals()` (`simultaneous/sim_phase_manager.py`) declared the win
+(0 territories left, `phase = 'ended'`) and the same arrivals then queued the battle at the
+neutral territory, the player resolving it. The victory cinematic waits until
+`pending_battles` is empty, but the battle marker (`handle_battle_marker_click()`) and the
+Resolve Remaining Battles button (drawn only in the top panel's `phase == 'playing'` block)
+both needed phase 'playing': nothing could resolve the battle and the game stayed on the
+map. AI-resolved battles were not affected (`_auto_resolve_ai_battle()` has no such gate).
+- `main.py` `Game._battles_open_after_victory()`: the game was won, the cinematic is
+  waiting (`victory_sequence_pending`, not yet active) and battles are pending in the battle
+  phase. `handle_battle_marker_click()` accepts it as a battle phase;
+  `rendering/ui_renderer.py` `draw_top_panel()` still draws the button then (its rect is
+  cleared otherwise). The mouse handler already let these clicks through (Priority 1).
+- The rest was already safe after a win: FIGHT / Close (`_finalize_enhanced_battle()`) and
+  `_resolve_all_pending_battles()` have no phase gate, `complete_round()` returns on
+  `'ended'`; once the last battle is gone the cinematic starts as usual.
+- Tests: `tests/test_battle_after_victory.py` (7): the owner's case built with the real
+  `check_victory()`; marker opens the battle, button drawn, fighting it or the button lets
+  the victory play; nothing opens before the loop saw the win, after the cinematic started
+  or with no battle left.
+- Docs: CODE_GUIDE "Victory/Defeat Cinematic" (battles left after the win) and "Modify
+  Resolve Remaining Battles Button".
+
 ## 2026-10-28 - Battle screen effects as light
 
 Branch `feature/battle-fx`. Owner: the battle effects (the two bars fighting and shooting at
