@@ -127,7 +127,7 @@ Benefits:
 
 **UI Systems** (ui/):
 - `scaler.py` - Dynamic UI scaling
-- `effects/` - 9 effect modules (battle, sparkles, turn announcements, hero abilities, etc.)
+- `effects/` - effect modules: the light kit (`light_fx.py`) and the effects drawn as light (production rays, construction dust, hero abilities, order marks, map markers, turn banner), the battle screen, chat notifications
 
 **AI System** (5 files):
 - `ai_player.py` - Main AI controller

@@ -31,6 +31,9 @@ from config.constants import *
 from ui.scaler import UIConstants
 from ui.sidebar_layout import compute_tab_rects
 from rendering.sidebar_widgets import chat_entry_layout, draw_chat_entry
+from ui.effects import light_fx
+from ui.effects.light_fx import GlowSprites, TintSprites, RisingMotes
+from ui.effects.hero_fx_style import get_hero_fx_style
 from utils.logger import get_logger
 import map_data
 
@@ -61,9 +64,9 @@ class UIRenderer:
         self.game = game_instance
         self.update_layout(layout_values)
 
-        # Tech tree particle system for Ruthless Ingenuity effect
-        self.tech_particles = []
-        self.particle_spawn_accumulator = 0.0
+        # Ruthless Ingenuity motes over the Technology Tree:
+        # (scale, RisingMotes, GlowSprites, TintSprites), built on first use
+        self._ingenuity = None
 
         # H3: Text surface cache using LRU (Least Recently Used) eviction.
         # OrderedDict allows O(1) move_to_end on hit and popitem(last=False) for LRU eviction.
@@ -3066,7 +3069,7 @@ class UIRenderer:
 
                     hovered_tech_info = tooltip_lines
 
-        # Render blue particles if Silvyr is active (LOCAL player only)
+        # Ruthless Ingenuity: blue motes of light if the LOCAL player has Erec Silvyr
         if self.game.multiplayer_mode:
             local_player = self.game.local_player_index if self.game.local_player_index is not None else 0
         else:
@@ -3075,11 +3078,10 @@ class UIRenderer:
                 if not self.game.game_state.player_is_ai[i]:
                     local_player = i
                     break
-        # Skipped while the sidebar slides: particles store absolute screen positions,
-        # so ones spawned mid-slide would be left behind when the panel stops.
+        # Drawn relative to the panel, so they slide with it
         sliding = self.game.is_sidebar_animating()
-        if self.game.game_state.player_has_silvyr(local_player) and not sliding:
-            self._render_tech_tree_particles(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
+        if self.game.game_state.player_has_silvyr(local_player):
+            self._draw_ingenuity_motes(sidebar_x, sidebar_y, sidebar_width, sidebar_height)
 
         # Draw tooltip at the very end so it appears on top of everything
         # (not mid-slide: the buttons are moving under a still cursor)
@@ -3087,120 +3089,41 @@ class UIRenderer:
             # Use main.py's draw_tooltip_box for mixed-style rendering support
             self.game.draw_tooltip_box(self.game.mouse_pos, hovered_tech_info)
 
-    def _update_tech_tree_particles(self, delta_time, panel_x, panel_y, panel_width, panel_height):
+    def _draw_ingenuity_motes(self, panel_x, panel_y, panel_width, panel_height):
         """
-        Update particle system for Technology Tree (Ruthless Ingenuity effect).
-
-        Args:
-            delta_time: Time elapsed since last update (seconds)
-            panel_x, panel_y: Top-left corner of tech tree panel
-            panel_width, panel_height: Dimensions of tech tree panel
-        """
-        # Particle configuration
-        PARTICLES_PER_SECOND = 80  # Increased for better visibility
-        MIN_PARTICLE_LIFETIME = 1.5
-        MAX_PARTICLE_LIFETIME = 3.0
-        PARTICLE_SIZE = 3  # Slightly larger for better visibility
-
-        # Blue shades for Ruthless Ingenuity
-        BLUE_SHADES = [
-            (30, 60, 150),    # Dark blue
-            (50, 100, 200),   # Medium blue
-            (70, 120, 255),   # Bright blue
-            (100, 150, 255),  # Light blue
-            (130, 180, 255)   # Very light blue
-        ]
-
-        # Spawn new particles
-        self.particle_spawn_accumulator += delta_time
-        particles_to_spawn = int(self.particle_spawn_accumulator * PARTICLES_PER_SECOND)
-        self.particle_spawn_accumulator -= particles_to_spawn / PARTICLES_PER_SECOND
-
-        for _ in range(particles_to_spawn):
-            # Random position within panel (focus on research icon area, skip header)
-            # Start particles below the header (50 pixels down from panel_y)
-            icon_area_start_y = 50
-            x = panel_x + random.uniform(0, panel_width)
-            y = panel_y + icon_area_start_y + random.uniform(0, panel_height - icon_area_start_y)
-
-            particle = {
-                'x': x,
-                'y': y,
-                'color': random.choice(BLUE_SHADES),
-                'size': PARTICLE_SIZE,
-                'lifetime': random.uniform(MIN_PARTICLE_LIFETIME, MAX_PARTICLE_LIFETIME),
-                'age': 0.0,
-                'max_opacity': random.uniform(0.4, 0.8),
-                'vy': random.uniform(-20, -40)  # Upward velocity
-            }
-            self.tech_particles.append(particle)
-
-        # Update existing particles
-        particles_to_remove = []
-        for particle in self.tech_particles:
-            particle['age'] += delta_time
-            particle['y'] += particle['vy'] * delta_time  # Move upward
-
-            # Remove particles that exceeded their lifetime or left the panel
-            if particle['age'] >= particle['lifetime'] or particle['y'] < panel_y:
-                particles_to_remove.append(particle)
-
-        # Remove dead particles
-        for particle in particles_to_remove:
-            self.tech_particles.remove(particle)
-
-    def _render_tech_tree_particles(self, panel_x, panel_y, panel_width, panel_height):
-        """
-        Render particles for Technology Tree (Ruthless Ingenuity effect).
+        Ruthless Ingenuity on the Technology Tree: motes of blue light rising over
+        the panel below its header (hero_fx_style INGENUITY_MOTES). Drawn from the
+        clock, relative to the panel - nothing is stored per mote, so they follow
+        the panel while the sidebar slides or collapses.
 
         Args:
             panel_x, panel_y: Top-left corner of tech tree panel
             panel_width, panel_height: Dimensions of tech tree panel
         """
-        # Update particles (use frame time from game clock)
-        try:
-            delta_time = self.game.clock.get_time() / 1000.0  # Convert ms to seconds
-            self._update_tech_tree_particles(delta_time, panel_x, panel_y, panel_width, panel_height)
-        except AttributeError:
-            # Fallback if clock not available
-            delta_time = 1/60.0
-            self._update_tech_tree_particles(delta_time, panel_x, panel_y, panel_width, panel_height)
+        style = get_hero_fx_style(map_data.get_current_look())['ingenuity_motes']
+        scale = self.WINDOW_HEIGHT / 900.0
+        if self._ingenuity is None or self._ingenuity[0] != scale:
+            self._ingenuity = (scale, RisingMotes(style, 'ruthless-ingenuity', scale),
+                               GlowSprites(), TintSprites())
+        _, motes, glow, tint = self._ingenuity
+        glow.begin_frame()
+        tint.begin_frame()
 
-        # If no particles, nothing to render
-        if not self.tech_particles:
-            return
+        # Spawn low enough that a mote never rises into the header
+        rise = motes.rise
+        top = panel_y + int(style['top'] * scale) + rise
+        height = max(1.0, panel_y + panel_height - top)
 
-        # PERFORMANCE: Reuse overlay surface for particle rendering
-        temp_surface = self._get_overlay_surface()
+        def spawn(a, b, index):
+            return panel_x + a * panel_width, top + b * height
 
-        # Draw all particles
-        for particle in self.tech_particles:
-            # Calculate opacity based on age
-            progress = particle['age'] / particle['lifetime']
-
-            if progress < 0.3:
-                # Fade in
-                opacity = (progress / 0.3) * particle['max_opacity']
-            elif progress < 0.7:
-                # Hold
-                opacity = particle['max_opacity']
-            else:
-                # Fade out
-                fade_progress = (progress - 0.7) / 0.3
-                opacity = (1.0 - fade_progress) * particle['max_opacity']
-
-            # Apply opacity to particle color
-            r, g, b = particle['color']
-            alpha = int(255 * opacity)
-            color_with_alpha = (r, g, b, alpha)
-
-            # Draw particle as a circle
-            x = int(particle['x'])
-            y = int(particle['y'])
-            pygame.draw.circle(temp_surface, color_with_alpha, (x, y), particle['size'])
-
-        # Blit the particle surface onto the main screen
-        self.game.screen.blit(temp_surface, (0, 0))
+        screen = self.game.screen
+        clip = screen.get_clip()
+        screen.set_clip(pygame.Rect(panel_x, panel_y, panel_width, panel_height).clip(clip))
+        raw = tuple(style['colour'])
+        motes.draw(screen, glow, light_fx.light_colour(raw, style['white_mix']),
+                   pygame.time.get_ticks() / 1000.0, 1.0, spawn, tint, raw)
+        screen.set_clip(clip)
 
     def _wrap_text(self, text, max_width, font):
         """Helper to wrap text to fit within a width."""

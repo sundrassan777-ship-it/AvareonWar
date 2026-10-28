@@ -176,8 +176,13 @@ Skipping inner rings, building letters and glow halos below a zoom threshold.
 
 ## Deferred: real bugs, small impact
 
-### `battleeffect.py` / `alliance_marker_effect.py` caches never hit
-Both do:
+### ~~`battleeffect.py` / `alliance_marker_effect.py` caches never hit~~ (gone, 2026-10-27)
+**Resolved by removal:** the event FX pass replaced both with `MarkerLight`
+(`ui/effects/marker_fx_effect.py`), whose icons are cached per plot radius and never scale
+with the pulse. Measured at 1600x900: 6 battle markers 5.2 -> 0.9 ms a frame, 2 alliance
+markers 3.3 -> 0.3 ms (`TestEventFxPerformance`). The notes below are history.
+
+Both did:
 
 ```python
 icon_scale = 1.0 + scale_amount          # derived from self.progress, a continuous float
@@ -198,8 +203,8 @@ the effect `smoothscale`s **every frame** — despite the comment claiming "cach
 icon, which had no cache at all and `smoothscale`d every frame in both the SETUP and
 ANIMATING states, in two duplicated copies. Both now go through
 `EnhancedBattleInterface._render_pulsed_icon()`, which quantizes the pulse scale to 1/64 and
-caches into a bounded dict. `battleeffect.py` and `alliance_marker_effect.py` are still
-outstanding.
+caches into a bounded dict. `battleeffect.py` and `alliance_marker_effect.py` were removed
+in the event FX pass (above).
 
 ### Pre-existing `TestDominationVictory` failures
 3 tests in `tests/test_victory.py` fail: `test_winner_at_threshold`,

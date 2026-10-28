@@ -83,10 +83,9 @@ from input.mouse_handler import MouseHandler
 from config.font_manager import FontManager
 from steam_integration import steam_manager
 from display_utils import set_display_mode, resolve_frame_cap, current_surface
-# Import sparkle version of turn announcement (can switch back to turn_announcement_effect if needed)
-from ui.effects.turn_announcement_sparkle import TurnAnnouncementEffect
+from ui.effects.turn_announcement_effect import TurnAnnouncementEffect
 from ui.effects.chat_notification_effect import ChatNotificationEffect
-from ui.effects.light_fx import vignette_surface
+from ui.effects.light_fx import vignette_surface, RisingMotes
 from global_sound import sound_manager, play_structure_sound  # Global sound manager instance
 from music_manager import music_manager, MUSIC_END_EVENT  # Background music system
 from tutorial_mission import CameraAnimation  # Reuse for Custom Game / Multiplayer start zoom
@@ -1233,7 +1232,8 @@ class Game:
         # PERFORMANCE: Cached overlay surfaces to avoid per-frame SRCALPHA allocations
         # Each full-screen SRCALPHA surface is ~5.44MB — reuse instead of recreating
         self._cached_silence_fog = None          # Silence fog overlay (WINDOW_WIDTH x MAP_HEIGHT)
-        self._cached_negotiator_surface = None   # Master Negotiator particles (full-screen)
+        self._cached_negotiator_glow = None      # Master Negotiator wash (WINDOW_WIDTH x MAP_HEIGHT)
+        self._negotiator_motes = None            # (scale, RisingMotes) for the Master Negotiator glow
         self._cached_targeting_cursor = None     # Targeting cursor image (TargetCircle.png, 60x60)
         self._cached_targeting_text_bg = None    # Targeting cursor text background
         self._cached_targeting_text = None       # Cached targeting instruction text
@@ -1256,10 +1256,6 @@ class Game:
         self.ability_targeting_hero = None  # Which hero's ability is being targeted
         self.ability_targeting_ability_index = None  # Which ability index
         self.ability_targeting_ability_name = None  # Name of the ability being targeted
-
-        # Master Negotiator particle system
-        self.master_negotiator_particles = []  # List of particle dicts
-        self.master_negotiator_particle_spawn_accumulator = 0.0
 
         self.hovered_plot = None  # (territory, plot_index) tuple
         self.action_log_visible = False  # Toggle for action log overlay
@@ -5250,6 +5246,69 @@ class Game:
         # Blit the fog over the map area (below top panel)
         self.screen.blit(self._cached_silence_fog, (0, TOP_PANEL_HEIGHT))
 
+    def _negotiator_glow_shown(self):
+        """
+        Whether this PC shows the Master Negotiator glow: while the discount lasts,
+        and to its caster only - a human on this PC, in multiplayer the local
+        player (the rule its spell sound follows, GameState._activate_master_negotiator).
+        """
+        gs = self.game_state
+        if gs.master_negotiator_activation_time is None:
+            return False
+        caster = gs.master_negotiator_active_player
+        if caster is None or not 0 <= caster < len(gs.player_is_ai) or gs.player_is_ai[caster]:
+            return False
+        if gs.network_mode:
+            return caster == gs.local_player_index
+        return True
+
+    def draw_negotiator_glow(self):
+        """
+        Master Negotiator while its discount lasts: a green wash over the edges of
+        the map and motes of green light rising there (hero_fx_style
+        NEGOTIATOR_GLOW), for its caster only (_negotiator_glow_shown).
+
+        The wash is baked once per map size (light_fx.vignette_surface) and only
+        takes the slower partial-alpha blit while it fades in, as the silence fog.
+        """
+        if not self._negotiator_glow_shown():
+            return
+        glow = self.map_renderer._hero_fx_style['negotiator_glow']
+        elapsed = max(0.0, (pygame.time.get_ticks() - self.game_state.master_negotiator_activation_time) / 1000.0)
+        fade = min(1.0, elapsed / glow['fade'])
+
+        size = (WINDOW_WIDTH, MAP_HEIGHT)
+        if self._cached_negotiator_glow is None or self._cached_negotiator_glow.get_size() != size:
+            self._cached_negotiator_glow = vignette_surface(
+                size, glow['colour'], glow['centre_alpha'], glow['edge_alpha'], inner=glow['inner'])
+        self._cached_negotiator_glow.set_alpha(int(255 * fade) if fade < 1.0 else 255)
+        self.screen.blit(self._cached_negotiator_glow, (0, TOP_PANEL_HEIGHT))
+
+        # Motes of light rising along the map's edges (px for a 900 px tall window)
+        motes = glow['motes']
+        scale = WINDOW_HEIGHT / 900.0
+        if self._negotiator_motes is None or self._negotiator_motes[0] != scale:
+            self._negotiator_motes = (scale, RisingMotes(motes, 'master-negotiator', scale))
+        width, height, top = WINDOW_WIDTH, MAP_HEIGHT, TOP_PANEL_HEIGHT
+        band = motes['band'] * height
+
+        def spawn(a, b, index):
+            # An edge by a (top, right, bottom, left), up to `band` in from it; along it by b
+            side = int(a * 4.0)
+            inset = (a * 4.0 - side) * band
+            if side == 0:
+                return b * width, top + inset
+            if side == 1:
+                return width - inset, top + b * height
+            if side == 2:
+                return b * width, top + height - inset
+            return inset, top + b * height
+
+        light = self.map_renderer.hero_light
+        raw = tuple(motes['colour'])
+        self._negotiator_motes[1].draw(self.screen, light.glow, light.light_colour(raw, motes['white_mix']),
+                                       elapsed, fade, spawn, light.tint, raw)
+
     def _get_hero_overlay(self, size, overlay_type):
         """
         Get or create a cached overlay surface for hero UI effects.
@@ -6886,11 +6945,6 @@ class Game:
                 UIConstants.SIDEBAR_SLIDE_MS)
         else:
             self._sidebar_anim_start_ms = None
-        # Tech-tree particles store absolute screen positions; after the panel moves
-        # they would float over the map for their 1.5-3 s lifetime.
-        particles = getattr(getattr(self, 'ui_renderer', None), 'tech_particles', None)
-        if particles:
-            particles.clear()
         return True
 
     def _reset_sidebar_scroll(self):
@@ -11392,10 +11446,8 @@ class Game:
         Advance every animated map effect by delta_time (run() calls this in its
         update section, which is skipped while paused; benchmarks call it too).
         """
-        # Castle upgrade particle effects
-        self.map_renderer.update_castle_upgrade_effects(delta_time)
-
-        # Hero ability casts: the AI's, recorded by game state, start here
+        # Hero ability casts (and Castle upgrades finishing, played the same way):
+        # the AI's casts, recorded by game state, start here
         self._play_recorded_ability_effects()
         self.map_renderer.update_ability_effects(delta_time)
 
@@ -11424,6 +11476,9 @@ class Game:
         # Draw silence fog overlay if any player is silenced
         self.draw_silence_fog_overlay()
 
+        # Master Negotiator's green glow round the map, for its caster
+        self.draw_negotiator_glow()
+
         # Draw movement arrows (orders) (Phase 4D: inlined)
         self.map_renderer.draw_movement_arrows()
 
@@ -11434,12 +11489,9 @@ class Game:
         self.map_renderer.draw_alliance_markers()
         self.map_renderer.draw_overflow_indicators()
 
-        # Draw castle upgrade particle effects (after battle markers, before UI)
-        self.map_renderer.render_castle_upgrade_effects()
-
-        # Draw hero ability casts over the plots and armies (flares, rings, sparks,
-        # comets). Their under layer, the passive auras and the Embargo embers are
-        # drawn under the plots, in draw_territories()
+        # Draw hero ability casts and finished Castle upgrades over the plots and
+        # armies (flares, rings, sparks, comets). Their under layer, the passive auras
+        # and the Embargo embers are drawn under the plots, in draw_territories()
         self.map_renderer.render_ability_effects()
 
     def draw(self):
@@ -12212,9 +12264,6 @@ class Game:
             # Render turn announcement effect (on top of everything)
             if self.turn_announcement_effect:
                 self.turn_announcement_effect.render(self.screen)
-
-            # Render Master Negotiator particle effect (green particles around screen edges)
-            self.render_master_negotiator_particles()
 
             # Render AI thinking indicator (SEQUENTIAL MODE ONLY)
             # In simultaneous mode, all players plan at once - no AI thinking indicator needed
@@ -16241,127 +16290,6 @@ class Game:
         sound_manager.set_volume(0.5 * 0.8)
 
         logger.info(f"🔄 Settings reset to defaults: {self.default_resolution[0]}x{self.default_resolution[1]} (click Apply to save)")
-
-    def update_master_negotiator_particles(self, delta_time):
-        """
-        Update Master Negotiator particle system - green particles around screen edges.
-
-        Args:
-            delta_time: Time elapsed since last update (seconds)
-        """
-        # Only update if Master Negotiator is active
-        if self.game_state.master_negotiator_activation_time is None:
-            # Clear particles if effect is not active
-            self.master_negotiator_particles.clear()
-            return
-
-        # Particle configuration
-        PARTICLES_PER_SECOND = 120
-        MIN_PARTICLE_LIFETIME = 1.0
-        MAX_PARTICLE_LIFETIME = 2.0
-        PARTICLE_SIZE = 3
-        EDGE_WIDTH = 100  # How far from edge to spawn particles
-
-        # Green shades for Master Negotiator
-        GREEN_SHADES = [
-            (0, 150, 0),      # Dark green
-            (50, 200, 50),    # Medium green
-            (100, 255, 100),  # Bright green
-            (150, 255, 150),  # Light green
-            (200, 255, 200)   # Very light green
-        ]
-
-        # Spawn new particles
-        self.master_negotiator_particle_spawn_accumulator += delta_time
-        particles_to_spawn = int(self.master_negotiator_particle_spawn_accumulator * PARTICLES_PER_SECOND)
-        self.master_negotiator_particle_spawn_accumulator -= particles_to_spawn / PARTICLES_PER_SECOND
-
-        for _ in range(particles_to_spawn):
-            # Randomly choose an edge: 0=top, 1=right, 2=bottom, 3=left
-            edge = random.randint(0, 3)
-
-            if edge == 0:  # Top edge
-                x = random.uniform(0, WINDOW_WIDTH)
-                y = random.uniform(0, EDGE_WIDTH)
-            elif edge == 1:  # Right edge
-                x = random.uniform(WINDOW_WIDTH - EDGE_WIDTH, WINDOW_WIDTH)
-                y = random.uniform(0, WINDOW_HEIGHT)
-            elif edge == 2:  # Bottom edge
-                x = random.uniform(0, WINDOW_WIDTH)
-                y = random.uniform(WINDOW_HEIGHT - EDGE_WIDTH, WINDOW_HEIGHT)
-            else:  # Left edge
-                x = random.uniform(0, EDGE_WIDTH)
-                y = random.uniform(0, WINDOW_HEIGHT)
-
-            particle = {
-                'x': x,
-                'y': y,
-                'color': random.choice(GREEN_SHADES),
-                'size': PARTICLE_SIZE,
-                'lifetime': random.uniform(MIN_PARTICLE_LIFETIME, MAX_PARTICLE_LIFETIME),
-                'age': 0.0,
-                'max_opacity': random.uniform(0.5, 0.9),
-                'vy': random.uniform(-15, -30)  # Slow upward drift
-            }
-            self.master_negotiator_particles.append(particle)
-
-        # Update existing particles
-        for particle in self.master_negotiator_particles:
-            particle['age'] += delta_time
-            particle['y'] += particle['vy'] * delta_time  # Drift upward
-
-        # P9 fix: O(n) list comprehension instead of O(n*k) list.remove() loop
-        self.master_negotiator_particles = [
-            p for p in self.master_negotiator_particles
-            if p['age'] < p['lifetime']
-        ]
-
-    def render_master_negotiator_particles(self):
-        """
-        Render green particles around screen edges for Master Negotiator effect.
-        """
-        # Update particles first (this spawns new particles if ability is active)
-        delta_time = self.clock.get_time() / 1000.0  # Convert ms to seconds
-        self.update_master_negotiator_particles(delta_time)
-
-        # Early return if no particles to render
-        if not self.master_negotiator_particles:
-            return
-
-        # PERFORMANCE: Reuse cached surface instead of allocating full-screen SRCALPHA every frame
-        if self._cached_negotiator_surface is None or self._cached_negotiator_surface.get_size() != (WINDOW_WIDTH, WINDOW_HEIGHT):
-            self._cached_negotiator_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        self._cached_negotiator_surface.fill((0, 0, 0, 0))  # Clear with transparent
-        temp_surface = self._cached_negotiator_surface
-
-        # Draw all particles
-        for particle in self.master_negotiator_particles:
-            # Calculate opacity based on age
-            progress = particle['age'] / particle['lifetime']
-
-            if progress < 0.3:
-                # Fade in
-                opacity = (progress / 0.3) * particle['max_opacity']
-            elif progress < 0.7:
-                # Hold
-                opacity = particle['max_opacity']
-            else:
-                # Fade out
-                fade_progress = (progress - 0.7) / 0.3
-                opacity = (1.0 - fade_progress) * particle['max_opacity']
-
-            # Apply opacity to particle color
-            r, g, b = particle['color']
-            alpha = int(255 * opacity)
-            color_with_alpha = (r, g, b, alpha)
-
-            # Draw particle as a circle
-            x = int(particle['x'])
-            y = int(particle['y'])
-            pygame.draw.circle(temp_surface, color_with_alpha, (x, y), particle['size'])
-
-        # Blit the particle surface onto the main screen
-        self.screen.blit(temp_surface, (0, 0))
 
     # AI Player Management Methods
     def render_spectator_banner(self):

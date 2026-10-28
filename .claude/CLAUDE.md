@@ -262,11 +262,13 @@ AvareonWar/
 **UI & Effects:**
 - [ui/scaler.py](ui/scaler.py) - Dynamic UI scaling
 - [ui/sidebar_layout.py](ui/sidebar_layout.py) - Right sidebar geometry + collapse slide (single source of truth for "is this point over the sidebar"), tab content area (`content_geometry`), pixel `ScrollState`
-- [ui/effects/](ui/effects/) - 15 effect modules (battle, sparkles, turn announcements, hero ability light, alliance markers, castle upgrade, production light rays, construction dust, chat notifications, etc.)
+- [ui/effects/](ui/effects/) - Effect modules: the light kit and everything drawn as light (production rays, construction dust, hero abilities, order marks, map markers, turn banner), the battle screen, chat notifications
+- [ui/effects/marker_fx_style.py](ui/effects/marker_fx_style.py) / [marker_fx_effect.py](ui/effects/marker_fx_effect.py) - Battle and alliance arrival markers and the army overflow warning as light (`MarkerLight`, `MarkerState`)
+- [ui/effects/turn_announcement_effect.py](ui/effects/turn_announcement_effect.py) - The turn banner: vignette, bronze-framed Cinzel banner, gold glow and motes
 - [ui/effects/plot_fx_style.py](ui/effects/plot_fx_style.py) - The look of the plot effects in one place (`RAY_STYLE`, `DUST_STYLE`, per map look `PLOT_FX_STYLES`), `plot_phase()`
 - [ui/effects/production_glow_effect.py](ui/effects/production_glow_effect.py) - Production light rays on producing Barracks / Keeps / Castles: shared `ProductionRays` renderer + per-plot `ProductionGlowEffect`
 - [ui/effects/construction_dust_effect.py](ui/effects/construction_dust_effect.py) - Construction dust (`ConstructionDust`, stateless) on plots under construction; gold-glint variant on Keep -> Castle upgrades
-- [ui/effects/light_fx.py](ui/effects/light_fx.py) - Shared light kit: additive `GlowSprites`, normal-blend `TintSprites`, anti-light `DarkSprites`, `SoftRing` (with cached `frame()` / `tint_frame()`), `TerritoryRaster`, `bead_chain`, `path_beads`, `vignette_surface` (used by the production rays, the hero ability effects and the order effects)
+- [ui/effects/light_fx.py](ui/effects/light_fx.py) - Shared light kit: additive `GlowSprites`, normal-blend `TintSprites`, anti-light `DarkSprites`, `SoftRing` (with cached `frame()` / `tint_frame()`), `TerritoryRaster`, `bead_chain`, `path_beads`, `vignette_surface`, `RisingMotes` (used by the production rays, the hero ability effects, the order effects, the map markers and the turn banner)
 - [ui/effects/hero_fx_style.py](ui/effects/hero_fx_style.py) - The look of every hero ability effect: passive auras, Embargo embers, each active ability as a timeline of cues (`HERO_FX_STYLES` per map look)
 - [ui/effects/hero_fx_effect.py](ui/effects/hero_fx_effect.py) - Hero ability effects as light: shared `HeroLight` renderer, `HeroAbilityEffect` (one cast, drawn under and over the plots), `HeroAura` (passive aura / persistent embers)
 - [ui/effects/order_fx_style.py](ui/effects/order_fx_style.py) - The look of the selection ring, order arrows and destination reticle (`ORDER_FX_STYLES` per map look)

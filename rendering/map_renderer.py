@@ -28,9 +28,6 @@ from config.constants import *
 import map_data
 from utils.colors import brighten_color, lighten_color
 from utils.logger import get_logger
-from ui.effects.battleeffect import BattleHurricaneEffect
-from ui.effects.castle_upgrade_effect import CastleUpgradeEffect
-from ui.effects.alliance_marker_effect import AllianceMarkerEffect
 from ui.effects.production_glow_effect import ProductionGlowEffect, ProductionRays
 from ui.effects.construction_dust_effect import ConstructionDust, VARIANT_BUILD, VARIANT_UPGRADE
 from ui.effects.plot_fx_style import get_plot_fx_style, plot_phase
@@ -38,6 +35,8 @@ from ui.effects.hero_fx_style import get_hero_fx_style
 from ui.effects.hero_fx_effect import HeroLight, HeroAura, HeroAbilityEffect, FxView, stable_seed
 from ui.effects.order_fx_style import get_order_fx_style
 from ui.effects.order_fx_effect import OrderLight, OrderArrow
+from ui.effects.marker_fx_style import get_marker_fx_style
+from ui.effects.marker_fx_effect import MarkerLight, MarkerState
 
 logger = get_logger(__name__)
 
@@ -69,13 +68,12 @@ class MapRenderer:
             game_instance: Reference to Game instance for state access
         """
         self.game = game_instance
-        # Dictionary to store active battle hurricane effects: {battle_index: BattleHurricaneEffect}
+        # The battle markers on the map: {territory: MarkerState}
         self.battle_effects = {}
-        # Dictionary to store active alliance marker effects: {territory: AllianceMarkerEffect}
-        # Used in simultaneous mode when allied armies arrive at same territory
+        # The alliance arrival markers (simultaneous mode, allied armies arriving at
+        # the same territory): {territory: MarkerState}
         self.alliance_effects = {}
-        # List to store active castle upgrade effects
-        self.castle_upgrade_effects = []
+        self._marker_labels = {}         # "#N" -> (shadow, label) surfaces
         # Dictionary to store active production glow effects: {(territory, plot_index): ProductionGlowEffect}
         # Tracks Barracks with units in training queue, and Keep/Castle with hero in training
         self.production_glow_effects = {}
@@ -96,6 +94,9 @@ class MapRenderer:
         # The selection ring, order arrows and destination reticles as light
         # (ui/effects/order_fx_effect.py), drawn from the same clock
         self._order_fx_style = get_order_fx_style(map_data.get_current_look())
+        # Battle and alliance markers and the army overflow warning as light
+        # (ui/effects/marker_fx_effect.py), drawn from the same clock
+        self._marker_fx_style = get_marker_fx_style(map_data.get_current_look())
         self._build_plot_fx_renderers()
         # Active hero ability casts (HeroAbilityEffect), drawn in two layers
         self.ability_effects = []
@@ -290,6 +291,8 @@ class MapRenderer:
         self._embargo_sync = None
         self.order_light = OrderLight(self._order_fx_style)
         self.order_light.prewarm(self._plot_radius_range())
+        self.marker_light = MarkerLight(self._marker_fx_style)
+        self.marker_light.prewarm(self._plot_radius_range())
 
     def _plot_phase(self, territory, plot_index):
         """A plot's stable animation offset (plot_fx_style.plot_phase), cached."""
@@ -928,8 +931,9 @@ class MapRenderer:
         self.game.screen.blit(cached[0], cached[1])
     def draw_territories(self):
         """Draw territory overlays, markers and ownership colors"""
-        # Once per frame, before any selection ring, reticle or order arrow
+        # Once per frame, before any selection ring, reticle, order arrow or marker
         self.order_light.begin_frame()
+        self.marker_light.begin_frame()
         # H8 fix: Rebuild overlay surfaces if window was resized
         current_size = (self.game.screen.get_width(), self.game.screen.get_height())
         if current_size != self._overlay_size:
@@ -1814,8 +1818,43 @@ class MapRenderer:
             arrows.append(OrderArrow(points, kind, total_count, allied=is_ally))
         return arrows
 
+    def _marker_state(self, effects, territory, greyed_out):
+        """
+        The MarkerState of a marker on this territory, created when it first shows
+        (it fades in from then). greyed_out is re-evaluated every frame (it used to
+        be decided once, so a stale colour survived turn changes).
+        """
+        state = effects.get(territory)
+        if state is None:
+            phase = (stable_seed('marker', territory) & 0xFFFF) / 65536.0 * 8.0
+            state = effects[territory] = MarkerState(greyed_out, phase, self._plot_fx_clock)
+        state.greyed_out = greyed_out
+        return state
+
+    def _marker_appear(self, state):
+        """0-1: how far a marker has faded in since it first showed."""
+        appear = self._marker_fx_style['marker']['appear']
+        return min(1.0, max(0.0, (self._plot_fx_clock - state.born) / appear)) if appear > 0 else 1.0
+
+    def _draw_marker_label(self, text, x, y):
+        """A marker's "#N" label centred on (x, y), with a dark shadow (readable on any map colour)."""
+        surfaces = self._marker_labels.get(text)
+        if surfaces is None:
+            font = self.game.small_font
+            shadow = self._marker_fx_style['marker']['label_shadow']
+            surfaces = self._marker_labels[text] = (font.render(text, True, shadow),
+                                                    font.render(text, True, WHITE))
+        shadow_surface, label = surfaces
+        rect = label.get_rect(center=(x, y))
+        self.game.screen.blit(shadow_surface, rect.move(1, 1))
+        self.game.screen.blit(label, rect)
+
     def draw_battle_markers(self):
-        """Draw battle markers with hurricane particle effects (Phase 2D: camera-aware)"""
+        """
+        Draw the battle markers as light (ui/effects/marker_fx_effect.py): crossed
+        swords over coral-red light where it is the viewing player's battle to
+        resolve (click it), ash grey where someone else resolves it.
+        """
         # Always clear battle markers list first (prevents stale markers from blocking clicks)
         self.game.battle_markers = []
 
@@ -1831,12 +1870,15 @@ class MapRenderer:
                 show_battles = True
 
         if not show_battles:
-            # Clear all battle effects when not in battle phase
+            # Forget the markers when not in battle phase
             self.battle_effects.clear()
             return
 
-        # Get delta time for animation updates
-        delta_time = self.game.clock.get_time() / 1000.0  # Convert milliseconds to seconds
+        view = self._hero_fx_view()
+        click_radius = self.marker_light.click_radius(view.radius)
+        label_offset = (self.marker_light.icon_half_height('battle', view.radius)
+                        + int(self._marker_fx_style['marker']['label_gap'] * view.radius)
+                        + self.game.small_font.get_height() // 2)
 
         # Track which battle territories still exist (keyed by territory, not index)
         active_battle_territories = set()
@@ -1856,10 +1898,8 @@ class MapRenderer:
             screen_x = int(screen_x)
             screen_y = int(screen_y)
 
-            # Check if this battle is clickable by the local player — evaluated every
-            # frame (it used to be decided once when the marker appeared, so a stale
-            # colour survived turn changes).
-            # Red = your battle to resolve (click it), Gray = AI/other player resolves
+            # Check if this battle is clickable by the local player.
+            # Red = your battle to resolve (click it), Grey = AI/other player resolves
             greyed_out = False
             if hasattr(self.game, 'sim_state') and self.game.sim_state is not None:
                 # Simultaneous mode: only the resolver can click
@@ -1874,57 +1914,35 @@ class MapRenderer:
                 if self.game.game_state.current_player != self.game.get_local_player():
                     greyed_out = True
 
-            # Create or get existing battle effect for this battle
-            # FIX: Key by territory name (stable identity) instead of list index
-            # to prevent stale colors when battles resolve and indices shift
-            if territory not in self.battle_effects or self.battle_effects[territory].greyed_out != greyed_out:
-                # Create new hurricane effect at battle location (or recreate it with
-                # the new colour scheme when clickability changed, like alliance markers)
-                self.battle_effects[territory] = BattleHurricaneEffect(
-                    center_pos=(screen_x, screen_y),
-                    num_particles=1000,
-                    duration=3.0,
-                    num_arms=4,
-                    greyed_out=greyed_out
-                )
-            else:
-                # Update center position (in case of camera movement)
-                effect = self.battle_effects[territory]
-                effect.center_x = screen_x
-                effect.center_y = screen_y
+            # Keyed by territory name (stable identity), not list index, so a marker
+            # keeps its phase when other battles resolve and indices shift
+            state = self._marker_state(self.battle_effects, territory, greyed_out)
+            self.marker_light.draw_marker(view, screen_x, screen_y, 'battle', greyed_out,
+                                          self._plot_fx_clock, state.phase, self._marker_appear(state))
 
-            # Update and render the hurricane effect
-            effect = self.battle_effects[territory]
-            effect.update(delta_time)
-            effect.render(self.game.screen)
+            # Battle number below the icon
+            self._draw_marker_label(f"#{i+1}", screen_x, screen_y + label_offset)
 
-            # Draw battle number below the effect
-            number_text = self.game.small_font.render(f"#{i+1}", True, WHITE)
-            number_rect = number_text.get_rect(center=(screen_x, screen_y + 60))
-            self.game.screen.blit(number_text, number_rect)
-
-            # Store clickable area for this battle marker (use effect size)
-            # Hurricane base size is 40px, max expansion is 54px (40 * 1.35)
-            click_radius = 60  # Larger for easier clicking
+            # Clickable area: the icon and the ring, growing with the zoom
             self.game.battle_markers.append(pygame.Rect(screen_x - click_radius, screen_y - click_radius,
-                                                    click_radius * 2, click_radius * 2))
+                                                        click_radius * 2, click_radius * 2))
 
-        # Clean up effects for battles that no longer exist
+        # Forget the markers of battles that no longer exist
         removed_territories = set(self.battle_effects.keys()) - active_battle_territories
         for territory_key in removed_territories:
             del self.battle_effects[territory_key]
 
     def draw_alliance_markers(self):
         """
-        Draw alliance markers with blue particle effects (simultaneous mode only).
+        Draw the alliance arrival markers as light (simultaneous mode only): a
+        sword over the allies' green where the viewing player chooses the new
+        owner, ash grey where an ally chooses.
 
         Alliance markers appear when multiple allied armies arrive at the same
         territory during resolution phase. The player with the biggest army
         can click the marker to assign territory ownership.
         """
         # Clear alliance markers list first
-        if not hasattr(self.game, 'alliance_markers'):
-            self.game.alliance_markers = []
         self.game.alliance_markers = []
 
         # Only show in simultaneous mode during resolution phase
@@ -1947,7 +1965,8 @@ class MapRenderer:
             self.alliance_effects.clear()
             return
 
-        delta_time = self.game.clock.get_time() / 1000.0
+        view = self._hero_fx_view()
+        click_radius = self.marker_light.click_radius(view.radius)
         active_territories = set()
 
         for marker in pending_markers:
@@ -1963,47 +1982,18 @@ class MapRenderer:
             screen_x = int(screen_x)
             screen_y = int(screen_y)
 
-            # Determine if marker should be greyed out (player is not the chooser)
+            # Greyed out when the viewing player is not the chooser
             greyed_out = False
             chooser = marker.get('chooser')
-            if chooser is not None:
-                # Get local player (human player viewing this)
-                local_player = self.game.get_local_player()
-                if chooser != local_player:
-                    greyed_out = True
+            if chooser is not None and chooser != self.game.get_local_player():
+                greyed_out = True
 
-            # Create or update alliance effect
-            if territory not in self.alliance_effects:
-                self.alliance_effects[territory] = AllianceMarkerEffect(
-                    center_pos=(screen_x, screen_y),
-                    num_particles=600,
-                    duration=3.0,
-                    num_arms=3,
-                    greyed_out=greyed_out
-                )
-            else:
-                effect = self.alliance_effects[territory]
-                effect.center_x = screen_x
-                effect.center_y = screen_y
-                # Update greyed_out status if it changed (e.g., different chooser)
-                if effect.greyed_out != greyed_out:
-                    # Recreate effect with new color scheme
-                    self.alliance_effects[territory] = AllianceMarkerEffect(
-                        center_pos=(screen_x, screen_y),
-                        num_particles=600,
-                        duration=3.0,
-                        num_arms=3,
-                        greyed_out=greyed_out
-                    )
-
-            # Update and render the effect
-            effect = self.alliance_effects[territory]
-            effect.update(delta_time)
-            effect.render(self.game.screen)
+            state = self._marker_state(self.alliance_effects, territory, greyed_out)
+            self.marker_light.draw_marker(view, screen_x, screen_y, 'alliance', greyed_out,
+                                          self._plot_fx_clock, state.phase, self._marker_appear(state))
 
             # Store clickable area for this alliance marker
             # Only the chooser (biggest army) can click, but store all markers for UI
-            click_radius = 55
             self.game.alliance_markers.append({
                 'rect': pygame.Rect(screen_x - click_radius, screen_y - click_radius,
                                    click_radius * 2, click_radius * 2),
@@ -2012,14 +2002,15 @@ class MapRenderer:
                 'chooser': marker['chooser']
             })
 
-        # Clean up effects for territories that no longer have alliance arrivals
+        # Forget the markers of territories that no longer have alliance arrivals
         removed_territories = set(self.alliance_effects.keys()) - active_territories
         for territory in removed_territories:
             del self.alliance_effects[territory]
 
     def draw_overflow_indicators(self):
         """
-        Draw overflow indicators (red glow + pulse) for territories with excess armies.
+        Draw the overflow warning (an amber ring of light breathing fast, pulses
+        running outward) on territories with excess armies.
 
         In simultaneous mode, when an alliance arrival assigns territory to a player
         who would exceed the army limit, the overflow is allowed for one turn.
@@ -2033,71 +2024,37 @@ class MapRenderer:
         if not overflow_territories:
             return
 
-        # Pre-calculate UI scale for performance
+        view = self._hero_fx_view()
+        # Round the army circle (SHARED constants, as the selection ring and reticle)
         ui_scale = self.game.get_ui_scale_factor()
-
+        circle_radius = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_SCALE)
+        circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
         for territory in overflow_territories:
             if territory not in self.game.scaled_centers:
                 continue
-
-            world_center = self.game.scaled_centers[territory]
-            screen_x, screen_y = self.game.world_to_screen(world_center)
-
-            # Pulsing red glow effect
-            pulse = abs(math.sin(time.time() * 4))  # Faster pulse for urgency
-            glow_alpha = int(100 + 100 * pulse)
-
-            # Reduce glow layers when zoomed out
-            glow_layers = 1 if ui_scale < 1.5 else 3
-
-            # Draw red glow rings around overflow territory
-            for i in range(glow_layers):
-                glow_radius = int((25 + i * 5) * ui_scale)
-                glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                pygame.draw.circle(glow_surface, (255, 50, 50, glow_alpha // (i + 1)),
-                                 (glow_radius + 5, glow_radius + 5), glow_radius, 4)
-                self.game.screen.blit(glow_surface, (int(screen_x) - glow_radius - 5,
-                                                    int(screen_y) - glow_radius - 5))
-                self.return_surface_to_pool(glow_surface)
+            screen_x, screen_y = self.game.world_to_screen(self.game.scaled_centers[territory])
+            self.marker_light.draw_overflow(view, screen_x, screen_y - circle_y_offset, circle_radius,
+                                            self._plot_fx_clock)
 
     def trigger_castle_upgrade_effect(self, territory, plot_index):
         """
-        Trigger a golden particle effect when a Keep is upgraded to Castle.
+        Show a Keep -> Castle upgrade finishing as light: gold rays, a flare, rings
+        and sparks at the plot (plot_fx_style 'castle_complete'), played through the
+        hero ability cue engine with the ability casts.
 
         Args:
             territory: Name of the territory
             plot_index: Index of the plot containing the upgraded Keep
         """
-        # Get plot position in world coordinates
-        if territory not in self.game.scaled_plots:
+        plots = self.game.scaled_plots.get(territory)
+        if not plots or plot_index >= len(plots):
             return
-        if plot_index >= len(self.game.scaled_plots[territory]):
-            return
-
-        world_plot_pos = self.game.scaled_plots[territory][plot_index]
-
-        # Create effect in world coordinates (will be converted to screen each frame)
-        effect = CastleUpgradeEffect(center_pos=world_plot_pos, world_coords=True)
-        self.castle_upgrade_effects.append(effect)
-
-    def update_castle_upgrade_effects(self, delta_time):
-        """
-        Update all active castle upgrade effects.
-
-        Args:
-            delta_time: Time elapsed since last update in seconds
-        """
-        # Update all effects
-        for effect in self.castle_upgrade_effects[:]:
-            effect.update(delta_time)
-            # Remove finished effects
-            if effect.is_finished():
-                self.castle_upgrade_effects.remove(effect)
-
-    def render_castle_upgrade_effects(self):
-        """Render all active castle upgrade effects on screen."""
-        for effect in self.castle_upgrade_effects:
-            effect.render(self.game.screen, world_to_screen_func=self.game.world_to_screen)
+        seed = stable_seed('castle', territory, plot_index, self._ability_casts)
+        self._ability_casts += 1
+        effect = HeroAbilityEffect(self.hero_light, self._plot_fx_style['castle_complete'],
+                                   {'keep': plots[plot_index]}, seed)
+        if effect.cues:
+            self.ability_effects.append(effect)
 
     # ========================================
     # HERO ABILITY VISUAL EFFECTS
@@ -2475,8 +2432,8 @@ class MapRenderer:
         """
         FPS OPTIMIZATION Phase 3.1: Unified plot rendering in single pass.
 
-        Combines _draw_completed_building_plots, _draw_under_construction_plots,
-        and _draw_empty_plot_markers into one loop to eliminate redundant iterations.
+        Completed buildings, plots under construction and empty plots in one loop
+        (they used to be three separate passes, since removed).
 
         Old: 3 separate loops × 39 territories × 4 plots = 468 iterations/frame
         New: 1 loop × 39 territories × 4 plots = 156 iterations/frame
@@ -2852,524 +2809,6 @@ class MapRenderer:
         if mission.should_highlight_plot(territory, plot_index):
             return True
         return building == 'Barracks' and mission.should_highlight_button(f'barracks_{territory}')
-
-    def _draw_completed_building_plots(self, ui_scale, scaled_empty_plot_radius,
-                                       building_letter_font):
-        """
-        Draw circles with letters for completed buildings.
-        
-        Phase 4: Extracted from draw_plots() for maintainability.
-        Handles only fully-constructed buildings (F/M/B/K/Q).
-        
-        Renders:
-        - Background circle (uses EMPTY_PLOT_RADIUS size)
-        - Gold ring if selected
-        - Building letter icon (F/M/B/K/Q)
-        - Hover brightening (+20%)
-        - Click flash (+40%)
-        
-        Args:
-            ui_scale: Scale factor based on camera zoom (1.0 to 1.5)
-            scaled_empty_plot_radius: Radius for plot circles (zoom-adjusted)
-            building_letter_font: Font for building letters
-        """
-        scaled_plot_surface_size = int(PLOT_SURFACE_SIZE * ui_scale)
-        scaled_plot_center_offset = scaled_plot_surface_size // 2
-
-        for territory, plots in self.game.scaled_plots.items():
-            owner = self.game.game_state.territory_owners.get(territory, -1)
-            if owner < 0:
-                continue
-
-            # PERFORMANCE OPTIMIZATION: Use cached screen positions instead of world_to_screen every frame
-            screen_plots = self.get_cached_screen_plots(territory)
-
-            for plot_index, screen_pos in enumerate(screen_plots):
-                # PERFORMANCE: Skip off-screen plots (using screen coordinates now)
-                # Screen position is (x, y) tuple - no need to transform
-                if (screen_pos[0] < -100 or screen_pos[0] > self.game.screen.get_width() + 100 or
-                    screen_pos[1] < -100 or screen_pos[1] > self.game.screen.get_height() + 100):
-                    continue
-
-                # Check if completed building exists
-                building = None
-                if territory in self.game.game_state.buildings:
-                    building = self.game.game_state.buildings[territory].get(plot_index)
-
-                if not building:
-                    continue  # Skip non-buildings
-                
-                # Get building info (with error handling)
-                try:
-                    building_info = self.game.game_state.building_types[building]
-                    letter = building_info['letter']
-
-                    # Override for Castle upgrades
-                    if building == 'Keep':
-                        display_letter, _ = self.game.game_state.get_keep_display_info(territory, plot_index)
-                        letter = display_letter
-                except (KeyError, TypeError) as e:
-                    logger.warning(f"Invalid building type '{building}' in {territory}")
-                    continue
-
-                # PERFORMANCE OPTIMIZATION: Use cached screen position (already transformed)
-                x, y = int(screen_pos[0]), int(screen_pos[1])
-
-                # PERFORMANCE: Use reusable surface from pool
-                plot_surface = self.get_reusable_surface(scaled_plot_surface_size, scaled_plot_surface_size)
-                
-                # Get owner color and soften it (avoid confusion with army circles)
-                owner_color = self.game.game_state.get_player_color(owner)
-                # Darken owner color by 30% for buildings (more subtle than armies)
-                softened_color = tuple(int(c * 0.7) for c in owner_color)
-                
-                # Base color
-                circle_color = softened_color
-                
-                # Check for hover
-                # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
-                is_hovering = False
-                mouse_screen_x, mouse_screen_y = self.game.mouse_pos
-                distance_sq = (x - mouse_screen_x) ** 2 + (y - mouse_screen_y) ** 2
-                if distance_sq <= scaled_empty_plot_radius ** 2:
-                    is_hovering = True
-                
-                # Check for click flash
-                is_clicking = (self.game.clicked_element and 
-                              self.game.clicked_element[0] == 'plot' and 
-                              self.game.clicked_element[1] == (territory, plot_index))
-                
-                # Apply visual feedback
-                if is_clicking:
-                    circle_color = brighten_color(circle_color, 0.4)
-                elif is_hovering:
-                    circle_color = lighten_color(circle_color, 0.2)
-                
-                # Draw circle
-                pygame.draw.circle(plot_surface, circle_color, 
-                                 (scaled_plot_center_offset, scaled_plot_center_offset), 
-                                 scaled_empty_plot_radius)
-                
-                # Check if this Keep houses the selected hero
-                is_selected_hero_keep = False
-                if self.game.selected_hero and building == 'Keep':
-                    current_player = self.game.game_state.current_player
-                    if current_player in self.game.game_state.heroes:
-                        hero_name = self.game.selected_hero
-                        if hero_name in self.game.game_state.heroes[current_player]:
-                            hero_data = self.game.game_state.heroes[current_player][hero_name]
-                            if (hero_data['keep_territory'] == territory and
-                                hero_data['keep_plot'] == plot_index):
-                                is_selected_hero_keep = True
-
-                # Check if this plot/building is selected
-                is_plot_selected = (
-                    is_selected_hero_keep or
-                    (self.game.selected_barracks and self.game.selected_barracks == (territory, plot_index)) or
-                    (self.game.selected_keep and self.game.selected_keep == (territory, plot_index)) or
-                    (self.game.selected_plot and self.game.selected_plot == (territory, plot_index))
-                )
-
-                # Draw simple border on plot surface
-                pygame.draw.circle(plot_surface, COLOR_PLOT_BORDER,
-                                 (scaled_plot_center_offset, scaled_plot_center_offset),
-                                 scaled_empty_plot_radius, 2)
-
-                self.game.screen.blit(plot_surface, (x - scaled_plot_center_offset, y - scaled_plot_center_offset))
-                self.return_surface_to_pool(plot_surface)
-
-                # Draw building icon PNG or fallback to letter
-                # For Keep buildings, check if upgraded to Castle for icon selection
-                icon_building = building
-                if building == 'Keep':
-                    _, display_name = self.game.game_state.get_keep_display_info(territory, plot_index)
-                    if display_name == 'Castle':
-                        icon_building = 'Castle'
-
-                if icon_building in self.game.building_icons and self.game.building_icons[icon_building]:
-                    building_icon = self.game.building_icons[icon_building]
-
-                    # Scale the icon to fit within the plot circle (about 2x the circle radius)
-                    icon_size = int(scaled_empty_plot_radius * 2)
-
-                    # PERFORMANCE OPTIMIZATION: Use selective .copy() strategy
-                    # Only copy cached icon when overlays needed (enemy tint/hover/click)
-                    # Otherwise use cached icon directly for maximum performance
-                    cached_icon = self.get_cached_scaled_building(icon_building, building_icon, icon_size)
-
-                    # Check if we need to apply any overlays
-                    needs_effects = (owner != self.game.game_state.current_player or is_clicking or is_hovering)
-
-                    if needs_effects:
-                        # Copy only when effects are needed
-                        display_icon = cached_icon.copy()
-
-                        # Apply overlays to copy (respects icon's alpha channel transparency)
-                        # Grey tint for enemy buildings
-                        # FPS OPTIMIZATION: Use pooled surfaces instead of creating new ones
-                        if owner != self.game.game_state.current_player:
-                            grey_overlay = self.get_reusable_surface(icon_size, icon_size)
-                            grey_overlay.fill((128, 128, 128, 180))  # Grey overlay
-                            display_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                            self.return_surface_to_pool(grey_overlay)
-
-                        # Hover/click brightness effects
-                        if is_clicking:
-                            bright_overlay = self.get_reusable_surface(icon_size, icon_size)
-                            bright_overlay.fill((100, 100, 100, 100))  # White overlay with transparency
-                            display_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                            self.return_surface_to_pool(bright_overlay)
-                        elif is_hovering:
-                            light_overlay = self.get_reusable_surface(icon_size, icon_size)
-                            light_overlay.fill((50, 50, 50, 50))  # Lighter white overlay
-                            display_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                            self.return_surface_to_pool(light_overlay)
-                    else:
-                        # No effects: use cached icon directly (zero overhead)
-                        display_icon = cached_icon
-
-                    # Center and blit the final icon
-                    icon_rect = display_icon.get_rect(center=(x, y))
-                    self.game.screen.blit(display_icon, icon_rect)
-                else:
-                    # Fallback to letter if icon not available
-                    letter_surface = building_letter_font.render(letter, True, WHITE)
-                    letter_rect = letter_surface.get_rect(center=(x, y))
-                    self.game.screen.blit(letter_surface, letter_rect)
-
-                # Draw layered border AFTER icon: black - player color - black (thinner than army circles)
-                # Get player color for the border
-                player_color = self.game.game_state.get_player_color(owner)
-
-                # Outer black border (thin)
-                pygame.draw.circle(self.game.screen, BLACK, (int(x), int(y)), scaled_empty_plot_radius, 1)
-                # Middle player color border (medium thickness - thinner than army circles)
-                pygame.draw.circle(self.game.screen, player_color, (int(x), int(y)), scaled_empty_plot_radius - 1, 3)
-                # Inner black border (thin)
-                pygame.draw.circle(self.game.screen, BLACK, (int(x), int(y)), scaled_empty_plot_radius - 4, 1)
-
-                # Draw green pulsing selection glow (same as army composition highlight)
-                if is_plot_selected:
-                    pulse = abs(math.sin(time.time() * 2))  # Pulse between 0 and 1
-                    glow_alpha = int(100 + 100 * pulse)  # Between 100 and 200
-
-                    # Get UI scale factor for zoom-based sizing
-                    ui_scale = self.game.get_ui_scale_factor()
-
-                    # Draw multiple glow circles for effect (scaled with zoom)
-                    for i in range(3):
-                        glow_radius = int((scaled_empty_plot_radius + i * 5) * ui_scale)
-                        # PERFORMANCE: Use reusable surface from pool
-                        glow_surface = self.get_reusable_surface(glow_radius * 2 + 10, glow_radius * 2 + 10)
-                        pygame.draw.circle(glow_surface, (0, 255, 0, glow_alpha // (i + 1)),
-                                         (glow_radius + 5, glow_radius + 5), glow_radius, 3)
-                        self.game.screen.blit(glow_surface, (int(x) - glow_radius - 5, int(y) - glow_radius - 5))
-                        self.return_surface_to_pool(glow_surface)
-    
-    def _draw_under_construction_plots(self, ui_scale, scaled_empty_plot_radius,
-                                       building_letter_font):
-        """
-        Draw yellow circles for buildings under construction.
-        
-        Phase 4: Extracted from draw_plots() for maintainability.
-        Shows construction progress with yellowish tint.
-        
-        Renders:
-        - Yellowish background circle
-        - Gold ring if selected
-        - Building letter (shows what's being built)
-        - Hover brightening (+20%)
-        - Click flash (+40%)
-        
-        Args:
-            ui_scale: Scale factor based on camera zoom
-            scaled_empty_plot_radius: Radius for plot circles
-            building_letter_font: Font for building letters
-        """
-        scaled_plot_surface_size = int(PLOT_SURFACE_SIZE * ui_scale)
-        scaled_plot_center_offset = scaled_plot_surface_size // 2
-        
-        for territory, plots in self.game.scaled_plots.items():
-            owner = self.game.game_state.territory_owners.get(territory, -1)
-            if owner < 0:
-                continue
-
-            # PERFORMANCE OPTIMIZATION: Use cached screen positions instead of world_to_screen every frame
-            screen_plots = self.get_cached_screen_plots(territory)
-
-            for plot_index, screen_pos in enumerate(screen_plots):
-                # PERFORMANCE: Skip off-screen plots (using screen coordinates now)
-                if (screen_pos[0] < -100 or screen_pos[0] > self.game.screen.get_width() + 100 or
-                    screen_pos[1] < -100 or screen_pos[1] > self.game.screen.get_height() + 100):
-                    continue
-
-                # Check if under construction
-                under_construction = None
-                if territory in self.game.game_state.under_construction:
-                    under_construction = self.game.game_state.under_construction[territory].get(plot_index)
-
-                if not under_construction:
-                    continue  # Skip non-construction plots
-
-                # Get building info (with error handling)
-                try:
-                    building_type = under_construction[0]  # entry is (building_type, turns_remaining, cost)
-                    turns_remaining = under_construction[1]
-                    building_info = self.game.game_state.building_types[building_type]
-                    letter = building_info['letter']
-                except (KeyError, TypeError, ValueError, IndexError) as e:
-                    logger.warning(f"Invalid under_construction data in {territory}: {e}")
-                    continue
-
-                # PERFORMANCE OPTIMIZATION: Use cached screen position (already transformed)
-                x, y = int(screen_pos[0]), int(screen_pos[1])
-
-                # PERFORMANCE: Use reusable surface from pool
-                plot_surface = self.get_reusable_surface(scaled_plot_surface_size, scaled_plot_surface_size)
-
-                # Base color (yellowish for construction)
-                circle_color = COLOR_CONSTRUCTION
-                
-                # Check for hover
-                # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
-                is_hovering = False
-                mouse_screen_x, mouse_screen_y = self.game.mouse_pos
-                distance_sq = (x - mouse_screen_x) ** 2 + (y - mouse_screen_y) ** 2
-                if distance_sq <= scaled_empty_plot_radius ** 2:
-                    is_hovering = True
-                
-                # Check for click flash
-                is_clicking = (self.game.clicked_element and 
-                              self.game.clicked_element[0] == 'plot' and 
-                              self.game.clicked_element[1] == (territory, plot_index))
-                
-                # Apply visual feedback
-                if is_clicking:
-                    circle_color = brighten_color(circle_color, 0.4)
-                elif is_hovering:
-                    circle_color = lighten_color(circle_color, 0.2)
-                
-                # Draw circle
-                pygame.draw.circle(plot_surface, circle_color, 
-                                 (scaled_plot_center_offset, scaled_plot_center_offset), 
-                                 scaled_empty_plot_radius)
-                
-                # Draw simple border on plot surface
-                pygame.draw.circle(plot_surface, COLOR_CONSTRUCTION_BORDER,
-                                 (scaled_plot_center_offset, scaled_plot_center_offset),
-                                 scaled_empty_plot_radius, 2)
-
-                self.game.screen.blit(plot_surface, (x - scaled_plot_center_offset, y - scaled_plot_center_offset))
-                self.return_surface_to_pool(plot_surface)
-
-                # Draw building icon PNG or fallback to letter
-                if building_type in self.game.building_icons and self.game.building_icons[building_type]:
-                    building_icon = self.game.building_icons[building_type]
-
-                    # Scale the icon to fit within the plot circle (about 2x the circle radius)
-                    icon_size = int(scaled_empty_plot_radius * 2)
-
-                    # PERFORMANCE OPTIMIZATION (Phase 1.4): Use cached icon directly without .copy()
-                    # Blit overlays to screen instead of modifying cached surface
-                    cached_icon = self.get_cached_scaled_building(building_type, building_icon, icon_size)
-
-                    # Create a temporary surface for combining icon + overlays
-                    # This preserves the cache while allowing per-frame effects
-                    temp_icon = self.get_reusable_surface(icon_size, icon_size)
-                    temp_icon.fill((0, 0, 0, 0))  # Clear with transparency
-
-                    # Blit cached icon to temp surface
-                    temp_icon.blit(cached_icon, (0, 0))
-
-                    # Apply grey tint if enemy building under construction
-                    if owner != self.game.game_state.current_player:
-                        grey_overlay = self.get_reusable_surface(icon_size, icon_size)
-                        grey_overlay.fill((128, 128, 128, 180))
-                        temp_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                        self.return_surface_to_pool(grey_overlay)
-
-                    # Apply hover/click brightness effects
-                    if is_clicking:
-                        bright_overlay = self.get_reusable_surface(icon_size, icon_size)
-                        bright_overlay.fill((100, 100, 100, 100))
-                        temp_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                        self.return_surface_to_pool(bright_overlay)
-                    elif is_hovering:
-                        light_overlay = self.get_reusable_surface(icon_size, icon_size)
-                        light_overlay.fill((50, 50, 50, 50))
-                        temp_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                        self.return_surface_to_pool(light_overlay)
-
-                    # Apply slight transparency to indicate construction
-                    temp_icon.set_alpha(180)
-
-                    # Blit to screen
-                    icon_rect = temp_icon.get_rect(center=(x, y))
-                    self.game.screen.blit(temp_icon, icon_rect)
-                    self.return_surface_to_pool(temp_icon)
-                else:
-                    # Fallback to letter if icon not available
-                    letter_surface = building_letter_font.render(letter, True, COLOR_CONSTRUCTION_TEXT)
-                    letter_rect = letter_surface.get_rect(center=(x, y))
-                    self.game.screen.blit(letter_surface, letter_rect)
-
-                # Draw layered border AFTER icon: black - player color - black (thinner than army circles)
-                # Get player color for the border
-                player_color = self.game.game_state.get_player_color(owner)
-
-                # Outer black border (thin)
-                pygame.draw.circle(self.game.screen, BLACK, (int(x), int(y)), scaled_empty_plot_radius, 1)
-                # Middle player color border (medium thickness - thinner than army circles)
-                pygame.draw.circle(self.game.screen, player_color, (int(x), int(y)), scaled_empty_plot_radius - 1, 3)
-                # Inner black border (thin)
-                pygame.draw.circle(self.game.screen, BLACK, (int(x), int(y)), scaled_empty_plot_radius - 4, 1)
-
-    def _draw_empty_plot_markers(self, ui_scale, scaled_empty_plot_radius):
-        """
-        Draw small circles for empty plot locations.
-        
-        Phase 4: Extracted from draw_plots() for maintainability.
-        Color indicates whether building is allowed this turn.
-        
-        Renders:
-        - Green circle if can build this turn
-        - Gray circle if cannot build (building limit reached)
-        - Gold ring if selected
-        - Hover brightening (+20%)
-        - Click flash (+40%)
-        
-        Building Limit:
-        One building per territory per turn. If already started construction
-        this turn, empty plots show gray to indicate restriction.
-        
-        Args:
-            ui_scale: Scale factor based on camera zoom
-            scaled_empty_plot_radius: Radius for empty plot markers
-        """
-        scaled_plot_surface_size = int(PLOT_SURFACE_SIZE * ui_scale)
-        scaled_plot_center_offset = scaled_plot_surface_size // 2
-        
-        for territory, plots in self.game.scaled_plots.items():
-            owner = self.game.game_state.territory_owners.get(territory, -1)
-            if owner < 0:
-                continue
-
-            # PERFORMANCE OPTIMIZATION: Use cached screen positions instead of world_to_screen every frame
-            screen_plots = self.get_cached_screen_plots(territory)
-
-            for plot_index, screen_pos in enumerate(screen_plots):
-                # PERFORMANCE: Skip off-screen plots (using screen coordinates now)
-                if (screen_pos[0] < -100 or screen_pos[0] > self.game.screen.get_width() + 100 or
-                    screen_pos[1] < -100 or screen_pos[1] > self.game.screen.get_height() + 100):
-                    continue
-
-                # Check if plot is empty
-                is_empty = True
-
-                if territory in self.game.game_state.buildings:
-                    if plot_index in self.game.game_state.buildings[territory]:
-                        if self.game.game_state.buildings[territory][plot_index] is not None:
-                            is_empty = False
-
-                if territory in self.game.game_state.under_construction:
-                    if plot_index in self.game.game_state.under_construction[territory]:
-                        is_empty = False
-
-                if not is_empty:
-                    continue  # Skip non-empty plots
-
-                # PERFORMANCE OPTIMIZATION: Use cached screen position (already transformed)
-                x, y = int(screen_pos[0]), int(screen_pos[1])
-
-                # PERFORMANCE: Use reusable surface from pool
-                plot_surface = self.get_reusable_surface(scaled_plot_surface_size, scaled_plot_surface_size)
-
-                # Check if can build on this territory this turn
-                can_build = (owner == self.game.game_state.current_player and 
-                            territory not in self.game.game_state.buildings_started_this_turn)
-                
-                # Color: Bright green if can build, gray otherwise
-                if can_build:
-                    circle_color = COLOR_EMPTY_PLOT_CAN_BUILD
-                else:
-                    circle_color = COLOR_EMPTY_PLOT_CANNOT_BUILD
-                
-                # Check for hover
-                # PHASE 2 OPTIMIZATION: Use distance squared to avoid expensive sqrt
-                is_hovering = False
-                mouse_screen_x, mouse_screen_y = self.game.mouse_pos
-                distance_sq = (x - mouse_screen_x) ** 2 + (y - mouse_screen_y) ** 2
-                if distance_sq <= scaled_empty_plot_radius ** 2:
-                    is_hovering = True
-                
-                # Check for click flash
-                is_clicking = (self.game.clicked_element and 
-                              self.game.clicked_element[0] == 'plot' and 
-                              self.game.clicked_element[1] == (territory, plot_index))
-                
-                # Apply visual feedback
-                if is_clicking:
-                    circle_color = brighten_color(circle_color, 0.4)
-                elif is_hovering:
-                    circle_color = lighten_color(circle_color, 0.2)
-                
-                # Draw circle
-                pygame.draw.circle(plot_surface, circle_color, 
-                                 (scaled_plot_center_offset, scaled_plot_center_offset), 
-                                 scaled_empty_plot_radius)
-                
-                # Draw simple border on plot surface
-                pygame.draw.circle(plot_surface, COLOR_EMPTY_PLOT_BORDER,
-                                 (scaled_plot_center_offset, scaled_plot_center_offset),
-                                 scaled_empty_plot_radius, 2)
-
-                self.game.screen.blit(plot_surface, (x - scaled_plot_center_offset, y - scaled_plot_center_offset))
-                self.return_surface_to_pool(plot_surface)
-
-                # Draw PlotIcon.png if available
-                if 'Plot' in self.game.building_icons and self.game.building_icons['Plot']:
-                    plot_icon = self.game.building_icons['Plot']
-                    icon_size = int(scaled_empty_plot_radius * 2)
-                    cached_icon = self.get_cached_scaled_plot('Plot', plot_icon, icon_size)
-
-                    # FPS OPT: Only .copy() when effects need to modify the surface in-place
-                    needs_effects = (not can_build) or is_clicking or is_hovering
-                    if needs_effects:
-                        scaled_plot_icon = cached_icon.copy()
-
-                        if not can_build:
-                            grey_overlay = self.get_reusable_surface(icon_size, icon_size)
-                            grey_overlay.fill((128, 128, 128, 180))
-                            scaled_plot_icon.blit(grey_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                            self.return_surface_to_pool(grey_overlay)
-
-                        if is_clicking:
-                            bright_overlay = self.get_reusable_surface(icon_size, icon_size)
-                            bright_overlay.fill((100, 100, 100, 100))
-                            scaled_plot_icon.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                            self.return_surface_to_pool(bright_overlay)
-                        elif is_hovering:
-                            light_overlay = self.get_reusable_surface(icon_size, icon_size)
-                            light_overlay.fill((50, 50, 50, 50))
-                            scaled_plot_icon.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-                            self.return_surface_to_pool(light_overlay)
-
-                        icon_rect = scaled_plot_icon.get_rect(center=(x, y))
-                        self.game.screen.blit(scaled_plot_icon, icon_rect)
-                    else:
-                        icon_rect = cached_icon.get_rect(center=(x, y))
-                        self.game.screen.blit(cached_icon, icon_rect)
-
-                # Draw layered border AFTER icon: black - player color - black (thinner than army circles)
-                # Get player color for the border
-                player_color = self.game.game_state.get_player_color(owner)
-
-                # Outer black border (thin)
-                pygame.draw.circle(self.game.screen, BLACK, (int(x), int(y)), scaled_empty_plot_radius, 1)
-                # Middle player color border (medium thickness - thinner than army circles)
-                pygame.draw.circle(self.game.screen, player_color, (int(x), int(y)), scaled_empty_plot_radius - 1, 3)
-                # Inner black border (thin)
-                pygame.draw.circle(self.game.screen, BLACK, (int(x), int(y)), scaled_empty_plot_radius - 4, 1)
 
     def _draw_quick_access_icons(self, ui_scale, scaled_building_icon_radius,
                                  scaled_icon_click_radius, icon_letter_font):
@@ -3752,18 +3191,10 @@ class MapRenderer:
         """
         Draw building plots on territories owned by current player.
         
-        Phase 4: Refactored into sub-methods for maintainability.
-        Main method now orchestrates four rendering passes:
-        1. Completed buildings - Circles with letter icons (F/M/B/K/Q)
-        2. Under-construction - Yellowish tint + letter
-        3. Empty plots - Small circles (green/gray)
-        4. Quick-access icons - Orbiting around selected plots
-        
-        Each pass is handled by a dedicated method for clarity:
-        - _draw_completed_building_plots()
-        - _draw_under_construction_plots()
-        - _draw_empty_plot_markers()
-        - _draw_quick_access_icons()
+        Two rendering passes:
+        1. Plots - completed buildings (letter icons F/M/B/K/Q), plots under
+           construction and empty plots, in one loop (_draw_all_plots_unified())
+        2. Quick-access icons - orbiting around selected plots (_draw_quick_access_icons())
         
         Visual Indicators:
             - Gold ring: Selected plot or Barracks

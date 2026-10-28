@@ -970,6 +970,84 @@ class TestOrderFxPerformance:
         assert result['worst_frame_ms'] < 100
 
 
+class TestEventFxPerformance:
+    """
+    Event effects (event FX pass, 2026-10): battle markers, a Keep -> Castle
+    upgrade finishing, the Master Negotiator glow and the turn banner, all drawn
+    as light. They replaced particle effects (600-1800 one-pixel dots a frame on
+    full-screen surfaces).
+
+    Same per-frame work as the hero scenarios (update_map_effects() + draw()).
+    Compare against event_fx_none (the same map, no events). draw() leaves out the
+    turn banner (run() draws it over everything), so its scenario adds it on top.
+    """
+
+    SCENARIOS = ('event_fx_none', 'battle_markers_6', 'castle_complete_4', 'negotiator_glow',
+                 'turn_banner')
+
+    _run = staticmethod(TestHeroAbilityFxPerformance._run)
+
+    @pytest.fixture
+    def event_game(self, pygame_init):
+        from main import Game
+        game = Game()
+        game.initialize_game({
+            'num_players': 4,
+            'player_is_ai': [False, True, True, True],
+            'player_ai_difficulty': [None, 'Normal', 'Normal', 'Normal'],
+        })
+        game.game_state.phase = 'playing'
+        game.game_state.current_player = 0
+        populate_map(game, buildings_per_territory=1)
+        return game
+
+    @staticmethod
+    def _near(game, home, count):
+        """home and its nearest neighbours on the map, `count` territories in all."""
+        import map_data
+        neighbours = [n for n in sorted(map_data.get_neighbors(home)) if n in game.scaled_centers]
+        return ([home] + neighbours)[:count]
+
+    @pytest.mark.parametrize('scenario', SCENARIOS)
+    def test_scenario(self, event_game, scenario):
+        import pygame
+        from game_state import Battle
+        from ui.effects.turn_announcement_effect import TurnAnnouncementEffect
+        gs = event_game.game_state
+        home = best_keep_territory(event_game)
+        if scenario == 'battle_markers_6':
+            # Yours (red) on your turn; half of them greyed on another player's
+            gs.turn_phase = 'battles'
+            gs.pending_battles = [Battle(t) for t in self._near(event_game, home, 6)]
+        elif scenario == 'castle_complete_4':
+            # Four upgrades finishing at once; the bursts last the whole measurement
+            for territory in self._near(event_game, home, 4):
+                if event_game.scaled_plots.get(territory):
+                    event_game.map_renderer.trigger_castle_upgrade_effect(territory, 0)
+        elif scenario == 'negotiator_glow':
+            gs.master_negotiator_activation_time = pygame.time.get_ticks() - 5000   # faded in
+            gs.master_negotiator_active_player = 0
+        elif scenario == 'turn_banner':
+            # The banner over the frame, restarted when it ends: every phase is measured
+            banner = [TurnAnnouncementEffect(event_game.screen.get_width(), event_game.screen.get_height(),
+                                             player_name='Empire of Naragonthid')]
+            draw = event_game.draw
+
+            def draw_with_banner():
+                draw()
+                banner[0].update(1.0 / 60.0)
+                if banner[0].is_finished():
+                    banner[0] = TurnAnnouncementEffect(event_game.screen.get_width(),
+                                                       event_game.screen.get_height(),
+                                                       player_name='Empire of Naragonthid')
+                banner[0].render(event_game.screen)
+
+            event_game.draw = draw_with_banner
+        sync_camera(event_game, zoom=event_game.camera.min_zoom)
+        result = self._run(event_game, scenario, frames=90, warmup=5)
+        assert result['worst_frame_ms'] < 100
+
+
 class TestCrowdedMapPerformance:
     """
     Documents how frame cost scales with on-map entity count, so a future

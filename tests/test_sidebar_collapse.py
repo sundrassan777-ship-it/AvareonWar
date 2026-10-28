@@ -378,11 +378,20 @@ class TestToggleSidebar:
             movement_whitelist=None)]
         assert mission.is_action_allowed('toggle_sidebar') is False
 
-    def test_toggle_clears_tech_particles(self, game):
-        """Particles store absolute positions; after the panel moves they'd float over the map."""
-        game.ui_renderer.tech_particles.append({'x': 1400, 'y': 300})
-        game.toggle_sidebar()
-        assert game.ui_renderer.tech_particles == []
+    def test_ingenuity_motes_stay_on_the_panel(self, game):
+        """Ruthless Ingenuity's motes are drawn relative to the tech panel and clipped
+        to it: wherever the panel is (expanded, sliding), none is left over the map."""
+        import pygame
+        screen = game.screen
+        for panel in (pygame.Rect(1350, 120, 250, 600), pygame.Rect(1480, 120, 250, 600)):
+            screen.fill((0, 0, 0))
+            for _ in range(12):   # the first draws build sprites within the frame budget
+                game.ui_renderer._draw_ingenuity_motes(*panel)
+            dark = pygame.mask.from_threshold(screen, (0, 0, 0, 255), (1, 1, 1, 255))
+            dark.invert()
+            assert dark.count() > 0, "no motes drawn"
+            for lit in dark.get_bounding_rects():
+                assert panel.contains(lit), f"mote at {lit} outside the panel {panel}"
 
     def test_new_game_starts_expanded(self, game):
         game.toggle_sidebar(animate=True)

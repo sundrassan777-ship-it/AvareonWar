@@ -23,12 +23,17 @@ Pieces:
     path_beads            the same along an open path (path_point: a point on it)
     GlowFrame             soft light hugging a rectangle, circle or sprite outline
                           (UI highlights), cached per shape, size and brightness
+    RisingMotes           motes of light rising and fading on screen or over a
+                          panel, from a clock (nothing stored per mote)
 
 Users: production_glow_effect.py (production rays), hero_fx_effect.py (hero
-ability effects), order_fx_effect.py (selection rings, order arrows).
+ability effects), order_fx_effect.py (selection rings, order arrows),
+marker_fx_effect.py (map markers), turn_announcement_effect.py (turn banner),
+main.py (Master Negotiator glow), ui_renderer.py (Ruthless Ingenuity motes).
 """
 
 import math
+import random
 import time
 from collections import OrderedDict
 
@@ -405,6 +410,7 @@ class SoftRing:
         self._frames = OrderedDict()             # (kind, radius, colour, level) -> scaled ring
         self._budget = _BuildBudget(self.BUILDS_PER_FRAME, self.BUILD_MS_PER_FRAME)
         self.frames_built = 0
+        self.denied = 0          # frames wanted but not built (budget spent): a caller can fall back
 
     def begin_frame(self):
         """Call once per rendered frame when using frame() / tint_frame()."""
@@ -511,6 +517,7 @@ class SoftRing:
             self._frames.move_to_end(key)
             return surface
         if not self._budget.allows():
+            self.denied += 1
             return None
         started = time.perf_counter()
         kind, radius, colour, level = key
@@ -841,8 +848,10 @@ class GlowFrame:
         tinted = self._frames.get(key)
         if tinted is None:
             grey = self._grey(grey_key, w, h, shape, corner, sprite)
-            tinted = grey.copy()
-            tinted.fill(scaled_colour(colour, level / float(self.LEVELS)), special_flags=pygame.BLEND_RGB_MULT)
+            # The colour times the grey (a blit multiplies ~2.5x faster than a fill)
+            tinted = pygame.Surface(grey.get_size(), 0, grey)
+            tinted.fill(scaled_colour(colour, level / float(self.LEVELS)))
+            tinted.blit(grey, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
             if pygame.display.get_surface() is not None:
                 tinted = tinted.convert()
             self._frames[key] = tinted
@@ -852,6 +861,16 @@ class GlowFrame:
         else:
             self._frames.move_to_end(key)
         return tinted, self.reach + 2
+
+    def grey(self, size, shape='rect', corner=4, sprite=None, sprite_key=None):
+        """
+        The untinted glow (grey on black) round a shape of this size, and its pad:
+        for a glow that is tinted every frame instead of in cached levels (a large
+        one that fades, where LEVELS steps show and a level per frame costs ~1 MB).
+        """
+        w, h = max(1, int(size[0])), max(1, int(size[1]))
+        grey_key = (shape, w, h, corner if shape == 'rect' else sprite_key)
+        return self._grey(grey_key, w, h, shape, corner, sprite), self.reach + 2
 
     def _grey(self, key, w, h, shape, corner, sprite):
         grey = self._greys.get(key)
@@ -893,3 +912,79 @@ class GlowFrame:
         if len(self._greys) > self.MAX_GREYS:
             self._greys.popitem(last=False)
         return grey
+
+
+# ========================================
+# RISING MOTES (screen and panel effects)
+# ========================================
+
+class RisingMotes:
+    """
+    Motes of light that rise, sway a little and fade, for effects drawn in screen
+    px rather than on the map: the turn banner, the Master Negotiator glow, the
+    Ruthless Ingenuity tech tree.
+
+    Closed form from a clock, as the hero fireflies: each life a mote starts at a
+    new point, spawn(a, b, index) -> (x, y), from two hashed numbers a, b in 0-1.
+
+    Args:
+        style: count, life (min, max) s, rise / sway px, size (min, max) diameter
+            px, optional tint (alpha of a normal-blend halo under each mote, for a
+            bright background) and tint_size (halo / mote diameter)
+        seed: makes the table the same every run
+        scale: multiplies the px sizes (screen or UI scale)
+    """
+
+    def __init__(self, style, seed, scale=1.0):
+        rng = random.Random(seed)
+        lo, hi = style['size']
+        tint_size = style.get('tint_size', 1.6)
+        self.rise = style['rise'] * scale
+        self.sway = style['sway'] * scale
+        self.tint_alpha = style.get('tint', 0)
+        # Per mote: (1 / life, offset, diameter, halo diameter, hash salt, sway phase)
+        self.motes = []
+        for _ in range(style['count']):
+            size = rng.uniform(lo, hi) * scale
+            self.motes.append((1.0 / rng.uniform(*style['life']), rng.random(), max(2, int(size) & ~1),
+                               max(4, int(size * tint_size) & ~3), rng.getrandbits(24),
+                               rng.uniform(0.0, 2.0 * math.pi)))
+
+    def draw(self, screen, glow, colour, clock, strength, spawn, tint=None, raw_colour=None):
+        """
+        Draw the motes at this clock (s) and strength (0-1): halos (with tint, in
+        raw_colour) under the light. Sprites still being built within the frame
+        budget are skipped for a frame.
+        """
+        if strength <= 0.02:
+            return
+        steps = GlowSprites.LEVELS
+        use_tint = tint is not None and self.tint_alpha > 0 and raw_colour is not None
+        sin, pi = math.sin, math.pi
+        halos = []
+        seq = []
+        for index, (inv_life, offset, diameter, halo_d, salt, sway_phase) in enumerate(self.motes):
+            u = clock * inv_life + offset
+            cycle = int(u)
+            age = u - cycle
+            env = sin(pi * age)
+            env *= env * strength
+            level = int(steps * env + 0.5)
+            if level <= 0:
+                continue
+            h = ((cycle * 73856093) ^ salt) & 0xFFFFFFFF
+            h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
+            x, y = spawn((h & 0xFFFF) / 65536.0, (h >> 16) / 65536.0, index)
+            x = int(x + self.sway * sin(age * 5.0 + sway_phase))
+            y = int(y - self.rise * age)
+            if use_tint:
+                halo = tint.sprite(halo_d, raw_colour, self.tint_alpha * env)
+                if halo is not None:
+                    halos.append((halo, (x - (halo_d >> 1), y - (halo_d >> 1))))
+            sprite = glow.sprite(diameter, colour, min(steps, level))
+            if sprite is not None:
+                seq.append((sprite, (x - (diameter >> 1), y - (diameter >> 1)), None, pygame.BLEND_RGB_ADD))
+        if halos:
+            screen.blits(halos, doreturn=False)
+        if seq:
+            screen.blits(seq, doreturn=False)

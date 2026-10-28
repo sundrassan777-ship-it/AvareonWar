@@ -219,6 +219,47 @@ SILENCE_FOG = {
     'fade': 1.5,               # seconds to fade in
 }
 
+# Master Negotiator while its discount lasts (main.py draw_negotiator_glow): a
+# green wash over the edges of the map and motes of green light rising there.
+# Shown to the caster only, like its sound (owner, 2026-10-27); fades in, then holds.
+# Screen px are for a 900 px tall window, scaled to the real one
+NEGOTIATOR_GLOW = {
+    'colour': (25, 130, 45),
+    'centre_alpha': 0,
+    'edge_alpha': 110,
+    'inner': 0.68,             # where the wash starts, share of the half-size (vignette_surface):
+                               # the map's colours stay readable, only its rim turns green
+    'fade': 0.8,               # seconds to fade in
+    'motes': {
+        'count': 56,
+        'life': (1.2, 2.2),
+        'rise': 40.0,          # px over a life
+        'sway': 5.0,
+        'size': (14.0, 26.0),  # diameter, px
+        'band': 0.1,           # how far in from the edges they rise, share of the map height
+        'colour': (60, 200, 80),
+        'white_mix': 0.25,
+        'tint': 90,            # alpha of a green halo under each mote: the map is bright
+        'tint_size': 1.6,
+    },
+}
+
+# Erec Silvyr's Ruthless Ingenuity while the tech tree is open (ui_renderer
+# _draw_ingenuity_motes): motes of blue light rising over the technology panel.
+# Px at UI scale 1
+INGENUITY_MOTES = {
+    'colour': (70, 120, 255),
+    'white_mix': 0.3,
+    'count': 40,
+    'life': (1.5, 3.0),
+    'rise': 60.0,              # px over a life
+    'sway': 4.0,
+    'size': (12.0, 22.0),      # diameter, px
+    'top': 50,                 # px below the panel's top (its header) where they may start
+    'tint': 70,
+    'tint_size': 1.6,
+}
+
 # ========================================
 # ACTIVE ABILITIES
 # ========================================
@@ -475,6 +516,8 @@ HERO_FX_STYLE = {
     'auras': AURAS,
     'persistent': PERSISTENT,
     'silence_fog': SILENCE_FOG,
+    'negotiator_glow': NEGOTIATOR_GLOW,
+    'ingenuity_motes': INGENUITY_MOTES,
     'abilities': ABILITIES,
     'warm_white': WARM_WHITE,
 }
