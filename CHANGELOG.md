@@ -2,6 +2,44 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-28 - Battle screen effects as light
+
+Branch `feature/battle-fx`. Owner: the battle effects (the two bars fighting and shooting at
+each other) still felt unpolished next to the new glowy effects. Decisions along the way: a
+winner finale, a glow on the battle icon and a vignette backdrop (no ambient embers on the
+bars); a salvo of small bolts and a single bolt compared side by side - the single bolt
+kept, one shot at a time, flying level; the destroyed chunk falling out of the bar; hits
+weighted by the armies' strength; the shot charging up from the bar's front.
+- **Shots** (`ui/effects/battle_fx_effect.py` `Shot`, `BattleLight`; styled in
+  `ui/effects/battle_fx_style.py`): the sides take turns, one shot at a time, the loser
+  opening and the winner firing last. Light gathers from the shooter's remaining bar into
+  its front (motes, a sweep, an orb - `CHARGE_STYLE`, `'enabled': False` reverts to the
+  frame's spear tip), then a bolt of light - comet head, streak, colour halo - flies level
+  to the enemy bar: a flare, sparks, a ring. The chunk it destroys breaks off glowing hot,
+  falls out of the bar toppling and fades over 0.5 s, embers bursting from it. Replaces the
+  coloured wedge lances, the 6-frame starburst and the white-to-grey rectangle.
+- **Hits weighted by strength**: each hit's size is its random draw (wider: 0.5-1.6) times
+  the firing army's strength at the time, then each side's hits are scaled to its real
+  loss - a strong army keeps hitting hard, a weakening one's hits shrink
+  (`HIT_STRENGTH_POWER`, 0 = off). The bars still end on the real result.
+- **The bars**: gradient fill with a highlight over a dark bronze track, a seam of light at
+  each front (shimmer, flares on hits), a faint sheen. Setup and fight use one painter.
+- **Finale**: light sweeps the bar left standing and gold light hugs its frame until the
+  splash; an emptied bar's last light goes out in embers.
+- **Battle icon**: gold light round the crossed swords and a bloom behind them, breathing
+  with the pulse, flaring with each bolt. The pulse no longer restarts at Resolve
+  (`_ambient_clock`).
+- **Backdrop**: a multiply vignette instead of the flat black overlay (0.66 ms against 1.2 ms).
+- **Timing**: battles run longer - a turn (pause, charge, flight) is ~0.49 s; up to 8 s
+  (was 6), at most 10 volleys (was 14): 4 v 3 armies 5.8 s, from ~10 v 8 up 7.8 s.
+- `BattleBarVolleyEffect` keeps its chunk split, RNG stream, retarget and skip; shots aim
+  at the front the bar shows (`_aim_fill`); the frame flare is gentler (0.35). Dark player
+  colours are brightened before they become light.
+- **Tools**: `tools/battle_fx_preview.py` (live, `--sheet`, `--bench`).
+- **Cost** (1600x900): the battle screen ~2.4-2.5 ms a frame through a fight (the old one
+  2.6-3.4 ms), nothing built or skipped during it; ~18 ms of bakes the first time it opens
+  in a session.
+
 ## 2026-10-27 - Event effects as light
 
 Branch `feature/event-fx`. Owner: some events still used the old particle effects. A review
