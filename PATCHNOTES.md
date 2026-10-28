@@ -4,6 +4,20 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Final Battle Fix
+
+*28 October 2026*
+
+### Fixes
+
+- **The game no longer hangs on a battle after you win.** When the last enemy territory
+  fell in the same turn as a battle you still had to fight (for example, the enemy's last
+  army marching out to meet yours), the game declared victory but the battle could not be
+  opened and the Resolve Remaining Battles button was gone, so the game stayed on the map.
+  You can now fight that battle, and the victory screen follows.
+
+---
+
 ## Battles in a New Light
 
 *28 October 2026*
