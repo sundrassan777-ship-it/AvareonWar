@@ -752,56 +752,102 @@ def set_actual_battle_result(self, winner: int, attacker_survivors: int,
 ##### Bar animation: `BattleBarVolleyEffect`
 
 Modelled on BFME2's War of the Ring auto-resolve. **Visual layer only** — it never touches
-`resolve_battle()` or the dice.
+`resolve_battle()` or the dice. The light it shows (the charge, the bolts, the falling
+chunks, the bars' look, the finale) is drawn by `ui/effects/battle_fx_effect.py`
+(`BattleLight`, `Shot`), styled in `ui/effects/battle_fx_style.py` - see "Change the battle
+screen effects" below.
 
 **How it works:**
 - Both bars are **mirrored**: the attacker anchors at its left edge, the defender at its
-  right, so both erode inward toward the centre. `_render_strength_bars()` (the static
-  SETUP-state draw) must match `_fill_rect()` or the bar jumps when the animation starts.
-  The defender's `BattleBar.png` frame is flipped — the asset is not symmetric.
-- Depletion is **stepwise**, not a continuous slide. Each volley fires one blast per side;
-  when a blast lands, the chunk it destroyed flashes white-hot **in place** for
-  `BURN_DURATION`, then vanishes and the fill steps down.
-- The volley count scales with total army size on a log curve, clamped to
-  `[VOLLEY_MIN, VOLLEY_MAX]`. The duration falls out of the schedule (it is no longer drawn
-  up front), is clamped to `[ANIMATION_MIN_DURATION, ANIMATION_MAX_DURATION]`, and
-  `_start_animation()` reads it back into `self.animation_duration`.
+  right, so both erode inward toward the centre. The defender's `BattleBar.png` frame is
+  flipped — the asset is not symmetric. `_render_strength_bars()` (the static SETUP-state
+  draw) and the effect paint the bars with the same `BattleLight.draw_bar()` at the same
+  ambient clock, so nothing jumps when the animation starts
+  (`test_setup_bars_match_the_effects_first_frame`).
+- **One shot at a time** (owner, 2026-10-28: easier to follow than both sides firing at
+  once): the sides take turns. A shot is armed (`arm_t`) `SHOT_PAUSE` after the bolt
+  before has landed; light gathers from the shooter's remaining bar into its front for
+  `charge_time()`; the bolt leaves (`fire_t`) from that front and flies level to the enemy
+  bar (`land_t`); the chunk it destroys breaks off as it lands and the fill steps down
+  `BURN_DURATION` later (`current`). A turn is `SHOT_PAUSE + charge + PROJECTILE_TRAVEL`.
+  The side that loses opens and the winner has the last word, so an emptied bar never
+  fires again; the fire times do not depend on who wins, so `retarget()` can flip the
+  winner without moving a shot (`test_the_winner_fires_last`).
+- The volley count (one shot per side) scales with total army size on a log curve,
+  clamped to `[VOLLEY_MIN, VOLLEY_MAX]` and to as many turns as fit
+  `ANIMATION_MAX_DURATION` (8 s). The duration falls out of the schedule, is at least
+  `ANIMATION_MIN_DURATION`, and `_start_animation()` reads it back into
+  `self.animation_duration`. With the charge, a turn is ~0.49 s: 4 v 3 armies 5.8 s, from
+  ~10 v 8 up the 8 s cap holds it at 7 volleys, 7.8 s (the old version: 2-6 s).
 - Chunk sizes are jittered then **normalised to sum exactly to the damage**, so the bars
   land precisely on their final fill. `_finish()` also snaps to the final value.
+- **Hits weighted by strength** (owner, 2026-10-28: show the armies' strength): a hit's
+  weight is its random draw (`CHUNK_JITTER_MIN`-`MAX`, 0.5-1.6) times the strength of the
+  army firing it when it fires - its fill then, to `HIT_STRENGTH_POWER`, at least
+  `HIT_STRENGTH_FLOOR` (`_shooter_strengths()`, played through in turn order; two rounds,
+  since the fills follow the chunks). A strong army keeps hitting hard while a weakening
+  one's hits shrink; each side's hits are still normalised to its real loss, so only how
+  the loss is spread changes (`TestHitStrength`). `HIT_STRENGTH_POWER = 0` gives the plain
+  random split. The draws (`_draw_weights()`) come first, in a fixed order, whatever the
+  damage - `retarget()` depends on it.
+- **Falling chunk:** the chunk a bolt destroys breaks off where it was (`Shot.piece`,
+  computed on the bar painter's pixels by `_fill_edge()`, so it leaves exactly the hole),
+  glowing hot, pops up a little, falls and topples the way the bolt flew and fades over
+  0.5 s (`BURN_STYLE['fall']`). Drawn under the frames (`BattleLight.draw_pieces()`): it
+  leaves the bar with the window's shade on it, as the bar showed it, and falls out below.
+  It is a small copy turned each frame, for half a second.
+- **Finale:** when the last bolt lands, the bar left standing (`finale_sides()`: the longer
+  final fill, if any) is swept with light and its frame glows gold; an emptied bar's seam
+  goes out in a last shower of embers. It plays on after `is_finished()` (the effect's
+  clock keeps running, the fills stay put) until the interface moves on to the splash
+  0.5 s after the duration; a skip has no finale.
 
 **When modifying, watch for:**
-- **Use the private RNG.** The schedule draws from `random.Random(seed)`, never the global
-  `random`. `_pre_calculate_battle_result()` still calls `random.seed()` on the global RNG
-  immediately before `resolve_battle()` rolls its tie dice — leave that alone, removing it
-  changes single-player tie outcomes. `TestDeterminism.test_does_not_disturb_the_global_rng`
-  guards this. (Multiplayer battles roll from their own `rng` - see "Battle sync" - so the
+- **Use the private RNGs.** The schedule draws from `random.Random(seed)`, never the global
+  `random`; each shot's look (where exactly it lands, its sparks, charge motes, embers)
+  comes from its own `random.Random(stable_seed('battle shot', seed, index))`, drawn when
+  it is armed, so it can never shift the schedule's stream. `_pre_calculate_battle_result()`
+  still calls `random.seed()` on the global RNG immediately before `resolve_battle()` rolls
+  its tie dice — leave that alone, removing it changes single-player tie outcomes.
+  `test_does_not_disturb_the_global_rng` / `test_playing_does_not_disturb_the_global_rng`
+  guard this. (Multiplayer battles roll from their own `rng` - see "Battle sync" - so the
   global seeding does not reach them; `set_actual_battle_result()` re-aims the bars.)
-- **Nothing is allocated per frame.** Fills, burn chunks and bar backgrounds are drawn
-  straight to the screen; lances, impact bursts and the frame flare are pre-rendered in
-  `__init__`. The old version cleared and blitted a full-screen SRCALPHA surface every
-  frame — do not reintroduce that.
-- **Render order matters.** Lances draw *before* the frame PNG, so a tail still inside the
-  firing bar is hidden by the frame's end cap; each lance is also clipped to the far side of
-  its muzzle. The frame flare and impact bursts draw *after* the PNG.
+- **Aim at the front the bar shows.** `_aim_fill()` is a bar's fill once the chunk still
+  burning and the chunks of shots on their way to it are gone - where a bolt aimed at it
+  lands, and where its own bolt leaves from.
+- **Nothing is built during the fight.** The shots' small light sprites (charge motes, bolt
+  trails, sparks, embers) are queued by `BattleLight.prepare_battle()` when the screen
+  opens and built while the setup screen shows (`prewarm_step()`, within the frame budget);
+  the greys (flares, seams, the frame and icon glows, the vignette) are baked when it
+  opens. All of it is kept between battles (`battle_fx_effect._shared`). The old version
+  cleared and blitted a full-screen SRCALPHA surface every frame — do not reintroduce that.
+- **Render order matters.** Under the frames: track, fill, the seam, the sheen (and the
+  charge's sweep), then the chunks falling. Then the frame PNGs and their flares. Then one
+  additive layer of light over everything (charges, bolts, impacts, embers, the finale's
+  gold frame light).
 - **`BattleBar.png` stores non-zero RGB under fully transparent pixels.** Any additive blit
   of it lights up the whole rectangle. The flare uses `BLEND_RGB_ADD` (which leaves alpha
-  untouched) plus a normal alpha blit, so transparency is respected.
+  untouched) plus a normal alpha blit, so transparency is respected; the finale's gold
+  light is a `GlowFrame` round the frame's silhouette (alpha > 100: the fill window is 92).
 - **The flare is one sprite faded with `set_alpha`.** Pre-rendering a sprite per fade step
   cost ~21 ms up front — a visible hitch on the Resolve click. `set_alpha` is sticky, so the
   render path sets it unconditionally on every blit.
-- **`retarget()` must keep the RNG stream aligned.** `_split_damage()` draws its weights even
-  when damage is zero, so re-running the build with a fresh `random.Random(seed)` reproduces
-  identical fire times.
+- **`retarget()` must keep the RNG stream aligned.** The weights are drawn even when damage
+  is zero, so re-running the build with a fresh `random.Random(seed)` reproduces identical
+  fire times.
 - **Survivor → fill conversion.** Use `_survivor_fill()`, which scales by the side's
   *initial* fill. A raw `survivors / count` makes a weaker side that wins end with a longer
   bar than it started with.
+- **One clock for the icon and the bars' shimmer.** `EnhancedBattleInterface._ambient_clock`
+  is never reset (`self.elapsed` restarts with each state); the effect gets it at the start
+  (`ambient_clock`), so the icon's pulse and the bars' shimmer carry on through the click.
 
 **Skip:** clicking anywhere during ANIMATING, or pressing Space/ESC, calls
 `skip_animation()` → `BattleBarVolleyEffect.skip()`. `handle_click()` returns `'skip'`, which
 main.py's existing fall-through consumes; the key is wired in main.py's KEYDOWN branch ahead
 of the campaign-transmission skip.
 
-**Tests:** `tests/test_battle_bar_volley.py`
+**Tests:** `tests/test_battle_bar_volley.py`, `tests/test_battle_interface_integration.py`
 
 **Storage pattern in main.py:**
 ```python
@@ -831,7 +877,7 @@ self._resolved_battle_info = {
 - Production light rays (producing Barracks / Keeps / Castles) → `ui/effects/production_glow_effect.py` — two counter-rotating layers of soft additive beams; see "Change the plot effects" below
 - Construction dust (plots under construction, Keep → Castle upgrades with gold glints) → `ui/effects/construction_dust_effect.py` — stateless particles; see "Change the plot effects" below
 - Castle upgrade finishing (a burst of gold light) → `plot_fx_style.py` `'castle_complete'`, a cue timeline played by `HeroAbilityEffect` (`MapRenderer.trigger_castle_upgrade_effect()`)
-- Battle bar combat (volleys) → `ui/effects/battle_interface.py` (BattleBarVolleyEffect) — discrete blasts, pre-rendered sprites
+- Battle screen (the bars' shots of light - a charge, a bolt, the chunk falling - the finale, the battle icon's glow, the vignette) → `ui/effects/battle_fx_effect.py` (`BattleLight`) on the light kit, driven by `BattleBarVolleyEffect` / `EnhancedBattleInterface` in `ui/effects/battle_interface.py`, styled in `ui/effects/battle_fx_style.py`; see "Change the battle screen effects" below
 - Turn announcements → `ui/effects/turn_announcement_effect.py` — vignette, bronze-framed Cinzel banner, gold glow and motes
 - Hero abilities (every active cast, the passive auras, the Embargo embers) → `ui/effects/hero_fx_effect.py` on the shared light kit `ui/effects/light_fx.py` — light in the style of the production rays, each ability a timeline of cues in `ui/effects/hero_fx_style.py`; see "Change the hero ability effects" below
 - Vow of Silence fog → `main.py` `draw_silence_fog_overlay()` — a crimson vignette baked once (`light_fx.vignette_surface`)
@@ -1072,6 +1118,72 @@ production rays and hero abilities. Select → order → target read as one inpu
 **Tests:** `tests/test_event_fx.py`; benchmarks `TestEventFxPerformance` in
 `tests/test_fps_benchmark.py` (`battle_markers_6`, `castle_complete_4`, `negotiator_glow`,
 `turn_banner`, reference `event_fx_none`).
+
+#### ✅ Change the battle screen effects
+
+**What they are (2026-10-28, battle FX pass):** the battle screen (`EnhancedBattleInterface`)
+in the light style of the other passes - it was the last combat effect in the old style
+(flat bars, wedge-shaped lances, a 6-frame clip-art starburst).
+- **Backdrop:** the map behind the screen darkens toward the edges (a multiply vignette,
+  as the turn banner's) instead of a flat black wash. Every state, the report included.
+- **Battle icon:** gold light round the crossed swords' outline and a soft bloom behind
+  them, breathing with the icon's pulse from the first frame; each bolt makes it flare.
+- **The bars:** a gradient fill (lighter at the top, a glassy highlight line) over a dark
+  bronze track, a seam of light at each bar's front (it shimmers, flares when hit and
+  kicks when its bar fires), a faint sheen sliding along the fill every few seconds.
+- **Shots,** one at a time, the sides taking turns:
+  - **The charge** (owner, 2026-10-28 - may be rolled back: `CHARGE_STYLE['enabled'] =
+    False` puts the bolt back on the frame's spear tip, with no gathering): motes of light
+    stream along the shooter's remaining bar into its front, a band of light sweeps the
+    bar that way, the front's seam brightens and an orb swells there.
+  - **The bolt** leaves from that front with a flash: a comet head with a streak of motes
+    and a colour halo, flying level along the bars' centre line, speeding up into the
+    enemy bar. It lands in a flare of the shooter's colour with sparks sprayed back and a
+    soft ring.
+  - **The chunk** it destroys breaks off glowing hot in the bar's own colour, falls out of
+    the bar toppling the way the bolt flew and fades over 0.5 s; embers burst from it.
+  - A dark player colour is brightened (same hue) before it becomes light, so its bolts
+    read as well as a bright opponent's. (A salvo of 3-5 smaller bolts per shot was tried
+    side by side and dropped - owner, 2026-10-28.)
+- **Finale:** when the last bolt lands, light sweeps the bar left standing and gold light
+  hugs its frame until the splash; an emptied bar's seam goes out in a last shower of
+  embers. A skip goes straight to the splash.
+
+| To change | Where |
+|---|---|
+| Bars (gradient, track, seam, sheen) | `ui/effects/battle_fx_style.py` `BAR_STYLE` |
+| The charge (on / off, length, motes, sweep, orb) | `CHARGE_STYLE` |
+| The bolt (speed, where it lands, head, trail, halo), its flash, its impact | `BOLT_STYLE`, `MUZZLE_STYLE`, `IMPACT_STYLE` |
+| The chunk falling (heat, pop, gravity, push, spin, fade time), the embers | `BURN_STYLE` (`'fall'`, `'embers'`) |
+| Finale, battle icon glow, backdrop | `FINALE_STYLE`, `ICON_GLOW_STYLE`, `BACKDROP_STYLE` |
+| The turns (pause, how many, battle length), how big each hit is | constants at the top of `ui/effects/battle_interface.py`: `SHOT_PAUSE`, `VOLLEY_*`, `ANIMATION_MAX_DURATION`, `CHUNK_JITTER_*`, `HIT_STRENGTH_*` (see "Bar animation" above) |
+| Preview / tune / measure | `py tools/battle_fx_preview.py` (live: 1-4 battle, C colours, Space resolve / skip, R reopen, S slow motion, P pause; `--size 1280x720`), `--sheet out.png` (setup, a shot exchange, the finale; `--battles`, `--colours`), `--bench` |
+
+**Rules:**
+- **Sizes are in bar heights** (H, the fill's height: 40 px at 1600x900), so the light
+  scales with the screen. There is one style: the screen is drawn over the map whatever
+  its look.
+- **Small lights are cached, big ones tinted every frame.** Charge motes, bolt heads and
+  trails, sparks and embers are `GlowSprites` levels (steps don't show at that size).
+  Flares (the orb, the flash, the impact), seams, sheens and the frame and icon glows are
+  a grey tinted every frame (fill, multiply, add), so they fade without steps; flares use
+  a size ladder of baked greys instead of a smoothscale per frame.
+- **Everything is ready before the fight.** Opening the screen bakes the greys and the
+  vignette (~18 ms the first time a session at 1600x900, inside an open that already takes
+  ~260 ms loading its art; later battles reuse them); the setup screen builds the shots'
+  sprites for both colours within the frame budget. A fight then builds and skips nothing,
+  even when Resolve is clicked at once (the first charge is 0.35 s in). `--bench` prints
+  "built ... in fight" and "skipped in fight" to check it.
+- **A shot is closed form.** `Shot` is built once, when armed, from its own RNG (see "Bar
+  animation" above); everything it shows is a function of the clock.
+- **Cost** (whole battle screen render, 1600x900): ~2.4-2.5 ms a frame through a fight,
+  p95 ~3.3 ms - a little under the old version's 2.6-3.4 ms (one shot at a time means less
+  on screen at once). The vignette costs 0.66 ms against the old flat overlay's 1.2 ms; the
+  icon glow ~0.13 ms; the finale's frame glow ~0.04 ms.
+
+**Tests:** `tests/test_battle_bar_volley.py` (`TestShots`, `TestCharge`, `TestFinale`,
+`TestTurns`, `TestHitStrength`, `TestFallingPieces`, `TestRender`),
+`tests/test_battle_interface_integration.py` (`TestNoJumpOnResolve`).
 
 #### ✅ Change the tutorial / campaign highlights (gold)
 

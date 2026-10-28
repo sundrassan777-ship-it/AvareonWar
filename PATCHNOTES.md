@@ -4,6 +4,30 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Battles in a New Light
+
+*28 October 2026*
+
+### Improvements
+
+- **New battle screen.** The two armies' bars now fight in light. The sides take turns:
+  light gathers along an army's bar into its front, a bolt flies across and strikes the
+  enemy bar in a burst of sparks, and the piece it destroys breaks off and falls away.
+- **Army strength shows.** A strong army hits hard and keeps hitting hard; a weakening
+  army's shots take smaller and smaller pieces. The bars still end on the battle's result.
+- **The winner's moment.** When the last shot lands, the winning bar is swept with light
+  and its frame glows gold; a destroyed army's bar goes out in embers.
+- The bars have a new look, the crossed swords glow gold and flare with each shot, and the
+  map behind the battle screen darkens toward the edges.
+- Battles take a little longer to watch (up to 8 seconds). Click or press Space to skip, as
+  before.
+
+### Fixes
+
+- The crossed swords no longer jump when you click Resolve.
+
+---
+
 ## Events in a New Light
 
 *27 October 2026*

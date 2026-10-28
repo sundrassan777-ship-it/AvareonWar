@@ -142,6 +142,41 @@ class TestStateMachine:
             ui.render()
 
 
+class TestNoJumpOnResolve:
+    """Nothing on screen may jump when Resolve is clicked."""
+
+    def test_icon_pulse_carries_on(self, battle_ui):
+        """The icon's pulse (and its glow) runs on a clock the Resolve click does not reset."""
+        ui, _, _ = battle_ui
+        for _ in range(37):
+            ui.update(1.0 / 60.0)
+        clock = ui._ambient_clock
+        ui.handle_click(ui.resolve_button_rect.center)
+        assert ui.elapsed == 0.0               # the state's own clock restarts...
+        assert ui._ambient_clock == clock      # ...the pulse's does not
+        ui.update(0.25)
+        assert ui._ambient_clock == pytest.approx(clock + 0.25)
+
+    def test_setup_bars_match_the_effects_first_frame(self, battle_ui, screen):
+        """
+        The setup screen and the volley effect paint the bars with the same
+        painter at the same clock, so the bars look identical across the click.
+        """
+        ui, _, _ = battle_ui
+        for _ in range(53):
+            ui.update(1.0 / 60.0)
+        fill_y = ui.attacker_bar_rect.top + ui.bar_fill_offset
+        areas = [pygame.Rect(rect.left, fill_y, rect.width, rect.height)
+                 for rect in (ui.attacker_bar_rect, ui.defender_bar_rect)]
+        ui.render()
+        before = [screen.subsurface(area).copy() for area in areas]
+        ui.handle_click(ui.resolve_button_rect.center)
+        ui.render()
+        after = [screen.subsurface(area).copy() for area in areas]
+        for a, b in zip(before, after):
+            assert pygame.image.tobytes(a, 'RGB') == pygame.image.tobytes(b, 'RGB')
+
+
 class TestRealResultRetarget:
     """The bars must animate to the real outcome, not the estimate."""
 
@@ -260,7 +295,7 @@ class TestPulsedIconCache:
             pytest.skip("battle icon asset not available")
 
         for i in range(600):
-            ui.elapsed = i * 0.01
+            ui._ambient_clock = i * 0.01   # the pulse's clock
             ui.render()
 
         from ui.effects.battle_interface import ICON_PULSE_CACHE_MAX
@@ -272,11 +307,11 @@ class TestPulsedIconCache:
         if not ui.battle_icon:
             pytest.skip("battle icon asset not available")
 
-        ui.elapsed = 0.3
+        ui._ambient_clock = 0.3
         ui.render()
         snapshot = dict(ui._pulsed_icon_cache)
         assert snapshot
 
-        ui.render()  # same elapsed -> same quantised step -> no new entry
+        ui.render()  # same clock -> same quantised step -> no new entry
         for step, surface in snapshot.items():
             assert ui._pulsed_icon_cache[step] is surface

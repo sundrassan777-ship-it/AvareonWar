@@ -89,7 +89,7 @@ def make_border(width=400, height=200):
     return surf
 
 
-def make_effect_with_border(seed=5):
+def make_effect_with_border(seed=5, attacker_count=20, defender_count=20):
     """
     Build an effect that has a frame image, so the flare sprite exists.
 
@@ -111,8 +111,8 @@ def make_effect_with_border(seed=5):
         bar_fill_offset=-30,
         bar_png_height=200,
         ui_scale=1.0,
-        attacker_count=20,
-        defender_count=20,
+        attacker_count=attacker_count,
+        defender_count=defender_count,
     )
 
 
@@ -341,9 +341,11 @@ class TestSkip:
         effect.skip()
         for side in effect.sides:
             assert side['burn'] is None
-            assert side['flash'] is None
             assert side['glow_t0'] is None
         assert all(shot['landed'] for shot in effect.volleys)
+        # Nothing more is drawn in flight, and the icon's glow stops flaring
+        assert effect.skipped
+        assert effect.shot_kick() == 0.0
 
     def test_skip_before_any_shot(self):
         effect = make_effect(attacker_final=0.1)
@@ -439,11 +441,15 @@ class TestMirroring:
         assert dfn_chunk.left == pytest.approx(effect._fill_tip_x(dfn, 0.8), abs=1)
         assert atk_chunk.width > 0 and dfn_chunk.width > 0
 
-    def test_muzzles_face_the_gap(self):
-        effect = make_effect()
-        atk, dfn = effect.sides
-        assert effect._muzzle_x(atk) == atk['rect'].right
-        assert effect._muzzle_x(dfn) == dfn['rect'].left
+    def test_bolts_leave_from_the_inner_ends(self):
+        """Without a frame from the fill's inner end, with one from its spear tip beyond it."""
+        atk, dfn = make_effect().sides
+        assert atk['tip'][0] == atk['rect'].right
+        assert dfn['tip'][0] == dfn['rect'].left
+
+        atk, dfn = make_effect_with_border().sides
+        assert atk['tip'][0] > atk['rect'].right
+        assert dfn['tip'][0] < dfn['rect'].left
 
 
 # ----------------------------------------------------------------------
@@ -463,45 +469,24 @@ class TestRender:
             effect.render(screen)
         effect.render(screen)  # once more after completion
 
-    def test_sprites_are_prebuilt_not_per_frame(self):
-        """Sprites are built once in __init__; render must not rebuild them."""
-        effect = make_effect()
+    def test_nothing_is_built_during_the_fight_once_prepared(self):
+        """
+        The shots' light sprites are built while the setup screen shows
+        (prewarm_step); the fight itself then builds and skips nothing.
+        """
+        effect = make_effect_with_border()
+        light = effect.light
+        while True:
+            light.begin_frame()
+            if light.prewarm_step():
+                break
+        built, denied = light.sprites_built(), light.denied()
         screen = pygame.Surface((1600, 900))
-        lances = [side['lance'] for side in effect.sides]
-        flashes = [side['flash_frames'] for side in effect.sides]
-        glows = [side['glow'] for side in effect.sides]
-
-        for _ in range(120):
-            effect.update(1.0 / 60.0)
+        while not effect.is_finished():
+            effect.update(1.0 / 120.0)
             effect.render(screen)
-
-        assert [side['lance'] for side in effect.sides] == lances
-        assert [side['flash_frames'] for side in effect.sides] == flashes
-        assert [side['glow'] for side in effect.sides] == glows
-
-    def test_flash_frame_count(self):
-        effect = make_effect()
-        for side in effect.sides:
-            assert len(side['flash_frames']) > 1
-            assert all(f.get_size() == side['flash_frames'][0].get_size()
-                       for f in side['flash_frames'])
-
-    def test_lances_point_opposite_ways(self):
-        """
-        The attacker's streak has its bright head on the right, the defender's on
-        the left - otherwise one side's blast would fly tail-first.
-        """
-        effect = make_effect(ui_scale=1.0)
-
-        def head_side(sprite):
-            w, h = sprite.get_size()
-            mid = h // 2
-            left_alpha = sprite.get_at((1, mid))[3]
-            right_alpha = sprite.get_at((w - 2, mid))[3]
-            return 'right' if right_alpha > left_alpha else 'left'
-
-        assert head_side(effect.sides[effect.ATTACKER]['lance']) == 'right'
-        assert head_side(effect.sides[effect.DEFENDER]['lance']) == 'left'
+        assert light.sprites_built() == built
+        assert light.denied() == denied
 
     def test_frame_flare_is_built_from_the_border(self):
         assert make_effect().sides[0]['glow'] is None  # no border -> no flare
@@ -558,3 +543,293 @@ class TestRender:
         assert effect.sides[0]['glow'] is None
         effect.update(0.5)
         effect.render(screen)
+
+
+# ----------------------------------------------------------------------
+# Shots
+# ----------------------------------------------------------------------
+
+def run_until_fired(effect, step=1.0 / 120.0):
+    """Tick until every shot has been armed; returns the shots in schedule order."""
+    while not all(shot['fired'] for shot in effect.volleys) and not effect.is_finished():
+        effect.update(step)
+    return effect.volleys
+
+
+class TestShots:
+    """Each shot: a charge, one bolt of light, built when armed, from its own RNG."""
+
+    def test_the_bolt_lands_when_the_chunk_breaks_off(self):
+        for shot in run_until_fired(make_effect()):
+            assert shot['fx'].land_t == pytest.approx(shot['land_t'])
+            assert shot['fx'].fire_t == pytest.approx(shot['fire_t'])
+
+    def test_the_bolt_lands_in_the_doomed_chunk_near_its_front(self):
+        effect = make_effect_with_border()
+        for shot in run_until_fired(effect):
+            target = effect.sides[shot['target']]
+            front = shot['end_x']
+            back = effect._fill_tip_x(target, shot['aim'] - min(shot['chunk'], shot['aim']))
+            sx, ex, ey = shot['fx'].flight
+            assert min(front, back) - 1 <= ex <= max(front, back) + 1
+            assert abs(ex - front) <= abs(back - front) * 0.3 + 1
+            toward = 1 if shot['shooter'] == effect.ATTACKER else -1
+            assert (ex - sx) * toward > 0
+
+    def test_aim_skips_burning_and_in_flight_chunks(self):
+        """A shot armed at a bar is aimed past what earlier shots are about to destroy."""
+        effect = make_effect(defender_initial=0.8)
+        target = effect.sides[effect.DEFENDER]
+        target['burn'] = {'t0': 0.0, 'chunk': 0.1, 'fx': None}
+        flying = next(s for s in effect.volleys if s['target'] == effect.DEFENDER)
+        flying['fired'] = True
+        assert effect._aim_fill(effect.DEFENDER) == pytest.approx(0.8 - 0.1 - flying['chunk'])
+
+    def test_same_seed_same_shots(self):
+        def looks(effect):
+            return [(shot['fx'].flight, shot['fx'].sparks, shot['fx'].motes) for shot in run_until_fired(effect)]
+        assert looks(make_effect(seed=31337)) == looks(make_effect(seed=31337))
+        assert looks(make_effect(seed=31337)) != looks(make_effect(seed=31338))
+
+    def test_playing_does_not_disturb_the_global_rng(self):
+        """The shots' looks come from their own RNG, never the global one."""
+        import random
+        random.seed(99)
+        expected = [random.random() for _ in range(5)]
+        random.seed(99)
+        effect = make_effect(seed=4)
+        screen = pygame.Surface((1600, 900))
+        while not effect.is_finished():
+            effect.update(1.0 / 60.0)
+            effect.render(screen)
+        assert [random.random() for _ in range(5)] == expected
+
+    def test_the_chunk_breaks_off_as_the_bolt_lands(self):
+        fx = run_until_fired(make_effect())[0]['fx']
+        assert fx.broken(fx.land_t - 1e-6) == 0.0
+        assert fx.broken(fx.land_t) == 1.0
+
+
+# ----------------------------------------------------------------------
+# The charge
+# ----------------------------------------------------------------------
+
+class TestCharge:
+    """Light gathers from the shooter's remaining bar into its front; the bolt leaves from there."""
+
+    def test_the_bolt_leaves_from_the_shooters_front(self):
+        """At the front its bar shows when the charge begins, on the bars' centre line."""
+        effect = make_effect_with_border(attacker_count=40, defender_count=40)
+        centre = effect.fill_y + effect.sides[0]['rect'].height / 2.0
+        seen = set()
+        while not effect.is_finished():
+            effect.update(1.0 / 120.0)
+            for index, shot in enumerate(effect.volleys):
+                if shot['fired'] and index not in seen:
+                    seen.add(index)
+                    shooter = effect.sides[shot['shooter']]
+                    burn = shooter['burn']
+                    standing = shooter['current'] - (burn['chunk'] * burn['fx'].broken(effect.elapsed)
+                                                     if burn is not None and burn['fx'] is not None else 0.0)
+                    assert shot['fx'].muzzle[0] == pytest.approx(effect._fill_tip_x(shooter, standing))
+                    assert shot['fx'].muzzle[1] == pytest.approx(centre)
+                    assert shot['fx'].flight[2] == pytest.approx(centre)    # and flies level
+
+    def test_the_charge_comes_before_the_bolt(self):
+        from ui.effects.battle_fx_style import charge_time
+        for shot in run_until_fired(make_effect()):
+            fx = shot['fx']
+            assert shot['fire_t'] - shot['arm_t'] == pytest.approx(charge_time())
+            assert fx.charge(shot['arm_t']) == 0.0
+            assert 0.0 < fx.charge((shot['arm_t'] + shot['fire_t']) / 2.0) < 1.0
+            assert fx.charge(shot['fire_t']) is None
+            assert fx.motes
+
+    def test_the_motes_come_from_the_remaining_bar(self):
+        effect = make_effect()
+        for shot in run_until_fired(effect):
+            shooter = effect.sides[shot['shooter']]
+            lo, hi = sorted((shot['fx'].muzzle[0], effect._fill_tip_x(shooter, 0.0)))
+            for x0, y0, delay, d in shot['fx'].motes:
+                assert lo - 1 <= x0 <= hi + 1
+
+    def test_off_fires_from_the_spear_tip(self, monkeypatch):
+        """CHARGE_STYLE['enabled'] False: no gathering, the bolt leaves from the frame's spear tip."""
+        from ui.effects import battle_fx_style
+        monkeypatch.setitem(battle_fx_style.CHARGE_STYLE, 'enabled', False)
+        effect = make_effect_with_border()
+        for shot in run_until_fired(effect):
+            assert shot['arm_t'] == shot['fire_t']
+            assert shot['fx'].charge(shot['fire_t'] - 0.01) is None
+            assert shot['fx'].motes == []
+            assert shot['fx'].muzzle == effect.sides[shot['shooter']]['tip']
+
+
+# ----------------------------------------------------------------------
+# Finale
+# ----------------------------------------------------------------------
+
+class TestFinale:
+    """The bar left standing gets a finale once the last bolt lands."""
+
+    def test_picks_the_side_left_standing(self):
+        effect = make_effect(attacker_final=0.4, defender_final=0.0)
+        assert effect.finale_sides() == (effect.ATTACKER, effect.DEFENDER)
+        effect.retarget(0.0, 0.55)
+        assert effect.finale_sides() == (effect.DEFENDER, effect.ATTACKER)
+
+    def test_no_finale_when_both_bars_empty(self):
+        effect = make_effect(attacker_final=0.0, defender_final=0.0)
+        assert effect.finale_sides() == (None, None)
+
+    def test_starts_when_the_last_bolt_lands(self):
+        effect = make_effect(attacker_final=0.4, defender_final=0.0)
+        run_to_completion(effect, step=1.0 / 120.0)
+        last = max(shot['fx'].land_t for shot in effect.volleys)
+        assert effect.finale_t0 == pytest.approx(last)
+        assert effect.finale_t0 < effect.duration
+        # The emptied bar's last embers
+        assert effect.finale_embers
+
+    def test_runs_on_after_completion_without_moving_the_fills(self):
+        effect = make_effect_with_border()
+        run_to_completion(effect)
+        fills = [side['current'] for side in effect.sides]
+        elapsed = effect.elapsed
+        screen = pygame.Surface((1600, 900))
+        for _ in range(30):
+            effect.update(1.0 / 60.0)
+            effect.render(screen)
+        assert effect.elapsed == pytest.approx(elapsed + 0.5)
+        assert [side['current'] for side in effect.sides] == fills
+
+    def test_skip_has_no_finale(self):
+        effect = make_effect()
+        effect.update(0.5)
+        effect.skip()
+        assert effect.finale_t0 is None
+        effect.update(0.5)
+        assert effect.finale_t0 is None
+
+
+# ----------------------------------------------------------------------
+# Turns: one shot at a time
+# ----------------------------------------------------------------------
+
+class TestTurns:
+    """The sides take turns, one shot at a time (owner, 2026-10-28)."""
+
+    def test_sides_take_turns(self):
+        volleys = make_effect().volleys
+        shooters = [s['shooter'] for s in volleys]
+        assert all(a != b for a, b in zip(shooters, shooters[1:]))
+        assert shooters.count(0) == shooters.count(1)
+
+    def test_one_shot_at_a_time(self):
+        """A side starts charging only once the bolt before has landed, and a pause."""
+        from ui.effects.battle_interface import SHOT_PAUSE
+        volleys = run_until_fired(make_effect(attacker_count=60, defender_count=60))
+        for before, after in zip(volleys, volleys[1:]):
+            assert after['arm_t'] >= before['fx'].land_t + SHOT_PAUSE - 1e-9
+
+    def test_the_winner_fires_last(self):
+        """The loser opens, the winner has the last word - and still after the real result flips it."""
+        effect = make_effect(attacker_final=0.4, defender_final=0.0)
+        assert effect.volleys[0]['shooter'] == effect.DEFENDER
+        assert effect.volleys[-1]['shooter'] == effect.ATTACKER
+        times = [s['fire_t'] for s in effect.volleys]
+        effect.retarget(0.0, 0.55)
+        assert effect.volleys[0]['shooter'] == effect.ATTACKER
+        assert effect.volleys[-1]['shooter'] == effect.DEFENDER
+        assert [s['fire_t'] for s in effect.volleys] == times
+
+    @pytest.mark.parametrize('finals', [(0.4, 0.0), (0.0, 0.3), (0.0, 0.0)])
+    def test_an_emptied_bar_never_fires_again(self, finals):
+        effect = make_effect(attacker_final=finals[0], defender_final=finals[1])
+        seen = set()
+        while not effect.is_finished():
+            effect.update(1.0 / 120.0)
+            for index, shot in enumerate(effect.volleys):
+                if shot['fired'] and index not in seen:
+                    seen.add(index)
+                    assert effect.sides[shot['shooter']]['current'] > 1e-9
+
+
+# ----------------------------------------------------------------------
+# Hits weighted by strength
+# ----------------------------------------------------------------------
+
+class TestHitStrength:
+    """A hit is as heavy as the army firing it is strong at the time (owner, 2026-10-28)."""
+
+    @pytest.mark.parametrize('seed', [3, 17, 2024, 31337])
+    def test_a_weakening_army_hits_softer(self, seed):
+        """The loser's hits on the winner shrink as the loser's bar empties."""
+        effect = make_effect(attacker_initial=1.0, attacker_final=0.35, defender_initial=0.9,
+                             defender_final=0.0, attacker_count=200, defender_count=150, seed=seed)
+        taken = effect.sides[effect.ATTACKER]['chunks']      # the defender's hits, in order
+        half = len(taken) // 2
+        assert sum(taken[:half]) > 1.5 * sum(taken[half:])
+
+    def test_the_bars_still_land_on_the_real_result(self):
+        effect = make_effect(attacker_initial=1.0, attacker_final=0.35, defender_initial=0.9,
+                             defender_final=0.0, attacker_count=200, defender_count=150)
+        assert sum(effect.sides[effect.ATTACKER]['chunks']) == pytest.approx(0.65)
+        assert sum(effect.sides[effect.DEFENDER]['chunks']) == pytest.approx(0.9)
+        run_to_completion(effect)
+        assert effect.sides[effect.ATTACKER]['current'] == pytest.approx(0.35)
+        assert effect.sides[effect.DEFENDER]['current'] == pytest.approx(0.0)
+
+    def test_off_gives_the_plain_random_split(self, monkeypatch):
+        """HIT_STRENGTH_POWER 0: every army hits alike - only the random spread remains."""
+        import ui.effects.battle_interface as bi
+        monkeypatch.setattr(bi, 'HIT_STRENGTH_POWER', 0.0)
+        import random
+        effect = make_effect(seed=99)
+        rng = random.Random(99)
+        count = len(effect.volleys) // 2
+        expected = bi.BattleBarVolleyEffect._split_damage(rng, 1.0 - 0.4, count)
+        assert effect.sides[effect.ATTACKER]['chunks'] == pytest.approx(expected)
+
+
+# ----------------------------------------------------------------------
+# Falling pieces
+# ----------------------------------------------------------------------
+
+class TestFallingPieces:
+    """The chunk a bolt destroys breaks off and falls out of the bar (owner, 2026-10-28)."""
+
+    def test_the_piece_fills_exactly_the_hole(self):
+        """The piece covers the chunk the shot destroys, on the bar painter's pixels."""
+        effect = make_effect(attacker_count=40, defender_count=40)
+        for shot in run_until_fired(effect):
+            target = effect.sides[shot['target']]
+            chunk = min(shot['chunk'], shot['aim'])
+            hole = abs(effect._fill_edge(target, shot['aim']) - effect._fill_edge(target, shot['aim'] - chunk))
+            piece = shot['fx'].piece
+            assert (piece[1] if piece else 0) == hole
+
+    def test_a_piece_falls_for_half_a_second(self):
+        from ui.effects.battle_fx_style import BURN_STYLE
+        for shot in run_until_fired(make_effect()):
+            assert shot['fx'].end >= shot['fx'].land_t + BURN_STYLE['fall']['duration']
+
+    def test_no_damage_no_piece(self):
+        effect = make_effect(attacker_initial=1.0, attacker_final=1.0)
+        for shot in run_until_fired(effect):
+            if shot['target'] == effect.ATTACKER:
+                assert shot['fx'].piece is None
+
+    def test_a_piece_renders_while_falling(self):
+        """Drawing a piece mid-fall changes the pixels below the bar."""
+        effect = make_effect(attacker_count=10, defender_count=10)
+        fx = run_until_fired(effect)[0]['fx']
+        assert fx.piece
+        left, width = fx.piece
+        screen = pygame.Surface((1600, 900))
+        screen.fill((0, 0, 0))
+        before = screen.copy()
+        effect.light.draw_pieces(screen, fx, fx.land_t + 0.3)
+        below = pygame.Rect(left - 40, fx.bar.bottom, width + 80, fx.bar.height * 2)
+        assert (pygame.image.tobytes(screen.subsurface(below), 'RGB')
+                != pygame.image.tobytes(before.subsurface(below), 'RGB'))
