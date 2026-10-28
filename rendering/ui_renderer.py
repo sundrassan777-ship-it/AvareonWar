@@ -465,6 +465,12 @@ class UIRenderer:
             else:
                 # Clear bonuses button rect when not in playing phase
                 self.game.bonuses_button_rect = None
+                # Won with battles still queued (the victory cinematic waits for them):
+                # their Resolve Remaining Battles button stays
+                if self.game._battles_open_after_victory():
+                    self._draw_resolve_all_battles_button(scale)
+                else:
+                    self.game.resolve_all_battles_button = None
 
         # Connection status indicator (multiplayer only)
         connection_status_width = 0

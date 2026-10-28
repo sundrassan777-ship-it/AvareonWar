@@ -3799,6 +3799,25 @@ class Game:
             return False
         return True
 
+    def _battles_open_after_victory(self):
+        """
+        Whether battles are still to be fought after the game was won.
+
+        A win can land mid-round: the last enemy territory taken while a battle is queued,
+        or queued right after by the same arrivals (an army that marched out of its last
+        territory). The victory cinematic waits for those battles (_all_animations_complete),
+        so their battle marker and Resolve Remaining Battles button must stay usable - both
+        were gated on phase 'playing', and a human resolver was stuck for good (2026-10-28).
+        """
+        gs = self.game_state
+        if gs is None or gs.phase != 'ended' or not gs.pending_battles:
+            return False
+        if not self.victory_sequence_pending or self.victory_sequence_active:
+            return False
+        if self.sim_state is not None:
+            return self.sim_state.sim_phase == 'resolving'
+        return gs.turn_phase == 'battles'
+
     def _start_victory_sequence(self):
         """Initialize the victory/defeat cinematic animation sequence."""
         self.victory_sequence_active = True
@@ -14501,6 +14520,9 @@ class Game:
             elif self.sim_state is not None:
                 if self.sim_state.sim_phase == 'resolving':
                     in_battle_phase = True
+        elif self._battles_open_after_victory():
+            # Won with battles still queued: they stay open, the victory cinematic waits
+            in_battle_phase = True
 
         if not in_battle_phase:
             return False
