@@ -206,6 +206,45 @@ class TestTheStoredReport:
 # THE WORDS (report_view)
 # ============================================================================
 
+class TestTheStrengths:
+    """The preview hides both strengths (owner, 2026-10-29); the report shows them."""
+
+    def test_taken_quietly_before_the_fight(self):
+        gs = new_state()
+        _, territory, _ = h.adjacent_triple()
+        h.place(gs, territory, 0, h.units('Archer', 'Archer'), buildings={0: 'Keep'})
+        gs.territory_garrisons[territory][1] = {'unmoved': 0, 'moved': 5,
+                                                'units': h.units(*['Cavalry'] * 5)}
+        battle = Battle(territory)
+        battle.original_owner = 0
+        battle.add_army(0, 2, {'Archer': 2})
+        battle.add_army(1, 5, {'Cavalry': 5})
+        battle.keep_bonus, battle.keep_bonus_player = 2, 0
+        messages = len(gs.messages)
+        shown = gs._shown_strengths(battle)
+        assert len(gs.messages) == messages                   # no log lines
+        assert shown[1] == gs.calculate_army_effective_strength(
+            {'Cavalry': 5}, {'Archer': 2}, 1, territory,
+            unit_avg_levels=gs.get_unit_avg_levels(territory, 1))
+        assert shown[0] == pytest.approx(gs.calculate_army_effective_strength(
+            {'Archer': 2}, {'Cavalry': 5}, 0, territory,
+            unit_avg_levels=gs.get_unit_avg_levels(territory, 0)) + 2)
+
+    def test_the_stored_report_has_both(self):
+        gs = new_state()
+        fight(gs, h.units('Swordsman'), h.units(*['Swordsman'] * 12), buildings={0: 'Keep'},
+              keep_bonus=2)
+        report = gs.last_battle_reports[0]
+        assert report['attacker_strength'] == pytest.approx(12.0)
+        assert report['defender_strength'] == pytest.approx(1.0 + 2)    # the Keep's +2
+        assert json.loads(json.dumps(report)) == report
+
+    def test_the_report_shows_the_viewers_first(self):
+        view = report_view("Nefrid", True, BREAKDOWN, _outcome(), _ours, strengths=(8.4, 5.0))
+        assert view['strengths'] == (8.4, 5.0)
+        assert report_view("Nefrid", True, BREAKDOWN, _outcome(), _ours)['strengths'] is None
+
+
 def _ours(player):
     return player == 0
 
@@ -366,7 +405,7 @@ class TestReportScreen:
         assert (REPORT_PANEL_MIN_HEIGHT_RATIO * 900 - 1 <= panel.height
                 <= REPORT_PANEL_MAX_HEIGHT_RATIO * 900 + 1)
         assert panel.contains(content)
-        assert ui._report_scroll_max == 0
+        assert ui._report_scroller.max_offset == 0
         assert _report_height(ui) <= content.height
         assert max(part.get_width() for part in ui._report_parts) < content.width   # + scrollbar gutter
         assert close.top > content.bottom - 1
@@ -396,8 +435,28 @@ class TestReportScreen:
                                      report_snapshot=report)
         assert ui.state == BattleInterfaceState.REPORT
         assert ui._report_parts is not None                # sized before any click
+        assert ui._report_strengths() is None              # no strengths in it: no line
         ui.render()
         assert ui.handle_click(ui.close_button_rect.center) == 'close'
+
+    def test_the_live_report_has_both_strengths(self, screen):
+        ui, gs, battle = _battle_window(screen)                # player 0 attacks
+        _fight_it(ui, gs, battle)
+        assert ui._report_strengths() == (ui.attacker_strength, ui.defender_strength)
+
+    def test_a_stored_report_shows_the_defenders_side_first(self, screen):
+        gs = new_state()
+        report = {'territory': h.adjacent_triple()[1], 'turn_number': 3, 'defender': 0,
+                  'attacker': 1, 'held': True, 'units_lost': 0, 'units_remaining': 2,
+                  'structures_destroyed': 0, 'structures_captured': 0, 'structures_remaining': 0,
+                  'unit_breakdown': {'Archer': {'original': 2, 'survived': 2, 'lost': 0}},
+                  'defender_lost': 0, 'defender_survivors': 2, 'attacker_lost': 3,
+                  'attacker_survivors': 0, 'heroes_slain': [],
+                  'attacker_strength': 3.0, 'defender_strength': 4.5}
+        ui = EnhancedBattleInterface(screen=screen, game_state=gs, battle_index=0,
+                                     font_manager=FontManager(), current_player_index=0,
+                                     report_snapshot=report)
+        assert ui._report_strengths() == (4.5, 3.0)
 
 
 # A report too long for the largest panel: every building type, heroes, level-ups
@@ -428,19 +487,19 @@ class TestScrolling:
 
     def test_a_long_report_scrolls_in_the_largest_panel(self, screen):
         ui = _long_report(screen)
-        assert ui._report_scroll_max > 0
+        assert ui._report_scroller.max_offset > 0
         assert ui.report_panel_rect.height == int(900 * REPORT_PANEL_MAX_HEIGHT_RATIO)
 
     def test_the_wheel_scrolls_within_bounds(self, screen):
         ui = _long_report(screen)
         assert ui.handle_wheel(1) is False                 # already at the top
         assert ui.handle_wheel(-1) is True
-        assert ui._report_scroll > 0
+        assert ui._report_scroller.offset > 0
         ui.handle_wheel(-999)
-        assert ui._report_scroll == ui._report_scroll_max
+        assert ui._report_scroller.offset == ui._report_scroller.max_offset
         assert ui.handle_wheel(-1) is False                # at the end
         ui.handle_wheel(999)
-        assert ui._report_scroll == 0
+        assert ui._report_scroller.offset == 0
 
     def test_the_header_stays_put(self, screen):
         ui = _long_report(screen)
@@ -460,19 +519,19 @@ class TestScrolling:
     def test_scrolling_builds_nothing_per_frame(self, screen):
         ui = _long_report(screen)
         ui.render()
-        scratch = ui._scroll_scratch
+        scratch = ui._report_scroller._scratch
         for step in (-1, -1, 1, -999):
             ui.handle_wheel(step)
             ui.render()
-        assert ui._scroll_scratch is scratch
-        assert len(ui._scroll_masks) <= 3                  # top / bottom / both faded
+        assert ui._report_scroller._scratch is scratch
+        assert len(ui._report_scroller._masks) <= 3                  # top / bottom / both faded
 
     def test_a_short_report_does_not_scroll(self, screen):
         ui, gs, battle = _battle_window(screen)
         _fight_it(ui, gs, battle)
         ui._start_report()
         assert ui.handle_wheel(-1) is False
-        assert ui._report_scroll == 0
+        assert ui._report_scroller.offset == 0
 
     def test_only_the_report_scrolls(self, screen):
         ui, gs, battle = _battle_window(screen)

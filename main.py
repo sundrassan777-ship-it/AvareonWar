@@ -3829,11 +3829,17 @@ class Game:
         for name, image in (getattr(self, 'building_icons', None) or {}).items():
             sources[f"assets/mapicons/{name.replace(' ', '')}Icon.png"] = image
         sources["assets/upgrades/LevelDisplay.png"] = getattr(self, 'level_shield_icon', None)
+        sources["assets/BonusButton.png"] = getattr(self, 'bonus_button_icon_original', None)
         from game_state.data_definitions import HERO_TYPES
         for hero, image in (getattr(self, 'hero_images', None) or {}).items():
             icon = HERO_TYPES.get(hero, {}).get('icon')
             if icon:
                 sources[icon] = image
+        # Hero abilities (the preview's Vanquish the Enemy row)
+        for (hero, index), image in (getattr(self, 'ability_images', None) or {}).items():
+            abilities = HERO_TYPES.get(hero, {}).get('abilities') or []
+            if index < len(abilities) and abilities[index].get('icon'):
+                sources[abilities[index]['icon']] = image
         return {path: image for path, image in sources.items() if image is not None}
 
     def _battles_open_after_victory(self):

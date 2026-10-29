@@ -13,6 +13,8 @@ Battle screen kit - the battle screen's controls in the game's ornate style
   (unit and hero portraits, as the bottom panel's forces grid); shadow_text(): text with
   a 1 px drop shadow; separator(): the sidebar's fading gold rule with a diamond. The
   report (ui/battle_screen_panels.py) is built from these.
+- ScrollView: a surface in a rect of its own, scrolled with the mouse wheel when it
+  outgrows it (faded edges, a scrollbar) - the report's body, the preview's sides.
 
 Everything is baked once and kept between battles (a new interface opens for every
 battle) until the display changes, so opening a battle builds nothing it built before.
@@ -21,7 +23,7 @@ battle) until the display changes, so opening a battle builds nothing it built b
 import pygame
 
 from rendering.bottom_panel_kit import LIGHT_TEXT, SHADOW
-from rendering.sidebar_widgets import SidebarWidgets, GOLD, GOLD_DARK, PARCHMENT_DIM
+from rendering.sidebar_widgets import SidebarWidgets, GOLD, GOLD_DARK, PARCHMENT, PARCHMENT_DIM
 from utils.surface_utils import crop_to_opaque, get_campaign_button_image, load_cached_image
 
 # CampaignBTN's height / width once cropped (1502x297) - fallback aspect
@@ -30,6 +32,7 @@ LABEL_CACHE_MAX = 64
 ICON_CACHE_MAX = 64
 ART_CACHE_MAX = 16
 KEYCAP_FILL = (18, 12, 8, 190)
+TOOLTIP_FILL = (24, 16, 14, 238)   # As the sidebar's tooltips
 ICON_BORDER_PATH = 'assets/mapicons/IconBorder.png'
 ICON_BORDER_BRIGHTEN = 51  # +20%, as the game's own icon_border (main.py)
 
@@ -148,9 +151,151 @@ def shadow_text(text, font, color):
     return _cached_label(('text', text, font, color), build)
 
 
+def bronze_plate(size, border, fill):
+    """The carved bronze frame (TableBorder, as the turn banner) round a `fill`, cached."""
+    bx, by = border
+    return _kit()['widgets'].nine_slice('bronze', size, (bx, by, bx, by), fill)
+
+
 def separator(width, color=GOLD):
     """The sidebar's thin gold rule fading at both ends, with a centre diamond."""
     return _kit()['widgets'].separator(width, color)
+
+
+def tooltip_box(title, title_color, lines, title_font, body_font, scale, max_width):
+    """
+    A hover tooltip in the sidebar's style - a dark box with a bronze edge - holding a
+    title in its colour, a gold rule and parchment lines (wrapped to `max_width`). Built
+    once per text.
+    """
+    def build():
+        def s(value):
+            return max(1, int(value * scale))
+        pad = s(10)
+        inner = max_width - 2 * pad
+        heading = shadow_text(title, title_font, title_color)
+        rows = [shadow_text(part, body_font, PARCHMENT)
+                for line in lines for part in _wrap_words(line, body_font, inner)]
+        width = min(max_width, max([heading.get_width()] + [row.get_width() for row in rows]) + 2 * pad)
+        rule = separator(width - 2 * pad)
+        height = (pad + heading.get_height() + s(4) + rule.get_height() + s(4)
+                  + sum(row.get_height() for row in rows) + pad)
+        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        pygame.draw.rect(surf, TOOLTIP_FILL, surf.get_rect(), border_radius=s(4))
+        pygame.draw.rect(surf, GOLD_DARK, surf.get_rect(), 1, border_radius=s(4))
+        y = pad
+        surf.blit(heading, (pad, y))
+        y += heading.get_height() + s(4)
+        surf.blit(rule, (pad, y))
+        y += rule.get_height() + s(4)
+        for row in rows:
+            surf.blit(row, (pad, y))
+            y += row.get_height()
+        return surf
+    return cached(('tooltip', title, title_color, tuple(lines), title_font, body_font, scale,
+                   max_width), build)
+
+
+def _wrap_words(text, font, max_width):
+    """Greedy word wrap to `max_width`."""
+    lines, current = [], ""
+    for word in text.split():
+        trial = f"{current} {word}".strip()
+        if font.size(trial)[0] <= max_width or not current:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    return lines + ([current] if current else [])
+
+
+def cached(key, build):
+    """A small surface built once by `build()` and kept (labels, marks), keyed by `key`."""
+    return _cached_label(('custom',) + tuple(key), build)
+
+
+# Scrolling (the battle report's body, the preview's sides), px at 1600x900
+SCROLL_STEP = 40        # A wheel notch
+SCROLL_BAR = 6          # Scrollbar width
+SCROLL_BAR_GAP = 8      # Between the content and its scrollbar
+SCROLL_FADE = 18        # The fade at an edge with more beyond it
+SCROLL_TRACK = (34, 22, 22)
+
+
+class ScrollView:
+    """
+    A surface shown in a rect of its own: as it is when it fits, otherwise scrolled with
+    the mouse wheel (wheel()) - faded at an edge with more beyond it, a gold scrollbar
+    SCROLL_BAR_GAP right of the rect. Its scratch surface and fade masks are made once,
+    so a frame only blits.
+    """
+
+    def __init__(self, surface, rect, scale):
+        self.surface = surface
+        self.rect = pygame.Rect(rect)
+        self.scale = scale
+        self.max_offset = max(0, surface.get_height() - self.rect.height)
+        self.offset = 0          # px scrolled away at the top
+        self._scratch = None
+        self._masks = {}
+
+    @property
+    def scrollable(self):
+        return self.max_offset > 0
+
+    def wheel(self, dy):
+        """pygame MOUSEWHEEL y (+ up). Returns True if the view moved."""
+        if not self.scrollable:
+            return False
+        before = self.offset
+        step = max(1, int(SCROLL_STEP * self.scale))
+        self.offset = max(0, min(self.max_offset, self.offset - dy * step))
+        return self.offset != before
+
+    def draw(self, screen):
+        if not self.scrollable:
+            screen.blit(self.surface, self.rect.topleft)
+            return
+        width, height = self.rect.size
+        if self._scratch is None:
+            self._scratch = pygame.Surface((width, height), pygame.SRCALPHA)
+        scratch = self._scratch
+        scratch.fill((0, 0, 0, 0))
+        # MAX onto a clear surface copies the pixels exactly (alpha included)
+        scratch.blit(self.surface, (0, 0), pygame.Rect(0, self.offset, width, height),
+                     special_flags=pygame.BLEND_RGBA_MAX)
+        fade_top, fade_bottom = self.offset > 0, self.offset < self.max_offset
+        if fade_top or fade_bottom:
+            scratch.blit(self._mask(fade_top, fade_bottom), (0, 0),
+                         special_flags=pygame.BLEND_RGBA_MULT)
+        screen.blit(scratch, self.rect.topleft)
+        bar_w = max(2, int(SCROLL_BAR * self.scale))
+        track = pygame.Rect(self.rect.right + int(SCROLL_BAR_GAP * self.scale), self.rect.top,
+                            bar_w, height)
+        thumb_h = max(bar_w * 3, int(height * height / float(self.surface.get_height())))
+        thumb_y = track.top + int((height - thumb_h) * self.offset / float(self.max_offset))
+        pygame.draw.rect(screen, SCROLL_TRACK, track, border_radius=bar_w // 2)
+        pygame.draw.rect(screen, GOLD, pygame.Rect(track.x, thumb_y, bar_w, thumb_h),
+                         border_radius=bar_w // 2)
+
+    def _mask(self, fade_top, fade_bottom):
+        """Alpha multiplier fading the top / bottom edge (RGB 255: only alpha changes)."""
+        key = (fade_top, fade_bottom)
+        mask = self._masks.get(key)
+        if mask is None:
+            width, height = self.rect.size
+            mask = pygame.Surface((width, height), pygame.SRCALPHA)
+            mask.fill((255, 255, 255, 255))
+            fade = max(1, min(height // 3, int(SCROLL_FADE * self.scale)))
+            for i in range(fade):
+                alpha = int(255 * (i + 1) / float(fade + 1))
+                if fade_top:
+                    pygame.draw.line(mask, (255, 255, 255, alpha), (0, i), (width, i))
+                if fade_bottom:
+                    y = height - 1 - i
+                    pygame.draw.line(mask, (255, 255, 255, alpha), (0, y), (width, y))
+            self._masks[key] = mask
+        return mask
 
 
 def button_height(width):

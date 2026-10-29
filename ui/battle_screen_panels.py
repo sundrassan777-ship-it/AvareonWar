@@ -13,13 +13,17 @@ the heroes slain there, the XP and a line per level-up of the viewer's survivors
 - compose_report(): draws a view with the battle screen kit (ui/battle_screen_kit.py), as
   a header that stays put and a body that scrolls when the report outgrows its panel.
 - report_icons() / prewarm(): every icon a report can show, baked before the first one.
+- The preview (Phase 3): side_view() - a side's player, a row per unit type, a row per
+  bonus (no strength: an informed mystery); compose_side_header() / compose_side_body()
+  - its fixed top and its rows (which scroll); compose_banner() - the battle's name.
 
 Cinzel has no arrow / check / star glyphs, so the report uses columns, "-" and "x".
 """
 
 import pygame
 
-from config.constants import UNIT_PLURALS
+from config.constants import PLAYER_COLORS, UNIT_PLURALS
+from rendering.bottom_panel_kit import SHADOW
 from rendering.sidebar_widgets import GOLD, GOLD_DARK, GOLD_LIGHT, PARCHMENT
 from ui import battle_screen_kit as kit
 from ui.battle_report_popup import COLOR_DEFENDED, COLOR_LOST
@@ -90,6 +94,10 @@ def prewarm(scale, sources=None):
     for path, style in report_icons():
         kit.icon(path, size, bordered=style == 'framed', crop=style == 'cropped',
                  source=sources.get(path))
+    # The preview's icons (other sizes)
+    for path, style, ref in preview_icons():
+        kit.icon(path, max(1, int(ref * scale)), bordered=style == 'framed',
+                 crop=style == 'cropped', source=sources.get(path))
 
 
 def _hero_icon(name):
@@ -97,7 +105,7 @@ def _hero_icon(name):
     return (HERO_TYPES.get(name) or {}).get('icon')
 
 
-def report_view(territory, won, unit_breakdown, outcome, ours):
+def report_view(territory, won, unit_breakdown, outcome, ours, strengths=None):
     """
     The report's words.
 
@@ -108,9 +116,11 @@ def report_view(territory, won, unit_breakdown, outcome, ours):
         outcome: GameState.battle_outcome() for the viewer, or a stored report's same
             keys; {} (an older report) leaves the outcome lines out
         ours(player): True for the viewer and their allies
+        strengths: (the viewer's side's, the enemy's) - the preview keeps them hidden, the
+            report shows them (owner, 2026-10-29); None leaves the line out
 
     Returns:
-        {'result', 'headline', 'units': [(type, fought, lost, survived)],
+        {'result', 'headline', 'strengths', 'units': [(type, fought, lost, survived)],
          'lines': [(icon path or None, icon style, text, tone)]} - the style 'framed'
         (portraits: the gold IconBorder), 'cropped' (transparent margins trimmed) or None
     """
@@ -180,7 +190,8 @@ def report_view(territory, won, unit_breakdown, outcome, ours):
             lines.append((UNIT_ICON.format(unit_type), 'framed',
                           f"{count} {name} reached level {level}", 'xp'))
 
-    return {'result': result, 'headline': headline, 'units': units, 'lines': lines}
+    return {'result': result, 'headline': headline, 'units': units, 'lines': lines,
+            'strengths': strengths}
 
 
 def compose_report(view, width, fonts, scale):
@@ -218,6 +229,14 @@ def compose_report(view, width, fonts, scale):
         surf = kit.shadow_text(line, fonts['headline'], PARCHMENT)
         centred(surf, y)
         y += surf.get_height()
+    if view.get('strengths'):
+        # Both strengths, hidden before the fight
+        yours, theirs = view['strengths']
+        y += s(4)
+        line = kit.shadow_text(f"Your strength {yours:.1f}  ·  Enemy {theirs:.1f}",
+                               fonts['body'], GOLD_LIGHT)
+        centred(line, y)
+        y += line.get_height()
     y += s(SECTION_GAP)
     rule = kit.separator(int(width * 0.9))
     centred(rule, y)
@@ -343,3 +362,326 @@ def _wrap(text, font, max_width, max_lines=2):
             last = last[:-1]
         lines = lines[:max_lines - 1] + [last.rstrip() + "..."]
     return lines or [text]
+
+
+# ---------------------------------------------------------------- the preview (Phase 3)
+# Before the fight (owner, 2026-10-29): a banner naming the battle; per side the player,
+# a row per unit type ("2 x Archer", tagged where it counters the enemy or is countered)
+# and a row per bonus behind the army's strength, each with its icon - scrolling with the
+# mouse wheel when they outgrow the panel. The strength itself is not shown: an informed
+# mystery (the bars start full; the fight, then the report, reveal it).
+
+# The bonus list's order (GameState.calculate_army_effective_strength(breakdown=) keys)
+BONUS_ORDER = ('vanquish', 'cavalry_tactics', 'battlement_archery', 'divide_and_conquer',
+               'territorial', 'veterancy', 'captain', 'keep')
+# Each bonus's icon: (path, style - 'framed' / 'cropped' / None, as report_view's)
+BONUS_ICONS = {
+    'vanquish': ('assets/heroes/abilities/VanquishTheEnemyIcon.png', 'framed'),
+    'cavalry_tactics': ('assets/upgrades/CavalryTacticsIcon.png', 'framed'),
+    'battlement_archery': ('assets/upgrades/BattlementArcheryIcon.png', 'framed'),
+    'divide_and_conquer': ('assets/upgrades/DivideAndConquerIcon.png', 'framed'),
+    'territorial': ('assets/BonusButton.png', None),
+    'veterancy': ('assets/upgrades/LevelDisplay.png', 'cropped'),
+    'captain': ('assets/mapicons/CaptainIcon.png', 'framed'),
+    'keep': ('assets/mapicons/KeepIcon.png', None),
+}
+MATCHUP_STRONG = 1.15  # A unit type's counter factor from here up: its Advantage tag
+MATCHUP_WEAK = 0.85    # ... from here down: its Disadvantage tag
+MARK_COLORS = {'up': COLOR_DEFENDED, 'down': COLOR_LOST}
+MARK_WORDS = {'up': "Advantage", 'down': "Disadvantage"}
+FLAG_COLORS = ('Red', 'Blue', 'Green', 'Yellow')    # config.constants PLAYER_COLORS order
+FLAG_ICON = 'assets/mapicons/{}Flag1.png'
+NEUTRAL_FLAG = 'assets/NeutralFlag.png'
+READABLE_LUMINANCE = 140  # A darker player colour is lightened for its name (the 4 player colours are not)
+BANNER_FILL = ((62, 51, 36), (31, 25, 17))           # As the turn banner (dark parchment)
+BANNER_BORDER = (16, 12)                              # Bronze frame, px at 1600x900
+BANNER_PADDING = (34, 8)
+
+# Layout, in px at 1600x900
+PREVIEW_ROW = 32         # A unit or bonus row (owner: room to breathe)
+UNIT_ROW_ICON = 28
+BONUS_ROW_ICON = 24
+REACH_ICON = 18          # The unit types a bonus reaches, at the end of its row
+BONUS_VALUE_WIDTH = 50
+
+
+def flag_icon(player, color):
+    """The player's army flag: the PLAYER_COLORS entry their colour is (neutral: its own)."""
+    if player is None or player < 0:
+        return NEUTRAL_FLAG
+    colors = [tuple(c) for c in PLAYER_COLORS]
+    color = tuple(color[:3])
+    index = colors.index(color) if color in colors else player % len(FLAG_COLORS)
+    return FLAG_ICON.format(FLAG_COLORS[index])
+
+
+def readable(color):
+    """A player colour light enough to read on the dark wood: same hue, toward warm white."""
+    def luminance(rgb):
+        return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+    r, g, b = color[:3]
+    own = luminance((r, g, b))
+    if own >= READABLE_LUMINANCE:
+        return (r, g, b)
+    warm_white = (255, 240, 215)
+    mix = (READABLE_LUMINANCE - own) / (luminance(warm_white) - own)
+    return tuple(int(round(c + (w - c) * mix)) for c, w in zip((r, g, b), warm_white))
+
+
+def _pct(value):
+    return f"{value:.0f}" if abs(value - round(value)) < 0.05 else f"{value:.1f}"
+
+
+def bonus_lines(breakdown, composition):
+    """
+    The bonus rows from calculate_army_effective_strength(breakdown=): one per source and
+    amount, [(key, value, label, reach)], in BONUS_ORDER - a source worth different
+    amounts to different unit types (veterancy, territories) gets a row per amount.
+    `reach`: the unit types it applies to, or [] when that is the whole fighting army
+    (Captains aside) or the Captain's own bonus.
+    """
+    by_key = {}
+    for entry in breakdown:
+        if entry.get('key') != 'matchup':
+            by_key.setdefault(entry['key'], []).append(entry)
+    fighting = {unit_type for unit_type, count in composition.items()
+                if count > 0 and unit_type != 'Captain'}
+    lines = []
+    for key in BONUS_ORDER:
+        entries = by_key.get(key)
+        if not entries:
+            continue
+        label = entries[0]['label']
+        if key == 'keep':
+            lines.append((key, f"+{_pct(entries[0]['flat'])}", label, []))
+            continue
+        by_value = {}
+        for entry in entries:
+            by_value.setdefault(_pct(entry['pct']), set()).add(entry['unit_type'])
+        for value, types in sorted(by_value.items(), key=lambda item: float(item[0]), reverse=True):
+            reach = [] if key == 'captain' or types == fighting else sorted(types)
+            lines.append((key, f"+{value}%", label, reach))
+    return lines
+
+
+def unit_rows(composition, breakdown):
+    """[(unit_type, count, mark)]: mark 'up' / 'down' where it counters / is countered."""
+    factors = {entry['unit_type']: entry['factor'] for entry in breakdown
+               if entry.get('key') == 'matchup'}
+    rows = []
+    for unit_type, count in sorted(composition.items()):
+        if count <= 0:
+            continue
+        factor = factors.get(unit_type, 1.0)
+        mark = 'up' if factor >= MATCHUP_STRONG else ('down' if factor <= MATCHUP_WEAK else None)
+        rows.append((unit_type, count, mark))
+    return rows
+
+
+def matchup_tip(entry):
+    """
+    The words of a unit type's Advantage / Disadvantage tooltip (owner, 2026-10-29: the
+    tag alone did not say where it came from): (title, lines), from its breakdown entry
+    ('matchup': the counter factor and the enemy units it is made of).
+    """
+    unit_type = entry['unit_type']
+    ours = UNIT_PLURALS.get(unit_type, unit_type)
+    factor = entry['factor']
+    title = f"{'Advantage' if factor >= 1 else 'Disadvantage'}  ×{factor:.2f}"
+    total = entry.get('enemy_total', 0)
+    counters, counters_count = entry.get('counters'), entry.get('counters_count', 0)
+    countered_by, countered_count = entry.get('countered_by'), entry.get('countered_by_count', 0)
+    lines = []
+    if counters_count:
+        lines.append(f"{ours} counter {UNIT_PLURALS.get(counters, counters)}: "
+                     f"×2 against the enemy's {counters_count}.")
+    if countered_count:
+        lines.append(f"{UNIT_PLURALS.get(countered_by, countered_by)} counter {ours}: "
+                     f"×0.5 against the enemy's {countered_count}.")
+    rest = total - counters_count - countered_count
+    if rest > 0:
+        lines.append(f"×1 against the other {rest} {_plural(rest, 'unit', 'units')}.")
+    lines.append(f"Over all {total} enemy {_plural(total, 'unit', 'units')}: ×{factor:.2f} strength.")
+    return title, lines
+
+
+def side_view(role, name, player, color, composition, breakdown, keep=False):
+    """One side of the preview: {'role', 'name', 'color', 'flag', 'units', 'empty',
+    'bonuses', 'matchups'} (no pygame; no strength - the preview keeps it a mystery).
+    'matchups': {unit_type: its breakdown entry} for the tags' tooltips."""
+    return {
+        'role': role,
+        'name': name,
+        'color': readable(color),
+        'flag': flag_icon(player, color),
+        'units': unit_rows(composition, breakdown),
+        'empty': "The Keep stands alone" if keep else "No units",
+        'bonuses': bonus_lines(breakdown, composition),
+        'matchups': {entry['unit_type']: entry for entry in breakdown
+                     if entry.get('key') == 'matchup'},
+    }
+
+
+def preview_icons():
+    """(path, style, px at 1600x900) of the preview's 1024 px icons, for prewarm() (the
+    flags are small files)."""
+    specs = [(UNIT_ICON.format(unit_type), 'framed', UNIT_ROW_ICON) for unit_type in UNIT_PLURALS]
+    specs += [(UNIT_ICON.format(unit_type), 'framed', REACH_ICON) for unit_type in UNIT_PLURALS]
+    specs += [(path, style, BONUS_ROW_ICON) for path, style in BONUS_ICONS.values()]
+    return specs
+
+
+def _mark(surface, x, y, size, mark):
+    """An advantage (up) / disadvantage (down) triangle with a dark rim."""
+    color = MARK_COLORS[mark]
+    if mark == 'up':
+        points = [(x + size / 2.0, y), (x + size, y + size), (x, y + size)]
+    else:
+        points = [(x, y), (x + size, y), (x + size / 2.0, y + size)]
+    pygame.draw.polygon(surface, color, points)
+    pygame.draw.polygon(surface, SHADOW, points, 1)
+
+
+def side_indent(width):
+    """How far in from the content's edges the rows start: where the separators start."""
+    return (width - int(width * 0.9)) // 2
+
+
+def compose_side_header(view, width, fonts, scale):
+    """A side's fixed top: ATTACKING / DEFENDING, the flag and the name, a separator."""
+    def s(value):
+        return max(1, int(value * scale))
+    blits, y = [], 0
+
+    def centred(surf, top):
+        blits.append((surf, ((width - surf.get_width()) // 2, top)))
+
+    role = kit.shadow_text(view['role'], fonts['role'], GOLD)
+    centred(role, y)
+    y += role.get_height() + s(2)
+    name_font = fonts['name']
+    flag_h = name_font.get_height()
+    flag_gap = s(8)
+    lines = _wrap(view['name'], name_font, width - flag_h - flag_gap)
+    rendered = [kit.shadow_text(line, name_font, view['color']) for line in lines]
+    block_w = flag_h + flag_gap + max(text.get_width() for text in rendered)
+    block_h = sum(text.get_height() for text in rendered)
+    x = (width - block_w) // 2
+    blits.append((kit.icon(view['flag'], flag_h, crop=True), (x, y + (block_h - flag_h) // 2)))
+    line_y = y
+    for text in rendered:
+        blits.append((text, (x + flag_h + flag_gap, line_y)))
+        line_y += text.get_height()
+    y += block_h + s(8)
+    rule = kit.separator(int(width * 0.9))
+    centred(rule, y)
+    y += rule.get_height() + s(10)
+    return _flatten(width, y, blits)
+
+
+def compose_side_body(view, width, fonts, scale):
+    """
+    A side's rows, which scroll when they outgrow the panel: the army - a row per unit
+    type, "2 x Archer", tagged Advantage / Disadvantage - then the bonuses, each with its
+    icon, value, name and the unit types it reaches. `width` is the rows' own width.
+
+    Returns:
+        (surface, tags): tags [(rect in the surface, unit_type)] - where each tag is, for
+        its tooltip (matchup_tip)
+    """
+    def s(value):
+        return max(1, int(value * scale))
+    blits, y = [], 0
+    tags = []
+    row_h = s(PREVIEW_ROW)
+
+    heading = kit.shadow_text("Army", fonts['heading'], GOLD_LIGHT)
+    blits.append((heading, (0, y)))
+    y += heading.get_height() + s(2)
+    icon = s(UNIT_ROW_ICON)
+    if view['units']:
+        for unit_type, count, mark in view['units']:
+            mid = y + row_h // 2
+            blits.append((kit.icon(UNIT_ICON.format(unit_type), icon, bordered=True),
+                          (0, mid - icon // 2)))
+            text = kit.shadow_text(f"{count} × {unit_type}", fonts['body'], PARCHMENT)
+            blits.append((text, (icon + s(9), mid - text.get_height() // 2)))
+            if mark:
+                word = kit.shadow_text(MARK_WORDS[mark], fonts['tag'], MARK_COLORS[mark])
+                side = max(6, fonts['tag'].get_height() // 2)
+                word_x = width - word.get_width()
+                blits.append((word, (word_x, mid - word.get_height() // 2)))
+                blits.append((_mark_surface(side, mark), (word_x - side - s(5), mid - side // 2)))
+                tag_left = word_x - side - s(5)
+                tags.append((pygame.Rect(tag_left - s(4), y, width - tag_left + s(4), row_h), unit_type))
+            y += row_h
+    else:
+        empty = kit.shadow_text(view['empty'], fonts['body'], NUMBER_DIM)
+        blits.append((empty, (0, y + (row_h - empty.get_height()) // 2)))
+        y += row_h
+
+    if view['bonuses']:
+        y += s(SECTION_GAP)
+        heading = kit.shadow_text("Bonuses", fonts['heading'], GOLD_LIGHT)
+        blits.append((heading, (0, y)))
+        y += heading.get_height() + s(2)
+        bonus_icon = s(BONUS_ROW_ICON)
+        reach_icon = s(REACH_ICON)
+        value_right = bonus_icon + s(8) + s(BONUS_VALUE_WIDTH)
+        label_x = value_right + s(8)
+        for key, value, label, reach in view['bonuses']:
+            mid = y + row_h // 2
+            path, style = BONUS_ICONS.get(key, (None, None))
+            if path:
+                blits.append((kit.icon(path, bonus_icon, bordered=style == 'framed',
+                                       crop=style == 'cropped'), (0, mid - bonus_icon // 2)))
+            value_surf = kit.shadow_text(value, fonts['body'], GOLD_LIGHT)
+            blits.append((value_surf, (value_right - value_surf.get_width(), mid - value_surf.get_height() // 2)))
+            reach_w = len(reach) * (reach_icon + s(3))
+            x = width - reach_w + s(3)
+            for unit_type in reach:
+                blits.append((kit.icon(UNIT_ICON.format(unit_type), reach_icon, bordered=True),
+                              (x, mid - reach_icon // 2)))
+                x += reach_icon + s(3)
+            label_surf = kit.shadow_text(
+                _fit(label, fonts['body'], width - label_x - reach_w - s(6)), fonts['body'], PARCHMENT)
+            blits.append((label_surf, (label_x, mid - label_surf.get_height() // 2)))
+            y += row_h
+    return _flatten(width, y + s(4), blits), tags
+
+
+def _mark_surface(size, mark):
+    """The tag's triangle on its own small surface (cached)."""
+    def build():
+        surf = pygame.Surface((size + 1, size + 1), pygame.SRCALPHA)
+        _mark(surf, 0, 0, size, mark)
+        return surf
+    return kit.cached(('mark', size, mark), build)
+
+
+def compose_banner(title, subtitle, fonts, scale):
+    """The battle's name over the panels: gold Cinzel in the turn banner's bronze frame."""
+    def s(value):
+        return max(1, int(value * scale))
+    text = kit.shadow_text(title, fonts['banner_title'], GOLD_LIGHT)
+    sub = kit.shadow_text(subtitle, fonts['banner_sub'], PARCHMENT) if subtitle else None
+    sub_gap = s(14)
+    inner_w = text.get_width() + ((sub_gap + sub.get_width()) if sub else 0)
+    inner_h = max(text.get_height(), sub.get_height() if sub else 0)
+    bx, by = s(BANNER_BORDER[0]), s(BANNER_BORDER[1])
+    size = (inner_w + 2 * (bx + s(BANNER_PADDING[0])), inner_h + 2 * (by + s(BANNER_PADDING[1])))
+    plate = kit.bronze_plate(size, (bx, by), BANNER_FILL).copy()
+    x = (size[0] - inner_w) // 2
+    plate.blit(text, (x, (size[1] - text.get_height()) // 2))
+    if sub:
+        plate.blit(sub, (x + text.get_width() + sub_gap, (size[1] - sub.get_height()) // 2))
+    return plate
+
+
+def _fit(text, font, max_width):
+    """`text`, cut with an ellipsis to `max_width`."""
+    if font.size(text)[0] <= max_width:
+        return text
+    while text and font.size(text + "...")[0] > max_width:
+        text = text[:-1]
+    return text.rstrip() + "..."
