@@ -4,11 +4,21 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
-## A Skip Button and a New Battle Report
+## Battle Screen: Preview, Skip Button and Report
 
-*28 October 2026*
+*29 October 2026*
 
 ### Improvements
+
+- **A clearer battle preview.** Before a battle, a banner names it, and each side lists
+  its units - with an Advantage or Disadvantage tag where they are strong or weak against
+  the enemy's - and every bonus it fights with, each with its icon: heroes, technologies,
+  territory bonuses, veterancy, Captains and the Keep. A long list scrolls with the mouse
+  wheel. Hover over an Advantage or Disadvantage tag to see why: which enemy units it
+  counters or is countered by, and how much that is worth.
+- **Who is stronger is no longer given away.** Both armies' bars start full and the
+  strengths are not shown before the battle - read the units and bonuses and judge for
+  yourself. The fight shows it, and the battle report now gives both strengths.
 
 - **A new battle report.** After a battle, the report now tells you what happened to the
   territory (captured, held or lost), shows your army as a table of units fought, lost and

@@ -861,6 +861,29 @@ Space/ESC, calls `skip_animation()` → `BattleBarVolleyEffect.skip()`. `handle_
 KEYDOWN branch ahead of the campaign-transmission skip. A skip goes to the splash, which
 still plays (owner's choice, 2026-10-28).
 
+**The preview (owner, 2026-10-29):** `_prepare_preview()` composes the banner and each
+side once as the window opens (`ui/battle_screen_panels.py`: `side_view()`,
+`compose_side_header()`, `compose_side_body()`, `compose_banner()`); `_render_sides()`
+blits them in SETUP and ANIMATING. A side: a fixed top (ATTACKING / DEFENDING / OPPOSING,
+flag + name - `flag_icon()`, `readable()`), then its rows in a
+`battle_screen_kit.ScrollView` (the wheel scrolls the side under the cursor,
+`handle_wheel()`): a row per unit type with its Advantage / Disadvantage tag
+(`unit_rows()`: counter factor >= 1.15 / <= 0.85; hovering a tag explains the matchup -
+`matchup_tip()` from the breakdown's matchup entry, found under the cursor by
+`_matchup_at()` from the tag rects `compose_side_body()` returns, drawn by
+`_render_matchup_tip()` with `battle_screen_kit.tooltip_box()`), a row per bonus with its icon
+(`BONUS_ICONS`) and the unit types it reaches (`bonus_lines()` from
+`calculate_army_effective_strength(breakdown=)`, collected by
+`_calculate_effective_strengths()` per side, the Keep as a flat entry). **No strength is
+shown, and both bars start full** (owner: an informed mystery - the rows let a player work
+it out, the fight shows it, the report gives both numbers); don't bring the strengths'
+ratio back into `attacker_fill` / `defender_fill`. **A new strength factor in the rule needs its `note()` call, a
+place in `BONUS_ORDER` and an icon in `BONUS_ICONS`** (and the icon in `preview_icons()`'s
+prewarm), or the preview leaves it out of the list (the strength is right either way). The breakdown must never change the arithmetic
+(`tests/test_battle_preview_screen.py` `TestTheStrengthIsUnchanged`). The preview's
+numbers are the window's simplification as before: a Keep battle's flat Keep bonus (the
+real fight has two phases), the first defender's veterancy for a team.
+
 **The action button (owner, 2026-10-28):** one slot centred under the bars
 (`resolve_button_rect` == `skip_button_rect`, `ACTION_BUTTON_*`): **Resolve Battle** in
 SETUP, **Skip** with a fast-forward mark and a "Space" keycap (`skip_hint_top`) in
@@ -1876,6 +1899,11 @@ resolver's own window, come from `GameState.battle_outcome(battle, viewer)` (plu
 kept on the battle because `_battle_hero_deaths` is reset by the next resolution). A
 report without them (older ones) still opens; `structures_destroyed` still counts a
 fallen Keep - the report screen takes it off the buildings line.
+**`attacker_strength` / `defender_strength`** (2026-10-29) - both sides' strengths as the
+battle window counts them, taken quietly as the battle starts (`_shown_strengths()` ->
+`battle._shown_strengths`; never `_calculate_battle_strengths()`, which logs). The report
+screen's "Your strength - Enemy" line (the preview hides them); None for an uncontested
+capture or an older report (no line).
 **`buildings_destroyed` / `buildings_captured`** (2026-10-29) - the buildings by type,
 `{building_type: count}`, the Keep left out (`_battle_building_changes()`: the plot layout
 before vs after; captured = what Champion of the People saved for the winner). The report
