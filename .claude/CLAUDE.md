@@ -69,7 +69,8 @@ AvareonWar/
 
 **Battle Reports:**
 - [ui/battle_report_popup.py](ui/battle_report_popup.py) - On-map defender-side battle summary popups (DEFENDED/LOST, Detail + Close buttons)
-- [ui/battle_screen_kit.py](ui/battle_screen_kit.py) - The battle screen's ornate buttons (Resolve Battle / Skip / Close: CampaignBTN with baked hover / flash, light labels, the Skip mark and "Space" keycap), cached between battles
+- [ui/battle_screen_kit.py](ui/battle_screen_kit.py) - The battle screen's ornate buttons (Resolve Battle / Skip / Close: CampaignBTN with baked hover / flash, light labels, the Skip mark and "Space" keycap), icons, shadowed text, separators, panel art - cached between battles
+- [ui/battle_screen_panels.py](ui/battle_screen_panels.py) - The battle report's words (`report_view()`: VICTORY / DEFEAT, captured / held / lost, the army table, the Keep / buildings / heroes slain / XP lines) and its one-time composition (`compose_report()`)
 
 **Game Setup Screens (shared by Custom Game + multiplayer lobby):**
 - [ui/additional_options_overlay.py](ui/additional_options_overlay.py) - Additional Options modal (Neutral Armies, Randomize Bonuses, Gold Transfer, Starting Gold); read-only view for multiplayer clients
@@ -564,6 +565,7 @@ After making code changes, ask yourself:
 - Modify Battle Report show/hide rules → `main.py` `_viewer_in_planning()` (clearing) vs `_battle_reports_visible()` (drawing) — these are deliberately separate
 - Modify "Close All Battle Reports" button → `rendering/ui_renderer.py` `_draw_close_all_battle_reports_button()` + `main.py` `close_all_battle_reports()`
 - Modify Battle Report detail screen → `ui/effects/battle_interface.py` `report_snapshot` ctor path + `main.py` `open_battle_report_detail()`
+- Change what the battle report says or shows → `ui/battle_screen_panels.py` (`report_view()` wording, `compose_report()` layout); its data → `GameState.battle_outcome()` (the resolver's window) and the same keys in `_make_battle_report()` (the defender's stored report); the panel's size → `battle_interface.py` `_layout_report()`; its scrolling → `handle_wheel()` / `_render_scrolled_body()` (the wheel arrives through `main.py` `_battle_window_wheel()`). A new report icon goes in `report_icons()` too (prewarmed by `prewarm_battle_screen()` from `Game._battle_screen_icon_sources()`, or the first report decodes it as its splash starts). See "Detail screen" in CODE_GUIDE.md
 - Modify disconnect elimination → `network/server.py` (_cleanup_expired_reconnects), `main.py` (DISCONNECT_ELIMINATION handler) — inactive while `RECONNECT_ENABLED` is False (`network_config.py`)
 - Change how clients drop / get refused → `network/server.py` `_disconnect_client()` (every removal; LOBBY_LEAVE vs PLAYER_DISCONNECT to host + clients) / `_reject_connection()` + `network/client.py` `_connection_failed()` (first reason wins). See "Connection lifecycle" in CODE_GUIDE.md
 - Change how a multiplayer game starts (Host / Join / Steam invite) → `network/multiplayer_setup.py` `build_multiplayer_config()` / `run_client_lobby()` + `main.py` `_play_multiplayer_game()` — one path for all three, never a per-path copy

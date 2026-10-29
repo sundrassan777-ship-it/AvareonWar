@@ -747,9 +747,11 @@ The simultaneous round waits for steps 4-5: `Game._sim_round_may_end()` is False
 **Key method in battle_interface.py:**
 ```python
 def set_actual_battle_result(self, winner: int, attacker_survivors: int,
-                             defender_survivors: int, surviving_units: list = None):
+                             defender_survivors: int, surviving_units: list = None,
+                             outcome: dict = None):
     """Update the battle result with actual values from game_state.resolve_battle()."""
-    # Recalculates unit_breakdown using actual surviving_units list
+    # Recalculates unit_breakdown using actual surviving_units list; outcome =
+    # game_state.battle_outcome(battle, viewer): the report's outcome lines
 ```
 
 **Important:** Battle resolution happens on FIGHT click (not CLOSE). This ensures:
@@ -1862,6 +1864,23 @@ normally **replay** the battle and record the deaths themselves; only the fallba
 (seedless message / battle missing) turns these into `hero_death_events` for the "Our
 Hero, X, has been slain in Y!" toast.
 
+**`keep` / `keep_name` / `xp_per_unit` / `level_ups`** (2026-10-28, the report screen's
+outcome lines) — the Keep's fate (`'held'` / `'destroyed'` / None) and name (`'Keep'` /
+`'Castle'`: `battle._had_castle`, snapshotted in `resolve_battle()` because
+`destroy_buildings()` forgets the upgrade; an uncontested capture always says Keep), and
+the XP each of the defender's survivors gained with their level-ups as
+`[[unit_type, new_level, count]]` (`battle.xp_awarded`, recorded where
+`_update_battle_results()` awards it; only winners gain XP). The same keys, for the
+resolver's own window, come from `GameState.battle_outcome(battle, viewer)` (plus
+`previous_owner`, `holder`, `heroes_slain` as `[[owner, name]]` from `battle.heroes_slain`,
+kept on the battle because `_battle_hero_deaths` is reset by the next resolution). A
+report without them (older ones) still opens; `structures_destroyed` still counts a
+fallen Keep - the report screen takes it off the buildings line.
+**`buildings_destroyed` / `buildings_captured`** (2026-10-29) - the buildings by type,
+`{building_type: count}`, the Keep left out (`_battle_building_changes()`: the plot layout
+before vs after; captured = what Champion of the People saved for the winner). The report
+screen lists each type with its icon; a report without them shows the counts.
+
 **Adding a field to a report** — add it in `_make_battle_report()` and keep it
 JSON-safe. The snapshot crosses the network, so **no tuples** (JSON turns them into
 lists), no sets, no game objects. `_send_action_to_remote()` has no `try/except` around
@@ -2026,11 +2045,42 @@ Overlapping popups are hit-tested in **reverse** draw order, so the visible one 
 #### Detail screen
 
 `EnhancedBattleInterface(report_snapshot=...)` opens directly in the REPORT state.
-`_load_assets()` and `_calculate_layout()` still run (they are battle-data free, and the
-layout is the only producer of `report_panel_rect`, `close_button_rect` and the text
-metrics); `_extract_battle_data()` is skipped because the `Battle` is popped the instant
-it resolves. `current_player` is set to the defender so the totals line reads
-`defender_lost` / `defender_survivors`.
+`_load_assets()` and `_calculate_layout()` still run (they are battle-data free, and
+the fonts and the report's geometry come from them); `_extract_battle_data()` is skipped
+because the `Battle` is popped the instant it resolves. `current_player` is set to the
+defender so the army table reads the defender's units. `_apply_report_snapshot()` maps
+the report's keys to the `battle_outcome()` shape (`self.outcome`) and composes the
+report at once, so `report_panel_rect` / `close_button_rect` are final before the first
+click.
+
+**The report screen (both modes, 2026-10-28):** `ui/battle_screen_panels.py` -
+`report_view()` words it (no pygame: VICTORY / DEFEAT / NO VICTOR, "X captured / held /
+lost", "Repelled at X", the army rows, the outcome lines and their tone) and
+`compose_report()` draws it once onto a surface with the battle screen kit (unit and hero
+portraits in the gold IconBorder, the sidebar's gold separators, shadowed Cinzel; the
+army as a fought / lost / survived table - Cinzel has no arrow / check / star glyphs;
+every outcome line has an icon: each building type's own, a level-up's unit portrait).
+`_prepare_report()` composes it at the splash's start (not on the report's first frame)
+and `_layout_report()` sizes `BattlePlayerScreen.png` to it, between
+`REPORT_PANEL_MIN/MAX_HEIGHT_RATIO` of the screen, the content inside `REPORT_INSET_*`
+(shares of the panel: inside the frame, clear of the corner spears) and Close on the
+bottom rail (`REPORT_CLOSE_Y`). The scaled art is cached by size in the kit, so a report
+the same size as an earlier one scales nothing. `compose_report()` returns a header
+(caption, VICTORY / DEFEAT, the territory) and a body; a report too tall for the largest
+panel **scrolls**: `handle_wheel()` moves the body (`_report_scroll`), the header stays put,
+`_render_scrolled_body()` fades an edge with more beyond it and draws the scrollbar in the
+gutter the body leaves (`_report_width()`), from one reused scratch surface and cached
+masks. **The wheel reaches it through `Game._battle_window_wheel()`**, an early branch of
+the main event loop: an open battle window (the battle screen or a report's detail
+screen) takes the wheel, unless the game / options menu or the save dialog is over it. **Its icons are prewarmed:** they are 1024 px images,
+and decoding them as the first report's splash began cost ~130 ms, so
+`prewarm_battle_screen()` (`battle_interface.py`) bakes every icon `report_icons()` lists
+(and the panel art at the smallest report size) from the surfaces the game has already
+loaded (`Game._battle_screen_icon_sources()`) - a loading screen task and
+`apply_display_settings()` (the kit drops its cache with the old display). **A new icon
+in the report must be added to `report_icons()`** and, if the game loads it, to
+`_battle_screen_icon_sources()` (`test_the_game_hands_over_every_report_icon`), or the
+first report decodes it again. Tests: `tests/test_battle_report_screen.py`.
 
 **Do not route its close through `_finalize_enhanced_battle()`** — that would re-broadcast
 a `BATTLE_RESOLVE` message and re-create alliance markers for a battle finalised long ago.

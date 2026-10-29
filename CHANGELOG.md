@@ -2,6 +2,79 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-28 - Battle screen: the battle report (Phase 2)
+
+Branch `feature/battle-screens`, phase 2. The report was "Battle Report:", the territory,
+VICTORY / DEFEAT and the viewer's losses as plain white lines. Owner's picks for the new
+content: what happened to the territory, the heroes slain, the units' XP and level-ups
+(an enemy-losses column was offered and not chosen). After the owner's in-game look
+(2026-10-29): brighter column labels, the mouse wheel for long reports, an icon on every
+line (a line per level-up, with the unit's portrait), and the buildings by type with
+their own icons (they were a count with an empty plot).
+- **The look** (`ui/battle_screen_panels.py`, new): a small "Battle Report" caption,
+  VICTORY / DEFEAT / NO VICTOR (no army survived) in the on-map reports' green / red and
+  what happened to the territory ("Nefrid captured / held / lost", "Repelled at Nefrid");
+  the viewer's army as a table (unit portraits in the gold IconBorder; fought / lost /
+  survived under bright gold labels, losses in red, unscathed survivors in green; a total
+  from two unit types); then the outcome, every line with an icon - the Keep or Castle
+  destroyed / held, each building type destroyed / captured with its own icon ("2 Barracks
+  destroyed", "Mine taken by the enemy" when it was ours), heroes slain (ours in red, the
+  enemy's), "+N XP for each survivor" and a line per level-up with the unit's portrait
+  ("2 Archers reached level 2"). Gold separators, shadowed Cinzel; two-line wraps are
+  balanced. `report_view()` holds the words (no pygame), `compose_report()` draws them
+  once, as a header and a body.
+- **The panel** (`ui/effects/battle_interface.py` `_layout_report()`): sized to the
+  report, 55-80% of the screen height, content inside the art's frame and clear of its
+  corner spears (`REPORT_INSET_*`, shares of the panel), Close on the bottom rail; the
+  report is composed at the splash's start (`_prepare_report()`), the scaled art cached by
+  size in the kit (`battle_screen_kit.art()`). Close follows the art's aspect (180 wide).
+- **Scrolling**: a report taller than the largest panel scrolls with the mouse wheel
+  (`handle_wheel()`, 40 px a notch): the header (caption, VICTORY / DEFEAT, the territory)
+  stays put, the body scrolls, faded at an edge with more beyond it, a gold scrollbar in
+  the gutter the body leaves (`_render_scrolled_body()`; one reused scratch surface and
+  cached fade masks, so a frame only blits). `Game._battle_window_wheel()` gives the wheel
+  to an open battle window (the battle screen, or a Battle Report's detail screen, which is
+  on top when both are) - the map behind it zoomed before - unless a menu above it is open.
+- **The data, no rule change** (`game_state/military.py`): `resolve_battle()` keeps
+  `battle._had_castle` (destroy_buildings forgets the upgrade) and `battle.heroes_slain`
+  (`_battle_hero_deaths` is reset by the next battle); `_update_battle_results()` records
+  `battle.xp_awarded` where it awards the XP (the per-unit XP, each player's level-ups).
+  `GameState.battle_outcome(battle, viewer)` gathers it for the resolver's window (main.py
+  passes it to `set_actual_battle_result(outcome=)`); the defender's stored report gains
+  `keep`, `keep_name`, `xp_per_unit`, `level_ups`, and the buildings by type,
+  `buildings_destroyed` / `buildings_captured` (`{type: count}`, the Keep left out;
+  `_battle_keep_outcome()`, `_battle_xp_for()`, `_battle_building_changes()`), JSON-safe. A
+  report without them still opens (the buildings then as counts).
+- **Kit** (`ui/battle_screen_kit.py`): `icon()` (framed / cropped, or from a surface
+  already decoded), `art()`, `image()`, `shadow_text()`, `separator()`.
+- **No hitch on the first report**: its icons are 1024 px images - decoded as the first
+  report's splash began, the splash start took ~133 ms. `prewarm_battle_screen()`
+  (`battle_interface.py`) bakes them, and the panel art at the smallest report size, from
+  the images the game has already loaded (`Game._battle_screen_icon_sources()`): a
+  loading screen task ("Preparing the battle screen", ~100 ms) and again after a
+  resolution change (`apply_display_settings()`). The splash start is now ~3.8 ms; a
+  report frame ~0.9 ms. The icons' own images are not kept (only the small icons);
+  `BattlePlayerScreen.png` is decoded once per process and shared by the side panels and
+  the report (`battle_screen_kit.image()`; it was decoded for every battle - opening one
+  is ~40 ms faster).
+- **Tools**: `tools/battle_fx_preview.py` resolves the real battle on Resolve and hands its
+  result back as main.py does (it handed back the window's own estimate); the defender's
+  territory has a Keep and a Farm, so the report shows outcome lines.
+- Tests: `tests/test_battle_report_screen.py` (41): `battle_outcome()` for a captured Keep
+  with its hero, the winners' XP and level-ups, the loser's none, a held Keep, a Castle,
+  the buildings by type, saved buildings captured, no Keep, JSON, heroes kept with their
+  battle; the stored report's new keys (lost / held Keep, uncontested capture);
+  `report_view()` headlines, rows, each building type with its icon, an older report's
+  counts, our losses as losses, an enemy hero, XP and level-up lines (all with icons); the
+  screen: composed once at the splash, longer with outcome lines, the panel fits its
+  report, 720p / 1440p, an older stored report still opens; scrolling: a long report
+  scrolls in the largest panel, the wheel within bounds, the header stays put, nothing
+  built per frame, a short report and other states do not scroll; the wheel goes to the
+  battle window (not under a menu); after the prewarm the first report reads no file
+  (fails without it), the game hands over every icon a report can show.
+- Docs: CODE_GUIDE "Battle Reports" (the new keys, the detail screen and the report
+  screen), "Modify Battle Interface"; `.claude/CLAUDE.md`; PATCHNOTES.
+
 ## 2026-10-28 - Battle screen: a Skip button, Resolve and Skip unified (Phase 1)
 
 Branch `feature/battle-screens`, phase 1 of the battle preview / report modernization.
@@ -33,7 +106,7 @@ into the Skip button's slot, so the two are one button that stays put.
   it goes to the splash, the splash clears it however the fight was skipped (button, a
   click, Space, Esc), hover and flash show, nothing baked twice (also for the next battle).
 - Docs: CODE_GUIDE "Modify Battle Interface" (Skip, the action button, the kit), the
-  preview tool's row; `.claude/CLAUDE.md`; PATCHNOTES ("Skip Button for Battles").
+  preview tool's row; `.claude/CLAUDE.md`; PATCHNOTES ("A Skip Button and a New Battle Report").
 
 ## 2026-10-28 - Fix: the game hung on a battle left after the win
 

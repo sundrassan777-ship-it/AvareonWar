@@ -4,11 +4,19 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
-## Skip Button for Battles
+## A Skip Button and a New Battle Report
 
 *28 October 2026*
 
 ### Improvements
+
+- **A new battle report.** After a battle, the report now tells you what happened to the
+  territory (captured, held or lost), shows your army as a table of units fought, lost and
+  survived, and lists what else the battle did: a Keep or Castle destroyed or held,
+  each building destroyed or captured, heroes slain, and the experience your surviving
+  units gained, including who reached a new level. A long report scrolls with the mouse
+  wheel. The report for a territory you lost, opened from its map notice, shows the same.
+- The mouse wheel no longer zooms the map behind an open battle window.
 
 - **A Skip button for the battle animation.** While the armies' bars fight, a Skip button
   sits under them, with a reminder that Space skips too. Clicking anywhere or pressing Esc
