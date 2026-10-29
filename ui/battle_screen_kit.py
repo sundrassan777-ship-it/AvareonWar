@@ -9,6 +9,10 @@ Battle screen kit - the battle screen's controls in the game's ornate style
   their panels' size, too small for a full-screen dialog at 1440p.
 - The Skip button's label carries a fast-forward mark (Cinzel has no arrow glyphs);
   key_hint() is the keycap under it ("Space").
+- icon(): an image file as a square icon, optionally framed by the game's IconBorder
+  (unit and hero portraits, as the bottom panel's forces grid); shadow_text(): text with
+  a 1 px drop shadow; separator(): the sidebar's fading gold rule with a diamond. The
+  report (ui/battle_screen_panels.py) is built from these.
 
 Everything is baked once and kept between battles (a new interface opens for every
 battle) until the display changes, so opening a battle builds nothing it built before.
@@ -17,13 +21,17 @@ battle) until the display changes, so opening a battle builds nothing it built b
 import pygame
 
 from rendering.bottom_panel_kit import LIGHT_TEXT, SHADOW
-from rendering.sidebar_widgets import SidebarWidgets, GOLD_DARK, PARCHMENT_DIM
-from utils.surface_utils import get_campaign_button_image
+from rendering.sidebar_widgets import SidebarWidgets, GOLD, GOLD_DARK, PARCHMENT_DIM
+from utils.surface_utils import crop_to_opaque, get_campaign_button_image, load_cached_image
 
 # CampaignBTN's height / width once cropped (1502x297) - fallback aspect
 _BUTTON_ASPECT_FALLBACK = 297 / 1502.0
 LABEL_CACHE_MAX = 64
+ICON_CACHE_MAX = 64
+ART_CACHE_MAX = 16
 KEYCAP_FILL = (18, 12, 8, 190)
+ICON_BORDER_PATH = 'assets/mapicons/IconBorder.png'
+ICON_BORDER_BRIGHTEN = 51  # +20%, as the game's own icon_border (main.py)
 
 
 class _BakeHost:
@@ -48,18 +56,101 @@ def _kit():
     key = display.get_size() if display is not None else None
     if _shared.get('key') != key:
         _shared.clear()
-        _shared.update(key=key, widgets=SidebarWidgets(_BakeHost()), labels={})
+        _shared.update(key=key, widgets=SidebarWidgets(_BakeHost()), labels={}, icons={}, art={})
     return _shared
 
 
-def _cached_label(key, build):
-    labels = _kit()['labels']
-    surf = labels.get(key)
+def _cached(store, limit, key, build):
+    cache = _kit()[store]
+    surf = cache.get(key)
     if surf is None:
-        if len(labels) >= LABEL_CACHE_MAX:
-            labels.clear()
-        surf = labels[key] = build()
+        if len(cache) >= limit:
+            cache.clear()
+        surf = cache[key] = build()
     return surf
+
+
+def _cached_label(key, build):
+    return _cached('labels', LABEL_CACHE_MAX, key, build)
+
+
+def _load(path, keep=False):
+    """
+    An image decoded from disk, or None when it is missing. keep=True decodes it once per
+    process (load_cached_image) - the panel art and the icon frame, scaled to many sizes.
+    An icon's own image is dropped once its small icon is baked (1024 px each).
+    """
+    try:
+        if keep:
+            return load_cached_image(path, alpha=True)
+        return pygame.image.load(path).convert_alpha()
+    except (pygame.error, FileNotFoundError, OSError):
+        return None
+
+
+def image(path):
+    """A full-size image decoded once per process (shared panel art), or None."""
+    return _load(path, keep=True)
+
+
+def icon(path, size, bordered=False, crop=False, source=None):
+    """
+    An image file as a size x size icon. `bordered` frames it with the game's gold
+    IconBorder, the portrait inset by 1 px (square unit and hero portraits); `crop`
+    trims transparent margins first and keeps the aspect (the level shield). `source`:
+    the image already decoded (the game's own icons), so the file is not read again. A
+    missing image gives an empty (or just framed) icon.
+    """
+    def build():
+        side = max(2, int(size))
+        surf = pygame.Surface((side, side), pygame.SRCALPHA)
+        image = source if source is not None else _load(path)
+        inset = 1 if bordered else 0
+        if image is not None and crop:
+            image = crop_to_opaque(image, threshold=40)
+            w, h = image.get_size()
+            fit = side / float(max(w, h))
+            scaled = pygame.transform.smoothscale(image, (max(1, int(w * fit)), max(1, int(h * fit))))
+            surf.blit(scaled, scaled.get_rect(center=(side // 2, side // 2)))
+        elif image is not None:
+            surf.blit(pygame.transform.smoothscale(image, (side - 2 * inset, side - 2 * inset)),
+                      (inset, inset))
+        border = _load(ICON_BORDER_PATH, keep=True) if bordered else None
+        if border is not None:
+            frame = pygame.transform.smoothscale(border, (side, side))
+            frame.fill((ICON_BORDER_BRIGHTEN,) * 3, special_flags=pygame.BLEND_RGB_ADD)
+            surf.blit(frame, (0, 0))
+        return surf
+    return _cached('icons', ICON_CACHE_MAX, ('icon', path, int(size), bordered, crop), build)
+
+
+def art(path, size):
+    """An image file smoothscaled to `size` (panel art), cached; None when it is missing."""
+    cache = _kit()['art']
+    key = (path, int(size[0]), int(size[1]))
+    if key not in cache:
+        if len(cache) >= ART_CACHE_MAX:
+            cache.clear()
+        full = _load(path, keep=True)
+        cache[key] = pygame.transform.smoothscale(full, key[1:]) if full is not None else None
+    return cache[key]
+
+
+def shadow_text(text, font, color):
+    """`text` with a 1 px drop shadow, on one transparent surface."""
+    def build():
+        label = font.render(text, True, color)
+        shadow = font.render(text, True, SHADOW)
+        surf = pygame.Surface((label.get_width() + 1, label.get_height() + 1), pygame.SRCALPHA)
+        surf.blit(shadow, (1, 1))
+        surf.blit(label, (0, 0))
+        return surf
+    return _cached_label(('text', text, font, color), build)
+
+
+def separator(width, color=GOLD):
+    """The sidebar's thin gold rule fading at both ends, with a centre diamond."""
+    return _kit()['widgets'].separator(width, color)
 
 
 def button_height(width):

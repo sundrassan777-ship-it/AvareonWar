@@ -92,6 +92,9 @@ def open_battle(screen, battle, colours):
 
     defender_units = units('Swordsman', defenders)
     game.territory_owners[territory] = 1
+    # A Keep and a Farm, so the battle report has its outcome lines (no Keep bonus: the
+    # fight itself is unchanged)
+    game.buildings[territory] = {0: 'Keep', 1: 'Farm'}
     game.territory_garrisons[territory] = {}
     game.add_garrison(territory, 1, unmoved=defenders, moved=0, units=defender_units)
     game.army_units[territory] = defender_units[:]
@@ -110,9 +113,22 @@ def open_battle(screen, battle, colours):
 
 
 def resolve(ui):
-    """Click Resolve, then hand back the real result as main.py does a frame later."""
+    """
+    Click Resolve, then resolve the real battle and hand its result back as main.py
+    does: the survivors, and what the battle did for the report's outcome lines.
+    """
     ui.handle_click(ui.resolve_button_rect.center)
-    ui.set_actual_battle_result(ui.winner, ui.attacker_survivors, ui.defender_survivors)
+    game = ui.game_state
+    battle = game.pending_battles[0]
+    game.resolve_battle(0)
+    winner = battle.winner if battle.resolved else -1
+    survivors = getattr(battle, 'surviving_armies', 0) or 0
+    units = (game.territory_garrisons.get(battle.territory, {}).get(winner, {}).get('units', [])
+             if winner is not None and winner >= 0 else [])
+    attacker_won = winner == ui.attacker_player
+    ui.set_actual_battle_result(winner, survivors if attacker_won else 0,
+                                0 if attacker_won else survivors, units,
+                                outcome=game.battle_outcome(battle, ui.current_player))
 
 
 def bars_area(ui):

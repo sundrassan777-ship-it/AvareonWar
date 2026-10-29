@@ -268,6 +268,13 @@ class LoadingScreen:
             self.game.initialize_game(self.setup_config)
         tasks.append(("Initializing game", _init_game))
 
+        # The battle report's icons, baked from the images the game just loaded (the
+        # first report of a game used to decode them as its splash began)
+        def _prepare_battle_screen():
+            from ui.effects.battle_interface import prewarm_battle_screen
+            prewarm_battle_screen(self.screen.get_size(), self.game._battle_screen_icon_sources())
+        tasks.append(("Preparing the battle screen", _prepare_battle_screen))
+
         return tasks
 
     def _draw(self):
