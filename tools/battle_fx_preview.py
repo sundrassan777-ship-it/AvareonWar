@@ -20,10 +20,14 @@ Run from the game folder:
     py tools/battle_fx_preview.py --bench            battle screen cost per frame (avg / p95 / worst ms)
 
 Controls (live):
-    1-4  battle: skirmish / large battle / close fight / defender wins
+    1-5  battle: skirmish / large battle / close fight / defender wins / full house
+         (full house: every unit type on both sides, every bonus the rules allow)
     C    colours: bright / dark / neutral grey defender
     Space  resolve (during the fight: skip)     R  reopen the battle
     S    slow motion (x0.25)     P  pause     Esc  quit
+    Mouse  the screen's own buttons: Resolve Battle, Skip (or click anywhere in the
+           fight), Close (reopens the battle); the wheel scrolls the side under the
+           cursor (or the report) when it outgrows its panel
 """
 
 import argparse
@@ -45,13 +49,31 @@ from tools.order_fx_preview import OrderPreview  # noqa: E402
 
 FRAME = 1.0 / 120.0   # the owner's fps cap
 
-# name -> (attacker armies, defender armies)
+# name -> (attacker armies, defender armies) of Swordsmen; None: FULL_HOUSE
 BATTLES = {
     'skirmish': (4, 3),
     'large battle': (60, 45),
     'close fight': (20, 18),
     'defender wins': (8, 20),
+    'full house': None,
 }
+
+# 'full house' - the battle preview with everything in it (owner, 2026-10-29: the full
+# picture). Player 0 attacks player 1's Keep. Per side (unit type, count, level): every unit
+# type, veterancy varied by type. Every strength bonus the rules allow is on for both: Cavalry
+# Tactics and Divide and Conquer (researched), Battlement Archery (only the defender has a
+# Keep there to use it), Vanquish the Enemy (a hero each), strength territories (owned, two of
+# one kind so the amounts differ), a Captain, and the defender's Keep.
+FULL_HOUSE = {
+    0: [('Swordsman', 4, 2), ('Archer', 3, 1), ('Pikeman', 2, 0), ('Cavalry', 4, 1), ('Captain', 1, 1)],
+    1: [('Swordsman', 3, 1), ('Archer', 4, 2), ('Pikeman', 3, 1), ('Cavalry', 2, 3), ('Captain', 1, 0)],
+}
+FULL_HOUSE_TERRITORIES = {
+    0: {'swordsman_str': 2, 'cavalry_str': 1, 'archer_str': 1, 'pikeman_str': 1},
+    1: {'archer_str': 2, 'pikeman_str': 1, 'cavalry_str': 1, 'swordsman_str': 1},
+}
+FULL_HOUSE_TECHS = ('archer_keep_strength', 'cavalry_strength_bonus', 'keep_siege_bonus')
+FULL_HOUSE_HEROES = {0: 'Neil H\u00e9vilneu', 1: 'Serthus Diarcess'}   # Vanquish the Enemy
 
 # name -> (attacker colour, defender colour)
 COLOURS = {
@@ -79,6 +101,12 @@ def open_battle(screen, battle, colours):
     from game_state import GameState, Battle
     from ui.effects.battle_interface import EnhancedBattleInterface
 
+    if BATTLES[battle] is None:
+        game = _full_house(colours)
+        start = time.perf_counter()
+        ui = EnhancedBattleInterface(screen=screen, game_state=game, battle_index=0,
+                                     font_manager=FontManager(), current_player_index=0)
+        return ui, (time.perf_counter() - start) * 1000
     attackers, defenders = BATTLES[battle]
     game = GameState(num_players=2, player_is_ai=[False, False], player_ai_difficulty=[1, 1],
                      skip_setup_phase=True)
@@ -90,6 +118,9 @@ def open_battle(screen, battle, colours):
 
     defender_units = units('Swordsman', defenders)
     game.territory_owners[territory] = 1
+    # A Keep and a Farm, so the battle report has its outcome lines (no Keep bonus: the
+    # fight itself is unchanged)
+    game.buildings[territory] = {0: 'Keep', 1: 'Farm'}
     game.territory_garrisons[territory] = {}
     game.add_garrison(territory, 1, unmoved=defenders, moved=0, units=defender_units)
     game.army_units[territory] = defender_units[:]
@@ -107,10 +138,85 @@ def open_battle(screen, battle, colours):
     return ui, (time.perf_counter() - start) * 1000
 
 
+def _full_house(colours):
+    """The GameState of the 'full house' battle (FULL_HOUSE), set up the real way."""
+    from game_state import GameState, Battle
+    from game_state.data_definitions import build_technologies
+
+    game = GameState(num_players=2, player_is_ai=[False, False], player_ai_difficulty=[1, 1],
+                     skip_setup_phase=True)
+    game.player_colors[0], game.player_colors[1] = COLOURS[colours]
+    game.turn_number = 12
+    territories = sorted(map_data.get_all_territories())
+    territory = territories[0]
+    owned = {0: [], 1: []}
+    for player, wanted in FULL_HOUSE_TERRITORIES.items():
+        for bonus, count in wanted.items():
+            for name in [t for t in territories
+                         if t != territory and t not in owned[0] + owned[1]
+                         and map_data.get_territory_bonus(t) == bonus][:count]:
+                game.territory_owners[name] = player
+                owned[player].append(name)
+    game.territory_owners[territory] = 1
+    game.invalidate_territorial_bonus_cache()
+    techs = [tech for tech in build_technologies() if tech.get('effect_type') in FULL_HOUSE_TECHS]
+    for player in (0, 1):
+        for tech in techs:
+            game.apply_tech_effect(player, tech, announce=False)
+    # The heroes: the defender's in its Keep here, the attacker's in a Keep at home
+    game.buildings[territory] = {0: 'Keep', 1: 'Farm', 2: 'Barracks'}
+    home = owned[0][0]
+    game.buildings[home] = {0: 'Keep'}
+    for player, keep in ((0, home), (1, territory)):
+        hero = FULL_HOUSE_HEROES[player]
+        game.heroes.setdefault(player, {})[hero] = {'keep_territory': keep, 'keep_plot': 0}
+        game.hero_ownership[player].add(hero)
+
+    def units(player, status):
+        result = []
+        for unit_type, count, level in FULL_HOUSE[player]:
+            for _ in range(count):
+                unit = game._make_unit(unit_type, len(result), status)
+                unit['level'] = level
+                result.append(unit)
+        return result
+
+    defender_units, attacker_units = units(1, 'ready'), units(0, 'moved')
+    game.territory_garrisons[territory] = {}
+    game.add_garrison(territory, 1, unmoved=len(defender_units), moved=0, units=defender_units)
+    game.territory_garrisons[territory][0] = {'unmoved': 0, 'moved': len(attacker_units),
+                                              'units': attacker_units}
+    fight = Battle(territory)
+    fight.original_owner = 1
+    for player, side in ((1, defender_units), (0, attacker_units)):
+        composition = {}
+        for unit in side:
+            composition[unit['type']] = composition.get(unit['type'], 0) + 1
+        fight.add_army(player, len(side), composition)
+    fight.keep_bonus = 2
+    fight.keep_bonus_player = 1
+    fight.original_garrison = len(defender_units)
+    game.pending_battles = [fight]
+    return game
+
+
 def resolve(ui):
-    """Click Resolve, then hand back the real result as main.py does a frame later."""
+    """
+    Click Resolve, then resolve the real battle and hand its result back as main.py
+    does: the survivors, and what the battle did for the report's outcome lines.
+    """
     ui.handle_click(ui.resolve_button_rect.center)
-    ui.set_actual_battle_result(ui.winner, ui.attacker_survivors, ui.defender_survivors)
+    game = ui.game_state
+    battle = game.pending_battles[0]
+    game.resolve_battle(0)
+    winner = battle.winner if battle.resolved else -1
+    survivors = getattr(battle, 'surviving_armies', 0) or 0
+    units = (game.territory_garrisons.get(battle.territory, {}).get(winner, {}).get('units', [])
+             if winner is not None and winner >= 0 else [])
+    attacker_won = winner == ui.attacker_player
+    ui.set_actual_battle_result(winner, survivors if attacker_won else 0,
+                                0 if attacker_won else survivors, units,
+                                outcome=game.battle_outcome(battle, ui.current_player))
 
 
 def bars_area(ui):
@@ -150,9 +256,19 @@ def run_live(size):
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 pygame.quit()
                 return
+            if event.type == pygame.MOUSEMOTION:
+                ui.handle_mouse_motion(event.pos)
+            elif event.type == pygame.MOUSEWHEEL:
+                ui.handle_wheel(event.y)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if ui.state == BattleInterfaceState.SETUP:
+                    if ui.resolve_button_rect.collidepoint(event.pos):
+                        resolve(ui)
+                elif ui.handle_click(event.pos) == 'close':
+                    ui, open_ms = open_battle(screen, battle, colours)
             if event.type == pygame.KEYDOWN:
                 reopen = False
-                if pygame.K_1 <= event.key <= pygame.K_4:
+                if pygame.K_1 <= event.key <= pygame.K_1 + len(battle_names) - 1:
                     battle = battle_names[event.key - pygame.K_1]
                     reopen = True
                 elif event.key == pygame.K_c:
@@ -185,7 +301,7 @@ def run_live(size):
             + (f"   sprites {counters[0]} skipped {counters[1]}" if counters else ''),
             f"{battle}   colours {colours}   {ui.state.name}"
             f"{'   SLOW' if slow else ''}{'   PAUSED' if paused else ''}",
-            '1-4 battle  C colours  Space resolve/skip  R reopen  S slow  P pause',
+            '1-5 battle  C colours  Space resolve/skip  R reopen  S slow  P pause  mouse: buttons, wheel',
         ]
         for i, line in enumerate(lines):
             text = font.render(line, True, (255, 255, 255))

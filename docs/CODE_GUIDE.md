@@ -747,9 +747,11 @@ The simultaneous round waits for steps 4-5: `Game._sim_round_may_end()` is False
 **Key method in battle_interface.py:**
 ```python
 def set_actual_battle_result(self, winner: int, attacker_survivors: int,
-                             defender_survivors: int, surviving_units: list = None):
+                             defender_survivors: int, surviving_units: list = None,
+                             outcome: dict = None):
     """Update the battle result with actual values from game_state.resolve_battle()."""
-    # Recalculates unit_breakdown using actual surviving_units list
+    # Recalculates unit_breakdown using actual surviving_units list; outcome =
+    # game_state.battle_outcome(battle, viewer): the report's outcome lines
 ```
 
 **Important:** Battle resolution happens on FIGHT click (not CLOSE). This ensures:
@@ -853,10 +855,49 @@ screen effects" below.
   is never reset (`self.elapsed` restarts with each state); the effect gets it at the start
   (`ambient_clock`), so the icon's pulse and the bars' shimmer carry on through the click.
 
-**Skip:** clicking anywhere during ANIMATING, or pressing Space/ESC, calls
-`skip_animation()` → `BattleBarVolleyEffect.skip()`. `handle_click()` returns `'skip'`, which
-main.py's existing fall-through consumes; the key is wired in main.py's KEYDOWN branch ahead
-of the campaign-transmission skip.
+**Skip:** clicking anywhere during ANIMATING (the Skip button included), or pressing
+Space/ESC, calls `skip_animation()` → `BattleBarVolleyEffect.skip()`. `handle_click()` returns
+`'skip'`, which main.py's existing fall-through consumes; the key is wired in main.py's
+KEYDOWN branch ahead of the campaign-transmission skip. A skip goes to the splash, which
+still plays (owner's choice, 2026-10-28).
+
+**The preview (owner, 2026-10-29):** `_prepare_preview()` composes the banner and each
+side once as the window opens (`ui/battle_screen_panels.py`: `side_view()`,
+`compose_side_header()`, `compose_side_body()`, `compose_banner()`); `_render_sides()`
+blits them in SETUP and ANIMATING. A side: a fixed top (ATTACKING / DEFENDING / OPPOSING,
+flag + name - `flag_icon()`, `readable()`), then its rows in a
+`battle_screen_kit.ScrollView` (the wheel scrolls the side under the cursor,
+`handle_wheel()`): a row per unit type with its Advantage / Disadvantage tag
+(`unit_rows()`: counter factor >= 1.15 / <= 0.85; hovering a tag explains the matchup -
+`matchup_tip()` from the breakdown's matchup entry, found under the cursor by
+`_matchup_at()` from the tag rects `compose_side_body()` returns, drawn by
+`_render_matchup_tip()` with `battle_screen_kit.tooltip_box()`), a row per bonus with its icon
+(`BONUS_ICONS`) and the unit types it reaches (`bonus_lines()` from
+`calculate_army_effective_strength(breakdown=)`, collected by
+`_calculate_effective_strengths()` per side, the Keep as a flat entry). **No strength is
+shown, and both bars start full** (owner: an informed mystery - the rows let a player work
+it out, the fight shows it, the report gives both numbers); don't bring the strengths'
+ratio back into `attacker_fill` / `defender_fill`. **A new strength factor in the rule needs its `note()` call, a
+place in `BONUS_ORDER` and an icon in `BONUS_ICONS`** (and the icon in `preview_icons()`'s
+prewarm), or the preview leaves it out of the list (the strength is right either way). The breakdown must never change the arithmetic
+(`tests/test_battle_preview_screen.py` `TestTheStrengthIsUnchanged`). The preview's
+numbers are the window's simplification as before: a Keep battle's flat Keep bonus (the
+real fight has two phases), the first defender's veterancy for a team.
+
+**The action button (owner, 2026-10-28):** one slot centred under the bars
+(`resolve_button_rect` == `skip_button_rect`, `ACTION_BUTTON_*`): **Resolve Battle** in
+SETUP, **Skip** with a fast-forward mark and a "Space" keycap (`skip_hint_top`) in
+ANIMATING (`_render_skip_button()`), so the button stays put from one to the other. Clear
+of the bolts' level line and of the chunks, which fall under their own bar. Not drawn on
+the splash - the splash clears it at once (its click flash used to linger there).
+Resolve, Skip and Close are drawn by `_render_button(rect, label, key, mark)` through
+`ui/battle_screen_kit.py`: CampaignBTN with baked hover / flash states
+(`SidebarWidgets.button_sprite`, as the bottom panel's buttons) and a light Cinzel label
+with a drop shadow in the battle screen's own size (the sidebar / bottom panel kits cap
+their text at their panels' size). The kit's sprites and labels live in a module cache
+kept between battles and rebuilt only when the display changes, so opening a battle
+bakes nothing twice. `clicked_element` / `_trigger_flash()` give the interface its own
+click flash (`CLICK_FLASH_DURATION_MS`).
 
 **Tests:** `tests/test_battle_bar_volley.py`, `tests/test_battle_interface_integration.py`
 
@@ -1168,7 +1209,7 @@ in the light style of the other passes - it was the last combat effect in the ol
 | The chunk falling (heat, pop, gravity, push, spin, fade time), the embers | `BURN_STYLE` (`'fall'`, `'embers'`) |
 | Finale, battle icon glow, backdrop | `FINALE_STYLE`, `ICON_GLOW_STYLE`, `BACKDROP_STYLE` |
 | The turns (pause, how many, battle length), how big each hit is | constants at the top of `ui/effects/battle_interface.py`: `SHOT_PAUSE`, `VOLLEY_*`, `ANIMATION_MAX_DURATION`, `CHUNK_JITTER_*`, `HIT_STRENGTH_*` (see "Bar animation" above) |
-| Preview / tune / measure | `py tools/battle_fx_preview.py` (live: 1-4 battle, C colours, Space resolve / skip, R reopen, S slow motion, P pause; `--size 1280x720`), `--sheet out.png` (setup, a shot exchange, the finale; `--battles`, `--colours`), `--bench` |
+| Preview / tune / measure | `py tools/battle_fx_preview.py` (live: 1-4 battle, C colours, Space resolve / skip, R reopen, S slow motion, P pause, the mouse on the screen's own buttons; `--size 1280x720`), `--sheet out.png` (setup, a shot exchange, the finale; `--battles`, `--colours`), `--bench` |
 
 **Rules:**
 - **Sizes are in bar heights** (H, the fill's height: 40 px at 1600x900), so the light
@@ -1846,6 +1887,28 @@ normally **replay** the battle and record the deaths themselves; only the fallba
 (seedless message / battle missing) turns these into `hero_death_events` for the "Our
 Hero, X, has been slain in Y!" toast.
 
+**`keep` / `keep_name` / `xp_per_unit` / `level_ups`** (2026-10-28, the report screen's
+outcome lines) — the Keep's fate (`'held'` / `'destroyed'` / None) and name (`'Keep'` /
+`'Castle'`: `battle._had_castle`, snapshotted in `resolve_battle()` because
+`destroy_buildings()` forgets the upgrade; an uncontested capture always says Keep), and
+the XP each of the defender's survivors gained with their level-ups as
+`[[unit_type, new_level, count]]` (`battle.xp_awarded`, recorded where
+`_update_battle_results()` awards it; only winners gain XP). The same keys, for the
+resolver's own window, come from `GameState.battle_outcome(battle, viewer)` (plus
+`previous_owner`, `holder`, `heroes_slain` as `[[owner, name]]` from `battle.heroes_slain`,
+kept on the battle because `_battle_hero_deaths` is reset by the next resolution). A
+report without them (older ones) still opens; `structures_destroyed` still counts a
+fallen Keep - the report screen takes it off the buildings line.
+**`attacker_strength` / `defender_strength`** (2026-10-29) - both sides' strengths as the
+battle window counts them, taken quietly as the battle starts (`_shown_strengths()` ->
+`battle._shown_strengths`; never `_calculate_battle_strengths()`, which logs). The report
+screen's "Your strength - Enemy" line (the preview hides them); None for an uncontested
+capture or an older report (no line).
+**`buildings_destroyed` / `buildings_captured`** (2026-10-29) - the buildings by type,
+`{building_type: count}`, the Keep left out (`_battle_building_changes()`: the plot layout
+before vs after; captured = what Champion of the People saved for the winner). The report
+screen lists each type with its icon; a report without them shows the counts.
+
 **Adding a field to a report** — add it in `_make_battle_report()` and keep it
 JSON-safe. The snapshot crosses the network, so **no tuples** (JSON turns them into
 lists), no sets, no game objects. `_send_action_to_remote()` has no `try/except` around
@@ -2010,11 +2073,42 @@ Overlapping popups are hit-tested in **reverse** draw order, so the visible one 
 #### Detail screen
 
 `EnhancedBattleInterface(report_snapshot=...)` opens directly in the REPORT state.
-`_load_assets()` and `_calculate_layout()` still run (they are battle-data free, and the
-layout is the only producer of `report_panel_rect`, `close_button_rect` and the text
-metrics); `_extract_battle_data()` is skipped because the `Battle` is popped the instant
-it resolves. `current_player` is set to the defender so the totals line reads
-`defender_lost` / `defender_survivors`.
+`_load_assets()` and `_calculate_layout()` still run (they are battle-data free, and
+the fonts and the report's geometry come from them); `_extract_battle_data()` is skipped
+because the `Battle` is popped the instant it resolves. `current_player` is set to the
+defender so the army table reads the defender's units. `_apply_report_snapshot()` maps
+the report's keys to the `battle_outcome()` shape (`self.outcome`) and composes the
+report at once, so `report_panel_rect` / `close_button_rect` are final before the first
+click.
+
+**The report screen (both modes, 2026-10-28):** `ui/battle_screen_panels.py` -
+`report_view()` words it (no pygame: VICTORY / DEFEAT / NO VICTOR, "X captured / held /
+lost", "Repelled at X", the army rows, the outcome lines and their tone) and
+`compose_report()` draws it once onto a surface with the battle screen kit (unit and hero
+portraits in the gold IconBorder, the sidebar's gold separators, shadowed Cinzel; the
+army as a fought / lost / survived table - Cinzel has no arrow / check / star glyphs;
+every outcome line has an icon: each building type's own, a level-up's unit portrait).
+`_prepare_report()` composes it at the splash's start (not on the report's first frame)
+and `_layout_report()` sizes `BattlePlayerScreen.png` to it, between
+`REPORT_PANEL_MIN/MAX_HEIGHT_RATIO` of the screen, the content inside `REPORT_INSET_*`
+(shares of the panel: inside the frame, clear of the corner spears) and Close on the
+bottom rail (`REPORT_CLOSE_Y`). The scaled art is cached by size in the kit, so a report
+the same size as an earlier one scales nothing. `compose_report()` returns a header
+(caption, VICTORY / DEFEAT, the territory) and a body; a report too tall for the largest
+panel **scrolls**: `handle_wheel()` moves the body (`_report_scroll`), the header stays put,
+`_render_scrolled_body()` fades an edge with more beyond it and draws the scrollbar in the
+gutter the body leaves (`_report_width()`), from one reused scratch surface and cached
+masks. **The wheel reaches it through `Game._battle_window_wheel()`**, an early branch of
+the main event loop: an open battle window (the battle screen or a report's detail
+screen) takes the wheel, unless the game / options menu or the save dialog is over it. **Its icons are prewarmed:** they are 1024 px images,
+and decoding them as the first report's splash began cost ~130 ms, so
+`prewarm_battle_screen()` (`battle_interface.py`) bakes every icon `report_icons()` lists
+(and the panel art at the smallest report size) from the surfaces the game has already
+loaded (`Game._battle_screen_icon_sources()`) - a loading screen task and
+`apply_display_settings()` (the kit drops its cache with the old display). **A new icon
+in the report must be added to `report_icons()`** and, if the game loads it, to
+`_battle_screen_icon_sources()` (`test_the_game_hands_over_every_report_icon`), or the
+first report decodes it again. Tests: `tests/test_battle_report_screen.py`.
 
 **Do not route its close through `_finalize_enhanced_battle()`** — that would re-broadcast
 a `BATTLE_RESOLVE` message and re-create alliance markers for a battle finalised long ago.

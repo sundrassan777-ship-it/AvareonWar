@@ -250,7 +250,7 @@ class MilitaryMixin:
         return effectiveness
 
     def calculate_army_effective_strength(self, composition, enemy_composition, player=None, territory=None, is_keep_phase1=False, unit_avg_levels=None,
-                                          battle_context=None):
+                                          battle_context=None, breakdown=None):
         """
         Calculate the total effective strength of an army against an enemy.
 
@@ -264,9 +264,19 @@ class MilitaryMixin:
             battle_context: Optional BattleContext - a simultaneous round's battle reads
                 Vanquish the Enemy and the territorial bonuses from it (frozen when the
                 round's battles were set up); None = the live values
+            breakdown: Optional list. When given, one entry per factor that applied is
+                appended - the battle window's bonus list (2026-10-29): a bonus as
+                {'key', 'label', 'unit_type', 'pct'} (+pct %), a unit type's counter
+                matchup as {'key': 'matchup', 'unit_type', 'factor', 'counters',
+                'countered_by', 'counters_count', 'countered_by_count', 'enemy_total'}. The arithmetic and
+                the returned strength are exactly the same with or without it.
 
         Returns: float representing total effective strength
         """
+        def note(key, label, unit_type, pct):
+            if breakdown is not None:
+                breakdown.append({'key': key, 'label': label, 'unit_type': unit_type, 'pct': pct})
+
         if not composition:
             return 0.0
 
@@ -282,6 +292,15 @@ class MilitaryMixin:
         total_strength = 0.0
         for unit_type, count in composition.items():
             effectiveness = self.calculate_unit_effectiveness(unit_type, enemy_composition)
+            if breakdown is not None and effectiveness != 1.0:
+                # The matchup and what it is made of (the preview's tag explains it)
+                info = self.UNIT_TYPES[unit_type]
+                breakdown.append({
+                    'key': 'matchup', 'unit_type': unit_type, 'factor': effectiveness,
+                    'counters': info['counters'], 'countered_by': info['countered_by'],
+                    'counters_count': enemy_composition.get(info['counters'], 0),
+                    'countered_by_count': enemy_composition.get(info['countered_by'], 0),
+                    'enemy_total': sum(enemy_composition.values())})
 
             # Base unit strength (Captain = 0.25, all others = 1.0)
             unit_strength = self.UNIT_TYPES.get(unit_type, {}).get('strength', 1.0)
@@ -296,17 +315,20 @@ class MilitaryMixin:
                     # Check if territory has a friendly Keep or Castle
                     if self.has_friendly_keep(territory, player):
                         base_multiplier += bonus_percent / 100.0
+                        note('battlement_archery', 'Battlement Archery', unit_type, bonus_percent)
 
             # Cavalry Tactics: +33% strength for Cavalry units (works in normal battles and Keep Phase 1)
             if (unit_type == 'Cavalry' and player is not None):
                 bonus_percent = self.player_cavalry_strength_bonus[player]
                 if bonus_percent > 0:
                     base_multiplier += bonus_percent / 100.0
+                    note('cavalry_tactics', 'Cavalry Tactics', unit_type, bonus_percent)
 
             # Divide and Conquer: +20% strength for Pikemen/Swordsmen (works in normal battles and Keep Phase 1)
             if (unit_type in ['Pikeman', 'Swordsman'] and player is not None):
                 if self.player_divide_conquer_bonus[player]:
                     base_multiplier += 0.20
+                    note('divide_and_conquer', 'Divide and Conquer', unit_type, 20)
 
             # Vanquish the Enemy (Neil Hévilneu): +20% strength for Swordsmen, Pikemen, Archers, and Cavalry
             # (a simultaneous round's battle: the hero as the round's battles began)
@@ -317,6 +339,7 @@ class MilitaryMixin:
                     has_vanquish = self.player_has_hevilneu(player)
                 if has_vanquish:
                     base_multiplier += 0.20
+                    note('vanquish', 'Vanquish the Enemy', unit_type, 20)
 
             # Territorial unit strength bonuses: +10% per bonus territory
             # (a simultaneous round's battle: the bonuses as the round's battles began)
@@ -325,25 +348,35 @@ class MilitaryMixin:
                     territorial_bonuses = battle_context.bonuses(player)
                 else:
                     territorial_bonuses = self.calculate_player_territorial_bonuses(player)
+                territory_key = None
                 if unit_type == 'Pikeman' and 'pikeman_str' in territorial_bonuses:
                     base_multiplier += territorial_bonuses['pikeman_str'] / 100.0
+                    territory_key = 'pikeman_str'
                 elif unit_type == 'Archer' and 'archer_str' in territorial_bonuses:
                     base_multiplier += territorial_bonuses['archer_str'] / 100.0
+                    territory_key = 'archer_str'
                 elif unit_type == 'Swordsman' and 'swordsman_str' in territorial_bonuses:
                     base_multiplier += territorial_bonuses['swordsman_str'] / 100.0
+                    territory_key = 'swordsman_str'
                 elif unit_type == 'Cavalry' and 'cavalry_str' in territorial_bonuses:
                     base_multiplier += territorial_bonuses['cavalry_str'] / 100.0
+                    territory_key = 'cavalry_str'
+                if territory_key is not None and territorial_bonuses[territory_key]:
+                    note('territorial', 'Territory bonuses', unit_type, territorial_bonuses[territory_key])
 
             # Veterancy bonus: +15% effective strength per unit level
             level_bonus = 1.0
             if unit_avg_levels and unit_type in unit_avg_levels:
                 avg_level = unit_avg_levels[unit_type]
                 level_bonus = 1.0 + avg_level * self.UNIT_LEVEL_STRENGTH_BONUS
+                if avg_level > 0:
+                    note('veterancy', 'Veterancy', unit_type, avg_level * self.UNIT_LEVEL_STRENGTH_BONUS * 100)
 
             # Captain army bonus: +12% to non-Captain units when army has a Captain
             captain_multiplier = 1.0
             if unit_type != 'Captain' and captain_bonus_pct > 0:
                 captain_multiplier = 1.0 + captain_bonus_pct
+                note('captain', 'Captain', unit_type, captain_bonus_pct * 100)
 
             total_strength += count * unit_strength * effectiveness * base_multiplier * level_bonus * captain_multiplier
 
@@ -2566,9 +2599,17 @@ class MilitaryMixin:
                 if getattr(battle, '_keep_had_hero', False) and not defensive_win:
                     total_battle_xp += self.HERO_KEEP_DESTROY_XP
                     self.add_message(f"  Veterancy: +{self.HERO_KEEP_DESTROY_XP} XP bonus for destroying Hero Keep!")
-                for units in survivors_by_player.values():
+                # Battle report: the XP and each player's level-ups (_battle_xp_for)
+                level_ups = {}
+                for player, units in survivors_by_player.items():
+                    ups = level_ups.setdefault(player, {})
                     for unit in units:
-                        self.award_unit_xp(unit, total_battle_xp)
+                        level_before = unit.get('level', 0)
+                        level = self.award_unit_xp(unit, total_battle_xp)
+                        if level > level_before:
+                            key = (unit.get('type', 'Swordsman'), level)
+                            ups[key] = ups.get(key, 0) + 1
+                battle.xp_awarded = {'per_unit': total_battle_xp, 'level_ups': level_ups}
 
         # IMPORTANT: Clear ALL garrisons in the territory (removes the losing sides)
         # Then set each winning player's own survivors
@@ -2710,10 +2751,121 @@ class MilitaryMixin:
         captured = 0 if held else after
         return destroyed, captured, after
 
+    def _battle_keep_outcome(self, buildings_before, territory, had_castle=False):
+        """
+        (fate, name) of the Keep a battle was fought over, for the battle report: fate
+        'held' / 'destroyed', name 'Keep' / 'Castle'. (None, None) without a Keep.
+        """
+        if 'Keep' not in (buildings_before or {}).values():
+            return None, None
+        standing = 'Keep' in self.buildings.get(territory, {}).values()
+        return ('held' if standing else 'destroyed'), ('Castle' if had_castle else 'Keep')
+
+    def _shown_strengths(self, battle):
+        """
+        Each side's strength as the battle window counts it - its army against all its
+        enemies combined, the Keep's bonus added to its side - before the battle changes
+        anything. {battle key: strength}. For the Battle Report (the window's preview no
+        longer shows them, owner 2026-10-29); quiet, unlike _calculate_battle_strengths()
+        (no log lines, no XP bookkeeping).
+        """
+        territory = battle.territory
+        compositions = {player: (battle.army_compositions.get(player) or {'Swordsman': count})
+                        for player, count in battle.armies.items()}
+        context = getattr(battle, 'battle_context', None)
+        shown = {}
+        for player, composition in compositions.items():
+            enemies = {}
+            for other, other_composition in compositions.items():
+                if other != player:
+                    for unit_type, count in other_composition.items():
+                        enemies[unit_type] = enemies.get(unit_type, 0) + count
+            shown[player] = self.calculate_army_effective_strength(
+                composition, enemies, player=player, territory=territory,
+                unit_avg_levels=self.get_unit_avg_levels(territory, player),
+                battle_context=context)
+        keep_player = getattr(battle, 'keep_bonus_player', None)
+        if keep_player is not None and getattr(battle, 'keep_bonus', 0):
+            shown[keep_player] = shown.get(keep_player, 0.0) + battle.keep_bonus
+        return shown
+
+    def _battle_building_changes(self, buildings_before, territory, held):
+        """
+        The buildings a battle destroyed and those the winner captured (the ones Champion
+        of the People saved), by type - {building_type: count}, for the battle report.
+        The Keep is left out: it has its own line (_battle_keep_outcome).
+        """
+        def counts(mapping):
+            result = {}
+            for building_type in (mapping or {}).values():
+                if building_type is not None and building_type != 'Keep':
+                    result[building_type] = result.get(building_type, 0) + 1
+            return result
+        before = counts(buildings_before)
+        after = counts(self.buildings.get(territory, {}))
+        destroyed = {building_type: count - after.get(building_type, 0)
+                     for building_type, count in before.items() if count > after.get(building_type, 0)}
+        return destroyed, ({} if held else after)
+
+    def _battle_xp_for(self, battle, player):
+        """
+        (XP each surviving unit gained, level-ups) of `player`'s units in a resolved
+        battle, for the battle report - (0, []) when they gained none (only the winners'
+        survivors do). Level-ups are [[unit_type, new_level, count], ...]: JSON-safe.
+        """
+        awarded = getattr(battle, 'xp_awarded', None) or {}
+        ups = (awarded.get('level_ups') or {}).get(player)
+        if ups is None:
+            return 0, []
+        return (awarded.get('per_unit', 0),
+                sorted([unit_type, level, count] for (unit_type, level), count in ups.items()))
+
+    def battle_outcome(self, battle, viewer):
+        """
+        What a resolved battle did, for the battle report `viewer` reads in the battle
+        window (EnhancedBattleInterface.set_actual_battle_result): who owned the territory
+        and who holds it now, its Keep, its other buildings, the heroes slain there and
+        the XP `viewer`'s surviving units gained. Plain and JSON-safe; the defender's
+        stored Battle Report carries the same keys (_capture_battle_reports).
+        """
+        territory = battle.territory
+        previous_owner = getattr(battle, 'original_owner', -1)
+        if previous_owner is None:
+            previous_owner = -1
+        holder = battle.winner if getattr(battle, 'resolved', False) else -1
+        if holder is None:
+            holder = -1
+        held = previous_owner >= 0 and holder == previous_owner
+        buildings_before = getattr(battle, '_buildings_before', None) or {}
+        destroyed, captured, _remaining = self._split_structure_losses(
+            buildings_before, territory, held)
+        keep, keep_name = self._battle_keep_outcome(
+            buildings_before, territory, getattr(battle, '_had_castle', False))
+        buildings_destroyed, buildings_captured = self._battle_building_changes(
+            buildings_before, territory, held)
+        xp_per_unit, level_ups = self._battle_xp_for(battle, viewer)
+        return {
+            'previous_owner': previous_owner,
+            'holder': holder,
+            'held': held,
+            'keep': keep,
+            'keep_name': keep_name,
+            'structures_destroyed': destroyed,
+            'structures_captured': captured,
+            'buildings_destroyed': buildings_destroyed,
+            'buildings_captured': buildings_captured,
+            'heroes_slain': [list(entry) for entry in (getattr(battle, 'heroes_slain', None) or [])],
+            'xp_per_unit': xp_per_unit,
+            'level_ups': level_ups,
+        }
+
     def _make_battle_report(self, territory, defender, attacker, held, units_lost,
                             units_remaining, structures_destroyed, structures_captured,
                             structures_remaining, unit_breakdown, attacker_lost,
-                            attacker_survivors, heroes_slain=None):
+                            attacker_survivors, heroes_slain=None, keep=None, keep_name=None,
+                            xp_per_unit=0, level_ups=None, buildings_destroyed=None,
+                            buildings_captured=None, attacker_strength=None,
+                            defender_strength=None):
         """
         Build the report dict. Plain and JSON-safe: it rides along on the BATTLE_RESOLVE
         network message, so no tuples (JSON turns them into lists), no sets, no objects.
@@ -2722,6 +2874,11 @@ class MilitaryMixin:
         _render_report() indexes them directly (KeyError if absent) and picks a branch on
         current_player == attacker_player. Every unit_breakdown entry likewise needs all
         three of original/survived/lost.
+
+        keep / keep_name / xp_per_unit / level_ups (2026-10-28) and buildings_destroyed /
+        buildings_captured (2026-10-29: by type) - battle_outcome()'s - came with the report
+        screen's outcome lines, attacker_strength / defender_strength (2026-10-29) with its
+        strengths line (None: an uncontested capture); a report without them still opens.
         """
         return {
             'territory': territory,
@@ -2742,6 +2899,18 @@ class MilitaryMixin:
             # Names of the defender's heroes killed here (their Keep fell). A defending
             # multiplayer client turns these into "Our Hero, X, has been slain" toasts.
             'heroes_slain': list(heroes_slain or []),
+            # The Keep's fate ('held' / 'destroyed' / None) and name ('Keep' / 'Castle')
+            'keep': keep,
+            'keep_name': keep_name,
+            # The XP each of the defender's survivors gained, [[unit_type, level, count]]
+            'xp_per_unit': xp_per_unit,
+            'level_ups': list(level_ups or []),
+            # The buildings by type, {building_type: count}, the Keep left out
+            'buildings_destroyed': dict(buildings_destroyed or {}),
+            'buildings_captured': dict(buildings_captured or {}),
+            # Both sides' strengths before the fight (_shown_strengths), rounded
+            'attacker_strength': None if attacker_strength is None else round(attacker_strength, 2),
+            'defender_strength': None if defender_strength is None else round(defender_strength, 2),
         }
 
     def _capture_battle_reports(self, battle, winner, territory):
@@ -2815,6 +2984,12 @@ class MilitaryMixin:
         if not held and winner == attacker:
             attacker_survivors = getattr(battle, 'surviving_armies', 0) or 0
 
+        keep, keep_name = self._battle_keep_outcome(
+            buildings_before, territory, getattr(battle, '_had_castle', False))
+        buildings_destroyed, buildings_captured = self._battle_building_changes(
+            buildings_before, territory, held)
+        xp_per_unit, level_ups = self._battle_xp_for(battle, defender)
+        shown = getattr(battle, '_shown_strengths', None) or {}
         self._emit_battle_report(self._make_battle_report(
             territory=territory, defender=defender, attacker=attacker, held=held,
             units_lost=total_original - total_survived, units_remaining=total_survived,
@@ -2823,7 +2998,11 @@ class MilitaryMixin:
             attacker_lost=max(0, attacker_original - attacker_survivors),
             attacker_survivors=attacker_survivors,
             heroes_slain=[event[1] for event in self._battle_hero_deaths
-                          if event[0] == defender and event[2] == territory]))
+                          if event[0] == defender and event[2] == territory],
+            keep=keep, keep_name=keep_name, xp_per_unit=xp_per_unit, level_ups=level_ups,
+            buildings_destroyed=buildings_destroyed, buildings_captured=buildings_captured,
+            attacker_strength=shown.get(self._battle_key(battle, attacker)) if attacker is not None else None,
+            defender_strength=shown.get(self._battle_key(battle, defender))))
 
     def _capture_uncontested_report(self, territory, previous_owner, new_owner,
                                     buildings_before):
@@ -2839,12 +3018,17 @@ class MilitaryMixin:
             return
         destroyed, captured, remaining = self._split_structure_losses(
             buildings_before, territory, held=False)
+        # (A Castle reads as a Keep here: destroy_buildings() already forgot the upgrade)
+        keep, keep_name = self._battle_keep_outcome(buildings_before, territory)
+        buildings_destroyed, buildings_captured = self._battle_building_changes(
+            buildings_before, territory, held=False)
         self._emit_battle_report(self._make_battle_report(
             territory=territory, defender=previous_owner, attacker=new_owner, held=False,
             units_lost=0, units_remaining=0,
             structures_destroyed=destroyed, structures_captured=captured,
             structures_remaining=remaining, unit_breakdown={},
-            attacker_lost=0, attacker_survivors=0))
+            attacker_lost=0, attacker_survivors=0, keep=keep, keep_name=keep_name,
+            buildings_destroyed=buildings_destroyed, buildings_captured=buildings_captured))
 
     def resolve_battle_shared(self, battle_index):
         """
@@ -2935,6 +3119,12 @@ class MilitaryMixin:
         # A plot->type dict rather than a count is what lets _capture_battle_reports()
         # tell destroyed plots apart from ones Champion of the People saved for the winner.
         battle._buildings_before = dict(self.buildings.get(territory, {}))
+        # The battle report names a fallen Castle: destroy_buildings() forgets the upgrade
+        battle._had_castle = bool(self.castle_upgrades.get(territory))
+        # Filled where the winners' survivors gain XP (_update_battle_results)
+        battle.xp_awarded = {}
+        # The strengths the report shows (before the garrisons and owners change)
+        battle._shown_strengths = self._shown_strengths(battle)
         # Eligibility must be judged on PRE-battle state. check_victory() runs inside
         # _update_battle_results() and can eliminate a defender who just lost their last
         # territory - reading eliminated_players afterwards would let this battle
@@ -3036,6 +3226,10 @@ class MilitaryMixin:
         # battle.winner: who holds the territory now (a defending team that held: its
         # owner, whose team's key in battle.armies can be an ally)
         self._capture_battle_reports(battle, battle.winner if battle.resolved else winner, territory)
+        # The heroes slain here, for the resolver's battle report (battle_outcome()):
+        # _battle_hero_deaths is reset by the next battle's resolution
+        battle.heroes_slain = [[owner, hero] for owner, hero, where in self._battle_hero_deaths
+                               if where == territory]
 
         # Cleanup
         self.pending_battles.pop(battle_index)

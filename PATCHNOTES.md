@@ -4,6 +4,39 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Battle Screen: Preview, Skip Button and Report
+
+*29 October 2026*
+
+### Improvements
+
+- **A clearer battle preview.** Before a battle, a banner names it, and each side lists
+  its units - with an Advantage or Disadvantage tag where they are strong or weak against
+  the enemy's - and every bonus it fights with, each with its icon: heroes, technologies,
+  territory bonuses, veterancy, Captains and the Keep. A long list scrolls with the mouse
+  wheel. Hover over an Advantage or Disadvantage tag to see why: which enemy units it
+  counters or is countered by, and how much that is worth.
+- **Who is stronger is no longer given away.** Both armies' bars start full and the
+  strengths are not shown before the battle - read the units and bonuses and judge for
+  yourself. The fight shows it, and the battle report now gives both strengths.
+
+- **A new battle report.** After a battle, the report now tells you what happened to the
+  territory (captured, held or lost), shows your army as a table of units fought, lost and
+  survived, and lists what else the battle did: a Keep or Castle destroyed or held,
+  each building destroyed or captured, heroes slain, and the experience your surviving
+  units gained, including who reached a new level. A long report scrolls with the mouse
+  wheel. The report for a territory you lost, opened from its map notice, shows the same.
+- The mouse wheel no longer zooms the map behind an open battle window.
+
+- **A Skip button for the battle animation.** While the armies' bars fight, a Skip button
+  sits under them, with a reminder that Space skips too. Clicking anywhere or pressing Esc
+  still works. The Victory or Defeat screen still follows.
+- **Resolve Battle moved under the bars,** into the same spot as Skip: one button that
+  starts the battle and then lets you skip it. The battle screen's buttons have the same
+  look as the buttons in the bottom panel.
+
+---
+
 ## Final Battle Fix
 
 *28 October 2026*

@@ -22,9 +22,10 @@ import math
 import random
 from enum import Enum, auto
 
-from config.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WHITE, BLACK
+import map_data
+from config.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WHITE, BLACK, CLICK_FLASH_DURATION_MS
 from utils.logger import get_logger
-from utils.surface_utils import crop_to_opaque
+from ui import battle_screen_kit, battle_screen_panels
 from ui.effects.battle_fx_effect import BattleLight, Shot, spear_tip, tip_x
 from ui.effects.battle_fx_style import (BAR_STYLE, BOLT_STYLE, BURN_STYLE, CHARGE_STYLE, FINALE_STYLE,
                                         ICON_GLOW_STYLE, charge_time)
@@ -43,10 +44,8 @@ REFERENCE_HEIGHT = 900
 # Panel layout (values are for reference resolution, will be scaled)
 PANEL_GAP_REF = 120  # Gap between panels for battle icon and button
 PANEL_WIDTH_RATIO = 0.35  # Each panel takes 35% of screen width
-PANEL_HEIGHT_RATIO = 0.55  # Panel height as ratio of screen height
+PANEL_HEIGHT_RATIO = 0.57  # Panel height as ratio of screen height (0.55 before the bonus list)
 PANEL_TOP_MARGIN_REF = 105  # Top margin for panels
-PANEL_CONTENT_PADDING_V_REF = 80  # Vertical (top) padding inside panels (reduced from 100 for 5 unit types)
-PANEL_CONTENT_PADDING_H_REF = 95  # Horizontal (left/right) padding for text breathing room
 
 # Strength bar dimensions (fill and PNG can be sized independently)
 BAR_FILL_WIDTH_RATIO = 0.20  # Fill width as ratio of screen width
@@ -64,11 +63,33 @@ ICON_PULSE_SPEED = 1.0  # Pulsations per second (slower, more dramatic)
 ICON_PULSE_SCALE_STEPS = 64  # Pulse scale is quantised to 1/64 so it can be cached
 ICON_PULSE_CACHE_MAX = 32  # Upper bound on cached pulsed-icon sizes
 
-# Button dimensions (reference resolution)
-RESOLVE_BUTTON_WIDTH_REF = 180
-RESOLVE_BUTTON_HEIGHT_REF = 50
-CLOSE_BUTTON_WIDTH_REF = 150
-CLOSE_BUTTON_HEIGHT_REF = 45
+# Battle report panel (centred): BattlePlayerScreen.png sized to the report it holds
+# (2026-10-28: the outcome lines made it longer), between these shares of the screen height
+REPORT_PANEL_WIDTH_RATIO = 0.4
+REPORT_PANEL_MIN_HEIGHT_RATIO = 0.55
+REPORT_PANEL_MAX_HEIGHT_RATIO = 0.8
+# The art's board as shares of the panel (the 1024x1536 art, stretched to the panel):
+# inside the frame, and below / above the corner spears (top ~17%, bottom ~18% of it)
+REPORT_INSET_X = 0.14
+PREVIEW_INSET_X = 0.17  # The side panels' (owner, 2026-10-29: the bonus list sat too near the frame)
+# The battle's banner sits just above the panels: its bottom this share of a panel's height
+# below their top, still clear of the art's corner spears (their tips ~5.5% down)
+BANNER_BOTTOM_SHARE = 0.04
+TIP_WIDTH_REF = 380  # The tags' tooltips, px at 1600x900 (a line each)
+REPORT_INSET_TOP = 0.11
+REPORT_INSET_BOTTOM = 0.19
+REPORT_PANEL_ART = "assets/BattlePlayerScreen.png"
+REPORT_CLOSE_Y = 0.92  # Close is centred here, on the art's bottom rail (share of the panel)
+# A report taller than the largest panel scrolls with the mouse wheel (owner, 2026-10-29):
+# its header (VICTORY / DEFEAT) stays, the body scrolls (battle_screen_kit.ScrollView, as
+# the preview's sides)
+CLOSE_BUTTON_WIDTH_REF = 180  # Its height follows the art's aspect
+# Resolve Battle (setup) and Skip (the fight) share one slot centred under the bars
+# (owner, 2026-10-28: a click or Space skipped the fight but nothing said so; then the
+# two unified). Its height follows the art's aspect.
+ACTION_BUTTON_WIDTH_REF = 220
+ACTION_BUTTON_GAP_REF = 34  # Below the bars' fill
+SKIP_HINT_GAP_REF = 8  # The Skip button's "Space" keycap below it
 
 # Animation timing
 # Bounds the volley schedule is clamped into (the duration is derived from the
@@ -109,10 +130,6 @@ BURN_DURATION = BURN_STYLE['cool']
 FRAME_GLOW_DURATION = 0.30  # Seconds the bar frame keeps flaring
 FRAME_GLOW_INTENSITY = 0.35  # How hard the flare brightens the frame artwork (the impacts carry the hit)
 
-# Text settings (reference resolution)
-TEXT_LINE_HEIGHT_REF = 34  # Vertical spacing between lines (reduced from 38 for 5 unit types)
-TEXT_PADDING_REF = 20  # Padding for fallback (not BattlePlayerScreen)
-REPORT_LINE_SPACING_REF = 5  # Extra spacing in battle report (reduced from 8 for 5 unit types)
 
 
 # ========================================
@@ -1019,6 +1036,21 @@ class BattleBarVolleyEffect:
 # ENHANCED BATTLE INTERFACE
 # ========================================
 
+def prewarm_battle_screen(screen_size, icon_sources=None):
+    """
+    Build what the battle report needs before the first battle (the loading screen, a
+    resolution change): its icons at this screen's size - from the surfaces the game has
+    already decoded (`icon_sources`, {path: surface}) - and the report panel's art at its
+    smallest size, the size of most reports. Without it the first report of a session
+    decoded ~10 images of 1024 px as its splash began (~130 ms).
+    """
+    width, height = screen_size
+    scale = (width / REFERENCE_WIDTH + height / REFERENCE_HEIGHT) / 2
+    battle_screen_panels.prewarm(scale, icon_sources)
+    battle_screen_kit.art(REPORT_PANEL_ART, (int(width * REPORT_PANEL_WIDTH_RATIO),
+                                             int(height * REPORT_PANEL_MIN_HEIGHT_RATIO)))
+
+
 class EnhancedBattleInterface:
     """
     Main battle interface controller.
@@ -1071,6 +1103,13 @@ class EnhancedBattleInterface:
 
         # Pre-calculated battle result (populated when Resolve is clicked)
         self.battle_result = None
+        # What the battle did (GameState.battle_outcome(), or a stored report's keys) and
+        # the report composed from it - once, before the report shows (_prepare_report)
+        self.outcome = {}
+        self.report_snapshot = None
+        self._report_parts = None        # (header, body) surfaces
+        self._report_header_pos = (0, 0)
+        self._report_scroller = None     # The body (battle_screen_kit.ScrollView)
         self.animation_duration = 0.0
         self.animation_seed = None
 
@@ -1080,7 +1119,7 @@ class EnhancedBattleInterface:
 
         # UI state
         self.mouse_pos = (0, 0)
-        self.clicked_button = None
+        self._flash = (None, 0)  # (button id, ticks) of the last click, see clicked_element
 
         # Load assets
         self._load_assets()
@@ -1102,6 +1141,7 @@ class EnhancedBattleInterface:
             # Extract battle data for display
             self._extract_battle_data()
             self._prepare_light()
+            self._prepare_preview()
 
     def _prepare_light(self):
         """
@@ -1143,6 +1183,26 @@ class EnhancedBattleInterface:
             'defender_lost': report.get('defender_lost', 0),
             'defender_survivors': report.get('defender_survivors', 0),
         }
+        # The outcome lines, in GameState.battle_outcome()'s keys (a report from before
+        # keep / xp_per_unit / level_ups existed shows without them)
+        defender, attacker = report.get('defender'), report.get('attacker')
+        self.outcome = {
+            'previous_owner': defender,
+            'holder': defender if report.get('held') else attacker,
+            'held': bool(report.get('held')),
+            'keep': report.get('keep'),
+            'keep_name': report.get('keep_name'),
+            'structures_destroyed': report.get('structures_destroyed', 0),
+            'structures_captured': report.get('structures_captured', 0),
+            'heroes_slain': [[defender, name] for name in report.get('heroes_slain') or []],
+            'xp_per_unit': report.get('xp_per_unit', 0),
+            'level_ups': report.get('level_ups') or [],
+            # None (a report from before 2026-10-29): the counts above instead
+            'buildings_destroyed': report.get('buildings_destroyed'),
+            'buildings_captured': report.get('buildings_captured'),
+        }
+        # Composed (and the panel sized) before the first click can test Close's rect
+        self._prepare_report()
         # Straight to REPORT: no SETUP/ANIMATING/SPLASH, so update() is a no-op and the
         # None sub-effects are never touched.
         self.state = BattleInterfaceState.REPORT
@@ -1155,12 +1215,11 @@ class EnhancedBattleInterface:
         scale_y = self.screen_height / REFERENCE_HEIGHT
         asset_scale = (scale_x + scale_y) / 2
 
-        try:
-            # Panel background
-            self.panel_bg = pygame.image.load("assets/BattlePlayerScreen.png").convert_alpha()
-        except (pygame.error, FileNotFoundError) as e:
-            logger.warning(f"Could not load BattlePlayerScreen.png: {e}")
-            self.panel_bg = None
+        # Panel background - decoded once per process and shared with the report panel
+        # (it was decoded again for every battle: ~40 ms of opening the window)
+        self.panel_bg = battle_screen_kit.image(REPORT_PANEL_ART)
+        if self.panel_bg is None:
+            logger.warning(f"Could not load {REPORT_PANEL_ART}")
 
         try:
             # Battle icon for center gap
@@ -1180,15 +1239,6 @@ class EnhancedBattleInterface:
             self.battle_icon = None
             self.battle_icon_base_w = 0
             self.battle_icon_base_h = 0
-
-        try:
-            # Button background
-            btn_full = pygame.image.load("assets/CampaignBTN.png").convert_alpha()
-            # Crop to opaque content
-            self.button_bg = crop_to_opaque(btn_full, threshold=128)
-        except (pygame.error, FileNotFoundError) as e:
-            logger.warning(f"Could not load CampaignBTN.png: {e}")
-            self.button_bg = None
 
         try:
             # Victory/defeat splash images
@@ -1211,10 +1261,30 @@ class EnhancedBattleInterface:
 
         # Get fonts (scaled based on reference resolution)
         ui_scale = self.screen_height / REFERENCE_HEIGHT
-        self.title_font = self.font_manager.get_bold_font(int(24 * ui_scale))
-        self.text_font = self.font_manager.get_font(int(16 * ui_scale))
-        self.small_font = self.font_manager.get_font(int(14 * ui_scale))
-        self.button_font = self.font_manager.get_font(int(14 * ui_scale))  # Smaller button text
+        # The preview (ui/battle_screen_panels.py compose_side_* / compose_banner)
+        self.preview_fonts = {
+            'role': self.font_manager.get_bold_font(int(13 * ui_scale)),
+            'name': self.font_manager.get_bold_font(int(21 * ui_scale)),
+            'heading': self.font_manager.get_bold_font(int(14 * ui_scale)),
+            'body': self.font_manager.get_font(int(15 * ui_scale)),
+            'tag': self.font_manager.get_bold_font(int(12 * ui_scale)),
+            'banner_title': self.font_manager.get_bold_font(int(20 * ui_scale)),
+            'banner_sub': self.font_manager.get_font(int(14 * ui_scale)),
+            # The Advantage / Disadvantage tags' tooltips
+            'tip_title': self.font_manager.get_bold_font(int(15 * ui_scale)),
+            'tip_body': self.font_manager.get_font(int(13 * ui_scale)),
+        }
+        self.button_font = self.font_manager.get_bold_font(int(15 * ui_scale))
+        self.hint_font = self.font_manager.get_font(int(12 * ui_scale))  # The Skip button's keycap
+        # The battle report (ui/battle_screen_panels.py compose_report)
+        self.report_fonts = {
+            'caption': self.font_manager.get_bold_font(int(13 * ui_scale)),
+            'banner': self.font_manager.get_bold_font(int(34 * ui_scale)),
+            'headline': self.font_manager.get_font(int(17 * ui_scale)),
+            'heading': self.font_manager.get_bold_font(int(15 * ui_scale)),
+            'body': self.font_manager.get_font(int(15 * ui_scale)),
+            'columns': self.font_manager.get_bold_font(int(13 * ui_scale)),
+        }
 
     def _calculate_layout(self):
         """Calculate positions and sizes for all UI elements.
@@ -1236,19 +1306,12 @@ class EnhancedBattleInterface:
         # Scaled values from reference constants
         panel_gap = s(PANEL_GAP_REF)
         panel_top_margin = s(PANEL_TOP_MARGIN_REF)
-        self.panel_content_padding_v = s(PANEL_CONTENT_PADDING_V_REF)
-        self.panel_content_padding_h = s(PANEL_CONTENT_PADDING_H_REF)
         self.bar_fill_height = s(BAR_FILL_HEIGHT_REF)
         self.bar_png_height = s(BAR_PNG_HEIGHT_REF)
         self.bar_top_margin = s(BAR_TOP_MARGIN_REF)
         self.bar_fill_offset = int(BAR_FILL_OFFSET_REF * self.scale)  # Keep sign
-        resolve_button_width = s(RESOLVE_BUTTON_WIDTH_REF)
-        resolve_button_height = s(RESOLVE_BUTTON_HEIGHT_REF)
         close_button_width = s(CLOSE_BUTTON_WIDTH_REF)
-        close_button_height = s(CLOSE_BUTTON_HEIGHT_REF)
-        self.text_line_height = s(TEXT_LINE_HEIGHT_REF)
-        self.text_padding = s(TEXT_PADDING_REF)
-        self.report_line_spacing = s(REPORT_LINE_SPACING_REF)
+        close_button_height = battle_screen_kit.button_height(close_button_width)
 
         # Panel dimensions
         self.panel_width = int(self.screen_width * PANEL_WIDTH_RATIO)
@@ -1272,6 +1335,10 @@ class EnhancedBattleInterface:
             self.panel_height
         )
 
+        # The side panels' content: inside the art's frame, clear of its corner spears
+        self.attacker_content_rect = self._panel_content(self.attacker_panel_rect, PREVIEW_INSET_X)
+        self.defender_content_rect = self._panel_content(self.defender_panel_rect, PREVIEW_INSET_X)
+
         # Battle icon position (centered in gap)
         gap_center_x = left_x + self.panel_width + panel_gap // 2
         self.icon_center_x = gap_center_x  # Store for pulsation rendering
@@ -1282,20 +1349,9 @@ class EnhancedBattleInterface:
                 gap_center_x - self.battle_icon.get_width() // 2,
                 icon_y
             )
-            # Resolve button positioned below battle icon (reduced gap)
-            button_y = icon_y + self.battle_icon.get_height() + s(8)
         else:
             self.battle_icon_pos = (gap_center_x, panel_top_margin + s(50))
             self.icon_center_y = panel_top_margin + s(80)
-            button_y = panel_top_margin + s(130)
-
-        # Resolve button (below battle icon in gap)
-        self.resolve_button_rect = pygame.Rect(
-            gap_center_x - resolve_button_width // 2,
-            button_y,
-            resolve_button_width,
-            resolve_button_height
-        )
 
         # Strength bars (below panels)
         # Fill and PNG can have independent widths
@@ -1319,23 +1375,26 @@ class EnhancedBattleInterface:
             self.bar_fill_height
         )
 
-        # Report panel (centered, used in REPORT state)
-        report_width = int(self.screen_width * 0.4)
-        report_height = int(self.screen_height * 0.6)
-        self.report_panel_rect = pygame.Rect(
-            (self.screen_width - report_width) // 2,
-            (self.screen_height - report_height) // 2,
-            report_width,
-            report_height
+        # The action button: Resolve Battle in setup, Skip in the fight, one slot centred
+        # under the bars - clear of the bolts' level line and of the chunks, which fall
+        # under their own bar. The Skip button's keycap goes below it.
+        action_width = s(ACTION_BUTTON_WIDTH_REF)
+        bar_fill_bottom = bar_y + self.bar_fill_offset + self.bar_fill_height
+        self.resolve_button_rect = pygame.Rect(
+            gap_center_x - action_width // 2,
+            bar_fill_bottom + s(ACTION_BUTTON_GAP_REF),
+            action_width,
+            battle_screen_kit.button_height(action_width)
         )
+        self.skip_button_rect = self.resolve_button_rect.copy()
+        self.skip_hint_top = self.skip_button_rect.bottom + s(SKIP_HINT_GAP_REF)
 
-        # Close button (bottom of report panel)
-        self.close_button_rect = pygame.Rect(
-            self.report_panel_rect.centerx - close_button_width // 2,
-            self.report_panel_rect.bottom - close_button_height - s(20),
-            close_button_width,
-            close_button_height
-        )
+        # Report panel (centered, used in REPORT state) and its Close button, on the
+        # panel's bottom frame: the smallest panel until the report is composed
+        # (_prepare_report sizes it)
+        self._close_button_size = (close_button_width, close_button_height)
+        self._report_parts = None
+        self._layout_report(0)
 
         # P2/P3 fix: pre-scale battle bar borders and panel backgrounds (constant sizes)
         self._scaled_bar_border = None
@@ -1351,12 +1410,44 @@ class EnhancedBattleInterface:
         # so the pulse no longer smoothscales the icon every single frame.
         self._pulsed_icon_cache = {}
         self._scaled_panel_bg = None
-        self._scaled_report_bg = None
         if self.panel_bg:
             self._scaled_panel_bg = pygame.transform.smoothscale(
                 self.panel_bg, (self.attacker_panel_rect.width, self.attacker_panel_rect.height))
-            self._scaled_report_bg = pygame.transform.smoothscale(
-                self.panel_bg, (self.report_panel_rect.width, self.report_panel_rect.height))
+
+    @staticmethod
+    def _panel_content(rect, inset_x_share=REPORT_INSET_X):
+        """The content area of a panel drawn with the panel art (REPORT_INSET_* shares)."""
+        inset_x = int(rect.width * inset_x_share)
+        top = rect.top + int(rect.height * REPORT_INSET_TOP)
+        return pygame.Rect(rect.left + inset_x, top, rect.width - 2 * inset_x,
+                           rect.bottom - int(rect.height * REPORT_INSET_BOTTOM) - top)
+
+    def _layout_report(self, content_height):
+        """
+        Size the report panel to a report `content_height` px tall (between the
+        REPORT_PANEL_*_HEIGHT_RATIO shares of the screen), centred, with Close on its
+        bottom frame. The panel art at that size comes from the kit's cache, so a report
+        the same size as an earlier one scales nothing.
+        """
+        room = 1.0 - REPORT_INSET_TOP - REPORT_INSET_BOTTOM
+        height = int(math.ceil(content_height / room)) if content_height > 0 else 0
+        height = max(int(self.screen_height * REPORT_PANEL_MIN_HEIGHT_RATIO),
+                     min(int(self.screen_height * REPORT_PANEL_MAX_HEIGHT_RATIO), height))
+        width = int(self.screen_width * REPORT_PANEL_WIDTH_RATIO)
+        self.report_panel_rect = pygame.Rect((self.screen_width - width) // 2,
+                                             (self.screen_height - height) // 2, width, height)
+        close_w, close_h = self._close_button_size
+        self.close_button_rect = pygame.Rect(0, 0, close_w, close_h)
+        self.close_button_rect.center = (self.report_panel_rect.centerx,
+                                         self.report_panel_rect.top + int(height * REPORT_CLOSE_Y))
+        self.report_content_rect = self._panel_content(self.report_panel_rect)
+        self._scaled_report_bg = battle_screen_kit.art(REPORT_PANEL_ART, self.report_panel_rect.size)
+
+    def _report_width(self):
+        """The report's width: the board's, less a gutter for the scrollbar."""
+        width = int(self.screen_width * REPORT_PANEL_WIDTH_RATIO)
+        gutter = int((battle_screen_kit.SCROLL_BAR + battle_screen_kit.SCROLL_BAR_GAP) * self.scale)
+        return width - 2 * int(width * REPORT_INSET_X) - gutter
 
     def _extract_battle_data(self):
         """Extract battle information for display."""
@@ -1367,6 +1458,7 @@ class EnhancedBattleInterface:
         # Identify attacker and defenders
         # Attacker is the player who moved into the territory (not the original owner)
         original_owner = battle.original_owner
+        self.original_owner = original_owner
 
         self.attacker_player = None
         self.defender_players = []
@@ -1461,6 +1553,10 @@ class EnhancedBattleInterface:
         # A simultaneous round's battle is fought with the round's frozen heroes and
         # territorial bonuses (BattleContext) - the bars show the same numbers; None = live
         battle_context = getattr(battle, 'battle_context', None)
+        # What makes up each strength, for the panels' bonus lists (the same calls fill
+        # them: calculate_army_effective_strength(breakdown=)); the Keep is a flat entry
+        self.attacker_breakdown = []
+        self.defender_breakdown = []
 
         # Use game_state's calculation method if available
         if hasattr(self.game_state, 'calculate_army_effective_strength'):
@@ -1473,7 +1569,8 @@ class EnhancedBattleInterface:
                     self.attacker_player,
                     self.territory,
                     unit_avg_levels=atk_avg_levels,
-                    battle_context=battle_context
+                    battle_context=battle_context,
+                    breakdown=self.attacker_breakdown
                 )
             else:
                 self.attacker_strength = 0.0
@@ -1488,7 +1585,8 @@ class EnhancedBattleInterface:
                     def_player,
                     self.territory,
                     unit_avg_levels=def_avg_levels,
-                    battle_context=battle_context
+                    battle_context=battle_context,
+                    breakdown=self.defender_breakdown
                 )
                 self.defender_strength = base_strength + (self.keep_bonus if self.has_keep else 0)
             else:
@@ -1497,17 +1595,15 @@ class EnhancedBattleInterface:
             # Fallback to simple army counts
             self.attacker_strength = float(self.attacker_count)
             self.defender_strength = float(self.defender_count) + (self.keep_bonus if self.has_keep else 0)
+        if self.has_keep and self.keep_bonus:
+            self.defender_breakdown.append({'key': 'keep', 'label': 'Keep', 'flat': self.keep_bonus})
 
-        # Calculate bar fill proportions
-        if self.attacker_strength >= self.defender_strength and self.attacker_strength > 0:
-            self.attacker_fill = 1.0
-            self.defender_fill = self.defender_strength / self.attacker_strength if self.attacker_strength > 0 else 0.0
-        elif self.defender_strength > 0:
-            self.defender_fill = 1.0
-            self.attacker_fill = self.attacker_strength / self.defender_strength
-        else:
-            self.attacker_fill = 0.5
-            self.defender_fill = 0.5
+        # Both bars start full (owner, 2026-10-29: an informed mystery - the bonus list
+        # and the Advantage tags show what each side has, the fight shows who is stronger:
+        # each side's hits are sized to its real loss - and the report gives the numbers).
+        # They used to start at the strengths' ratio, which gave the winner away.
+        self.attacker_fill = 1.0
+        self.defender_fill = 1.0
 
     @staticmethod
     def _survivor_fill(initial_fill, survivors, initial_count):
@@ -1704,6 +1800,8 @@ class EnhancedBattleInterface:
         """Start the victory/defeat splash animation."""
         self.state = BattleInterfaceState.SPLASH
         self.elapsed = 0.0
+        # The result is final: compose the report now, not on its first frame
+        self._prepare_report()
 
         # Choose appropriate image
         if self.current_player_won:
@@ -1751,7 +1849,8 @@ class EnhancedBattleInterface:
                     self._start_report()
 
     def set_actual_battle_result(self, winner: int, attacker_survivors: int,
-                                  defender_survivors: int, surviving_units: list = None):
+                                  defender_survivors: int, surviving_units: list = None,
+                                  outcome: dict = None):
         """
         Update the battle result with actual values from game_state.resolve_battle().
 
@@ -1763,9 +1862,13 @@ class EnhancedBattleInterface:
             attacker_survivors: Actual number of attacker survivors
             defender_survivors: Actual number of defender survivors
             surviving_units: List of surviving unit dicts with 'type' key
+            outcome: GameState.battle_outcome() for the viewer - the report's outcome
+                lines (the Keep, buildings, heroes slain, XP); None leaves them out
         """
         # Update internal survivor counts
         self.winner = winner
+        self.outcome = outcome or {}
+        self._report_parts = None
         self.attacker_survivors = attacker_survivors
         self.defender_survivors = defender_survivors
         self.current_player_won = (winner == self.current_player)
@@ -1880,21 +1983,23 @@ class EnhancedBattleInterface:
             pos: (x, y) tuple of click position
 
         Returns:
-            str or None: 'resolve', 'close', or None if no button clicked
+            str or None: 'resolve', 'skip', 'close', or None if no button clicked
         """
         if self.state == BattleInterfaceState.SETUP:
             if self.resolve_button_rect.collidepoint(pos):
+                self._trigger_flash('resolve')
                 self._pre_calculate_battle_result()
                 self._start_animation()
                 return 'resolve'
 
         elif self.state == BattleInterfaceState.ANIMATING:
-            # Clicking anywhere cuts a long battle short
+            # The Skip button - or a click anywhere - cuts a long battle short
             if self.skip_animation():
                 return 'skip'
 
         elif self.state == BattleInterfaceState.REPORT:
             if self.close_button_rect.collidepoint(pos):
+                self._trigger_flash('close')
                 self.is_finished_flag = True
                 return 'close'
 
@@ -1909,6 +2014,8 @@ class EnhancedBattleInterface:
         """
         if self.state != BattleInterfaceState.ANIMATING or self.particle_effect is None:
             return False
+        # (No click flash: the splash replaces the Skip button on the next frame - owner,
+        # 2026-10-28: it lingered over the splash while it flashed)
         self.particle_effect.skip()
         # Push past the post-animation hold so update() moves on to the splash
         # on the next frame.
@@ -1939,196 +2046,147 @@ class EnhancedBattleInterface:
         """
         self.mouse_pos = pos
 
-    def _wrap_text(self, text, font, max_width):
-        """
-        Wrap text to fit within max_width, returning list of lines.
-
-        Tries to break on word boundaries first, then character boundaries
-        if a single word is too long.
-
-        Args:
-            text: Text string to wrap
-            font: pygame.Font to measure with
-            max_width: Maximum width in pixels
-
-        Returns:
-            List of text lines that fit within max_width
-        """
-        # First check if text fits as-is
-        if font.size(text)[0] <= max_width:
-            return [text]
-
-        words = text.split()
-        lines = []
-        current_line = ""
-
-        for word in words:
-            # Check if adding this word would exceed max_width
-            test_line = f"{current_line} {word}".strip()
-            if font.size(test_line)[0] <= max_width:
-                current_line = test_line
-            else:
-                # Current line is full, start new line
-                if current_line:
-                    lines.append(current_line)
-
-                # Check if single word fits
-                if font.size(word)[0] <= max_width:
-                    current_line = word
-                else:
-                    # Word too long - break by character
-                    current_line = ""
-                    for char in word:
-                        test = current_line + char
-                        if font.size(test)[0] <= max_width:
-                            current_line = test
-                        else:
-                            if current_line:
-                                lines.append(current_line)
-                            current_line = char
-
-        # Add remaining text
-        if current_line:
-            lines.append(current_line)
-
-        return lines if lines else [text]
-
     def _render_overlay(self):
         """Darken the map behind the battle screen: a vignette, deeper toward the edges."""
         self.light.darken(self.screen)
 
-    def _render_panel(self, rect, title, title_color, territory, composition,
-                      effective_strength, is_defender=False):
+    def _attacker_title(self):
+        """The left panel's name."""
+        if self.attacker_player is None:
+            return "Unknown"
+        return self.game_state.get_player_name(self.attacker_player)
+
+    def _defender_title(self):
+        """The right panel's name - the same in the preview and the fight."""
+        if not self.defender_players:
+            return "Defenders"
+        if len(self.defender_players) == 1:
+            return self.game_state.get_player_name(self.defender_players[0])
+        return f"{len(self.defender_players)} Defenders"
+
+    def _prepare_preview(self):
         """
-        Render a battle information panel.
-
-        Args:
-            rect: pygame.Rect for panel bounds
-            title: Player name to display
-            title_color: Color for player name
-            territory: Territory name
-            composition: Dict of unit_type -> count
-            effective_strength: Calculated effective strength
-            is_defender: If True, show Keep info if applicable
+        Compose the preview once, as the window opens (ui/battle_screen_panels.py): the
+        banner naming the battle and, per side, its fixed top (role, flag, name) and its
+        rows - the army, the bonuses - which scroll with the mouse wheel when they
+        outgrow the panel (handle_wheel). Drawn unchanged through the setup and the fight.
         """
-        # P3 fix: use pre-scaled panel background instead of smoothscale per frame
-        if self._scaled_panel_bg:
-            self.screen.blit(self._scaled_panel_bg, rect.topleft)
-        elif self.panel_bg:
-            self.screen.blit(pygame.transform.smoothscale(self.panel_bg, (rect.width, rect.height)), rect.topleft)
-        else:
-            # Fallback solid color
-            pygame.draw.rect(self.screen, (40, 40, 60), rect)
-            pygame.draw.rect(self.screen, WHITE, rect, 2)
+        fonts = self.preview_fonts
+        owner = getattr(self, 'original_owner', None)
+        defending = owner is not None and owner >= 0 and owner in self.defender_players
+        views = (
+            battle_screen_panels.side_view(
+                "Attacking", self._attacker_title(), self.attacker_player, self.attacker_color,
+                self.attacker_composition, self.attacker_breakdown),
+            battle_screen_panels.side_view(
+                "Defending" if defending else "Opposing", self._defender_title(),
+                self.defender_players[0] if len(self.defender_players) == 1 else owner,
+                self.defender_color, self.defender_composition, self.defender_breakdown,
+                keep=self.has_keep))
+        self._sides = []
+        # Per side: where its Advantage / Disadvantage tags are in its rows, and what each
+        # one explains (_matchup_at)
+        self._side_tags = []
+        for view, content in zip(views, (self.attacker_content_rect, self.defender_content_rect)):
+            header = battle_screen_panels.compose_side_header(view, content.width, fonts, self.scale)
+            left = battle_screen_panels.side_indent(content.width)
+            body, tags = battle_screen_panels.compose_side_body(view, content.width - 2 * left, fonts,
+                                                                self.scale)
+            self._side_tags.append((tags, view['matchups']))
+            room = pygame.Rect(content.left + left, content.top + header.get_height(),
+                               content.width - 2 * left, content.bottom - content.top - header.get_height())
+            self._sides.append((header, battle_screen_kit.ScrollView(body, room, self.scale)))
+        turn = getattr(self.game_state, 'turn_number', 0)
+        self._banner = battle_screen_panels.compose_banner(
+            f"Battle of {map_data.get_display_name(self.territory)}",
+            f"Turn {turn}" if turn else None, fonts, self.scale)
 
-        # Content area with separate H/V padding for BattlePlayerScreen.png
-        padding_h = self.panel_content_padding_h if self.panel_bg else self.text_padding
-        padding_v = self.panel_content_padding_v if self.panel_bg else self.text_padding
-        content_x = rect.left + padding_h
-        content_width = rect.width - padding_h * 2
-        y = rect.top + padding_v
+    def _render_sides(self):
+        """The two panels with their composed content, and the banner above them."""
+        for rect, content, (header, rows) in zip(
+                (self.attacker_panel_rect, self.defender_panel_rect),
+                (self.attacker_content_rect, self.defender_content_rect), self._sides):
+            if self._scaled_panel_bg:
+                self.screen.blit(self._scaled_panel_bg, rect.topleft)
+            else:
+                pygame.draw.rect(self.screen, (40, 40, 60), rect)
+                pygame.draw.rect(self.screen, WHITE, rect, 2)
+            self.screen.blit(header, content.topleft)
+            rows.draw(self.screen)
+        self.screen.blit(self._banner, self._banner_rect())
 
-        # Player name (colored) - wrap if too long
-        name_lines = self._wrap_text(title, self.title_font, content_width)
-        for line in name_lines:
-            name_surface = self.title_font.render(line, True, title_color)
-            name_rect = name_surface.get_rect(centerx=rect.centerx, top=y)
-            self.screen.blit(name_surface, name_rect)
-            y += self.text_line_height
-        y += int(5 * self.scale)  # Extra spacing after name
+    def _matchup_at(self, pos):
+        """The matchup (breakdown entry) of the Advantage / Disadvantage tag under `pos` in
+        either side's visible rows, or None."""
+        for (_header, rows), (tags, matchups) in zip(getattr(self, '_sides', ()),
+                                                     getattr(self, '_side_tags', ())):
+            if not rows.rect.collidepoint(pos):
+                continue
+            local = (pos[0] - rows.rect.x, pos[1] - rows.rect.y + rows.offset)
+            for rect, unit_type in tags:
+                if rect.collidepoint(local) and unit_type in matchups:
+                    return matchups[unit_type]
+        return None
 
-        # Territory
-        territory_text = f"Territory: {territory}"
-        territory_surface = self.text_font.render(territory_text, True, WHITE)
-        self.screen.blit(territory_surface, (content_x, y))
-        y += self.text_line_height
-
-        # Army Composition header
-        comp_header = self.text_font.render("Army Composition:", True, WHITE)
-        self.screen.blit(comp_header, (content_x, y))
-        y += self.text_line_height - int(5 * self.scale)
-
-        # Separator line
-        pygame.draw.line(self.screen, WHITE,
-                        (content_x, y),
-                        (content_x + content_width, y),
-                        1)
-        y += int(12 * self.scale)
-
-        # Unit counts
-        if composition:
-            for unit_type, count in sorted(composition.items()):
-                unit_text = f"{count} {unit_type}"
-                unit_surface = self.small_font.render(unit_text, True, WHITE)
-                self.screen.blit(unit_surface, (content_x + int(10 * self.scale), y))
-                y += self.text_line_height - int(10 * self.scale)  # Tighter spacing for 5 unit types
-        else:
-            no_units = self.small_font.render("No units", True, (150, 150, 150))
-            self.screen.blit(no_units, (content_x + int(10 * self.scale), y))
-            y += self.text_line_height - int(10 * self.scale)
-
-        # Keep indicator (defender only)
-        if is_defender and self.has_keep:
-            y += int(8 * self.scale)
-            keep_text = f"Territory has a Keep. (+{self.keep_bonus})"
-            keep_surface = self.small_font.render(keep_text, True, (255, 200, 100))
-            self.screen.blit(keep_surface, (content_x + int(10 * self.scale), y))
-            y += self.text_line_height
-
-        # Effective Strength
-        y += 12
-        strength_text = f"Effective Strength: {effective_strength:.1f}"
-        strength_surface = self.text_font.render(strength_text, True, WHITE)
-        self.screen.blit(strength_surface, (content_x, y))
-
-    def _render_button(self, rect, text, bg_image=None):
+    def _render_matchup_tip(self):
         """
-        Render a button with hover/click effects.
+        Hovering a unit type's Advantage / Disadvantage tag explains it (owner,
+        2026-10-29): which enemy units it counters or is countered by, and the factor
+        (battle_screen_panels.matchup_tip). Next to the cursor, kept on the screen.
+        """
+        entry = self._matchup_at(self.mouse_pos)
+        if entry is None:
+            return
+        title, lines = battle_screen_panels.matchup_tip(entry)
+        mark = 'up' if entry['factor'] >= 1 else 'down'
+        fonts = self.preview_fonts
+        box = battle_screen_kit.tooltip_box(
+            title, battle_screen_panels.MARK_COLORS[mark], lines, fonts['tip_title'],
+            fonts['tip_body'], self.scale, int(TIP_WIDTH_REF * self.scale))
+        mx, my = self.mouse_pos
+        x, y = mx + int(16 * self.scale), my + int(18 * self.scale)
+        if x + box.get_width() > self.screen_width - 4:
+            x = mx - box.get_width() - int(12 * self.scale)
+        if y + box.get_height() > self.screen_height - 4:
+            y = my - box.get_height() - int(10 * self.scale)
+        self.screen.blit(box, (max(4, x), max(4, y)))
+
+    def _banner_rect(self):
+        """Where the battle's banner goes: centred, just above the panels."""
+        panel = self.attacker_panel_rect
+        return self._banner.get_rect(midbottom=(
+            self.screen_width // 2, panel.top + int(panel.height * BANNER_BOTTOM_SHARE)))
+
+    @property
+    def clicked_element(self):
+        """The button flashing after its click ('resolve' / 'skip' / 'close'), else None."""
+        name, ticks = self._flash
+        if name is not None and pygame.time.get_ticks() - ticks < CLICK_FLASH_DURATION_MS:
+            return name
+        return None
+
+    def _trigger_flash(self, name):
+        self._flash = (name, pygame.time.get_ticks())
+
+    def _render_button(self, rect, text, key, mark=None):
+        """
+        Draw an ornate button (ui/battle_screen_kit.py): brighter under the cursor,
+        flashing for a moment after its click. Every sprite is baked once.
 
         Args:
             rect: pygame.Rect for button bounds
-            text: Text to display on button
-            bg_image: Optional background image
+            text: Label
+            key: The button's click-flash id ('resolve' / 'skip' / 'close')
+            mark: Optional mark after the label ('skip': fast-forward)
         """
-        is_hovering = rect.collidepoint(self.mouse_pos)
+        state = battle_screen_kit.button_state(rect, self.mouse_pos, self.clicked_element == key)
+        battle_screen_kit.draw_button(self.screen, rect, text, self.button_font, state, mark)
 
-        if bg_image:
-            # FPS OPT: Cache scaled+darkened base button image (avoids smoothscale+copy+Surface every frame)
-            if not hasattr(self, '_button_base_cache'):
-                self._button_base_cache = {}
-            btn_key = (id(bg_image), rect.width, rect.height)
-            if btn_key not in self._button_base_cache:
-                scaled_img = pygame.transform.smoothscale(bg_image, (rect.width, rect.height))
-                darkened = scaled_img.copy()
-                dark_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-                dark_surface.fill((100, 100, 100, 255))
-                darkened.blit(dark_surface, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                self._button_base_cache[btn_key] = darkened
-
-            if is_hovering:
-                # Only .copy() + brighten for the hovered button (rare — 1 at a time)
-                modified_img = self._button_base_cache[btn_key].copy()
-                bright_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-                bright_surface.fill((40, 40, 40, 0))
-                modified_img.blit(bright_surface, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
-                self.screen.blit(modified_img, rect.topleft)
-            else:
-                # FPS OPT: Blit directly from cache — no .copy() needed
-                self.screen.blit(self._button_base_cache[btn_key], rect.topleft)
-        else:
-            # Fallback solid color button
-            color = (80, 80, 120) if not is_hovering else (100, 100, 150)
-            pygame.draw.rect(self.screen, color, rect)
-            pygame.draw.rect(self.screen, WHITE, rect, 2)
-
-        # FPS OPT: Cache button text render (avoids font.render() every frame)
-        if not hasattr(self, '_button_text_cache'):
-            self._button_text_cache = {}
-        if text not in self._button_text_cache:
-            self._button_text_cache[text] = self.button_font.render(text, True, WHITE)
-        text_surface = self._button_text_cache[text]
-        text_rect = text_surface.get_rect(center=rect.center)
-        self.screen.blit(text_surface, text_rect)
+    def _render_skip_button(self):
+        """The Skip button under the bars, and its "Space" keycap (Esc and a click skip too)."""
+        self._render_button(self.skip_button_rect, "Skip", 'skip', mark='skip')
+        hint = battle_screen_kit.key_hint("Space", self.hint_font)
+        self.screen.blit(hint, hint.get_rect(midtop=(self.skip_button_rect.centerx, self.skip_hint_top)))
 
     def _render_pulsed_icon(self):
         """
@@ -2225,70 +2283,24 @@ class EnhancedBattleInterface:
         self.light.begin_frame()
         self.light.prewarm_step()
 
-        # Render panels
-        attacker_name = self.game_state.get_player_name(self.attacker_player) if self.attacker_player is not None else "Unknown"
-        self._render_panel(
-            self.attacker_panel_rect,
-            attacker_name,
-            self.attacker_color,
-            self.territory,
-            self.attacker_composition,
-            self.attacker_strength,
-            is_defender=False
-        )
-
-        defender_name = "Defenders"
-        if self.defender_players:
-            if len(self.defender_players) == 1:
-                defender_name = self.game_state.get_player_name(self.defender_players[0])
-            else:
-                defender_name = f"{len(self.defender_players)} Defenders"
-        self._render_panel(
-            self.defender_panel_rect,
-            defender_name,
-            self.defender_color,
-            self.territory,
-            self.defender_composition,
-            self.defender_strength,
-            is_defender=True
-        )
+        # The banner and both sides (composed once, _prepare_preview)
+        self._render_sides()
 
         # Render battle icon with pulsation animation
         self._render_pulsed_icon()
 
-        # Render resolve button
-        self._render_button(self.resolve_button_rect, "Resolve Battle", self.button_bg)
-
         # Render strength bars
         self._render_strength_bars()
 
+        # Resolve button, under the bars (the Skip button takes its place in the fight)
+        self._render_button(self.resolve_button_rect, "Resolve Battle", 'resolve')
+
+        self._render_matchup_tip()
+
     def _render_animating(self):
         """Render the ANIMATING state (particle combat)."""
-        # Render panels (static during animation)
-        attacker_name = self.game_state.get_player_name(self.attacker_player) if self.attacker_player is not None else "Unknown"
-        self._render_panel(
-            self.attacker_panel_rect,
-            attacker_name,
-            self.attacker_color,
-            self.territory,
-            self.attacker_composition,
-            self.attacker_strength,
-            is_defender=False
-        )
-
-        defender_name = "Defenders"
-        if self.defender_players:
-            if len(self.defender_players) == 1:
-                defender_name = self.game_state.get_player_name(self.defender_players[0])
-        self._render_panel(
-            self.defender_panel_rect,
-            defender_name,
-            self.defender_color,
-            self.territory,
-            self.defender_composition,
-            self.defender_strength,
-            is_defender=True
-        )
+        # The banner and both sides, unchanged through the fight
+        self._render_sides()
 
         # Render battle icon with pulsation animation
         self._render_pulsed_icon()
@@ -2297,13 +2309,88 @@ class EnhancedBattleInterface:
         if self.particle_effect:
             self.particle_effect.render(self.screen)
 
+        self._render_skip_button()
+        self._render_matchup_tip()
+
     def _render_splash(self):
         """Render the SPLASH state (victory/defeat image)."""
         if self.splash_effect:
             self.splash_effect.render(self.screen)
 
+    def _is_ours(self, player):
+        """The viewer or one of their allies (the report's "our" / "the enemy's")."""
+        viewer = self.current_player
+        if player is None or viewer is None or player < 0 or viewer < 0:
+            return False
+        return player == viewer or self.game_state.are_allies(player, viewer)
+
+    def _prepare_report(self):
+        """
+        Compose the report (ui/battle_screen_panels.py) from the final result, once: at
+        the splash's start, or on the report's first frame (report-only mode, no splash).
+        """
+        result = self.battle_result or {}
+        won = self.current_player_won
+        # No army survived (a perfect tie): neither side's victory
+        if (self.report_snapshot is None and (self.winner is None or self.winner < 0)
+                and not result.get('attacker_survivors') and not result.get('defender_survivors')):
+            won = None
+        view = battle_screen_panels.report_view(
+            map_data.get_display_name(self.territory), won,
+            result.get('unit_breakdown', {}), self.outcome, self._is_ours,
+            strengths=self._report_strengths())
+        header, body = battle_screen_panels.compose_report(
+            view, self._report_width(), self.report_fonts, self.scale)
+        self._report_parts = (header, body)
+        self._layout_report(header.get_height() + body.get_height())
+        # Centred on the board when it has room to spare; taller than the largest panel,
+        # the body scrolls under the header (handle_wheel)
+        content = self.report_content_rect
+        top = content.top + max(0, (content.height - header.get_height() - body.get_height()) // 2)
+        self._report_header_pos = (content.left, top)
+        room = pygame.Rect(content.left, top + header.get_height(), body.get_width(),
+                           content.bottom - top - header.get_height())
+        self._report_scroller = battle_screen_kit.ScrollView(body, room, self.scale)
+
+    def _report_strengths(self):
+        """
+        (the viewer's side's strength, the enemy's) for the report's line - the window's
+        own numbers for a battle fought here, the stored report's for one opened later
+        (None when it has none: an uncontested capture, an older report).
+        """
+        if self.report_snapshot is not None:
+            report = self.report_snapshot
+            yours, theirs = report.get('defender_strength'), report.get('attacker_strength')
+            return (yours, theirs) if yours is not None and theirs is not None else None
+        attacker = getattr(self, 'attacker_strength', None)
+        defender = getattr(self, 'defender_strength', None)
+        if attacker is None or defender is None:
+            return None
+        if self.current_player == self.attacker_player or self._is_ours(self.attacker_player):
+            return (attacker, defender)
+        return (defender, attacker)
+
+    def handle_wheel(self, dy):
+        """
+        Mouse wheel (pygame MOUSEWHEEL y: + up): the report, or - before and during the
+        fight - the side panel under the cursor, when its rows outgrow it.
+
+        Returns:
+            bool: True if something moved
+        """
+        if self.state == BattleInterfaceState.REPORT:
+            scroller = self._report_scroller
+        elif self.state in (BattleInterfaceState.SETUP, BattleInterfaceState.ANIMATING):
+            scroller = next((rows for rect, (_header, rows) in
+                             zip((self.attacker_panel_rect, self.defender_panel_rect),
+                                 getattr(self, '_sides', ()))
+                             if rect.collidepoint(self.mouse_pos)), None)
+        else:
+            scroller = None
+        return scroller.wheel(dy) if scroller is not None else False
+
     def _render_report(self):
-        """Render the REPORT state (battle summary with unit type breakdown)."""
+        """Render the REPORT state: the panel, the composed report, Close."""
         # P3 fix: use pre-scaled report panel background
         if self._scaled_report_bg:
             self.screen.blit(self._scaled_report_bg, self.report_panel_rect.topleft)
@@ -2315,104 +2402,13 @@ class EnhancedBattleInterface:
             pygame.draw.rect(self.screen, (40, 40, 60), self.report_panel_rect)
             pygame.draw.rect(self.screen, WHITE, self.report_panel_rect, 2)
 
-        # Content with separate H/V padding for BattlePlayerScreen.png
-        padding_h = self.panel_content_padding_h if self.panel_bg else self.text_padding
-        padding_v = self.panel_content_padding_v if self.panel_bg else self.text_padding
-        content_x = self.report_panel_rect.left + padding_h
-        content_width = self.report_panel_rect.width - padding_h * 2
-        y = self.report_panel_rect.top + padding_v
-        center_x = self.report_panel_rect.centerx
-
-        # Title
-        title = self.title_font.render("Battle Report:", True, WHITE)
-        title_rect = title.get_rect(centerx=center_x, top=y)
-        self.screen.blit(title, title_rect)
-        y += self.text_line_height + self.report_line_spacing
-
-        # Territory name
-        territory_text = self.text_font.render(self.territory, True, WHITE)
-        territory_rect = territory_text.get_rect(centerx=center_x, top=y)
-        self.screen.blit(territory_text, territory_rect)
-        y += self.text_line_height + self.report_line_spacing + int(5 * self.scale)
-
-        # Separator
-        pygame.draw.line(self.screen, WHITE,
-                        (content_x, y),
-                        (content_x + content_width, y),
-                        1)
-        y += int(12 * self.scale)  # Reduced from 15 for 5 unit types
-
-        # Victory/Defeat
-        if self.current_player_won:
-            result_text = "VICTORY"
-            result_color = (100, 255, 100)
-        else:
-            result_text = "DEFEAT"
-            result_color = (255, 100, 100)
-
-        result_surface = self.title_font.render(result_text, True, result_color)
-        result_rect = result_surface.get_rect(centerx=center_x, top=y)
-        self.screen.blit(result_surface, result_rect)
-        y += self.text_line_height + self.report_line_spacing + int(5 * self.scale)
-
-        # Separator
-        pygame.draw.line(self.screen, WHITE,
-                        (content_x, y),
-                        (content_x + content_width, y),
-                        1)
-        y += int(12 * self.scale)  # Reduced from 15 for 5 unit types
-
-        # Battle summary
-        if self.battle_result:
-            # "Your Units:" header
-            your_units_header = self.text_font.render("Your Units:", True, WHITE)
-            self.screen.blit(your_units_header, (content_x, y))
-            y += self.text_line_height
-
-            # Unit type breakdown for current player
-            unit_breakdown = self.battle_result.get('unit_breakdown', {})
-            if unit_breakdown:
-                for unit_type, data in sorted(unit_breakdown.items()):
-                    lost = data['lost']
-                    survived = data['survived']
-                    original = data['original']
-
-                    if survived == 0:
-                        unit_text = f"  {unit_type}: {lost} lost (all)"
-                        text_color = (255, 150, 150)  # Reddish for total loss
-                    elif lost == 0:
-                        unit_text = f"  {unit_type}: {survived} survived (no losses)"
-                        text_color = (150, 255, 150)  # Greenish for no losses
-                    else:
-                        unit_text = f"  {unit_type}: {lost} lost, {survived} survived"
-                        text_color = WHITE
-
-                    unit_surface = self.small_font.render(unit_text, True, text_color)
-                    self.screen.blit(unit_surface, (content_x, y))
-                    y += self.text_line_height - int(10 * self.scale)  # Tighter spacing for 5 unit types
-            else:
-                # Fallback if no breakdown available
-                no_data = self.small_font.render("  No unit data available", True, (150, 150, 150))
-                self.screen.blit(no_data, (content_x, y))
-                y += self.text_line_height - int(10 * self.scale)
-
-            # Add spacing before total summary
-            y += self.report_line_spacing
-
-            # Total summary line
-            if self.current_player == self.attacker_player:
-                total_lost = self.battle_result['attacker_lost']
-                total_survived = self.battle_result['attacker_survivors']
-            else:
-                total_lost = self.battle_result['defender_lost']
-                total_survived = self.battle_result['defender_survivors']
-
-            total_text = f"Total: {total_lost} lost, {total_survived} survived"
-            total_surface = self.text_font.render(total_text, True, WHITE)
-            self.screen.blit(total_surface, (content_x, y))
+        if self._report_parts is None:
+            self._prepare_report()
+        self.screen.blit(self._report_parts[0], self._report_header_pos)
+        self._report_scroller.draw(self.screen)
 
         # Close button
-        self._render_button(self.close_button_rect, "Close", self.button_bg)
+        self._render_button(self.close_button_rect, "Close", 'close')
 
     def render(self):
         """Render the current state of the interface."""

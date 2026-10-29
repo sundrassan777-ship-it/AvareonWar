@@ -2,6 +2,205 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-29 - Battle screen: the preview, its rows and an informed mystery (Phase 3)
+
+Branch `feature/battle-screens`, phase 3, the last. Each side of the battle window showed
+its name, "Territory: X", "Army Composition:", "N UnitType" lines and one opaque
+"Effective Strength" number, in plain white text drawn every frame. Owner's pick: the
+restyle with a bonus breakdown. Along the way (2026-10-29): units and bonuses aligned
+with the gold separators, a wider inner margin (`PREVIEW_INSET_X` 0.17), the banner just
+above the panels (`BANNER_BOTTOM_SHARE`); a "full house" test battle showed the bonus list
+overflowing ("+3 more", the Keep hidden, unit names cut off), so: a row per unit type with
+its name, a row per bonus with its icon, both scrolling with the mouse wheel; and the
+strength hidden - an informed mystery.
+- **The look** (`ui/battle_screen_panels.py`): a bronze banner over the panels, "Battle
+  of {display name}" and the turn (`compose_banner()`, the turn banner's frame). Per side a
+  fixed top (`compose_side_header()`): ATTACKING / DEFENDING (OPPOSING in a multi-way
+  fight), the player's army flag (`flag_icon()`) and name in their colour (`readable()`:
+  a darker colour lightened toward warm white; the four player colours unchanged), a long
+  name on two lines. Then the rows (`compose_side_body()`), in line with the separators:
+  "Army" - a row per unit type, portrait and "2 x Archer", tagged "Advantage" (green) /
+  "Disadvantage" (red) at its end where the type counters the enemy (counter factor >=
+  1.15) / is countered (<= 0.85) (`unit_rows()`); "Bonuses" (none: no section) - a row per
+  source and amount in a fixed order (`bonus_lines()`), each with its icon (`BONUS_ICONS`:
+  the technology's, the Vanquish the Enemy ability's, the territorial-bonus button, the
+  level shield, the Captain, the Keep), its value, its name and - unless it reaches the
+  whole army - the unit types it reaches as small portraits at the row's end. Rows 32 px
+  high (at 900p). "The Keep stands alone" for a Keep without a garrison.
+- **The tags explained** (owner, 2026-10-29: where does Advantage come from?): hovering a
+  unit type's Advantage / Disadvantage tag shows a tooltip working the counter matchup out
+  - "Cavalry counter Archers: x2 against the enemy's 4", "Pikemen counter Cavalry: x0.5
+  against the enemy's 3", "x1 against the other 6 units", "Over all 13 enemy units: x1.19
+  strength" (`battle_screen_panels.matchup_tip()`; the breakdown's matchup entry now
+  carries the unit types and enemy counts behind it). `compose_side_body()` returns where
+  each tag is; `EnhancedBattleInterface._matchup_at()` / `_render_matchup_tip()` find it
+  under the cursor (scrolled rows included) and draw `battle_screen_kit.tooltip_box()` -
+  the sidebar's tooltip style with a title, a gold rule and wrapped lines, built once.
+- **Scrolling** (`ui/battle_screen_kit.py` `ScrollView`, new): the rows sit in a view of
+  their own under the fixed top; when they outgrow the panel the wheel scrolls the side
+  under the cursor (`EnhancedBattleInterface.handle_wheel()`, in setup and through the
+  fight), faded at an edge with more beyond it, a gold scrollbar beside it. Nothing is cut
+  off any more ("+N more" is gone). The battle report's body uses the same view (its own
+  scroll code went).
+- **An informed mystery** (owner, 2026-10-29): the preview shows no strength, and both
+  bars start full (`_calculate_effective_strengths()`; they started at the strengths'
+  ratio, which gave the winner away). The bonus rows and the Advantage tags stay, so a
+  player can work it out; the fight shows it - each side's hits are still sized to its real
+  loss - and the report gives the numbers: "Your strength 21.1 - Enemy 15.6" under the
+  territory line (`report_view(strengths=)`; `_report_strengths()`: the window's own
+  numbers, or a stored report's).
+- **The data, no rule change** (`game_state/military.py`):
+  `calculate_army_effective_strength(..., breakdown=None)` appends an entry per factor it
+  applies (`{'key', 'label', 'unit_type', 'pct'}`, a counter matchup `{'key': 'matchup',
+  'unit_type', 'factor'}`) - the arithmetic and the returned strength are the same with or
+  without it; `_calculate_effective_strengths()` passes a list per side and adds the Keep
+  as a flat entry. `_shown_strengths(battle)`: each side's strength as the window counts
+  it, taken quietly as the battle starts (`battle._shown_strengths`; the battle's own
+  `_calculate_battle_strengths()` logs and keeps XP bookkeeping) - the stored Battle Report
+  gains `attacker_strength` / `defender_strength`.
+- **The window** (`ui/effects/battle_interface.py`): `_prepare_preview()` composes the
+  banner and each side (top + rows in a `ScrollView`) once as the window opens;
+  `_render_sides()` blits them (the old `_render_panel()` rendered every line every
+  frame). The right panel's name from one helper (`_defender_title()`: the fight said
+  "Defenders" where the preview said "3 Defenders"); the territory's display name. Panels
+  57% of the screen height (55%). The old panel fonts, paddings and `_wrap_text()` are
+  gone.
+- **Prewarm**: every preview icon at its sizes (`preview_icons()`: unit rows, the bonuses'
+  small unit portraits, the bonus icons) - from the game's own images where it has them
+  (`Game._battle_screen_icon_sources()` now also hands over the territorial-bonus button
+  and the hero abilities' icons); the three technology icons are read on the loading
+  screen.
+- **Tools**: `tools/battle_fx_preview.py` battle 5, "full house" (`FULL_HOUSE`): every unit
+  type on both sides with varied veterancy and every strength bonus the rules allow, set
+  up the real way (researched techs, a Vanquish hero each, owned strength territories, a
+  Keep); the live mode passes the mouse wheel on (it did not: nothing scrolled there).
+- **Cost** (1600x900, `--bench`): setup ~2.2 ms a frame, the fight ~2.5 ms (the full house,
+  both sides scrolling, ~2.8 / 2.9 ms); opening a battle ~185 ms as before.
+- Tests: `tests/test_battle_preview_screen.py` (86): the strength identical with and
+  without the breakdown (5 x 5 unit mixes, with and without every bonus), every bonus
+  listed with its unit type and amount, a counter matchup, nothing when nothing applies;
+  `bonus_lines()` (the whole army: no units shown, some units shown, Captains aside, a row
+  per amount, the order and the Keep, fractions, every bonus has an icon); the tags,
+  flags, readable colours, no strength in the preview; the window: composed once (setup
+  and fight), both bars start full and still end on the result, the defender's name, the
+  Keep as a bonus, the banner's name and place, the content inside the art, 720p-1440p,
+  no unit icon read after the prewarm; scrolling: the full house lists everything and
+  scrolls, the side under the cursor scrolls (and only it), in the fight too, the name
+  stays put, a short side does not scroll; the tags explained (the matchup's make-up in
+  the breakdown, an advantage and a disadvantage in words, hovering every tag explains it,
+  the tooltip shows, a tag scrolled away explains nothing). `tests/test_battle_report_screen.py`: the
+  strengths (taken quietly, in the stored report, the viewer's first, the live report's,
+  a stored report's from the defender's side, none in an older report); the report's
+  scrolling on the shared view. `test_battle_context`'s strength test passes unchanged.
+- Docs: CODE_GUIDE "Modify Battle Interface" (the preview, the informed mystery) and
+  "Battle Reports" (the strengths); `.claude/CLAUDE.md`; PATCHNOTES.
+
+## 2026-10-28 - Battle screen: the battle report (Phase 2)
+
+Branch `feature/battle-screens`, phase 2. The report was "Battle Report:", the territory,
+VICTORY / DEFEAT and the viewer's losses as plain white lines. Owner's picks for the new
+content: what happened to the territory, the heroes slain, the units' XP and level-ups
+(an enemy-losses column was offered and not chosen). After the owner's in-game look
+(2026-10-29): brighter column labels, the mouse wheel for long reports, an icon on every
+line (a line per level-up, with the unit's portrait), and the buildings by type with
+their own icons (they were a count with an empty plot).
+- **The look** (`ui/battle_screen_panels.py`, new): a small "Battle Report" caption,
+  VICTORY / DEFEAT / NO VICTOR (no army survived) in the on-map reports' green / red and
+  what happened to the territory ("Nefrid captured / held / lost", "Repelled at Nefrid");
+  the viewer's army as a table (unit portraits in the gold IconBorder; fought / lost /
+  survived under bright gold labels, losses in red, unscathed survivors in green; a total
+  from two unit types); then the outcome, every line with an icon - the Keep or Castle
+  destroyed / held, each building type destroyed / captured with its own icon ("2 Barracks
+  destroyed", "Mine taken by the enemy" when it was ours), heroes slain (ours in red, the
+  enemy's), "+N XP for each survivor" and a line per level-up with the unit's portrait
+  ("2 Archers reached level 2"). Gold separators, shadowed Cinzel; two-line wraps are
+  balanced. `report_view()` holds the words (no pygame), `compose_report()` draws them
+  once, as a header and a body.
+- **The panel** (`ui/effects/battle_interface.py` `_layout_report()`): sized to the
+  report, 55-80% of the screen height, content inside the art's frame and clear of its
+  corner spears (`REPORT_INSET_*`, shares of the panel), Close on the bottom rail; the
+  report is composed at the splash's start (`_prepare_report()`), the scaled art cached by
+  size in the kit (`battle_screen_kit.art()`). Close follows the art's aspect (180 wide).
+- **Scrolling**: a report taller than the largest panel scrolls with the mouse wheel
+  (`handle_wheel()`, 40 px a notch): the header (caption, VICTORY / DEFEAT, the territory)
+  stays put, the body scrolls, faded at an edge with more beyond it, a gold scrollbar in
+  the gutter the body leaves (`_render_scrolled_body()`; one reused scratch surface and
+  cached fade masks, so a frame only blits). `Game._battle_window_wheel()` gives the wheel
+  to an open battle window (the battle screen, or a Battle Report's detail screen, which is
+  on top when both are) - the map behind it zoomed before - unless a menu above it is open.
+- **The data, no rule change** (`game_state/military.py`): `resolve_battle()` keeps
+  `battle._had_castle` (destroy_buildings forgets the upgrade) and `battle.heroes_slain`
+  (`_battle_hero_deaths` is reset by the next battle); `_update_battle_results()` records
+  `battle.xp_awarded` where it awards the XP (the per-unit XP, each player's level-ups).
+  `GameState.battle_outcome(battle, viewer)` gathers it for the resolver's window (main.py
+  passes it to `set_actual_battle_result(outcome=)`); the defender's stored report gains
+  `keep`, `keep_name`, `xp_per_unit`, `level_ups`, and the buildings by type,
+  `buildings_destroyed` / `buildings_captured` (`{type: count}`, the Keep left out;
+  `_battle_keep_outcome()`, `_battle_xp_for()`, `_battle_building_changes()`), JSON-safe. A
+  report without them still opens (the buildings then as counts).
+- **Kit** (`ui/battle_screen_kit.py`): `icon()` (framed / cropped, or from a surface
+  already decoded), `art()`, `image()`, `shadow_text()`, `separator()`.
+- **No hitch on the first report**: its icons are 1024 px images - decoded as the first
+  report's splash began, the splash start took ~133 ms. `prewarm_battle_screen()`
+  (`battle_interface.py`) bakes them, and the panel art at the smallest report size, from
+  the images the game has already loaded (`Game._battle_screen_icon_sources()`): a
+  loading screen task ("Preparing the battle screen", ~100 ms) and again after a
+  resolution change (`apply_display_settings()`). The splash start is now ~3.8 ms; a
+  report frame ~0.9 ms. The icons' own images are not kept (only the small icons);
+  `BattlePlayerScreen.png` is decoded once per process and shared by the side panels and
+  the report (`battle_screen_kit.image()`; it was decoded for every battle - opening one
+  is ~40 ms faster).
+- **Tools**: `tools/battle_fx_preview.py` resolves the real battle on Resolve and hands its
+  result back as main.py does (it handed back the window's own estimate); the defender's
+  territory has a Keep and a Farm, so the report shows outcome lines.
+- Tests: `tests/test_battle_report_screen.py` (41): `battle_outcome()` for a captured Keep
+  with its hero, the winners' XP and level-ups, the loser's none, a held Keep, a Castle,
+  the buildings by type, saved buildings captured, no Keep, JSON, heroes kept with their
+  battle; the stored report's new keys (lost / held Keep, uncontested capture);
+  `report_view()` headlines, rows, each building type with its icon, an older report's
+  counts, our losses as losses, an enemy hero, XP and level-up lines (all with icons); the
+  screen: composed once at the splash, longer with outcome lines, the panel fits its
+  report, 720p / 1440p, an older stored report still opens; scrolling: a long report
+  scrolls in the largest panel, the wheel within bounds, the header stays put, nothing
+  built per frame, a short report and other states do not scroll; the wheel goes to the
+  battle window (not under a menu); after the prewarm the first report reads no file
+  (fails without it), the game hands over every icon a report can show.
+- Docs: CODE_GUIDE "Battle Reports" (the new keys, the detail screen and the report
+  screen), "Modify Battle Interface"; `.claude/CLAUDE.md`; PATCHNOTES.
+
+## 2026-10-28 - Battle screen: a Skip button, Resolve and Skip unified (Phase 1)
+
+Branch `feature/battle-screens`, phase 1 of the battle preview / report modernization.
+Owner: skipping the fight (a click anywhere, Space, Esc) worked but nothing on screen said
+so. Decisions along the way: the skip keeps the 3 s Victory/Defeat splash; the splash
+clears the button at once (its click flash lingered over it); then Resolve Battle moved
+into the Skip button's slot, so the two are one button that stays put.
+- **The action button** (`ui/effects/battle_interface.py`): one slot centred under the bars
+  (`ACTION_BUTTON_*`, height from the art's aspect; `resolve_button_rect` ==
+  `skip_button_rect`), clear of the bolts' level line and of the chunks falling under each
+  bar. SETUP shows **Resolve Battle** (was a small, darkened button under the battle icon,
+  180x50); ANIMATING shows **Skip** with a fast-forward mark and a "Space" keycap under it
+  (`_render_skip_button()`). Skipping works as before (`skip_animation()`); the button is
+  one more place to click.
+- **`ui/battle_screen_kit.py`** (new): the battle screen's ornate buttons - CampaignBTN with
+  baked hover / flash states (`SidebarWidgets.button_sprite`, as the bottom panel's), a
+  light Cinzel label with a drop shadow in the battle screen's own size (bold 15 at 900p),
+  the fast-forward mark (drawn; Cinzel has no arrow glyphs) and `key_hint()`. Sprites and
+  labels sit in a module cache kept between battles, rebuilt when the display changes.
+  Close uses it too. `_render_button(rect, label, key, mark)`; the interface has its own
+  click flash (`clicked_element`, `_trigger_flash()`). The darkened CampaignBTN copy and
+  its per-interface caches are gone.
+- **Tools**: `tools/battle_fx_preview.py` live mode takes the mouse (the screen's own
+  buttons: Resolve, Skip, Close reopens the battle).
+- **Cost** (1600x900, `--bench` back to back with the old code): ~2.5 ms a frame through a
+  fight either way; opening a battle unchanged.
+- Tests: `tests/test_battle_interface_integration.py` `TestSkipButton` (13): under the bars
+  and centred, fits 720p-1440p, Resolve shares the slot, drawn only in the fight, clicking
+  it goes to the splash, the splash clears it however the fight was skipped (button, a
+  click, Space, Esc), hover and flash show, nothing baked twice (also for the next battle).
+- Docs: CODE_GUIDE "Modify Battle Interface" (Skip, the action button, the kit), the
+  preview tool's row; `.claude/CLAUDE.md`; PATCHNOTES ("Battle Screen: Preview, Skip Button and Report").
+
 ## 2026-10-28 - Fix: the game hung on a battle left after the win
 
 Branch `fix/battle-after-victory`. Owner's game (simultaneous, vs 1 AI): the AI marched its

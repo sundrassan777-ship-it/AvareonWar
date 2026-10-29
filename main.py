@@ -3799,6 +3799,49 @@ class Game:
             return False
         return True
 
+    def _battle_window_wheel(self, dy):
+        """
+        Mouse wheel while a battle window is open (the battle screen, or a Battle
+        Report's detail screen, which is on top of it when both are): the window takes
+        it - a report taller than its panel scrolls - and the map behind does not zoom.
+
+        Returns:
+            bool: True if a battle window took the wheel; False when none is open or a
+            menu above it should have it
+        """
+        if self.game_menu_visible or self.options_menu_visible or self.save_dialog_active:
+            return False
+        window = self.battle_report_detail_ui or self.enhanced_battle_ui
+        if window is None:
+            return False
+        window.handle_wheel(dy)
+        return True
+
+    def _battle_screen_icon_sources(self):
+        """
+        The battle report's icons the game has already decoded, {asset path: surface}:
+        prewarm_battle_screen() bakes its small icons from them instead of reading the
+        files again (ui/battle_screen_panels.py report_icons()).
+        """
+        sources = {}
+        for unit_type, image in (getattr(self, 'unit_icons', None) or {}).items():
+            sources[f"assets/mapicons/{unit_type}Icon.png"] = image
+        for name, image in (getattr(self, 'building_icons', None) or {}).items():
+            sources[f"assets/mapicons/{name.replace(' ', '')}Icon.png"] = image
+        sources["assets/upgrades/LevelDisplay.png"] = getattr(self, 'level_shield_icon', None)
+        sources["assets/BonusButton.png"] = getattr(self, 'bonus_button_icon_original', None)
+        from game_state.data_definitions import HERO_TYPES
+        for hero, image in (getattr(self, 'hero_images', None) or {}).items():
+            icon = HERO_TYPES.get(hero, {}).get('icon')
+            if icon:
+                sources[icon] = image
+        # Hero abilities (the preview's Vanquish the Enemy row)
+        for (hero, index), image in (getattr(self, 'ability_images', None) or {}).items():
+            abilities = HERO_TYPES.get(hero, {}).get('abilities') or []
+            if index < len(abilities) and abilities[index].get('icon'):
+                sources[abilities[index]['icon']] = image
+        return {path: image for path, image in sources.items() if image is not None}
+
     def _battles_open_after_victory(self):
         """
         Whether battles are still to be fought after the game was won.
@@ -4608,6 +4651,11 @@ class Game:
             self.battle_report_rects = []
             if self.battle_report_renderer is not None:
                 self.battle_report_renderer.invalidate()
+            # The battle report's icons and panel art at the new size (its kit dropped
+            # them with the old display - the first report would decode them again)
+            if getattr(self, 'unit_icons', None) is not None:
+                from ui.effects.battle_interface import prewarm_battle_screen
+                prewarm_battle_screen(self.screen.get_size(), self._battle_screen_icon_sources())
             # Territory preview caches (border scaled size + preview images)
             self._territory_preview_cache = {}
             self._scaled_preview_border = None
@@ -11966,6 +12014,12 @@ class Game:
                     else:
                         continue  # Block all other events (other keys, etc.)
 
+                # A battle window (the battle screen, or a Battle Report's detail screen)
+                # takes the wheel: it scrolls a long report, and the map behind it no
+                # longer zooms
+                elif event.type == pygame.MOUSEWHEEL and self._battle_window_wheel(event.y):
+                    continue
+
                 elif event.type == pygame.USEREVENT + 1:
                     # Battle animation timer - transition from resolving to result
                     if self.battle_popup_visible and self.battle_popup_state == 'resolving':
@@ -13032,12 +13086,14 @@ class Game:
                     surviving_units = [unit for player in sorted(winner_side)
                                        for unit in garrison.get(player, {}).get('units', [])]
 
-                # Pass actual result to battle interface for accurate report display
+                # Pass actual result to battle interface for accurate report display,
+                # with what the battle did for the report's outcome lines
                 self.enhanced_battle_ui.set_actual_battle_result(
                     winner=shown_winner,
                     attacker_survivors=attacker_survivors,
                     defender_survivors=defender_survivors,
-                    surviving_units=surviving_units
+                    surviving_units=surviving_units,
+                    outcome=self.game_state.battle_outcome(battle, ui.current_player)
                 )
 
                 # Store resolved battle info for _finalize_enhanced_battle() to use
