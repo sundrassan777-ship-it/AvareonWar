@@ -2,6 +2,31 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-30 - Main menu: the Achievements trophy wall (Phase 2)
+
+Branch `feature/menu-glow-up`, phase 2 of 3. The Achievements panel showed two plaque
+rows at a time (AchievementFull.png stretched per row), the categories mixed in "All"
+(sorted by stat key), progress and earned dates only in a hover tooltip, and Esc in its
+search closed the whole window; the category kept from the last visit.
+- **The trophy wall** (`achievement_panel.py`, rewritten on the menu kit): a summary
+  (earned of total with a bar, the closest counted achievement, the latest earned),
+  category chips with counts, a search over names and descriptions (typing anywhere starts
+  it; Esc clears it before it closes the window), every achievement as a medal grouped by
+  category - earned first in colour with a glow, the rest in the game's own order, grey
+  with a padlock and a thin progress bar when counted - scrolling with the wheel, and a
+  details card (hover shows a medal, a click keeps it): description, earned date or
+  progress, the reward with its own icon or the title. Opens fresh each time.
+- **Frame cost**: board, summary and the wall's visible part baked into the WindowStage
+  picture (`static_key()` = chip, search, scroll); ~0.5 ms a settled frame, ~1.1 ms with
+  the mouse over medals, ~3.5 ms a wheel notch at 1600x900.
+- **Icons decoded once**: `MenuKit.preload_icons()` keeps each icon at the sizes the window
+  uses, per screen size, shared between MainMenus - the old panel decoded all 44 1024 px
+  icons on every MainMenu (every return to the menu).
+- Kit: medals, chips, search box, lock badge, selection ring, progress bars; letter-spaced
+  capitals step by each glyph's advance (a Q's / R's tail had left a gap: "CONQ UEST").
+- One menu-kit window at a time: `MainMenu._windows()` / `_end_window_fades()`.
+- `tools/menu_preview.py --window achievements`; tests `tests/test_menu_achievements.py` (19).
+
 ## 2026-10-30 - Main menu: the Options window glow-up (Phase 1)
 
 Branch `feature/menu-glow-up`, phase 1 of 3 (Options, then Achievements, then Profile).

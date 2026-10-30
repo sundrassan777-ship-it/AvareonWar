@@ -27,7 +27,7 @@ This guide provides module-specific guidance on when and how to modify different
 16. [Replay System](#replay-system) - Recording, viewer, browser
 17. [Campaign Save System](#campaign-save-system) - Save/load campaign progress
 18. [Browser Screens](#browser-screens-saved-games--replays) - Saved Games + Replays UI
-    - [Main Menu Windows](#main-menu-windows-options--achievements--profile) - The menu's windows kit (bronze window, drop + fade, WindowStage), the Options window, adding a setting
+    - [Main Menu Windows](#main-menu-windows-options--achievements--profile) - The menu's windows kit (bronze window, drop + fade, WindowStage), the Options window, the Achievements trophy wall, adding a setting
 19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
@@ -4674,10 +4674,10 @@ using filename stem as key (only for games with a `campaign_map`, which tales ha
 
 ## Achievement System
 
-**Files:** `achievement_manager.py` (definitions, logic), `achievement_panel.py` (UI helper), `steam_integration.py` (Steam sync)
-**Integration:** `main_menu.py` (button/panel/profile), `recap_screen.py` (preview popup), `main.py` (post-game hook), `settings_manager.py` (persistence)
+**Files:** `achievement_manager.py` (definitions, logic), `achievement_panel.py` (the main menu's Achievements window - the trophy wall), `steam_integration.py` (Steam sync)
+**Integration:** `main_menu.py` (button/window/profile), `recap_screen.py` (preview popup), `main.py` (post-game hook), `settings_manager.py` (persistence)
 
-**Architecture:** Singleton `AchievementManager` owns all definitions and stat tracking. `AchievementPanel` is a UI helper class created by `MainMenu` to render panel content. Achievement data persisted to `config.json` via `settings_manager`.
+**Architecture:** Singleton `AchievementManager` owns all definitions and stat tracking. `AchievementPanel(menu, kit)` is the main menu's Achievements window, a menu-kit window like Options (see "Main Menu Windows"). Achievement data persisted to `config.json` via `settings_manager`.
 
 **Steam integration:** `steam_integration.py` provides `SteamManager` singleton. On startup: `initialize()` calls `SteamInit()` + `RequestCurrentStats()`, then `pump_until_stats_ready()` waits for stats callback before `sync_to_steam()`. Achievement IDs are encoded to bytes before passing to SteamworksPy (no argtypes on achievement methods). Steam persona name auto-updates `settings.player_name` on startup; profile panel shows "(Steam)" indicator and disables name editing when Steam is active. **Friend invites:** `can_invite()` checks Steam is initialized, `get_online_friends()` enumerates friends via `GetFriendCount`/`GetFriendByIndex`/`GetFriendPersonaName`, `invite_friend(steam_id, connect_string)` sends invite via `InviteFriend` with every host address (`+connect ip1:port,ip2:port`, see "Joining with several addresses" under network/upnp.py). Invited friends receive Steam notification; accepting launches game with that `+connect` arg. A friend can be invited again after `INVITE_COOLDOWN_SECONDS` (30, `network/territory_selector.py`); meanwhile the row shows "Invited" + "again in 0:23" (`_invited_friends` = {steam_id: monotonic time}, `_invite_cooldown_left()`).
 
@@ -4712,7 +4712,7 @@ the lobby with AI slots used to earn them.
 - **Add new reward icon**: Add icon file to `assets/achievements/RewardsIcons/`, add path to `ALL_REWARD_ICON_PATHS` in `achievement_manager.py`.
 - **Add new stat trigger**: Extend `record_game_result()` in `achievement_manager.py` to increment the new stat based on game conditions.
 - **Add campaign bonus achievement**: Add tracking flag in mission `__init__`, update the flag in existing event handlers (e.g., `_check_attack_awakening`, `_on_faction_defeated`), expose via `get_bonus_conditions()`. Stats are bridged to `achievement_manager` automatically by `record_game_result()`.
-- **Change achievement panel layout**: Modify `achievement_panel.py` draw methods.
+- **Change the Achievements window (trophy wall)**: `achievement_panel.py` - see "Main Menu Windows" → "The Achievements window". A new achievement needs nothing there: its icon is decoded and its medal built when the window prewarms, and its group / chip counts follow `CATEGORIES`.
 - **Change preview popup**: Modify `_draw_achievement_preview()` / `_update_achievement_preview()` in `recap_screen.py`.
 - **Change profile title/icon UI**: Modify `_draw_profile_panel()` in `main_menu.py`.
 - **Change Steam achievement sync**: Modify `steam_integration.py` (`unlock_achievement`, `pump_until_stats_ready`). Achievement IDs must be bytes-encoded.
@@ -4940,8 +4940,8 @@ state at 720p / 900p / 1080p), `--bench` (frame cost)
 
 Agreed with the owner on the "Menu Glow-up" mockup (2026-10-30): the battle screen's
 bronze TableBorder frame and palette, a window about three quarters of the screen over
-the dimmed menu, Options in tabs. Achievements (a trophy wall) and Profile (a player card)
-move onto the same kit in the next phases; until then they are the old slide-down panels.
+the dimmed menu, Options in tabs, Achievements as a trophy wall (phase 2). Profile (a
+player card) moves onto the same kit in phase 3; until then it is the old slide-down panel.
 The in-game Options (`rendering/ui_renderer.py` `draw_options_menu`) is separate code and
 not restyled.
 
@@ -5008,6 +5008,35 @@ end of the drop). So:
   tabs. One click sound per action; a `CLICK_FLASH_DURATION_MS` flash.
 - The Map Look row exists only while `MAP_3D_AVAILABLE` (tests patch
   `ui.options_panel.MAP_3D_AVAILABLE` as well as `main_menu`'s).
+
+### The Achievements window (`achievement_panel.py`)
+
+- The trophy wall (phase 2): a summary (earned of total + bar, the closest counted
+  achievement, the latest earned), category chips with counts (`chip_counts()`), a search
+  over names and descriptions, the medal wall and a details card. `open()` reloads the
+  manager and starts fresh: All, no search, the top, the closest achievement chosen.
+- The wall (`groups()` → `_compose_grid()`): grouped in `CATEGORIES` order, earned first,
+  then the rest - each part in the `ACHIEVEMENTS` order. One surface per (chip, search),
+  shown through `battle_screen_kit.ScrollView` (wheel: `wheel()`, from MainMenu's buttons
+  4 / 5). Medals: `MenuKit.medal()` - in colour with a glow when earned; grey, darkened,
+  with a padlock (`lock_badge()`) when not; counted ones (`stat_threshold` > 1) carry a
+  thin progress bar.
+- The card: hovering a medal shows it, a click keeps it (`selected`, ringed); composed
+  once per achievement (`_card()`, a few kept) - description, earned date / progress
+  (`progress_text()`: "Level 32 / 40", "722 / 2,000"), rewards (`rewards()`: the reward
+  icon itself, or the title).
+- Keys: typing anywhere searches (`handle_key()`), Esc clears the search first
+  (`handle_escape()`; MainMenu closes the window only when it returns False), Enter leaves
+  the field. Search length capped at 30.
+- Static parts (board, title plate, summary, the wall's visible part) are baked by
+  `WindowStage` - `static_key()` is (chip, search, scroll offset); chips, search, the
+  hovered / chosen medal, the card and Close are drawn each frame. ~0.5 ms a settled frame,
+  ~1.1 ms with the mouse moving over medals, ~3.5 ms a wheel notch (1600x900).
+- Icons: `MenuKit.preload_icons()` decodes each 1024 px file once and keeps it at every
+  size the window uses, per screen size, shared between MainMenus - `prewarm()` does it
+  (the old panel decoded all 44 on every MainMenu).
+- Only one menu-kit window shows at a time: `MainMenu._windows()`; opening one while another
+  still fades out ends that one at once (`_end_window_fades()`).
 
 ### Add a setting to the Options window
 

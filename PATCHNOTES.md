@@ -4,11 +4,18 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
-## Main Menu: A New Options Window
+## Main Menu: New Options and Achievements Windows
 
 *30 October 2026*
 
 ### Improvements
+
+- **A new Achievements window.** Every achievement is now a medal on one wall, grouped by
+  category: the ones you've earned shine in colour, the rest wait in grey with a padlock -
+  and those you work towards show how far along you are. The top shows how many you've
+  earned, the one you're closest to and your latest. Filter by category (each shows its
+  count) or just start typing to search. Hover over a medal to read it, click to keep it
+  in view: its description, when you earned it or your progress, and its reward.
 
 - **A new Options window.** Options now opens in a larger window with Display, Gameplay
   and Audio tabs, so every setting is in view without scrolling, and each one has a short

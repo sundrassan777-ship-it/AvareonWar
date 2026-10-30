@@ -111,7 +111,7 @@ AvareonWar/
 
 **Achievement System (2 files):**
 - [achievement_manager.py](achievement_manager.py) - Achievement definitions, stat tracking, persistence, checking
-- [achievement_panel.py](achievement_panel.py) - Achievement list panel UI (category filters, search, scrollable list)
+- [achievement_panel.py](achievement_panel.py) - The main menu's Achievements window, the trophy wall (menu kit): summary, chips with counts, search, medal wall (ScrollView), details card
 
 **Campaign Missions:**
 - [tutorial_mission.py](tutorial_mission.py) - Tutorial mission (Lobardia unification)
@@ -164,6 +164,7 @@ AvareonWar/
 **Performance Tests:**
 - [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow, construction-dust and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
 - [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
+- [tests/test_menu_achievements.py](tests/test_menu_achievements.py) - Main menu Achievements window (trophy wall): layout at 720p-1440p, every card fits, grouping / earned-first order / chip counts, chips filter, search from any key + Esc clears first, medal click keeps / hover shows, wheel clamped, opens fresh, hover < flash, no clicks until landed, one window at a time, a later MainMenu decodes no icon, no smoothscale in steady frames
 - [tests/test_menu_options.py](tests/test_menu_options.py) - Main menu Options window: layout at 720p-1440p (rows above the footer, controls in their column, text fits), every control (tabs, switches + their names, arrows, choices, sliders, "Set by VSync", dimmed rows), Apply / Cancel / Esc / Enter / Reset to the settings defaults, unsaved count, hover < flash, no clicks until landed, no smoothscale in steady frames, the alpha-255 trap, the zoom speed range fix
 - [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
 - [tests/test_hero_fx.py](tests/test_hero_fx.py) - Hero ability effects: light kit (sprite caches and build budget, rings, territory raster, bead chains), outlines drop shared borders, cue timelines, auras (fade, firefly density by area, no territory lookups per frame), game wiring (aura of the selected hero, Embargo embers from game state, Silence vignette, every active ability shows, AI casts shown once, no cast-time border building)
@@ -583,7 +584,7 @@ After making code changes, ask yourself:
 - Modify anti-win-farming XP → `player_level.py` (_is_disconnect_farming, DISCONNECT_FARMING_XP_THRESHOLD; AI takeovers count via `gs.ai_takeover_xp`)
 - Add new achievement → `achievement_manager.py` ACHIEVEMENTS list
 - Add achievement reward icon → `achievement_manager.py` ALL_REWARD_ICON_PATHS
-- Change achievement panel UI → `achievement_panel.py`
+- Change achievement panel UI → `achievement_panel.py` (the trophy wall; CODE_GUIDE "Main Menu Windows" → "The Achievements window")
 - Add campaign cutscene → Use `Cutscene_Tool.py`, data in `cutscene_data.json`
 - Modify cutscene player → `cutscene_player.py` (volume = slide volume × `master_volume`, passed by every in-game `CutscenePlayer(...)` call)
 - Change a bottom panel view (End Turn, Territory, empty plot, finished / under-construction plot, Barracks, Keep, Army, Hero) → `main.py` view method using `rendering/bottom_panel_kit.py`; section geometry via `_section_layout()` / `_*_view_layout()`, **never fixed x offsets**; text sized by `kit.font(role)` (panel height, not `ui_scale`). New buttons: `kit.ornate_button()` + rect reset in `draw_bottom_ui()` + `handle_bottom_ui_click()` + a hover/flash test in `tests/test_bottom_panel.py`. See "Bottom panel: sections, kit and views" in CODE_GUIDE.md
