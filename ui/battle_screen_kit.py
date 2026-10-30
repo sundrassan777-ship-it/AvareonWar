@@ -314,16 +314,18 @@ def button_state(rect, mouse_pos, flashing=False):
     return 'normal'
 
 
-def draw_button(screen, rect, label, font, state='normal', mark=None):
+def draw_button(screen, rect, label, font, state='normal', mark=None, color=LIGHT_TEXT):
     """
     An ornate button with its label centred.
 
     Args:
         mark: None, or 'skip' for the fast-forward mark after the label
+        color: the label's colour (the main menu windows' primary action is gold)
     """
     sprite = _kit()['widgets'].button_sprite('campaign', rect.size, state=state)
     screen.blit(sprite, rect.topleft)
-    text = _cached_label(('label', label, font, mark), lambda: _bake_label(label, font, mark))
+    text = _cached_label(('label', label, font, mark, color),
+                         lambda: _bake_label(label, font, mark, color))
     screen.blit(text, text.get_rect(center=rect.center))
 
 
@@ -343,9 +345,9 @@ def key_hint(text, font):
     return _cached_label(('keycap', text, font), build)
 
 
-def _bake_label(label, font, mark):
+def _bake_label(label, font, mark, color=LIGHT_TEXT):
     """Label (+ mark) with a 1 px drop shadow, on one transparent surface."""
-    text = font.render(label, True, LIGHT_TEXT)
+    text = font.render(label, True, color)
     shadow = font.render(label, True, SHADOW)
     h = text.get_height()
     mark_w = 0
@@ -359,7 +361,7 @@ def _bake_label(label, font, mark):
     if mark == 'skip':
         x = text.get_width() + gap
         _draw_fast_forward(surf, x + 1, 1, mark_w, h, SHADOW)
-        _draw_fast_forward(surf, x, 0, mark_w, h, LIGHT_TEXT)
+        _draw_fast_forward(surf, x, 0, mark_w, h, color)
     return surf
 
 

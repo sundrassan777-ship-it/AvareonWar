@@ -62,8 +62,10 @@ def style(monkeypatch):
 def unlocked(monkeypatch, style):
     """The switch unhidden (as if MAP_3D_AVAILABLE were True) and 3D chosen."""
     import main_menu
+    from ui import options_panel
     monkeypatch.setattr(constants, 'MAP_3D_AVAILABLE', True)
     monkeypatch.setattr(main_menu, 'MAP_3D_AVAILABLE', True)
+    monkeypatch.setattr(options_panel, 'MAP_3D_AVAILABLE', True)   # The Options window's row
     style('3d')
     yield
     map_data._look_cache.clear()
@@ -102,8 +104,10 @@ class TestLocked:
     @pytest.fixture(autouse=True)
     def locked(self, monkeypatch):
         import main_menu
+        from ui import options_panel
         monkeypatch.setattr(constants, 'MAP_3D_AVAILABLE', False)
         monkeypatch.setattr(main_menu, 'MAP_3D_AVAILABLE', False)
+        monkeypatch.setattr(options_panel, 'MAP_3D_AVAILABLE', False)   # The Options window's row
 
     def test_config_json_cannot_turn_3d_on(self, style, monkeypatch):
         style('3d')
@@ -141,10 +145,9 @@ class TestLocked:
         style('3d')
         menu = main_menu.MainMenu(pygame.display.get_surface())
         menu._open_options()
-        menu.options_panel_y = menu.options_panel_final_y
-        menu._draw_options_panel()
-        assert 'map_3d_checkbox' not in menu.options_ui_elements
-        assert 'show_fps_checkbox' in menu.options_ui_elements
+        rows = [row.key for row in menu.options_panel.rows]
+        assert 'map_look' not in rows
+        assert 'show_fps' in rows
 
     def test_saved_style_is_validated(self):
         settings.settings['map_style'] = 'isometric'
@@ -266,10 +269,9 @@ class TestUnlocked:
         monkeypatch.setattr(settings, 'save', lambda *a, **k: None)
         menu = main_menu.MainMenu(pygame.display.get_surface())
         menu._open_options()
-        menu.options_panel_y = menu.options_panel_final_y
-        menu._draw_options_panel()
+        menu.options_panel.anim.finish()
         assert menu.temp_map_3d is True
-        rect = menu.options_ui_elements['map_3d_checkbox']['rect']
+        rect = menu.options_panel.part_rect(('choice', 'map_look', 0))    # "2D"
         menu.handle_click(rect.center)
         assert menu.temp_map_3d is False
         menu._apply_options()

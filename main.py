@@ -1338,7 +1338,7 @@ class Game:
         self.tooltips_enabled = settings.get('tooltips_enabled', True)
         self.tooltip_delay_ms = settings.get('tooltip_delay_ms', 500)
         self.camera_pan_speed = settings.get('camera_pan_speed', 10.0)
-        self.camera_zoom_speed = settings.get('camera_zoom_speed', 1.1)
+        self.camera_zoom_speed = settings.get('camera_zoom_speed', CAMERA_ZOOM_SPEED)
         self.show_fps = settings.get('show_fps', False)
 
         # Audio volume settings
