@@ -22,7 +22,7 @@ import wishlist  # OPEN BETA ONLY: the Wishlist button (remove at full release)
 from utils.colors import lighten_color, brighten_color
 from settings_manager import settings
 from global_sound import sound_manager  # Global sound manager for UI clicks
-from achievement_manager import achievement_manager, ALL_REWARD_ICON_PATHS, ALL_TITLES
+from achievement_manager import ALL_REWARD_ICON_PATHS
 from achievement_panel import AchievementPanel
 from steam_integration import steam_manager
 from utils.logger import get_logger
@@ -30,6 +30,7 @@ from utils.cursor import draw_custom_cursor
 from display_utils import menu_frame_cap
 from ui.menu_kit import MenuKit, WindowStage
 from ui.options_panel import OptionsPanel
+from ui.profile_panel import ProfilePanel
 
 logger = get_logger(__name__)
 
@@ -44,6 +45,11 @@ class MainMenu:
     - Options menu integration
     - Return values indicate which mode to launch
     """
+
+    # The hero portraits a player can pick (assets/heroes/; player_icon 1-8 in this order,
+    # 0 = the default "?") - the corner Profile button and the Profile window
+    HERO_ICON_FILES = ('asford.png', 'asten.png', 'brennhen.png', 'hevilneu.png', 'narn.png',
+                       'nextroy.png', 'rennervail.png', 'silvyr.png')
 
     def __init__(self, screen):
         self.screen = screen
@@ -65,15 +71,10 @@ class MainMenu:
         # pending settings and resolutions it edits exist.
         self.menu_kit = MenuKit((self.width, self.height))
         self.window_stage = WindowStage(self.menu_kit)   # Draws a window over the dimmed menu
-
-        # Profile panel animation state
-        self.profile_panel_width = int(self.width * 0.5)
-        self.profile_panel_height = int(self.height * 0.7)
-        self.profile_panel_x = (self.width - self.profile_panel_width) // 2
-        self.profile_panel_y = -self.profile_panel_height
-        self.profile_panel_target_y = -self.profile_panel_height
-        self.profile_panel_final_y = (self.height - self.profile_panel_height) // 2 + 60
-        self.profile_animation_speed = 1500
+        # Profile -> View -> Achievements: the Profile comes back as it was left when the
+        # Achievements window closes; a window opened once the one before has faded out
+        self._return_to_profile = False
+        self._queued_open = None
 
         # Load and scale background image
         self._load_background()
@@ -103,7 +104,6 @@ class MainMenu:
         self.result = None  # Return value: 'custom_game', 'quit', etc.
         # Connect string of a friend's game chosen in Steam (result 'steam_invite_join')
         self.steam_join_target = None
-        self.hovered_profile_element = None  # Track hover state in profile panel
 
         # Temporary settings (not saved until Apply is clicked)
         self.temp_resolution = settings.get_resolution()
@@ -140,23 +140,11 @@ class MainMenu:
         self.temp_player_name = settings.get_player_name()
         self.temp_player_icon = settings.get_player_icon()
         self.temp_selected_title = settings.get_selected_title()
-        self.profile_name_active = False  # Whether name input field is active
         self._steam_name_active = False  # True when name is from Steam (non-editable)
-        self.title_dropdown_open = False  # Title dropdown in profile
-
-        # Profile UI elements
-        self.profile_ui_elements = {}
 
         # The Achievements window - the trophy wall (achievement_panel.py, the menu kit)
         self.achievements_panel = AchievementPanel(self, self.menu_kit)
         self.achievements_panel.prewarm()
-
-        # Profile panel scroll state (scrolls entire content area)
-        self.profile_scroll_offset = 0
-
-        # Title dropdown scroll state
-        self.title_dropdown_scroll = 0
-        self.TITLE_DROPDOWN_VISIBLE = 4  # Max visible options before scrolling
 
         # Configurable icon display names (modify these to rename icons in the UI)
         # Hero icons: index 0=question mark, indices 1-8=hero portraits
@@ -188,6 +176,11 @@ class MainMenu:
             'assets/achievements/RewardsIcons/Knight.png': 'Knight',
             'assets/achievements/RewardsIcons/AlexiusBrennhen.png': 'Alexius Brennhen',
         }
+
+        # The Profile window - the player card (ui/profile_panel.py, the menu kit), over
+        # the temp_player_* values above; it uses the icon names just above
+        self.profile_panel = ProfilePanel(self, self.menu_kit)
+        self.profile_panel.prewarm()
 
         # Clock
         self.clock = pygame.time.Clock()
@@ -268,17 +261,6 @@ class MainMenu:
             logger.warning(f"Error loading menu button background: {e}")
             self.button_bg_image = None
 
-        # Load profile panel background (same as options panel)
-        try:
-            profile_bg = pygame.image.load('assets/OptionsMenuBG.png').convert_alpha()
-            self.profile_panel_bg = pygame.transform.smoothscale(
-                profile_bg,
-                (self.profile_panel_width, self.profile_panel_height)
-            )
-        except Exception as e:
-            logger.warning(f"Error loading profile panel background: {e}")
-            self.profile_panel_bg = None
-
         # Load icon border for profile button
         try:
             icon_border = pygame.image.load('assets/mapicons/IconBorder.png').convert_alpha()
@@ -294,17 +276,7 @@ class MainMenu:
 
         # Load hero icons for profile (original size - will be pre-scaled later)
         self.hero_icons = []
-        hero_icon_files = [
-            'asford.png',
-            'asten.png',
-            'brennhen.png',
-            'hevilneu.png',
-            'narn.png',
-            'nextroy.png',
-            'rennervail.png',
-            'silvyr.png'
-        ]
-        for hero_file in hero_icon_files:
+        for hero_file in self.HERO_ICON_FILES:
             try:
                 icon = pygame.image.load(f'assets/heroes/{hero_file}').convert_alpha()
                 self.hero_icons.append(icon)
@@ -346,11 +318,9 @@ class MainMenu:
                 logger.warning(f"Could not load reward icon {icon_path}: {e}")
                 self.reward_icons_raw[icon_path] = None
 
-        # Pre-scaled versions for profile panel and profile button (created in _calculate_layout)
-        # This avoids expensive smoothscale operations during animation frames
-        self.hero_icons_panel_scaled = []  # For 8 icons in profile panel
+        # Pre-scaled versions for the profile button (created in _calculate_layout); the
+        # Profile window has its own (ui/profile_panel.py, through the menu kit)
         self.hero_icons_button_scaled = []  # For profile button
-        self.icon_border_panel_scaled = None  # For borders in profile panel
         self.icon_border_button_scaled = None  # For border on profile button
 
     def _get_cached_font(self, font_path, size):
@@ -408,17 +378,6 @@ class MainMenu:
             profile_button_size
         )
 
-        # Pre-scale hero icons for profile panel (done once during layout calculation)
-        # This prevents expensive smoothscale operations during every render frame
-        icon_size_panel = int(60 * self.ui_scale)
-        self.hero_icons_panel_scaled = []
-        for hero_icon in self.hero_icons:
-            if hero_icon:
-                scaled = pygame.transform.smoothscale(hero_icon, (icon_size_panel, icon_size_panel))
-                self.hero_icons_panel_scaled.append(scaled)
-            else:
-                self.hero_icons_panel_scaled.append(None)
-
         # Pre-scale hero icons for profile button
         self.hero_icons_button_scaled = []
         for hero_icon in self.hero_icons:
@@ -430,14 +389,10 @@ class MainMenu:
 
         # Pre-scale icon borders (2px larger than icon = 1px per side to fully contain icon edges)
         if self.icon_border:
-            self.icon_border_panel_scaled = pygame.transform.smoothscale(
-                self.icon_border, (icon_size_panel + 2, icon_size_panel + 2)
-            )
             self.icon_border_button_scaled = pygame.transform.smoothscale(
                 self.icon_border, (profile_button_size + 2, profile_button_size + 2)
             )
         else:
-            self.icon_border_panel_scaled = None
             self.icon_border_button_scaled = None
 
         # Pre-scale achievement button icon
@@ -485,15 +440,6 @@ class MainMenu:
                 for hovered, alpha in ((False, wishlist.WISHLIST_GLOW_ALPHA),
                                        (True, wishlist.WISHLIST_GLOW_ALPHA_HOVER))}
 
-        # Pre-scale reward icons for profile panel
-        self.reward_icons_panel_scaled = {}
-        for path, raw_icon in self.reward_icons_raw.items():
-            if raw_icon:
-                self.reward_icons_panel_scaled[path] = pygame.transform.smoothscale(
-                    raw_icon, (icon_size_panel, icon_size_panel))
-            else:
-                self.reward_icons_panel_scaled[path] = None
-
         # Pre-scale reward icons for profile button display
         self.reward_icons_button_scaled = {}
         for path, raw_icon in self.reward_icons_raw.items():
@@ -532,18 +478,13 @@ class MainMenu:
         return self.result
 
     def _update_options_animation(self, dt):
-        """Animate the windows opening / closing (Options, Achievements: drop + fade; Profile slides)"""
-        self.options_panel.update(dt)
-        self.achievements_panel.update(dt)
-
-        # Also animate profile panel
-        if self.profile_panel_y != self.profile_panel_target_y:
-            distance = self.profile_animation_speed * dt
-
-            if self.profile_panel_y < self.profile_panel_target_y:
-                self.profile_panel_y = min(self.profile_panel_y + distance, self.profile_panel_target_y)
-            else:
-                self.profile_panel_y = max(self.profile_panel_y - distance, self.profile_panel_target_y)
+        """Animate the windows opening / closing (an eased drop + fade); open a window that
+        waited for the one before to fade out (Profile <-> Achievements through View)"""
+        for window in self._windows():
+            window.update(dt)
+        if self._queued_open is not None and not any(w.anim.visible for w in self._windows()):
+            open_next, self._queued_open = self._queued_open, None
+            open_next()
 
     def handle_events(self):
         """Process events"""
@@ -554,20 +495,8 @@ class MainMenu:
             # The Achievements window lights the chip / medal / button under the mouse
             self.achievements_panel.update_hover(mouse_pos)
         elif self.show_profile:
-            # Update hover for profile panel elements
-            self.hovered_profile_element = None
-            # When title dropdown is open, check if mouse is in the dropdown area
-            # and prioritize dropdown options over icons underneath
-            dd_list_rect = getattr(self, '_title_dropdown_list_rect', None)
-            mouse_in_dropdown = (self.title_dropdown_open and dd_list_rect
-                                 and dd_list_rect.collidepoint(mouse_pos))
-            for element_id, element_data in self.profile_ui_elements.items():
-                if 'rect' in element_data and element_data['rect'].collidepoint(mouse_pos):
-                    # Skip non-dropdown elements when mouse is inside dropdown area
-                    if mouse_in_dropdown and not element_id.startswith('title_option_'):
-                        continue
-                    self.hovered_profile_element = element_id
-                    break
+            # The Profile window lights the title / portrait / button under the mouse
+            self.profile_panel.update_hover(mouse_pos)
         elif self.show_options:
             # The Options window lights the control under the mouse
             self.options_panel.update_hover(mouse_pos)
@@ -612,7 +541,9 @@ class MainMenu:
                         if not self.achievements_panel.handle_escape():
                             self._close_achievements()
                     elif self.show_profile:
-                        self._close_profile()
+                        # Typing the name: Esc stops the typing; else it cancels
+                        if not self.profile_panel.handle_escape():
+                            self._close_profile()
                     elif self.show_options:
                         self._close_options()
                     else:
@@ -631,14 +562,12 @@ class MainMenu:
                 elif self.show_achievements:
                     self.achievements_panel.handle_key(event)
 
-                # Handle text input for profile name (disabled when Steam name is active)
-                elif self.show_profile and self.profile_name_active and not self._steam_name_active:
-                    if event.key == pygame.K_BACKSPACE:
-                        self.temp_player_name = self.temp_player_name[:-1]
-                    elif event.key == pygame.K_RETURN or event.key == pygame.K_ESCAPE:
-                        self.profile_name_active = False
-                    elif len(self.temp_player_name) < 20 and event.unicode.isprintable():
-                        self.temp_player_name += event.unicode
+                # Profile: typing the name; Enter saves (or ends the typing)
+                elif self.show_profile:
+                    if self.profile_panel.handle_key(event) == 'save':
+                        sound_manager.play_ui_click()
+                        self._save_profile()
+                        self._close_profile()
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left click
@@ -646,23 +575,6 @@ class MainMenu:
                 elif event.button in (4, 5) and self.show_achievements:
                     # Mouse wheel scrolls the trophy wall
                     self.achievements_panel.wheel(1 if event.button == 4 else -1)
-                elif event.button in (4, 5) and self.show_profile:
-                    # Title dropdown scroll takes priority when open and mouse is over it
-                    dd_rect = getattr(self, '_title_dropdown_list_rect', None)
-                    if self.title_dropdown_open and dd_rect and dd_rect.collidepoint(mouse_pos):
-                        max_dd_scroll = getattr(self, '_title_dropdown_max_scroll', 0)
-                        if event.button == 4:  # Scroll up
-                            self.title_dropdown_scroll = max(0, self.title_dropdown_scroll - 1)
-                        else:  # Scroll down
-                            self.title_dropdown_scroll = min(max_dd_scroll, self.title_dropdown_scroll + 1)
-                    else:
-                        # Mouse wheel scroll for entire profile panel content
-                        scroll_amount = int(30 * self.ui_scale)
-                        max_scroll = getattr(self, '_profile_max_scroll', 0)
-                        if event.button == 4:  # Scroll up
-                            self.profile_scroll_offset = max(0, self.profile_scroll_offset - scroll_amount)
-                        else:  # Scroll down
-                            self.profile_scroll_offset = min(max_scroll, self.profile_scroll_offset + scroll_amount)
             elif event.type == pygame.MOUSEMOTION:
                 # A held Options slider follows the mouse (volumes preview live)
                 if self.show_options and self.options_panel.dragging:
@@ -681,77 +593,16 @@ class MainMenu:
                 self._close_achievements()
             return
 
-        # Check if profile panel is open
-        if self.show_profile and self.profile_panel_y > -self.profile_panel_height + 50:
-            # Check Cancel button
-            if 'cancel_button' in self.profile_ui_elements and self.profile_ui_elements['cancel_button']['rect'].collidepoint(pos):
-                sound_manager.play_ui_click()
-                self._close_profile()
-                return
-
-            # Check Save button
-            if 'save_button' in self.profile_ui_elements and self.profile_ui_elements['save_button']['rect'].collidepoint(pos):
-                sound_manager.play_ui_click()
+        # Profile window: titles, portraits, the name; Save / Cancel / View come back as actions
+        if self.show_profile:
+            action = self.profile_panel.handle_click(pos)
+            if action == 'save':
                 self._save_profile()
                 self._close_profile()
-                return
-
-            # Check player name input field (not clickable when Steam name is active)
-            if 'name_input' in self.profile_ui_elements and self.profile_ui_elements['name_input']['rect'].collidepoint(pos):
-                if not self._steam_name_active:
-                    self.profile_name_active = True
-                self.title_dropdown_open = False
-                return
-
-            # Check title dropdown toggle
-            if 'title_dropdown' in self.profile_ui_elements and self.profile_ui_elements['title_dropdown']['rect'].collidepoint(pos):
-                sound_manager.play_ui_click()
-                self.title_dropdown_open = not self.title_dropdown_open
-                self.title_dropdown_scroll = 0  # Reset scroll when toggling
-                self.profile_name_active = False
-                return
-
-            # Check title dropdown options (if open)
-            if self.title_dropdown_open:
-                all_title_options = [None] + list(ALL_TITLES)
-                for idx in range(len(all_title_options)):
-                    opt_key = f'title_option_{idx}'
-                    if opt_key in self.profile_ui_elements and self.profile_ui_elements[opt_key]['rect'].collidepoint(pos):
-                        opt_data = self.profile_ui_elements[opt_key]
-                        if not opt_data.get('locked', False):
-                            sound_manager.play_ui_click()
-                            self.temp_selected_title = all_title_options[idx]
-                            self.title_dropdown_open = False
-                        return
-
-                # Click outside dropdown closes it
-                self.title_dropdown_open = False
-
-            # Check hero icon selection (indices 0-8: question mark + 8 heroes)
-            num_hero_icons = 1 + len(self.hero_icons)
-            for i in range(num_hero_icons):
-                icon_key = f'icon_{i}'
-                if icon_key in self.profile_ui_elements and self.profile_ui_elements[icon_key]['rect'].collidepoint(pos):
-                    sound_manager.play_ui_click()
-                    self.temp_player_icon = i
-                    return
-
-            # Check reward icon selection
-            for key, data in self.profile_ui_elements.items():
-                if key.startswith('reward_icon_') and data['rect'].collidepoint(pos):
-                    reward_idx = int(key.split('_')[-1])
-                    unlocked_reward_icons = achievement_manager.get_unlocked_reward_icons()
-                    locked_reward_icons = [p for p in ALL_REWARD_ICON_PATHS if p not in unlocked_reward_icons]
-                    reward_icon_order = unlocked_reward_icons + locked_reward_icons
-                    if reward_idx < len(reward_icon_order):
-                        reward_path = reward_icon_order[reward_idx]
-                        is_unlocked, _ = achievement_manager.get_reward_icon_info(reward_path)
-                        if is_unlocked:
-                            sound_manager.play_ui_click()
-                            self.temp_player_icon = reward_path
-                    return
-
-            # Don't handle menu button clicks if profile panel is open
+            elif action == 'cancel':
+                self._close_profile()
+            elif action == 'view':
+                self._view_achievements_from_profile()
             return
 
         # Options window: its own controls; Apply / Cancel / Reset come back as actions
@@ -855,36 +706,42 @@ class MainMenu:
         _mm.set_music_volume(self.temp_music_volume)
         sound_manager.set_volume(self.temp_sfx_volume * self.temp_master_volume)
 
-    def _open_profile(self):
-        """Open the sliding profile panel"""
-        self._end_window_fades()
+    def _open_profile(self, keep=False):
+        """Open the Profile window. keep=True: with the choices as they were left (back
+        from the Achievements window it opened with View), not re-read from the settings."""
+        self._end_window_fades(self.profile_panel)
         self.show_profile = True
-        self.profile_panel_target_y = self.profile_panel_final_y
-        # Reset temporary settings to current settings
-        # If Steam is available, use Steam persona name (non-editable)
-        if steam_manager.is_available:
-            steam_name = steam_manager.get_player_name()
-            if steam_name:
-                self.temp_player_name = steam_name
-                self._steam_name_active = True
+        self.hovered_button = None   # The menu behind dims as it is
+        if not keep:
+            # Reset temporary settings to current settings
+            # If Steam is available, use Steam persona name (non-editable)
+            if steam_manager.is_available:
+                steam_name = steam_manager.get_player_name()
+                if steam_name:
+                    self.temp_player_name = steam_name
+                    self._steam_name_active = True
+                else:
+                    self.temp_player_name = settings.get_player_name()
+                    self._steam_name_active = False
             else:
                 self.temp_player_name = settings.get_player_name()
                 self._steam_name_active = False
-        else:
-            self.temp_player_name = settings.get_player_name()
-            self._steam_name_active = False
-        self.temp_player_icon = settings.get_player_icon()
-        self.temp_selected_title = settings.get_selected_title()
-        self.profile_name_active = False
-        self.title_dropdown_open = False
-        self.profile_scroll_offset = 0
+            self.temp_player_icon = settings.get_player_icon()
+            self.temp_selected_title = settings.get_selected_title()
+        self.profile_panel.open()
 
     def _close_profile(self):
-        """Close the sliding profile panel"""
+        """Close the Profile window (Cancel: the choices are dropped on the next opening)"""
         self.show_profile = False
-        self.profile_panel_target_y = -self.profile_panel_height
-        self.profile_name_active = False
-        self.title_dropdown_open = False
+        self.profile_panel.close()
+
+    def _view_achievements_from_profile(self):
+        """Profile -> View: the card leaves (its choices kept), the Achievements window opens
+        once it has; closing that brings the card back as it was."""
+        self.show_profile = False
+        self.profile_panel.close()
+        self._return_to_profile = True
+        self._queued_open = self._open_achievements
 
     def _save_profile(self):
         """Save current profile settings to global settings"""
@@ -902,13 +759,16 @@ class MainMenu:
         self.achievements_panel.open()
 
     def _close_achievements(self):
-        """Close the Achievements window"""
+        """Close the Achievements window (back to the Profile card when it came from there)"""
         self.show_achievements = False
         self.achievements_panel.close()
+        if self._return_to_profile:
+            self._return_to_profile = False
+            self._queued_open = lambda: self._open_profile(keep=True)
 
     def _windows(self):
         """The windows drawn with the menu kit over the dimmed menu (WindowStage)."""
-        return (self.options_panel, self.achievements_panel)
+        return (self.options_panel, self.achievements_panel, self.profile_panel)
 
     def _end_window_fades(self, opening=None):
         """A window opening while another still fades out: that one ends at once (the
@@ -990,7 +850,7 @@ class MainMenu:
         logger.info(f"Settings reset to defaults: {default_resolution[0]}x{default_resolution[1]} (click Apply to save)")
 
     def render(self):
-        """Render main menu, with the Options / Achievements window over it while one is open"""
+        """Render main menu, with the Options / Achievements / Profile window over it while one is open"""
         window = next((w for w in self._windows() if w.anim.visible), None)
         if window is not None:
             # The menu dims as the window drops in (WindowStage: the menu is captured once,
@@ -1004,7 +864,7 @@ class MainMenu:
         self.clicked_button = None
 
     def _render_menu(self):
-        """The menu itself: background, logo, buttons, the older slide-down panels"""
+        """The menu itself: background, logo, buttons (the windows are drawn over it)"""
         # Draw background image
         self.screen.blit(self.background, (0, 0))
 
@@ -1034,10 +894,6 @@ class MainMenu:
         # OPEN BETA ONLY: Wishlist button (bottom-left corner)
         if self.wishlist_button_rect:
             self._draw_wishlist_button()
-
-        # Draw sliding profile panel
-        if self.profile_panel_y > -self.profile_panel_height:
-            self._draw_profile_panel()
 
         # Draw tooltips for profile/achievement buttons when no panel is open
         if not self.show_profile and not self.show_achievements and not self.show_options:
@@ -1302,514 +1158,3 @@ class MainMenu:
         screen.blit(bg, (tx, ty))
         for i, surf in enumerate(line_surfaces):
             screen.blit(surf, (tx + pad, ty + pad + i * line_h))
-
-    def _draw_profile_panel(self):
-        """Draw the sliding profile panel with player name input and icon selection"""
-        panel_x = self.profile_panel_x
-        panel_y = int(self.profile_panel_y)
-        panel_w = self.profile_panel_width
-        panel_h = self.profile_panel_height
-
-        # Clear previous UI elements
-        self.profile_ui_elements = {}
-
-        # Panel background
-        if self.profile_panel_bg:
-            self.screen.blit(self.profile_panel_bg, (panel_x, panel_y))
-        else:
-            # Fallback solid color with shadow
-            shadow_offset = 8
-            shadow_surface = pygame.Surface((panel_w, panel_h))
-            shadow_surface.fill((0, 0, 0))
-            shadow_surface.set_alpha(80)
-            self.screen.blit(shadow_surface, (panel_x + shadow_offset, panel_y + shadow_offset))
-
-            panel_surface = pygame.Surface((panel_w, panel_h))
-            panel_surface.fill((45, 45, 55))
-            self.screen.blit(panel_surface, (panel_x, panel_y))
-
-        # Padding to account for ornate border
-        padding_top = int(120 * self.ui_scale)
-        padding_bottom = int(120 * self.ui_scale)
-        padding_sides = int(120 * self.ui_scale)
-
-        # Title
-        title_font_size = max(36, int(72 * self.ui_scale))
-        title_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', title_font_size)
-        title_text = title_font.render("Profile", True, WHITE)
-        title_rect = title_text.get_rect(center=(panel_x + panel_w // 2, panel_y + padding_top))
-        self.screen.blit(title_text, title_rect)
-
-        # Content area with profile-level scroll
-        content_x = panel_x + padding_sides
-        visible_content_top = panel_y + padding_top + int(60 * self.ui_scale)
-        # Pre-calculate buttons_y for clip boundary
-        buttons_y = panel_y + panel_h - padding_bottom - 10
-        visible_content_bottom = buttons_y - int(10 * self.ui_scale)
-
-        # Apply profile scroll offset to content
-        content_y = visible_content_top - self.profile_scroll_offset
-
-        # Clip the scrollable content area (between title and buttons)
-        profile_clip = pygame.Rect(panel_x, visible_content_top,
-                                   panel_w, visible_content_bottom - visible_content_top)
-        old_profile_clip = self.screen.get_clip()
-        self.screen.set_clip(profile_clip)
-
-        # Scaled fonts
-        label_font_size = max(16, int(28 * self.ui_scale))
-        label_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', label_font_size)
-
-        # Player Name Section
-        y = content_y
-        label_text = label_font.render("Player Name:", True, WHITE)
-        self.screen.blit(label_text, (content_x, y))
-        y += int(35 * self.ui_scale)
-
-        # Name input field
-        input_width = int(300 * self.ui_scale)
-        input_height = int(40 * self.ui_scale)
-        input_rect = pygame.Rect(content_x, y, input_width, input_height)
-
-        # Draw input box — different style when Steam name is active (non-editable)
-        is_active = self.profile_name_active and not self._steam_name_active
-        if self._steam_name_active:
-            # Steam name: darker, non-interactive look
-            input_bg = (15, 15, 15)
-            border_color = (60, 60, 60)
-        else:
-            input_bg = (30, 30, 30) if is_active else (20, 20, 20)
-            border_color = WHITE if is_active else (100, 100, 100)
-        pygame.draw.rect(self.screen, input_bg, input_rect, border_radius=5)
-        pygame.draw.rect(self.screen, border_color, input_rect, 2, border_radius=5)
-
-        # Draw current name text
-        name_text = label_font.render(self.temp_player_name, True, WHITE)
-        name_rect = name_text.get_rect(midleft=(input_rect.left + 10, input_rect.centery))
-        self.screen.blit(name_text, name_rect)
-
-        # Draw cursor if active (not shown for Steam names)
-        if is_active and int(pygame.time.get_ticks() / 500) % 2 == 0:
-            cursor_x = name_rect.right + 2
-            pygame.draw.line(self.screen, WHITE,
-                           (cursor_x, input_rect.top + 8),
-                           (cursor_x, input_rect.bottom - 8), 2)
-
-        # Show "(Steam)" indicator next to input box when name comes from Steam
-        if self._steam_name_active:
-            steam_label_size = max(12, int(20 * self.ui_scale))
-            steam_label_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', steam_label_size)
-            steam_label = steam_label_font.render("(Steam)", True, (120, 180, 255))
-            self.screen.blit(steam_label, (input_rect.right + int(8 * self.ui_scale), input_rect.centery - steam_label.get_height() // 2))
-
-        self.profile_ui_elements['name_input'] = {'rect': input_rect}
-
-        # --- Player Level Bar (to the right of name input) ---
-        from player_level import player_level_manager
-        level_progress = player_level_manager.get_progress()
-        level_bar_spacing = int(20 * self.ui_scale)
-        level_bar_width = int(200 * self.ui_scale)
-        level_bar_height = input_height  # Same height as name input
-        level_bar_x = input_rect.right + level_bar_spacing
-        level_bar_y = input_rect.top
-
-        # "Player Level:" label above the bar
-        level_label_text = label_font.render("Player Level:", True, WHITE)
-        self.screen.blit(level_label_text, (level_bar_x, content_y))
-
-        # Level bar background (same style as name input)
-        level_bar_rect = pygame.Rect(level_bar_x, level_bar_y, level_bar_width, level_bar_height)
-        pygame.draw.rect(self.screen, (20, 20, 20), level_bar_rect, border_radius=5)
-
-        # Gold fill based on XP progress within current level
-        fill_fraction = level_progress['progress_fraction']
-        fill_width = int(level_bar_width * fill_fraction)
-        if fill_width > 0:
-            # Draw gold fill clipped to rounded rect shape using a temporary surface
-            fill_surf = pygame.Surface((level_bar_width, level_bar_height), pygame.SRCALPHA)
-            pygame.draw.rect(fill_surf, (184, 134, 11), (0, 0, fill_width, level_bar_height), border_radius=5)
-            # Clip right side: if fill doesn't cover full width, mask with the full rounded shape
-            if fill_width < level_bar_width:
-                mask_surf = pygame.Surface((level_bar_width, level_bar_height), pygame.SRCALPHA)
-                pygame.draw.rect(mask_surf, (255, 255, 255, 255), (0, 0, level_bar_width, level_bar_height), border_radius=5)
-                fill_surf.blit(mask_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-            self.screen.blit(fill_surf, level_bar_rect.topleft)
-
-        # Border
-        pygame.draw.rect(self.screen, (100, 100, 100), level_bar_rect, 2, border_radius=5)
-
-        # Center text: "Level: X"
-        level_text_str = f"Level: {level_progress['level']}"
-        level_text_surf = label_font.render(level_text_str, True, WHITE)
-        level_text_rect = level_text_surf.get_rect(center=level_bar_rect.center)
-        self.screen.blit(level_text_surf, level_text_rect)
-
-        # Register level bar for hover detection and tooltip
-        self.profile_ui_elements['level_bar'] = {
-            'rect': level_bar_rect,
-            'tooltip': f"XP: {level_progress['xp_into_level']:,} / {level_progress['xp_for_next']:,}",
-        }
-
-        y += input_height + int(15 * self.ui_scale)
-
-        # --- Title Selection Section ---
-        title_label = label_font.render("Title:", True, WHITE)
-        self.screen.blit(title_label, (content_x, y))
-        y += int(30 * self.ui_scale)
-
-        # Title dropdown box
-        dropdown_width = int(300 * self.ui_scale)
-        dropdown_height = int(32 * self.ui_scale)
-        dropdown_rect = pygame.Rect(content_x, y, dropdown_width, dropdown_height)
-
-        # Draw dropdown background (black)
-        dd_hovered = (self.hovered_profile_element == 'title_dropdown')
-        dd_bg = (30, 30, 30) if dd_hovered or self.title_dropdown_open else (20, 20, 20)
-        pygame.draw.rect(self.screen, dd_bg, dropdown_rect, border_radius=5)
-        pygame.draw.rect(self.screen, WHITE if self.title_dropdown_open else (100, 100, 100), dropdown_rect, 2, border_radius=5)
-
-        # Dropdown text
-        title_display = self.temp_selected_title if self.temp_selected_title else "None"
-        dd_text = label_font.render(title_display, True, WHITE)
-        dd_text_rect = dd_text.get_rect(midleft=(dropdown_rect.left + 10, dropdown_rect.centery))
-        self.screen.blit(dd_text, dd_text_rect)
-
-        # Dropdown arrow
-        arrow_x = dropdown_rect.right - int(20 * self.ui_scale)
-        arrow_y = dropdown_rect.centery
-        arrow_size = int(6 * self.ui_scale)
-        if self.title_dropdown_open:
-            # Up arrow
-            points = [(arrow_x, arrow_y - arrow_size), (arrow_x - arrow_size, arrow_y + arrow_size),
-                       (arrow_x + arrow_size, arrow_y + arrow_size)]
-        else:
-            # Down arrow
-            points = [(arrow_x, arrow_y + arrow_size), (arrow_x - arrow_size, arrow_y - arrow_size),
-                       (arrow_x + arrow_size, arrow_y - arrow_size)]
-        pygame.draw.polygon(self.screen, WHITE, points)
-
-        self.profile_ui_elements['title_dropdown'] = {'rect': dropdown_rect}
-
-        # Store dropdown info for deferred rendering (drawn on top of icons)
-        self._title_dropdown_rect = dropdown_rect
-        self._title_dropdown_content_x = content_x
-        self._title_dropdown_width = dropdown_width
-
-        y += dropdown_height + int(15 * self.ui_scale)
-
-        # Icon Selection Section
-        label_text = label_font.render("Choose Icon:", True, WHITE)
-        self.screen.blit(label_text, (content_x, y))
-        y += int(30 * self.ui_scale)
-
-        # --- Scrollable icon grid (7 per row) ---
-        icon_size = int(50 * self.ui_scale)
-        icon_spacing = int(8 * self.ui_scale)
-        icons_per_row = 7
-
-        # Build ordered reward icon list: unlocked first, then locked
-        unlocked_reward_icons = achievement_manager.get_unlocked_reward_icons()
-        locked_reward_icons = [p for p in ALL_REWARD_ICON_PATHS if p not in unlocked_reward_icons]
-        reward_icon_order = unlocked_reward_icons + locked_reward_icons
-
-        # Total icons: 9 hero (question mark + 8 heroes) + reward icons
-        num_hero_icons = 1 + len(self.hero_icons)  # question mark + loaded heroes
-        total_icons = num_hero_icons + len(reward_icon_order)
-
-        # Icon grid layout (no sub-scroll — profile-level scroll handles everything)
-        icon_grid_top = y
-        total_rows = (total_icons + icons_per_row - 1) // icons_per_row
-        icons_content_height = total_rows * (icon_size + icon_spacing) - icon_spacing
-
-        # Deferred tooltip info (drawn after profile clip is restored)
-        deferred_tooltip = None
-        small_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', max(11, int(14 * self.ui_scale)))
-
-        for i in range(total_icons):
-            row = i // icons_per_row
-            col = i % icons_per_row
-            icon_x = content_x + col * (icon_size + icon_spacing)
-            icon_y = icon_grid_top + row * (icon_size + icon_spacing)
-            icon_rect = pygame.Rect(icon_x, icon_y, icon_size, icon_size)
-
-            # Skip icons fully outside visible clip area
-            if icon_y + icon_size < visible_content_top or icon_y > visible_content_bottom:
-                if i < num_hero_icons:
-                    self.profile_ui_elements[f'icon_{i}'] = {'rect': icon_rect}
-                else:
-                    self.profile_ui_elements[f'reward_icon_{i - num_hero_icons}'] = {'rect': icon_rect}
-                continue
-
-            if i < num_hero_icons:
-                # --- Hero icons (index 0=question mark, 1-8=heroes) ---
-                icon_key = f'icon_{i}'
-                is_selected = (self.temp_player_icon == i)
-                is_hovered = (self.hovered_profile_element == icon_key)
-                is_locked = False
-                icon_name = self.hero_icon_names[i] if i < len(self.hero_icon_names) else f"Hero {i}"
-
-                icon_surface = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-
-                if i == 0:
-                    icon_surface.fill((60, 60, 80))
-                    qm_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', int(24 * self.ui_scale))
-                    qm_text = qm_font.render("?", True, WHITE)
-                    qm_rect = qm_text.get_rect(center=(icon_size // 2, icon_size // 2))
-                    icon_surface.blit(qm_text, qm_rect)
-                else:
-                    hero_index = i - 1
-                    if hero_index < len(self.hero_icons_panel_scaled) and self.hero_icons_panel_scaled[hero_index]:
-                        scaled = pygame.transform.smoothscale(
-                            self.hero_icons_panel_scaled[hero_index], (icon_size, icon_size))
-                        icon_surface.blit(scaled, (0, 0))
-                    else:
-                        icon_surface.fill((100, 100, 100))
-            else:
-                # --- Reward icons ---
-                reward_idx = i - num_hero_icons
-                reward_path = reward_icon_order[reward_idx]
-                icon_key = f'reward_icon_{reward_idx}'
-                is_selected = (self.temp_player_icon == reward_path)
-                is_hovered = (self.hovered_profile_element == icon_key)
-                is_unlocked_reward, unlock_tooltip = achievement_manager.get_reward_icon_info(reward_path)
-                is_locked = not is_unlocked_reward
-                icon_name = self.reward_icon_names.get(reward_path, reward_path.split('/')[-1].replace('.png', ''))
-
-                icon_surface = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                scaled_reward = self.reward_icons_panel_scaled.get(reward_path)
-                if scaled_reward:
-                    resized = pygame.transform.smoothscale(scaled_reward, (icon_size, icon_size))
-                    icon_surface.blit(resized, (0, 0))
-                else:
-                    icon_surface.fill((100, 100, 100))
-
-                if is_locked:
-                    icon_surface.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
-
-            # Hover effect (suppress when title dropdown covers this icon)
-            if is_hovered and not self.title_dropdown_open:
-                light_overlay = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
-                light_overlay.fill((50, 50, 50, 50))
-                icon_surface.blit(light_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-            self.screen.blit(icon_surface, icon_rect)
-
-            # Border (2px larger than icon, offset -1 to center)
-            if self.icon_border_panel_scaled:
-                border_scaled = pygame.transform.smoothscale(
-                    self.icon_border_panel_scaled, (icon_size + 2, icon_size + 2))
-                if i >= num_hero_icons and is_locked:
-                    border_scaled = border_scaled.copy()
-                    border_scaled.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
-                self.screen.blit(border_scaled, (icon_rect.x - 1, icon_rect.y - 1))
-
-            # Selection indicator
-            if is_selected:
-                pygame.draw.rect(self.screen, (255, 215, 0), icon_rect, 3, border_radius=5)
-
-            self.profile_ui_elements[icon_key] = {'rect': icon_rect}
-
-            # Collect tooltip for hover (will be drawn after clip restore)
-            # Suppress when title dropdown is open to avoid tooltips showing through it
-            if is_hovered and not self.title_dropdown_open:
-                if i >= num_hero_icons and is_locked:
-                    # Show icon name + unlock source for locked reward icons
-                    deferred_tooltip = f"{icon_name}\n{unlock_tooltip}"
-                else:
-                    deferred_tooltip = icon_name
-
-        # --- Player Stats section (below icon grid, scrolls with profile content) ---
-        stats_y = icon_grid_top + icons_content_height + int(12 * self.ui_scale)
-        stats_line_width = panel_w - 2 * padding_sides
-        # Thin white divider line
-        pygame.draw.line(self.screen, (180, 180, 180),
-                         (content_x, stats_y), (content_x + stats_line_width, stats_y), 1)
-        stats_y += int(6 * self.ui_scale)
-
-        # "Player Stats" header
-        stats_header_font = self._get_cached_font('assets/fonts/Cinzel-Bold.ttf',
-                                                   max(11, int(14 * self.ui_scale)))
-        stats_header = stats_header_font.render("Player Stats", True, WHITE)
-        self.screen.blit(stats_header, (content_x, stats_y))
-        stats_y += int(18 * self.ui_scale)
-
-        # Read stats from achievement_manager
-        a_stats = achievement_manager.stats
-        custom_total = a_stats.get('custom_games_ai_finished', 0)
-        custom_wins = a_stats.get('custom_game_ai_wins', 0)
-        mp_total = a_stats.get('multiplayer_games_finished', 0)
-        mp_wins = a_stats.get('multiplayer_wins', 0)
-        custom_rate = f"{round(100 * custom_wins / custom_total)}%" if custom_total > 0 else "N/A"
-        mp_rate = f"{round(100 * mp_wins / mp_total)}%" if mp_total > 0 else "N/A"
-
-        # Stat lines rendered in single column
-        stat_color = (200, 200, 200)
-        stat_line_height = int(18 * self.ui_scale)
-        stat_lines = [
-            f"Custom Game Win Rate: {custom_rate}",
-            f"Multiplayer Win Rate: {mp_rate}",
-            f"Total Custom Games Played: {custom_total}",
-            f"Total Multiplayer Games Played: {mp_total}",
-            f"Total Custom Game Wins: {custom_wins}",
-            f"Total Multiplayer Wins: {mp_wins}",
-        ]
-        for line_text in stat_lines:
-            stat_surf = small_font.render(line_text, True, stat_color)
-            self.screen.blit(stat_surf, (content_x, stats_y))
-            stats_y += stat_line_height
-
-        # Calculate and clamp profile scroll
-        # Total content height computed from unscrolled origin (independent of current scroll offset)
-        total_unscrolled_height = stats_y + self.profile_scroll_offset - visible_content_top
-        visible_height = visible_content_bottom - visible_content_top
-        profile_max_scroll = max(0, total_unscrolled_height - visible_height)
-        self._profile_max_scroll = profile_max_scroll
-        self.profile_scroll_offset = max(0, min(self.profile_scroll_offset, profile_max_scroll))
-
-        # Restore profile clip
-        self.screen.set_clip(old_profile_clip)
-
-        # Draw scroll indicator if content overflows
-        if profile_max_scroll > 0:
-            scrollbar_x = panel_x + panel_w - padding_sides + int(10 * self.ui_scale)
-            scrollbar_w = int(4 * self.ui_scale)
-            scrollbar_top = visible_content_top
-            scrollbar_height = visible_content_bottom - visible_content_top
-            visible_ratio = visible_height / total_unscrolled_height
-            indicator_h = max(int(20 * self.ui_scale), int(scrollbar_height * visible_ratio))
-            scroll_ratio = self.profile_scroll_offset / profile_max_scroll if profile_max_scroll > 0 else 0
-            indicator_y = scrollbar_top + int((scrollbar_height - indicator_h) * scroll_ratio)
-            pygame.draw.rect(self.screen, (60, 60, 80),
-                             (scrollbar_x, scrollbar_top, scrollbar_w, scrollbar_height), border_radius=2)
-            pygame.draw.rect(self.screen, (150, 150, 170),
-                             (scrollbar_x, indicator_y, scrollbar_w, indicator_h), border_radius=2)
-
-        # --- Deferred: Draw title dropdown options on top of icons ---
-        if self.title_dropdown_open:
-            all_title_options = [None] + list(ALL_TITLES)
-            option_height = int(28 * self.ui_scale)
-            dropdown_list_y = self._title_dropdown_rect.bottom + 2
-
-            # Limit visible area to TITLE_DROPDOWN_VISIBLE items with scrolling
-            total_options = len(all_title_options)
-            visible_count = min(total_options, self.TITLE_DROPDOWN_VISIBLE)
-            visible_height = visible_count * option_height
-            max_dd_scroll = max(0, total_options - visible_count)
-            self.title_dropdown_scroll = max(0, min(self.title_dropdown_scroll, max_dd_scroll))
-            self._title_dropdown_max_scroll = max_dd_scroll
-
-            # Store dropdown list rect for scroll hit-testing
-            self._title_dropdown_list_rect = pygame.Rect(
-                self._title_dropdown_content_x, dropdown_list_y,
-                self._title_dropdown_width, visible_height)
-
-            # Background
-            list_bg = pygame.Surface((self._title_dropdown_width, visible_height), pygame.SRCALPHA)
-            list_bg.fill((20, 20, 20, 240))
-            self.screen.blit(list_bg, (self._title_dropdown_content_x, dropdown_list_y))
-
-            # Clip to visible dropdown area
-            old_dd_clip = self.screen.get_clip()
-            self.screen.set_clip(self._title_dropdown_list_rect)
-
-            small_dd_font = self._get_cached_font('assets/fonts/Cinzel-Regular.ttf', max(12, int(18 * self.ui_scale)))
-
-            for idx, title_opt in enumerate(all_title_options):
-                # Offset by scroll position
-                visual_y = dropdown_list_y + (idx - self.title_dropdown_scroll) * option_height
-                opt_rect = pygame.Rect(self._title_dropdown_content_x, visual_y,
-                                       self._title_dropdown_width, option_height)
-                opt_key = f'title_option_{idx}'
-                is_opt_hovered = (self.hovered_profile_element == opt_key)
-
-                if title_opt is None:
-                    display_text = "None"
-                    is_locked_title = False
-                else:
-                    display_text = title_opt
-                    is_unlocked_t, _ = achievement_manager.get_title_info(title_opt)
-                    is_locked_title = not is_unlocked_t
-
-                if is_opt_hovered and not is_locked_title:
-                    hover_bg = pygame.Surface((self._title_dropdown_width, option_height), pygame.SRCALPHA)
-                    hover_bg.fill((80, 80, 120, 150))
-                    self.screen.blit(hover_bg, opt_rect)
-
-                text_color = (100, 100, 100) if is_locked_title else WHITE
-                opt_text = small_dd_font.render(display_text, True, text_color)
-                opt_text_rect = opt_text.get_rect(midleft=(opt_rect.left + 10, opt_rect.centery))
-                self.screen.blit(opt_text, opt_text_rect)
-
-                if is_locked_title:
-                    lock_text = small_dd_font.render("[Locked]", True, (100, 100, 100))
-                    self.screen.blit(lock_text, (opt_rect.right - lock_text.get_width() - int(8 * self.ui_scale), opt_text_rect.y))
-
-                if is_opt_hovered and is_locked_title and title_opt:
-                    _, dd_tooltip = achievement_manager.get_title_info(title_opt)
-                    deferred_tooltip = dd_tooltip
-
-                self.profile_ui_elements[opt_key] = {'rect': opt_rect, 'locked': is_locked_title}
-
-            # Restore clip
-            self.screen.set_clip(old_dd_clip)
-
-            # Border around visible dropdown area
-            pygame.draw.rect(self.screen, (100, 100, 100), self._title_dropdown_list_rect, 1)
-
-            # Scroll indicator arrows if there are more options than visible
-            if max_dd_scroll > 0:
-                arrow_color = (180, 180, 180)
-                arrow_x = self._title_dropdown_content_x + self._title_dropdown_width - int(12 * self.ui_scale)
-                if self.title_dropdown_scroll > 0:
-                    # Up arrow
-                    ay = dropdown_list_y + int(6 * self.ui_scale)
-                    pygame.draw.polygon(self.screen, arrow_color,
-                                        [(arrow_x, ay + 6), (arrow_x - 5, ay + 12), (arrow_x + 5, ay + 12)])
-                if self.title_dropdown_scroll < max_dd_scroll:
-                    # Down arrow
-                    ay = dropdown_list_y + visible_height - int(6 * self.ui_scale)
-                    pygame.draw.polygon(self.screen, arrow_color,
-                                        [(arrow_x, ay - 6), (arrow_x - 5, ay - 12), (arrow_x + 5, ay - 12)])
-
-        # --- Deferred: Draw tooltip on top of everything ---
-        # Check level bar hover for tooltip (not inside icon grid clip region)
-        if not deferred_tooltip and self.hovered_profile_element == 'level_bar':
-            level_bar_data = self.profile_ui_elements.get('level_bar')
-            if level_bar_data and 'tooltip' in level_bar_data:
-                deferred_tooltip = level_bar_data['tooltip']
-        if deferred_tooltip:
-            self._draw_tooltip(self.screen, deferred_tooltip, pygame.mouse.get_pos(), small_font)
-
-        # Cancel and Save buttons at bottom (buttons_y pre-calculated above for icon grid)
-        button_width = int(150 * self.ui_scale)
-        button_height = int(50 * self.ui_scale)
-        button_spacing = int(20 * self.ui_scale)
-        total_buttons_width = button_width * 2 + button_spacing
-        buttons_start_x = panel_x + (panel_w - total_buttons_width) // 2
-
-        # Cancel button
-        cancel_rect = pygame.Rect(buttons_start_x, buttons_y, button_width, button_height)
-        is_hovered = (self.hovered_profile_element == 'cancel_button')
-        cancel_bg = lighten_color((120, 50, 50), 0.2) if is_hovered else (120, 50, 50)
-        pygame.draw.rect(self.screen, cancel_bg, cancel_rect, border_radius=8)
-        pygame.draw.rect(self.screen, (150, 150, 150), cancel_rect, 2, border_radius=8)
-
-        cancel_text = self.button_font.render("Cancel", True, WHITE)
-        cancel_text_rect = cancel_text.get_rect(center=cancel_rect.center)
-        self.screen.blit(cancel_text, cancel_text_rect)
-
-        self.profile_ui_elements['cancel_button'] = {'rect': cancel_rect}
-
-        # Save button
-        save_rect = pygame.Rect(buttons_start_x + button_width + button_spacing, buttons_y,
-                                button_width, button_height)
-        is_hovered = (self.hovered_profile_element == 'save_button')
-        save_bg = lighten_color((50, 180, 50), 0.2) if is_hovered else (50, 180, 50)
-        pygame.draw.rect(self.screen, save_bg, save_rect, border_radius=8)
-        pygame.draw.rect(self.screen, (150, 150, 150), save_rect, 2, border_radius=8)
-
-        save_text = self.button_font.render("Save", True, WHITE)
-        save_text_rect = save_text.get_rect(center=save_rect.center)
-        self.screen.blit(save_text, save_text_rect)
-
-        self.profile_ui_elements['save_button'] = {'rect': save_rect}

@@ -55,6 +55,15 @@ CHIP_EDGE = (90, 64, 32)
 CHIP_ON_EDGE = (226, 180, 90)
 CHIP_ON_COUNT = (58, 36, 8)
 LOCK_FILL = (26, 18, 11)
+LOCKED_CHIP_FILL = (21, 15, 10)
+LOCKED_CHIP_EDGE = (58, 42, 22)
+QMARK_FILL = (42, 34, 54)          # The default portrait's tile behind its "?"
+TILE_FILL = (10, 7, 4, 115)
+TILE_EDGE = (138, 98, 50, 140)
+COIN_RING = (181, 138, 62)
+COIN_FILL = (34, 25, 15)
+SMALL_BTN_FILL = (14, 10, 6, 140)
+GOLD_TEXT_C = (238, 206, 132)      # As bottom_panel_kit's GOLD_TEXT
 ICON_BORDER_PATH = 'assets/mapicons/IconBorder.png'
 ICON_BORDER_BRIGHTEN = 51      # As the game's own icon border (battle_screen_kit)
 LOCKED_MULT = 112              # A locked medal: grey, then darkened to this (of 255)
@@ -100,6 +109,26 @@ FONT_ROLES = {
     'card_label': ('semibold', 12),
     'card_reward': ('semibold', 15),
     'empty': ('regular', 16),
+    # Profile
+    'pname': ('semibold', 30),
+    'ptitle': ('semibold', 15),
+    'tag': ('semibold', 11),
+    'lvl_num': ('bold', 22),
+    'lvl': ('semibold', 16),
+    'lvl_small': ('regular', 13),
+    'tile_k': ('semibold', 11),
+    'tile_v': ('bold', 24),
+    'tile_s': ('regular', 12),
+    'ach_line': ('regular', 15),
+    'ach_num': ('semibold', 15),
+    'small_btn': ('semibold', 12),
+    'pick_head': ('semibold', 17),
+    'pick_note': ('regular', 14),
+    'pick_sub': ('semibold', 13),
+    'title_chip': ('semibold', 13),
+    'qmark': ('semibold', 30),
+    'tip_title': ('semibold', 15),
+    'tip_body': ('regular', 13),
 }
 _FONT_FILES = {'regular': CINZEL_REGULAR, 'semibold': CINZEL_SEMIBOLD, 'bold': CINZEL_BOLD}
 
@@ -641,33 +670,144 @@ class MenuKit:
         """The margin round a medal sprite (its glow and lock badge reach into it)."""
         return self.px(8)
 
-    def medal(self, path, size, earned, state='normal'):
+    def medal(self, path, size, earned, state='normal', glow=True):
         """
         An achievement's icon in the gold frame: in colour with a soft glow when earned,
         grey and darkened with a padlock when not; brighter (and glowing) on hover.
+        `glow=False`: no glow at rest (the Profile's portraits). `path` None: the default
+        portrait, a "?" tile.
         """
         def build():
             pad = self.medal_pad()
             surf = pygame.Surface((size + 2 * pad, size + 2 * pad), pygame.SRCALPHA)
             lit = state in ('hover', 'flash')
-            if earned or lit:
+            glowing = lit or (earned and glow)
+            if glowing:
                 alpha = 150 if lit else 85
                 surf.blit(_soft_glow((size, size), pad, GLOW, alpha), (0, 0),
                           special_flags=pygame.BLEND_RGBA_MAX)
             face = pygame.Surface((size, size), pygame.SRCALPHA)
-            face.blit(self.icon(path, size - 2), (1, 1))
+            if path is None:
+                face.fill(QMARK_FILL, pygame.Rect(1, 1, size - 2, size - 2))
+                mark = _render_text(self.font_px('semibold', max(12, size * 0.42 / self.scale)), "?",
+                                    PARCHMENT, SHADOW, 1, 0)
+                face.blit(mark, mark.get_rect(center=(size // 2, size // 2)))
+            else:
+                face.blit(self.icon(path, size - 2), (1, 1))
             face.blit(self.icon_border(size), (0, 0))
             if not earned:
                 face = _greyed(face)
             if lit:
                 face.fill((28, 28, 28), special_flags=pygame.BLEND_RGB_ADD)
-            surf.blit(face, (pad, pad), special_flags=0 if (earned or lit) else pygame.BLEND_RGBA_MAX)
+            surf.blit(face, (pad, pad), special_flags=0 if glowing else pygame.BLEND_RGBA_MAX)
             if not earned:
                 badge = self.lock_badge(max(12, int(size * 0.28)))
                 surf.blit(badge, (pad + size - badge.get_width() * 3 // 4,
                                   pad + size - badge.get_height() * 3 // 4))
             return surf
-        return self._sprite(('medal', path, size, earned, state), build)
+        return self._sprite(('medal', path, size, earned, state, glow), build)
+
+    # ------------------------------------------------------------ profile pieces
+
+    def title_chip(self, size, label, on, locked, state):
+        """A title to choose: a pill; gold when chosen; dim with a padlock when locked."""
+        def build():
+            w, h = size
+            if on:
+                surf = _bake_pill(size, CHOICE_ON_FILL, CHIP_ON_EDGE)
+                color = CHOICE_ON_TEXT
+            elif locked:
+                surf = _bake_pill(size, LOCKED_CHIP_FILL, LOCKED_CHIP_EDGE)
+                color = PARCHMENT_FAINT
+            else:
+                surf = _bake_pill(size, CHIP_FILL, WELL_EDGE)
+                color = PARCHMENT
+            _apply_state(surf, state)
+            lock = self.lock_glyph(max(6, int(h * 0.32)), color) if locked else None
+            room = w - self.px(20) - (lock.get_width() + self.px(5) if lock else 0)
+            text = self.text(self.fit(label, 'title_chip', room), 'title_chip', color, shadow=not on)
+            total = text.get_width() + (lock.get_width() + self.px(5) if lock else 0)
+            x = (w - total) // 2
+            if lock:
+                surf.blit(lock, (x, (h - lock.get_height()) // 2))
+                x += lock.get_width() + self.px(5)
+            surf.blit(text, (x, (h - text.get_height()) // 2))
+            return surf
+        return self._sprite(('title_chip', size, label, on, locked, state), build)
+
+    def lock_glyph(self, height, color):
+        """A small padlock (inside a locked title)."""
+        def build():
+            k = SUPERSAMPLE
+            w, h = int(height * 0.8) * k, height * k
+            big = pygame.Surface((w, h), pygame.SRCALPHA)
+            big.fill((color[0], color[1], color[2], 0))
+            body = pygame.Rect(0, int(h * 0.45), w, int(h * 0.55))
+            pygame.draw.rect(big, color, body, border_radius=k)
+            shackle = pygame.Rect(int(w * 0.18), 0, int(w * 0.64), int(h * 0.7))
+            pygame.draw.ellipse(big, color, shackle, max(k, int(w * 0.14)))
+            pygame.draw.rect(big, color, body, border_radius=k)
+            return pygame.transform.smoothscale(big, (w // k, h // k))
+        return self._sprite(('lock_glyph', height, color), build)
+
+    def tile(self, size):
+        """A stat tile: a faint dark box with a thin bronze edge."""
+        def build():
+            surf = _bake_pill(size, TILE_FILL, TILE_EDGE, radius=self.px(4))
+            return surf
+        return self._sprite(('tile', size), build)
+
+    def coin(self, diameter):
+        """The level medallion: a dark disc in a bronze ring, with a glow."""
+        def build():
+            pad = self.px(8)
+            surf = _soft_glow((diameter, diameter), pad, GLOW, 90, shape='round')
+            surf.blit(_disc(diameter, COIN_RING), (pad, pad))
+            inner = diameter - 2 * max(2, self.px(3))
+            surf.blit(_disc(inner, COIN_FILL), (pad + (diameter - inner) // 2, pad + (diameter - inner) // 2))
+            return surf
+        return self._sprite(('coin', diameter), build)
+
+    def coin_pad(self):
+        return self.px(8)
+
+    def small_button(self, label, state):
+        """A small pill button (View): gold text, a gold edge, brighter and glowing on hover."""
+        def build():
+            text = self.text(label.upper(), 'small_btn', GOLD_LIGHT if state != 'normal' else GOLD_TEXT_C,
+                             spacing=0.1)
+            w, h = text.get_width() + self.px(24), self.px(26)
+            pad = self.px(6)
+            surf = pygame.Surface((w + 2 * pad, h + 2 * pad), pygame.SRCALPHA)
+            lit = state in ('hover', 'flash')
+            if lit:
+                surf.blit(_soft_glow((w, h), pad, GLOW, 90 if state == 'hover' else 140, shape='pill'),
+                          (0, 0), special_flags=pygame.BLEND_RGBA_MAX)
+            pill = _bake_pill((w, h), SMALL_BTN_FILL, GOLD if lit else GOLD_DARK)
+            surf.blit(pill, (pad, pad), special_flags=0 if lit else pygame.BLEND_RGBA_MAX)
+            surf.blit(text, text.get_rect(center=(pad + w // 2, pad + h // 2)))
+            return surf
+        return self._sprite(('small_button', label, state), build)
+
+    def small_button_pad(self):
+        return self.px(6)
+
+    def tag(self, label):
+        """A small dim label pill (the "Steam" next to a Steam name)."""
+        def build():
+            text = self.text(label.upper(), 'tag', PARCHMENT_DIM, shadow=False, spacing=0.12)
+            w, h = text.get_width() + self.px(14), text.get_height() + self.px(6)
+            surf = _bake_pill((w, h), SMALL_BTN_FILL, WELL_EDGE)
+            surf.blit(text, text.get_rect(center=(w // 2, h // 2)))
+            return surf
+        return self._sprite(('tag', label), build)
+
+    def tooltip(self, title, lines):
+        """The battle screen's hover tooltip (a dark box, gold title, parchment lines)."""
+        def build():
+            return kit.tooltip_box(title, GOLD_LIGHT, list(lines), self.font('tip_title'),
+                                   self.font('tip_body'), self.scale, self.px(320))
+        return self._sprite(('tooltip', title, tuple(lines)), build)
 
     def lock_badge(self, diameter):
         """A small dark disc with a padlock (a locked medal or portrait)."""
