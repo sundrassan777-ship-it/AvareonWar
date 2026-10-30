@@ -4,6 +4,27 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Main Menu: A New Options Window
+
+*30 October 2026*
+
+### Improvements
+
+- **A new Options window.** Options now opens in a larger window with Display, Gameplay
+  and Audio tabs, so every setting is in view without scrolling, and each one has a short
+  line explaining what it does. Switches, arrows and sliders replace the old boxes, and
+  sliders show their value as you drag. Settings that depend on another one (Scroll From,
+  Tooltip Delay) stay in place and dim while they don't apply. The window shows how many
+  changes you haven't applied yet; press Enter to apply or Esc to cancel.
+
+### Fixes
+
+- **Zooming out with the mouse wheel no longer jumps straight to the furthest view.** If
+  you had never changed Zoom Speed, a single notch out zoomed all the way out. Zoom Speed
+  now starts at a sensible value, and an out-of-range saved value is reset to it.
+
+---
+
 ## Battle Screen: Preview, Skip Button and Report
 
 *29 October 2026*

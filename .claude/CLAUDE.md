@@ -53,6 +53,9 @@ AvareonWar/
 
 **Setup & Menus:**
 - [main_menu.py](main_menu.py) - Main menu with game mode selection
+- [ui/menu_kit.py](ui/menu_kit.py) - The main menu windows' look (bronze window, title plate, switches / arrows / sliders / tabs), `WindowAnim` (drop + fade) and `WindowStage` (menu captured once, fixed parts baked, opaque fades only) - CODE_GUIDE "Main Menu Windows"
+- [ui/options_panel.py](ui/options_panel.py) - The main menu's Options window: Display / Gameplay / Audio tabs over MainMenu's pending `temp_*` values (`build_rows()`)
+- [config/options_hints.py](config/options_hints.py) - The Options window's one-line explanations, edited by the owner
 - [integrated_setup.py](integrated_setup.py) - Setup window with map preview, territory selection
 - [campaign_screen.py](campaign_screen.py) - Campaign screen with background and return button
 - [book_of_tales.py](book_of_tales.py) - Book of Tales scenario picker (opened from the Campaign screen's bottom-right icon; description markup; Launch runs the tale via `main.py` `_TALE_REGISTRY`)
@@ -155,11 +158,13 @@ AvareonWar/
 - [tools/plot_fx_preview.py](tools/plot_fx_preview.py) - Plot effects preview on the real map (production light rays, construction dust): live window with zoom / 2D-3D look / FPS, `--sheet` contact sheets, `--bench` frame cost
 - [tools/hero_fx_preview.py](tools/hero_fx_preview.py) - Hero ability effects preview on the real map: keys cast each ability at the territory under the mouse (with the Embargo embers / Silence fog they leave behind, C clears), A cycles the passive auras, `--sheet` stills over time (`--only` some effects), `--bench` frame cost
 - [tools/order_fx_preview.py](tools/order_fx_preview.py) - Selection ring / order arrows / destination reticle preview on the real map: click selects, right-click orders, keys add orders, reverse pairs, 2-hops, hover (gold), ally's order (dimmer), order kind (G), cancel (ash-grey fizzle); `--sheet` stills, `--bench` frame cost
+- [tools/menu_preview.py](tools/menu_preview.py) - Main menu windows preview (the real MainMenu, settings never saved): live window, `--sheet DIR` stills of every tab / state at 720p-1080p, `--bench` frame cost
 - [tools/battle_fx_preview.py](tools/battle_fx_preview.py) - Battle screen preview (the real `EnhancedBattleInterface` over the map): keys pick a battle (skirmish / large / close / defender wins) and colours (bright / dark / neutral grey), Space resolves or skips, the mouse clicks the screen's own buttons, S slow motion; `--sheet` stills (setup, a shot exchange, the finale), `--bench` render cost per frame with sprite builds / skips in the fight
 
 **Performance Tests:**
 - [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow, construction-dust and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
 - [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
+- [tests/test_menu_options.py](tests/test_menu_options.py) - Main menu Options window: layout at 720p-1440p (rows above the footer, controls in their column, text fits), every control (tabs, switches + their names, arrows, choices, sliders, "Set by VSync", dimmed rows), Apply / Cancel / Esc / Enter / Reset to the settings defaults, unsaved count, hover < flash, no clicks until landed, no smoothscale in steady frames, the alpha-255 trap, the zoom speed range fix
 - [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
 - [tests/test_hero_fx.py](tests/test_hero_fx.py) - Hero ability effects: light kit (sprite caches and build budget, rings, territory raster, bead chains), outlines drop shared borders, cue timelines, auras (fade, firefly density by area, no territory lookups per frame), game wiring (aura of the selected hero, Embargo embers from game state, Silence vignette, every active ability shows, AI casts shown once, no cast-time border building)
 - [tests/test_mission_refusal_toasts.py](tests/test_mission_refusal_toasts.py) - "Not yet" toasts for what a mission has locked: the section G texts, the game-state locks (route, building, unit), every tutorial refusal click by click (Damlere, a greyed building, a locked unit, End Turn, tab, technology, plot, cancel, sidebar), story steps and clouded territories silent, toasts below the speech board
@@ -588,7 +593,9 @@ After making code changes, ask yourself:
 - Change sound playback → `sound_manager.py`
 - Change background music → `music_manager.py`
 - Change volume settings → `settings_manager.py` + `music_manager.py`
-- Change volume slider UI → `rendering/ui_renderer.py` (in-game) + `main_menu.py` (main menu)
+- Change volume slider UI → `rendering/ui_renderer.py` (in-game) + `ui/options_panel.py` (main menu)
+- Change the main menu's Options window (rows, tabs, wording) → `ui/options_panel.py` `build_rows()` + `config/options_hints.py`; pending values / Apply / Reset in `main_menu.py`. Add a setting: CODE_GUIDE "Main Menu Windows" → "Add a setting to the Options window"
+- Change the main menu windows' look or their drop → `ui/menu_kit.py` (preview: `py tools/menu_preview.py`). **Never fade a big per-pixel-alpha surface, never `set_alpha(255)`** (`_blit_faded()`), never cache a `Font` across MainMenus. See CODE_GUIDE "Main Menu Windows"
 - Change VSync / FPS limit → `display_utils.py` (`set_display_mode`, `resolve_frame_cap`, `menu_frame_cap`) + `settings_manager.py` keys + both options menus
 - Create/recreate the display window → **always** `display_utils.set_display_mode()`, never `pygame.display.set_mode()` directly (VSync needs `SCALED` + a fresh display, and is silently lost otherwise)
 - Shared campaign utilities → `campaign_utils.py`

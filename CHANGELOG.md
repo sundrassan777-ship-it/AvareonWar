@@ -2,6 +2,49 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-30 - Main menu: the Options window glow-up (Phase 1)
+
+Branch `feature/menu-glow-up`, phase 1 of 3 (Options, then Achievements, then Profile).
+The owner asked to modernize the main menu's Options window and Achievements menu, then
+added the Profile menu; the look was agreed on a mockup page ("Menu Glow-up") built from
+the game's own art: the battle screen's bronze frame, Options in tabs, Achievements as a
+trophy wall, Profile as a player card. The old Options panel was half the screen on
+OptionsMenuBG with grey boxes, green / red buttons, six rows visible and the rest scrolled.
+- **The window** (`ui/options_panel.py`): Display / Gameplay / Audio tabs, a row per
+  setting with a one-line explanation (`config/options_hints.py`) and its control - a
+  switch (its name toggles it too), arrows (Resolution, FPS Limit, Tooltip Delay - the
+  old click-to-cycle boxes and the Resolution dropdown, whose list covered the rows below
+  it, are gone), a two-way choice (Map Look, Scroll From), a slider with its value on the
+  same line (volumes still preview live). Scroll From and Tooltip Delay dim and ignore
+  clicks while their switch is off instead of disappearing; FPS Limit reads "Set by
+  VSync" while VSync is on. The footer counts unsaved changes; Reset to Defaults reads
+  `settings.defaults` instead of its own copy. Enter applies, Esc cancels, Tab / Shift+Tab
+  step the tabs. Hover lights and a click flashes every control.
+- **The kit** (`ui/menu_kit.py`, for all three windows): a bronze-framed window (~76% x
+  90% of the screen at 16:9, scaled by min(W/1600, H/900) so it keeps growing past 900p)
+  under a bronze title plate, the battle screen's ornate buttons (`battle_screen_kit.
+  draw_button(color=)`: a gold label for the primary action), baked sprites shared
+  between MainMenus per screen size (fonts excepted: a Font dies with pygame.quit(), and a
+  shared one crashed the test run with an access violation). Opening: an eased 0.3 s drop
+  and fade with the menu dimming behind (closing 0.22 s).
+- **Frame cost** (`WindowStage`): the first build drew everything every frame - 4 ms a
+  settled frame and 37 ms an opening one, as pygame blits big translucent surfaces slowly
+  (a full-screen vignette at partial alpha 12 ms) and takes a ~12 ms slow path for a
+  surface alpha of exactly 255. Now the menu is captured once (plain and dimmed), the
+  window's fixed parts are baked into that picture, and only opaque surfaces fade, ending
+  halfway through the drop: ~0.5 ms a settled frame, ~2 ms a fading one, ~0.6 ms the rest
+  of the drop at 1600x900; sprites are prewarmed when the menu is made (the cold first
+  frame was 85 ms); a slow frame advances the drop at most 1/60 s.
+- **Fix: zoom speed default.** `camera_zoom_speed` defaulted to 1.1 (settings_manager,
+  main.py) while the slider and the camera expect 0.05-0.30: the camera zooms by
+  (1 +/- speed), so on any config whose player never moved the slider one wheel notch
+  out jumped to the furthest zoom. Default 0.15 (`CAMERA_ZOOM_SPEED`), range
+  `CAMERA_ZOOM_SPEED_MIN` / `MAX`, values out of range reset when settings load.
+- Preview `tools/menu_preview.py` (live / `--sheet` / `--bench`; never saves). Tests
+  `tests/test_menu_options.py` (31); `tests/test_map_look.py` follows the new window.
+- Noticed, not changed (also on main): once a second MainMenu has been built in a
+  process, every blit in it is ~4x slower. To be looked at after the three phases.
+
 ## 2026-10-29 - Battle screen: the preview, its rows and an informed mystery (Phase 3)
 
 Branch `feature/battle-screens`, phase 3, the last. Each side of the battle window showed

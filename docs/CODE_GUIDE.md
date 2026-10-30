@@ -27,6 +27,7 @@ This guide provides module-specific guidance on when and how to modify different
 16. [Replay System](#replay-system) - Recording, viewer, browser
 17. [Campaign Save System](#campaign-save-system) - Save/load campaign progress
 18. [Browser Screens](#browser-screens-saved-games--replays) - Saved Games + Replays UI
+    - [Main Menu Windows](#main-menu-windows-options--achievements--profile) - The menu's windows kit (bronze window, drop + fade, WindowStage), the Options window, adding a setting
 19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
@@ -3704,7 +3705,8 @@ AI-turn branch of `run()` (it only passes ESC, F2, the wheel and whitelisted cli
 #### When to Modify
 
 ✅ **Change camera behavior:**
-- Modify pan speed, zoom speed
+- Modify pan speed, zoom speed (the Zoom Speed setting's range: `CAMERA_ZOOM_SPEED_MIN` /
+  `MAX` in `config/constants.py` - see "Main Menu Windows")
 - Adjust edge scrolling sensitivity
 - Change zoom limits (min/max)
 
@@ -4926,6 +4928,105 @@ close the dialog only), RETURN = open, and wheel scrolling via legacy buttons 4/
 | Rows | single line, `row_height = 64 * s` | two lines (+ `mode - victory` sub-line), `78 * s` |
 | Buttons | Return / Delete / **Load** | Back / Delete / **Watch** |
 | List source | `save_manager.scan_saves()` | `ReplayBrowser._scan_replays()` |
+
+## Main Menu Windows (Options / Achievements / Profile)
+
+**Files:** `ui/menu_kit.py` (the look, the drop + fade, `WindowStage`), `ui/options_panel.py`
+(the Options window), `config/options_hints.py` (its explanation lines, edited by the
+owner), `main_menu.py` (opens / closes them; Apply / Cancel / Reset to Defaults; `render()`)
+**Preview:** `py tools/menu_preview.py` (live, never saves), `--sheet DIR` (every tab and
+state at 720p / 900p / 1080p), `--bench` (frame cost)
+**Tests:** `tests/test_menu_options.py`; the Map Look row: `tests/test_map_look.py`
+
+Agreed with the owner on the "Menu Glow-up" mockup (2026-10-30): the battle screen's
+bronze TableBorder frame and palette, a window about three quarters of the screen over
+the dimmed menu, Options in tabs. Achievements (a trophy wall) and Profile (a player card)
+move onto the same kit in the next phases; until then they are the old slide-down panels.
+The in-game Options (`rendering/ui_renderer.py` `draw_options_menu`) is separate code and
+not restyled.
+
+### The kit (`ui/menu_kit.py`)
+
+- `MenuKit(screen_size)`: `scale = min(W/1600, H/900)` (grows past 900p - the old panels
+  stopped at 900p sizes); `px()`; fonts by role (`FONT_ROLES`) from the Cinzel files
+  directly, as the browser screens (not `font_manager`, which maps weights one step
+  bolder); `text()` with a drop shadow and optional letter spacing; sprites for the
+  window, title plate, tabs, switch, arrows, two-way choice, slider, knob, row wash.
+  Buttons are the battle screen's (`battle_screen_kit.draw_button`, `color=` gold for the
+  primary action).
+- Text and sprites are kept between MainMenus per screen size (`_SHARED`: one MainMenu is
+  made every time the game returns to the menu). **Fonts are not** - a `Font` dies with
+  `pygame.quit()`, and using one afterwards crashes the process (access violation).
+- Glows (`_soft_glow()`) fade to nothing exactly at the sprite's edge (a wider blur is cut
+  off there and shows as a square) and carry the glow colour at alpha 0 everywhere (no
+  dark fringe). Put one on an empty sprite with `BLEND_RGBA_MAX`: a plain blit onto a
+  clear surface darkens it. The same goes for anything drawn large and smoothscaled down:
+  fill it with its colour at alpha 0 first.
+- `WindowAnim`: opens in `OPEN_SECONDS` (0.30), closes in `CLOSE_SECONDS` (0.22), eased
+  (`level`); one frame advances it at most `MAX_STEP` (1/60 s), so a slow frame does not
+  make the drop jump; clicks and hover only once it has landed (`interactive`).
+
+### Drawing a window cheaply (`WindowStage`)
+
+pygame blits a big translucent surface slowly: a full-screen per-pixel-alpha surface at
+partial alpha costs ~12 ms, an opaque surface faded with `set_alpha()` ~0.6 ms, and a
+surface alpha of **exactly 255 takes a ~12 ms slow path** (the cause of a stutter at the
+end of the drop). So:
+
+- When a window starts to show, the menu is drawn once and captured plain and dimmed (the
+  vignette `backdrop()`); its buttons cannot change under a window.
+- Landed: the window's fixed parts (`draw_static()`: board, title plate, row names) are
+  baked into the dimmed picture, again whenever `static_key()` changes (the tab, which rows
+  are dimmed). A frame is one opaque blit plus `draw_dynamic()` (tabs, controls, buttons).
+- Moving: the two menu pictures cross-fade and one opaque picture of the window (its title
+  plate apart) fades and drops; both fades end at `FADE_END` (0.85) of the drop, so its
+  second half is opaque blits only.
+- Fade with `_blit_faded()` (alpha 0 skipped, 255 blitted with no surface alpha).
+- Measured at 1600x900 (best of 3): settled ~0.5 ms a frame, fading ~2 ms, the rest of the
+  drop ~0.6 ms, an opening's first frame ~10 ms (it captures the menu). After the game has
+  built a second MainMenu every blit in the process is ~4x slower (also on main, not
+  investigated yet): ~1.4 / ~6 / ~1.7 / ~28 ms.
+- A window provides `anim`, `title`, `rect()`, `draw()` / `draw_static()` /
+  `draw_dynamic()`, `static_key()` and `prewarm()` (MainMenu calls it on creation, so the
+  first opening builds no sprites - cold, that frame took ~85 ms).
+
+### The Options window (`ui/options_panel.py`)
+
+- Rows come from `build_rows()`: `Row(key, tab, label, kind, attr, ...)`, kind `switch` /
+  `arrows` / `choice` / `slider`, each editing a MainMenu `temp_*` attribute. MainMenu
+  keeps the rest: `_open_options()` reads the settings, `_apply_options()` saves them
+  (`'recreate_window'` for a resolution / fullscreen / VSync change), `_close_options()`
+  reverts the live volume preview, `_reset_to_defaults()` reads `settings.defaults`.
+- `depends=`: the row dims and ignores clicks while that switch is off (Scroll From,
+  Tooltip Delay). `locked_by=`: the arrows give way to a note (FPS Limit: "Set by VSync").
+  A value that is not one of the arrows' choices (a hand-edited config.json) is shown as
+  it is (`value_label()`). Clicking a switch row's name toggles it.
+- Geometry: `_layout(tab)`, once per tab - drawing and hit-testing (`element_at()`,
+  `part_rect()`) use the same rects. One row height for every tab: the longest tab must
+  fit above the footer.
+- Keys (`MainMenu.handle_events`): Esc cancels, Enter applies, Tab / Shift+Tab step the
+  tabs. One click sound per action; a `CLICK_FLASH_DURATION_MS` flash.
+- The Map Look row exists only while `MAP_3D_AVAILABLE` (tests patch
+  `ui.options_panel.MAP_3D_AVAILABLE` as well as `main_menu`'s).
+
+### Add a setting to the Options window
+
+1. Its default in `settings_manager.py` (`defaults` + `SETTING_TYPES`). It lands in every
+   player's config.json on the next save - add one deliberately.
+2. `main_menu.py`: `temp_<name>` in `__init__` and `_open_options()`, saved in
+   `_apply_options()`, reset in `_reset_to_defaults()`.
+3. A `Row` in `build_rows()` and its line in `config/options_hints.py`.
+4. The in-game Options too, if it belongs there (`ui_renderer.draw_options_menu` +
+   `main.py` `handle_options_menu_click`).
+5. `tests/test_menu_options.py` checks every row's layout at 720p-1440p; add a test for its
+   control. Look at it with `py tools/menu_preview.py --sheet DIR`.
+
+### Zoom speed range
+
+`camera_zoom_speed` defaults to `CAMERA_ZOOM_SPEED` (0.15); the slider's range is
+`CAMERA_ZOOM_SPEED_MIN` / `CAMERA_ZOOM_SPEED_MAX` (0.05-0.30) in `config/constants.py`, and
+settings validation resets anything outside it. The camera zooms by (1 +/- speed) per
+wheel notch, so the old default of 1.1 made one notch out jump to the furthest zoom.
 
 ## Book of Tales Screen
 
