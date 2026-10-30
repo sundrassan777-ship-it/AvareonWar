@@ -4,11 +4,17 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
-## Main Menu: New Options and Achievements Windows
+## Main Menu: New Options, Achievements and Profile Windows
 
 *30 October 2026*
 
 ### Improvements
+
+- **A new Profile.** Your profile is now a player card: your portrait, name and title,
+  your level with the experience you need for the next one, your wins in Custom and
+  Multiplayer games, and the achievements you've earned. All titles and portraits are in
+  view to choose from - hover over a locked one to see which achievement unlocks it. View
+  takes you to your achievements and back without losing your unsaved choices.
 
 - **A new Achievements window.** Every achievement is now a medal on one wall, grouped by
   category: the ones you've earned shine in colour, the rest wait in grey with a padlock -
@@ -26,6 +32,8 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ### Fixes
 
+- **Win rates in your profile no longer go above 100%.** Profiles from before games were
+  counted could show more wins than games played.
 - **Zooming out with the mouse wheel no longer jumps straight to the furthest view.** If
   you had never changed Zoom Speed, a single notch out zoomed all the way out. Zoom Speed
   now starts at a sensible value, and an out-of-range saved value is reset to it.

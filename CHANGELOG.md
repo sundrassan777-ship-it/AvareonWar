@@ -2,6 +2,30 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-30 - Main menu: the Profile player card (Phase 3)
+
+Branch `feature/menu-glow-up`, phase 3 of 3 - the last. The Profile panel had a name box, a
+level bar whose XP showed only on hover, a title dropdown showing 4 of 16 titles at a time,
+a 7-wide icon grid that rescaled every icon and border on every frame, and six grey stat
+lines below its scroll.
+- **The player card** (`ui/profile_panel.py`, on the menu kit): the chosen portrait large,
+  the name typed on the card (a Steam name read-only with a "Steam" tag), the title under
+  it, the level medallion with the XP written out, Custom / Multiplayer stat tiles, the
+  achievements earned with a View button; every title as a chip and every portrait (the
+  default "?", 8 heroes, 16 achievement rewards) in view, locked ones saying on hover which
+  achievement unlocks them. Enter saves, Esc cancels (while typing the name they only end
+  the typing).
+- **View**: the card leaves with its choices kept, the Achievements window opens once it
+  has, closing that brings the card back as it was (`MainMenu._queued_open`,
+  `_return_to_profile`, `_open_profile(keep=True)`).
+- **Fix: win rate above 100%.** The "games finished" counters arrived after the wins
+  counters (b00c2e7), so an older profile had more wins than games - 210 wins of 8 games
+  read 2625%. The games played never count fewer than the wins (`win_line()`).
+- Removed from `main_menu.py`: the old panel, its title dropdown and scroll, the
+  OptionsMenuBG loads of all three panels and the panel icon pre-scaling; added
+  `MainMenu.HERO_ICON_FILES`. The corner Profile button keeps its own pictures.
+- `tools/menu_preview.py --window profile`; tests `tests/test_menu_profile.py` (20).
+
 ## 2026-10-30 - Main menu: the Achievements trophy wall (Phase 2)
 
 Branch `feature/menu-glow-up`, phase 2 of 3. The Achievements panel showed two plaque
