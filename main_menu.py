@@ -75,15 +75,6 @@ class MainMenu:
         self.profile_panel_final_y = (self.height - self.profile_panel_height) // 2 + 60
         self.profile_animation_speed = 1500
 
-        # Achievement panel animation state (same dimensions as options/profile)
-        self.achievement_panel_width = int(self.width * 0.5)
-        self.achievement_panel_height = int(self.height * 0.7)
-        self.achievement_panel_x = (self.width - self.achievement_panel_width) // 2
-        self.achievement_panel_y = -self.achievement_panel_height
-        self.achievement_panel_target_y = -self.achievement_panel_height
-        self.achievement_panel_final_y = (self.height - self.achievement_panel_height) // 2 + 60
-        self.achievement_animation_speed = 1500
-
         # Load and scale background image
         self._load_background()
 
@@ -113,7 +104,6 @@ class MainMenu:
         # Connect string of a friend's game chosen in Steam (result 'steam_invite_join')
         self.steam_join_target = None
         self.hovered_profile_element = None  # Track hover state in profile panel
-        self.hovered_achievement_element = None  # Track hover state in achievement panel
 
         # Temporary settings (not saved until Apply is clicked)
         self.temp_resolution = settings.get_resolution()
@@ -157,8 +147,9 @@ class MainMenu:
         # Profile UI elements
         self.profile_ui_elements = {}
 
-        # Achievement panel helper (handles content rendering and interaction)
-        self.achievement_panel_helper = AchievementPanel(self.width, self.height, self.ui_scale)
+        # The Achievements window - the trophy wall (achievement_panel.py, the menu kit)
+        self.achievements_panel = AchievementPanel(self, self.menu_kit)
+        self.achievements_panel.prewarm()
 
         # Profile panel scroll state (scrolls entire content area)
         self.profile_scroll_offset = 0
@@ -345,15 +336,6 @@ class MainMenu:
                 self.wishlist_button_icon = pygame.image.load(wishlist.WISHLIST_ICON_PATH).convert_alpha()
             except (pygame.error, FileNotFoundError) as e:
                 logger.info(f"Wishlist icon not there yet ({e}); drawing a fallback tile")
-
-        # Load achievement panel background (same as options)
-        try:
-            ach_bg = pygame.image.load('assets/OptionsMenuBG.png').convert_alpha()
-            self.achievement_panel_bg = pygame.transform.smoothscale(
-                ach_bg, (self.achievement_panel_width, self.achievement_panel_height))
-        except Exception as e:
-            logger.warning(f"Error loading achievement panel bg: {e}")
-            self.achievement_panel_bg = None
 
         # Load reward icons for profile (will be pre-scaled in _calculate_layout)
         self.reward_icons_raw = {}
@@ -550,8 +532,9 @@ class MainMenu:
         return self.result
 
     def _update_options_animation(self, dt):
-        """Animate the windows opening / closing (Options: drop + fade; the others slide)"""
+        """Animate the windows opening / closing (Options, Achievements: drop + fade; Profile slides)"""
         self.options_panel.update(dt)
+        self.achievements_panel.update(dt)
 
         # Also animate profile panel
         if self.profile_panel_y != self.profile_panel_target_y:
@@ -562,23 +545,14 @@ class MainMenu:
             else:
                 self.profile_panel_y = max(self.profile_panel_y - distance, self.profile_panel_target_y)
 
-        # Also animate achievement panel
-        if self.achievement_panel_y != self.achievement_panel_target_y:
-            distance = self.achievement_animation_speed * dt
-
-            if self.achievement_panel_y < self.achievement_panel_target_y:
-                self.achievement_panel_y = min(self.achievement_panel_y + distance, self.achievement_panel_target_y)
-            else:
-                self.achievement_panel_y = max(self.achievement_panel_y - distance, self.achievement_panel_target_y)
-
     def handle_events(self):
         """Process events"""
         mouse_pos = pygame.mouse.get_pos()
 
         # Update hover state
         if self.show_achievements:
-            # Update hover for achievement panel elements
-            self.hovered_achievement_element = self.achievement_panel_helper.get_element_at(mouse_pos)
+            # The Achievements window lights the chip / medal / button under the mouse
+            self.achievements_panel.update_hover(mouse_pos)
         elif self.show_profile:
             # Update hover for profile panel elements
             self.hovered_profile_element = None
@@ -634,7 +608,9 @@ class MainMenu:
                 if event.key == pygame.K_ESCAPE:
                     # If any panel is open, close it; otherwise quit
                     if self.show_achievements:
-                        self._close_achievements()
+                        # A search is cleared first; Esc again closes the window
+                        if not self.achievements_panel.handle_escape():
+                            self._close_achievements()
                     elif self.show_profile:
                         self._close_profile()
                     elif self.show_options:
@@ -651,9 +627,9 @@ class MainMenu:
                     else:
                         self.options_panel.handle_key(event)
 
-                # Handle text input for achievement search
+                # Achievements: typing searches (from anywhere in the window)
                 elif self.show_achievements:
-                    self.achievement_panel_helper.handle_keydown(event)
+                    self.achievements_panel.handle_key(event)
 
                 # Handle text input for profile name (disabled when Steam name is active)
                 elif self.show_profile and self.profile_name_active and not self._steam_name_active:
@@ -668,10 +644,8 @@ class MainMenu:
                 if event.button == 1:  # Left click
                     self.handle_click(mouse_pos)
                 elif event.button in (4, 5) and self.show_achievements:
-                    # Mouse wheel scroll in achievement panel
-                    direction = 1 if event.button == 4 else -1
-                    max_scroll = getattr(self.achievement_panel_helper, '_max_scroll', 0)
-                    self.achievement_panel_helper.handle_scroll(direction, max_scroll)
+                    # Mouse wheel scrolls the trophy wall
+                    self.achievements_panel.wheel(1 if event.button == 4 else -1)
                 elif event.button in (4, 5) and self.show_profile:
                     # Title dropdown scroll takes priority when open and mouse is over it
                     dd_rect = getattr(self, '_title_dropdown_list_rect', None)
@@ -701,12 +675,9 @@ class MainMenu:
 
     def handle_click(self, pos):
         """Handle button clicks"""
-        # Check if achievement panel is open
-        if self.show_achievements and self.achievement_panel_y > -self.achievement_panel_height + 50:
-            result = self.achievement_panel_helper.handle_click(
-                pos, self.achievement_panel_x, int(self.achievement_panel_y),
-                self.achievement_panel_width, self.achievement_panel_height)
-            if result == 'close':
+        # Achievements window: chips, search, medals; Close comes back as an action
+        if self.show_achievements:
+            if self.achievements_panel.handle_click(pos) == 'close':
                 self._close_achievements()
             return
 
@@ -846,6 +817,7 @@ class MainMenu:
 
     def _open_options(self):
         """Open the Options window with the saved settings as its pending values"""
+        self._end_window_fades(self.options_panel)
         self.show_options = True
         self.hovered_button = None   # The menu behind dims as it is (no lit Options button)
         # Reset temporary settings to current settings
@@ -885,6 +857,7 @@ class MainMenu:
 
     def _open_profile(self):
         """Open the sliding profile panel"""
+        self._end_window_fades()
         self.show_profile = True
         self.profile_panel_target_y = self.profile_panel_final_y
         # Reset temporary settings to current settings
@@ -922,15 +895,29 @@ class MainMenu:
         logger.info(f"Profile saved: {self.temp_player_name}, Icon: {self.temp_player_icon}, Title: {self.temp_selected_title}")
 
     def _open_achievements(self):
-        """Open the sliding achievement panel"""
+        """Open the Achievements window (fresh: All, no search, the latest achievements)"""
+        self._end_window_fades(self.achievements_panel)
         self.show_achievements = True
-        self.achievement_panel_target_y = self.achievement_panel_final_y
-        self.achievement_panel_helper.reset()
+        self.hovered_button = None   # The menu behind dims as it is
+        self.achievements_panel.open()
 
     def _close_achievements(self):
-        """Close the sliding achievement panel"""
+        """Close the Achievements window"""
         self.show_achievements = False
-        self.achievement_panel_target_y = -self.achievement_panel_height
+        self.achievements_panel.close()
+
+    def _windows(self):
+        """The windows drawn with the menu kit over the dimmed menu (WindowStage)."""
+        return (self.options_panel, self.achievements_panel)
+
+    def _end_window_fades(self, opening=None):
+        """A window opening while another still fades out: that one ends at once (the
+        stage shows one window at a time). The window being opened itself just turns
+        round (WindowAnim reverses from where it is)."""
+        for window in self._windows():
+            if window is not opening and window.anim.visible and not window.anim.opening:
+                window.anim.finish()
+                self.window_stage.reset()
 
     def _apply_options(self):
         """Apply current temporary settings to global settings"""
@@ -1003,11 +990,12 @@ class MainMenu:
         logger.info(f"Settings reset to defaults: {default_resolution[0]}x{default_resolution[1]} (click Apply to save)")
 
     def render(self):
-        """Render main menu, with the Options window over it while it is open"""
-        if self.options_panel.anim.visible:
+        """Render main menu, with the Options / Achievements window over it while one is open"""
+        window = next((w for w in self._windows() if w.anim.visible), None)
+        if window is not None:
             # The menu dims as the window drops in (WindowStage: the menu is captured once,
             # the window's fixed parts baked in, so a frame is mostly one opaque blit)
-            self.window_stage.draw(self.screen, self.options_panel, self._render_menu)
+            self.window_stage.draw(self.screen, window, self._render_menu)
         else:
             self.window_stage.reset()
             self._render_menu()
@@ -1050,10 +1038,6 @@ class MainMenu:
         # Draw sliding profile panel
         if self.profile_panel_y > -self.profile_panel_height:
             self._draw_profile_panel()
-
-        # Draw sliding achievement panel
-        if self.achievement_panel_y > -self.achievement_panel_height:
-            self._draw_achievement_panel()
 
         # Draw tooltips for profile/achievement buttons when no panel is open
         if not self.show_profile and not self.show_achievements and not self.show_options:
@@ -1301,26 +1285,6 @@ class MainMenu:
         self.screen.blit(icon_surface, rect)
         if self.icon_border_button_scaled:
             self.screen.blit(self.icon_border_button_scaled, (rect.x - 1, rect.y - 1))
-
-    def _draw_achievement_panel(self):
-        """Draw the sliding achievement panel"""
-        panel_x = self.achievement_panel_x
-        panel_y = int(self.achievement_panel_y)
-        panel_w = self.achievement_panel_width
-        panel_h = self.achievement_panel_height
-
-        # Panel background
-        if self.achievement_panel_bg:
-            self.screen.blit(self.achievement_panel_bg, (panel_x, panel_y))
-        else:
-            panel_surface = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-            panel_surface.fill((40, 40, 60, 230))
-            self.screen.blit(panel_surface, (panel_x, panel_y))
-
-        # Delegate content rendering to achievement panel helper
-        self.achievement_panel_helper.draw(
-            self.screen, panel_x, panel_y, panel_w, panel_h,
-            self.hovered_achievement_element)
 
     def _draw_tooltip(self, screen, text, pos, font):
         """Draw a tooltip near the mouse position. Supports multi-line text via newline characters."""

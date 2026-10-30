@@ -2,22 +2,24 @@
 """
 Main Menu Windows Preview (dev tool)
 
-The real MainMenu with its new-style windows (ui/menu_kit.py: the Options window now;
-Achievements and Profile next), to check their look at several screen sizes and their
-frame cost. Settings are never saved: settings.save() is switched off here, so Apply,
-Reset to Defaults and the rest change nothing on disk (config.json stays as it is).
+The real MainMenu with its new-style windows (ui/menu_kit.py: Options and Achievements;
+Profile next), to check their look at several screen sizes and their frame cost.
+Settings are never saved: settings.save() is switched off here, so Apply, Reset to
+Defaults and the rest change nothing on disk (config.json stays as it is).
 
 Run from the game folder:
-    py tools/menu_preview.py                      live main menu, Options open (1600x900)
-    py tools/menu_preview.py --size 1280x720      another window size
-    py tools/menu_preview.py --sheet DIR          stills of every tab at 720p / 900p / 1080p,
-                                                  a hovered row, a held slider, a dimmed
-                                                  row, the opening drop - PNGs in DIR
-    py tools/menu_preview.py --bench              frame cost with the window open and opening
-                                                  (avg / p95 / worst ms) + smoothscale calls
+    py tools/menu_preview.py                         live main menu, Options open (1600x900)
+    py tools/menu_preview.py --window achievements   ... with Achievements open
+    py tools/menu_preview.py --size 1280x720         another window size
+    py tools/menu_preview.py --sheet DIR             stills of both windows at 720p / 900p /
+                                                     1080p and their states (hover, held
+                                                     slider, dimmed rows, a chip, a search,
+                                                     scrolled, the opening drop) - PNGs in DIR
+    py tools/menu_preview.py --bench [--window W]    frame cost with the window open and
+                                                     opening (avg / p95 / worst ms)
 
-Live: the menu as in the game (Esc closes the window, then quits; the Options button
-opens it again). Apply with a display change would re-create the window in the game -
+Live: the menu as in the game (Esc closes the window, then quits; the menu's buttons open
+the windows again). Apply with a display change would re-create the window in the game -
 here it just closes.
 """
 
@@ -44,76 +46,143 @@ settings.save = lambda *args, **kwargs: None    # The preview never writes confi
 
 FRAME = 1.0 / 120.0   # the owner's fps cap
 SIZES = ((1280, 720), (1600, 900), (1920, 1080))
+WINDOWS = ('options', 'achievements')
 
 
-def make_menu(size):
-    """A MainMenu on a fresh display of `size`, with the Options window open and settled."""
+def panel_of(menu, window):
+    return menu.options_panel if window == 'options' else menu.achievements_panel
+
+
+def make_menu(size, window='options'):
+    """A MainMenu on a fresh display of `size`, with `window` open and landed."""
     pygame.display.set_mode(size)
     import main_menu
     menu = main_menu.MainMenu(pygame.display.get_surface())
-    menu._open_options()
-    menu.options_panel.anim.finish()
+    open_window(menu, window)
+    panel_of(menu, window).anim.finish()
     return menu
 
 
-def frame(menu, mouse=None):
+def open_window(menu, window):
+    if window == 'options':
+        menu._open_options()
+    else:
+        menu._open_achievements()
+
+
+def close_window(menu, window):
+    if window == 'options':
+        menu._close_options()
+    else:
+        menu._close_achievements()
+
+
+def frame(menu, window, mouse=None):
     """One frame as MainMenu.run() draws it, with the mouse at `mouse` (hover)."""
     if mouse is not None:
-        menu.options_panel.update_hover(mouse)
+        panel_of(menu, window).update_hover(mouse)
     menu.render()
 
 
-def centre(menu, element):
-    return menu.options_panel.part_rect(element).center
+def save(menu, out_dir, name):
+    pygame.image.save(menu.screen, os.path.join(out_dir, name))
 
 
-def sheet(out_dir):
-    os.makedirs(out_dir, exist_ok=True)
+def options_sheet(out_dir):
     for size in SIZES:
-        menu = make_menu(size)
+        menu = make_menu(size, 'options')
         panel = menu.options_panel
         tag = f"{size[0]}x{size[1]}"
         for tab in ('display', 'gameplay', 'audio'):
             panel.select_tab(tab)
-            frame(menu, (0, 0))
-            frame(menu, (0, 0))   # second frame: drawn over the settled snapshot
-            pygame.image.save(menu.screen, os.path.join(out_dir, f"options_{tab}_{tag}.png"))
+            frame(menu, 'options', (0, 0))
+            frame(menu, 'options', (0, 0))   # Second frame: drawn over the landed picture
+            save(menu, out_dir, f"options_{tab}_{tag}.png")
         if size != (1600, 900):
             continue
-        # States, at 1600x900: a hovered switch row, a hovered tab, a held slider, a dimmed row
+        centre = lambda element: panel.part_rect(element).center  # noqa: E731
         panel.select_tab('display')
-        frame(menu, centre(menu, ('switch', 'vsync')))
-        pygame.image.save(menu.screen, os.path.join(out_dir, f"state_hover_switch_{tag}.png"))
-        frame(menu, centre(menu, ('tab', 'audio')))
-        pygame.image.save(menu.screen, os.path.join(out_dir, f"state_hover_tab_{tag}.png"))
+        frame(menu, 'options', centre(('switch', 'vsync')))
+        save(menu, out_dir, f"options_hover_switch_{tag}.png")
+        frame(menu, 'options', centre(('tab', 'audio')))
+        save(menu, out_dir, f"options_hover_tab_{tag}.png")
         panel.select_tab('audio')
         panel.dragging = 'music_volume'
-        frame(menu, centre(menu, ('slider', 'music_volume')))
+        frame(menu, 'options', centre(('slider', 'music_volume')))
         panel.release()
-        pygame.image.save(menu.screen, os.path.join(out_dir, f"state_held_slider_{tag}.png"))
+        save(menu, out_dir, f"options_held_slider_{tag}.png")
         panel.select_tab('gameplay')
         menu.temp_tooltips_enabled = False
         menu.temp_edge_scrolling_enabled = False
-        frame(menu, centre(menu, ('choice', 'edge_mode', 1)))
-        pygame.image.save(menu.screen, os.path.join(out_dir, f"state_dimmed_rows_{tag}.png"))
+        frame(menu, 'options', centre(('choice', 'edge_mode', 1)))
+        save(menu, out_dir, f"options_dimmed_rows_{tag}.png")
         menu.temp_vsync = True
         panel.select_tab('display')
-        frame(menu, (0, 0))
-        pygame.image.save(menu.screen, os.path.join(out_dir, f"state_vsync_on_{tag}.png"))
-        # The opening drop, part of the way in
-        menu._close_options()
-        panel.anim.finish()
-        menu._open_options()
-        for name, progress in (('open_25', 0.25), ('open_60', 0.6)):
-            panel.anim.progress = progress
-            frame(menu, (0, 0))
-            pygame.image.save(menu.screen, os.path.join(out_dir, f"{name}_{tag}.png"))
-    print(f"Wrote stills to {out_dir}")
+        frame(menu, 'options', (0, 0))
+        save(menu, out_dir, f"options_vsync_on_{tag}.png")
+        opening_stills(menu, 'options', out_dir, tag)
 
 
-def bench(size=(1600, 900), frames=600):
-    menu = make_menu(size)
-    panel = menu.options_panel
+def achievements_sheet(out_dir):
+    for size in SIZES:
+        menu = make_menu(size, 'achievements')
+        panel = menu.achievements_panel
+        tag = f"{size[0]}x{size[1]}"
+        frame(menu, 'achievements', (0, 0))
+        frame(menu, 'achievements', (0, 0))
+        save(menu, out_dir, f"achievements_{tag}.png")
+        if size != (1600, 900):
+            continue
+        ids = [cid for cid, _cell in panel.grid()['cells']]
+        earned = next((a['id'] for a in panel.achievements if a['earned']), ids[0])
+        frame(menu, 'achievements', panel.medal_rect(earned).center)
+        save(menu, out_dir, f"achievements_hover_earned_{tag}.png")
+        frame(menu, 'achievements', panel.part_rect(('chip', 'campaign')).center)
+        save(menu, out_dir, f"achievements_hover_chip_{tag}.png")
+        panel.set_category('campaign')
+        frame(menu, 'achievements', (0, 0))
+        save(menu, out_dir, f"achievements_campaign_{tag}.png")
+        panel.set_category('all')
+        for _ in range(3):
+            panel.wheel(-1)
+        frame(menu, 'achievements', (0, 0))
+        save(menu, out_dir, f"achievements_scrolled_{tag}.png")
+        panel.search_text = 'win'
+        panel.search_active = True
+        panel._after_search()
+        frame(menu, 'achievements', (0, 0))
+        save(menu, out_dir, f"achievements_search_{tag}.png")
+        panel.search_text = 'zzz'
+        panel._after_search()
+        frame(menu, 'achievements', (0, 0))
+        save(menu, out_dir, f"achievements_search_none_{tag}.png")
+        panel.handle_escape()
+        opening_stills(menu, 'achievements', out_dir, tag)
+
+
+def opening_stills(menu, window, out_dir, tag):
+    """The drop part of the way in."""
+    panel = panel_of(menu, window)
+    close_window(menu, window)
+    panel.anim.finish()
+    menu.render()
+    open_window(menu, window)
+    for name, progress in (('open_25', 0.25), ('open_60', 0.6)):
+        panel.anim.progress = progress
+        frame(menu, window, (0, 0))
+        save(menu, out_dir, f"{window}_{name}_{tag}.png")
+
+
+def bench(size, window, frames=600):
+    menu = make_menu(size, window)
+    panel = panel_of(menu, window)
+    if window == 'options':
+        moves = [(0, 0)] + [panel.part_rect(e).center for e in panel._layout().parts
+                            if e[0] in ('switch', 'left', 'right', 'choice', 'slider')]
+    else:
+        moves = [(0, 0)] + [panel.medal_rect(cid).center for cid, _c in panel.grid()['cells'][:24]]
+    for m in moves:
+        frame(menu, window, m)                    # Warm: hover sprites, cards
     calls = {'smoothscale': 0}
     real = pygame.transform.smoothscale
 
@@ -121,29 +190,20 @@ def bench(size=(1600, 900), frames=600):
         calls['smoothscale'] += 1
         return real(*args, **kwargs)
 
-    def run(label, setup, moves):
+    def run(label, setup, positions):
         times = []
         for i in range(frames):
             setup(i)
             start = time.perf_counter()
-            frame(menu, moves[i % len(moves)])
+            frame(menu, window, positions[i % len(positions)])
             times.append((time.perf_counter() - start) * 1000.0)
         times.sort()
         avg = sum(times) / len(times)
         print(f"{label:<34} avg {avg:5.2f} ms   p95 {times[int(len(times) * 0.95)]:5.2f}   "
               f"worst {times[-1]:5.2f}")
 
-    # Warm every sprite first (tabs, states), then count smoothscale calls in steady use
-    for tab in ('display', 'gameplay', 'audio'):
-        panel.select_tab(tab)
-        for row in panel.tab_rows():
-            for element in list(panel._layout().parts):
-                if element[1] == row.key:
-                    frame(menu, menu.options_panel.part_rect(element).center)
     pygame.transform.smoothscale = counting
-    moves = [(0, 0)] + [panel.part_rect(e).center for e in panel._layout().parts
-                        if e[0] in ('switch', 'left', 'right', 'choice', 'slider')]
-    run("settled, mouse over the controls", lambda i: None, moves)
+    run(f"{window}: landed, mouse moving", lambda i: None, moves)
 
     def opening(i):
         if i % 36 == 0:
@@ -151,20 +211,20 @@ def bench(size=(1600, 900), frames=600):
             # the next frame capture the menu again (a once-per-opening cost)
             panel.anim.progress = 1e-6
         panel.anim.update(FRAME)
-    menu._close_options()
+    close_window(menu, window)
     panel.anim.finish()
-    menu._open_options()
-    run("opening drop + fade (loop)", opening, [(0, 0)])
+    open_window(menu, window)
+    run(f"{window}: opening drop (loop)", opening, [(0, 0)])
     pygame.transform.smoothscale = real
     print(f"smoothscale calls after warm-up: {calls['smoothscale']}")
 
 
-def live(size):
+def live(size, window):
     pygame.display.set_mode(size)
     pygame.display.set_caption("Main menu windows preview")
     import main_menu
     menu = main_menu.MainMenu(pygame.display.get_surface())
-    menu._open_options()
+    open_window(menu, window)
     while True:
         result = menu.run()
         if result != 'recreate_window':
@@ -175,16 +235,20 @@ def live(size):
 def main():
     parser = argparse.ArgumentParser(description='Main menu windows preview')
     parser.add_argument('--size', default='1600x900', help='window size, e.g. 1280x720')
+    parser.add_argument('--window', default='options', choices=WINDOWS, help='the window to open')
     parser.add_argument('--sheet', help='write stills (PNGs) into this folder and exit')
     parser.add_argument('--bench', action='store_true', help="print the window's frame cost and exit")
     args = parser.parse_args()
     size = tuple(int(v) for v in args.size.lower().split('x'))
     if args.sheet:
-        sheet(args.sheet)
+        os.makedirs(args.sheet, exist_ok=True)
+        options_sheet(args.sheet)
+        achievements_sheet(args.sheet)
+        print(f"Wrote stills to {args.sheet}")
     elif args.bench:
-        bench(size)
+        bench(size, args.window)
     else:
-        live(size)
+        live(size, args.window)
     pygame.quit()
 
 

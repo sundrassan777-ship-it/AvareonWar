@@ -49,7 +49,15 @@ SWITCH_ON_FILL = ((110, 66, 16), (196, 138, 46))
 SWITCH_ON_EDGE = (224, 184, 96)
 CHOICE_ON_FILL = ((226, 180, 90), (154, 108, 38))
 CHOICE_ON_TEXT = (30, 20, 8)
-SLIDER_FILL = ((125, 79, 23), (240, 200, 96))     # Left -> right
+SLIDER_FILL = ((125, 79, 23), (240, 200, 96))     # Left -> right (also progress bars)
+CHIP_FILL = (32, 22, 14)
+CHIP_EDGE = (90, 64, 32)
+CHIP_ON_EDGE = (226, 180, 90)
+CHIP_ON_COUNT = (58, 36, 8)
+LOCK_FILL = (26, 18, 11)
+ICON_BORDER_PATH = 'assets/mapicons/IconBorder.png'
+ICON_BORDER_BRIGHTEN = 51      # As the game's own icon border (battle_screen_kit)
+LOCKED_MULT = 112              # A locked medal: grey, then darkened to this (of 255)
 ROW_RULE = (138, 98, 50, 72)
 GLOW = (255, 196, 70)
 
@@ -75,6 +83,23 @@ FONT_ROLES = {
     'choice': ('semibold', 15),
     'button': ('semibold', 17),
     'note': ('regular', 15),
+    # Achievements
+    'count': ('semibold', 25),
+    'count_small': ('regular', 16),
+    'summary': ('regular', 15),
+    'summary_b': ('semibold', 15),
+    'chip': ('semibold', 15),
+    'search': ('regular', 15),
+    'group': ('semibold', 15),
+    'group_count': ('regular', 15),
+    'card_cat': ('semibold', 12),
+    'card_name': ('semibold', 25),
+    'card_text': ('regular', 15),
+    'card_status': ('semibold', 15),
+    'card_prog': ('regular', 14),
+    'card_label': ('semibold', 12),
+    'card_reward': ('semibold', 15),
+    'empty': ('regular', 16),
 }
 _FONT_FILES = {'regular': CINZEL_REGULAR, 'semibold': CINZEL_SEMIBOLD, 'bold': CINZEL_BOLD}
 
@@ -508,6 +533,194 @@ class MenuKit:
             return surf
         return self._sprite(('dot', diameter, color), build)
 
+    # ------------------------------------------------------------ chips, search, bars
+
+    def chip(self, label, count, on, state):
+        """A filter chip: a pill holding a label and its count; gold when chosen."""
+        def build():
+            pad_x, gap = self.px(16), self.px(7)
+            if on:
+                colors = (CHOICE_ON_TEXT, CHIP_ON_COUNT)
+            else:
+                colors = (PARCHMENT if state != 'normal' else PARCHMENT_DIM, GOLD)
+            name = self.text(label, 'chip', colors[0], shadow=not on)
+            num = self.text(count, 'chip', colors[1], shadow=not on)
+            h = self.px(38)
+            w = name.get_width() + gap + num.get_width() + 2 * pad_x
+            if on:
+                surf = _bake_pill((w, h), CHOICE_ON_FILL, CHIP_ON_EDGE)
+            else:
+                surf = _bake_pill((w, h), CHIP_FILL, CHIP_EDGE)
+            _apply_state(surf, state)
+            surf.blit(name, (pad_x, (h - name.get_height()) // 2))
+            surf.blit(num, (pad_x + name.get_width() + gap, (h - num.get_height()) // 2))
+            return surf
+        return self._sprite(('chip', label, count, on, state), build)
+
+    def search_box(self, size, focused):
+        """The search field: a recessed pill, its edge gold and glowing while typing in it."""
+        def build():
+            w, h = size
+            pad = self.px(8)
+            surf = pygame.Surface((w + 2 * pad, h + 2 * pad), pygame.SRCALPHA)
+            if focused:
+                surf.blit(_soft_glow((w, h), pad, GLOW, 70, shape='pill'), (0, 0),
+                          special_flags=pygame.BLEND_RGBA_MAX)
+            box = _bake_well(size, h // 2)
+            if focused:
+                box.blit(_bake_pill(size, None, GOLD), (0, 0))
+            surf.blit(box, (pad, pad), special_flags=0 if focused else pygame.BLEND_RGBA_MAX)
+            # The magnifier, inside the left end
+            r = max(3, int(h * 0.17))
+            _magnifier(surf, (pad + h // 2 + self.px(2), pad + h // 2), r, GOLD, max(1, self.px(2)))
+            return surf
+        return self._sprite(('search', size, focused), build)
+
+    def search_pad(self):
+        return self.px(8)
+
+    def bar(self, size, frac):
+        """A progress bar (the slider's track and gold fill) at `frac`, on one surface."""
+        surf = self.slider_track(size).copy()
+        fill_w = int(round(size[0] * max(0.0, min(1.0, frac))))
+        if fill_w > 0:
+            surf.blit(self.slider_fill(size), (0, 0), pygame.Rect(0, 0, fill_w, size[1]))
+        return surf
+
+    # ------------------------------------------------------------ icons and medals
+
+    def icon(self, path, size):
+        """An image file as a size x size icon, decoded once (preload_icons) and kept."""
+        key = ('icon', path, size)
+        surf = self._sprites.get(key)
+        if surf is None:
+            self.preload_icons([path], [size])
+            surf = self._sprites[key]
+        return surf
+
+    def preload_icons(self, paths, sizes):
+        """
+        Decode each image file once and keep it at every size in `sizes` (the source
+        images are 1024 px; decoding one is ~20 ms, so it happens once per screen size
+        and process, when a window prewarms - not on a frame).
+        """
+        sizes = [int(s) for s in sizes]
+        for path in paths:
+            missing = [s for s in sizes if ('icon', path, s) not in self._sprites]
+            if not missing:
+                continue
+            try:
+                image = pygame.image.load(path).convert_alpha()
+            except (pygame.error, FileNotFoundError, OSError):
+                logger.warning(f"Icon missing: {path}")
+                image = None
+            for s in missing:
+                surf = pygame.Surface((s, s), pygame.SRCALPHA)
+                if image is not None:
+                    surf.blit(pygame.transform.smoothscale(image, (s, s)), (0, 0))
+                self._sprites[('icon', path, s)] = surf
+
+    def icon_border(self, size):
+        """The game's gold icon frame (IconBorder, brightened as the battle screen's)."""
+        def build():
+            from utils.surface_utils import load_cached_image
+            try:
+                art = load_cached_image(ICON_BORDER_PATH, alpha=True)
+            except (pygame.error, FileNotFoundError, OSError):
+                art = None
+            if art is None:
+                surf = pygame.Surface((size, size), pygame.SRCALPHA)
+                pygame.draw.rect(surf, GOLD_DARK, surf.get_rect(), max(1, size // 24))
+                return surf
+            surf = pygame.transform.smoothscale(art, (size, size))
+            surf.fill((ICON_BORDER_BRIGHTEN,) * 3, special_flags=pygame.BLEND_RGB_ADD)
+            return surf
+        return self._sprite(('icon_border', size), build)
+
+    def medal_pad(self):
+        """The margin round a medal sprite (its glow and lock badge reach into it)."""
+        return self.px(8)
+
+    def medal(self, path, size, earned, state='normal'):
+        """
+        An achievement's icon in the gold frame: in colour with a soft glow when earned,
+        grey and darkened with a padlock when not; brighter (and glowing) on hover.
+        """
+        def build():
+            pad = self.medal_pad()
+            surf = pygame.Surface((size + 2 * pad, size + 2 * pad), pygame.SRCALPHA)
+            lit = state in ('hover', 'flash')
+            if earned or lit:
+                alpha = 150 if lit else 85
+                surf.blit(_soft_glow((size, size), pad, GLOW, alpha), (0, 0),
+                          special_flags=pygame.BLEND_RGBA_MAX)
+            face = pygame.Surface((size, size), pygame.SRCALPHA)
+            face.blit(self.icon(path, size - 2), (1, 1))
+            face.blit(self.icon_border(size), (0, 0))
+            if not earned:
+                face = _greyed(face)
+            if lit:
+                face.fill((28, 28, 28), special_flags=pygame.BLEND_RGB_ADD)
+            surf.blit(face, (pad, pad), special_flags=0 if (earned or lit) else pygame.BLEND_RGBA_MAX)
+            if not earned:
+                badge = self.lock_badge(max(12, int(size * 0.28)))
+                surf.blit(badge, (pad + size - badge.get_width() * 3 // 4,
+                                  pad + size - badge.get_height() * 3 // 4))
+            return surf
+        return self._sprite(('medal', path, size, earned, state), build)
+
+    def lock_badge(self, diameter):
+        """A small dark disc with a padlock (a locked medal or portrait)."""
+        def build():
+            k = SUPERSAMPLE
+            d = diameter * k
+            big = pygame.Surface((d, d), pygame.SRCALPHA)
+            big.fill((LOCK_FILL[0], LOCK_FILL[1], LOCK_FILL[2], 0))
+            pygame.draw.circle(big, GOLD_DARK, (d // 2, d // 2), d // 2)
+            pygame.draw.circle(big, LOCK_FILL, (d // 2, d // 2), d // 2 - k)
+            # Padlock: a shackle arc over a body
+            bw, bh = int(d * 0.42), int(d * 0.30)
+            body = pygame.Rect(0, 0, bw, bh)
+            body.midtop = (d // 2, int(d * 0.47))
+            pygame.draw.rect(big, PARCHMENT_DIM, body, border_radius=max(1, k))
+            sw = int(d * 0.30)
+            shackle = pygame.Rect(0, 0, sw, int(d * 0.36))
+            shackle.midbottom = (d // 2, body.top + int(d * 0.10))
+            pygame.draw.ellipse(big, PARCHMENT_DIM, shackle, max(k, int(d * 0.07)))
+            pygame.draw.rect(big, LOCK_FILL, (shackle.x, body.top + int(d * 0.02), shackle.w,
+                                              int(d * 0.10)))
+            pygame.draw.rect(big, PARCHMENT_DIM, body, border_radius=max(1, k))
+            return pygame.transform.smoothscale(big, (diameter, diameter))
+        return self._sprite(('lock', diameter), build)
+
+    def ring(self, size):
+        """The selected medal's mark: a gold outline a little outside it, with a glow."""
+        def build():
+            gap, pad = self.px(4), self.px(8)
+            w, h = size[0] + 2 * gap, size[1] + 2 * gap
+            surf = pygame.Surface((w + 2 * pad, h + 2 * pad), pygame.SRCALPHA)
+            surf.blit(_soft_glow((w, h), pad, GLOW, 110), (0, 0), special_flags=pygame.BLEND_RGBA_MAX)
+            # Clear the inside (the medal shows through), then the outline
+            inner = pygame.Rect(pad + 2, pad + 2, w - 4, h - 4)
+            surf.fill((0, 0, 0, 0), inner)
+            k = SUPERSAMPLE
+            big = pygame.Surface((w * k, h * k), pygame.SRCALPHA)
+            big.fill((GOLD_LIGHT[0], GOLD_LIGHT[1], GOLD_LIGHT[2], 0))
+            pygame.draw.rect(big, GOLD_LIGHT, big.get_rect(), max(1, self.px(2)) * k,
+                             border_radius=self.px(3) * k)
+            surf.blit(pygame.transform.smoothscale(big, (w, h)), (pad, pad))
+            return surf
+        return self._sprite(('ring', size), build)
+
+    def ring_offset(self):
+        """How far a ring sprite reaches past its medal on each side."""
+        return self.px(4) + self.px(8)
+
+    def card_plate(self, size):
+        """The details card: a bronze plate round the banner's dark gradient."""
+        b = self.px(BANNER_BORDER)
+        return kit.bronze_plate(size, (b, b), BANNER_FILL)
+
 
 # ==================================================================== baking helpers
 
@@ -525,19 +738,24 @@ def _render_text(font, text, color, shadow_color, shadow_offset, spacing):
         return surf
     gap = int(round(font.get_height() * spacing * 0.75))
     glyphs = [font.render(ch, True, color) for ch in text]
-    widths = [font.size(ch)[0] for ch in text]
-    width = sum(widths) + gap * max(0, len(text) - 1)
+    # Step by each letter's advance, not its drawn width: a Q's or R's tail overhangs its
+    # advance, and stepping by the width put a gap after it ("CONQ UEST")
+    metrics = font.metrics(text) or []
+    advances = [(m[4] if m else glyph.get_width()) for m, glyph in zip(metrics + [None] * len(text), glyphs)]
+    width = sum(advances) + gap * max(0, len(text) - 1)
+    if glyphs:
+        width += max(0, glyphs[-1].get_width() - advances[-1])   # The last letter's overhang
     off = shadow_offset if shadow_color is not None else 0
     surf = pygame.Surface((max(1, width + off), font.get_height() + off), pygame.SRCALPHA)
     if shadow_color is not None:
         x = 0
-        for ch, w in zip(text, widths):
+        for ch, adv in zip(text, advances):
             surf.blit(font.render(ch, True, shadow_color), (x + off, off))
-            x += w + gap
+            x += adv + gap
     x = 0
-    for glyph, w in zip(glyphs, widths):
+    for glyph, adv in zip(glyphs, advances):
         surf.blit(glyph, (x, 0))
-        x += w + gap
+        x += adv + gap
     return surf
 
 
@@ -719,3 +937,28 @@ def _bake_switch(size, on, pad, state):
 
 def _mix(a, b, t):
     return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _greyed(surf):
+    """A locked look: grey, then darkened (alpha kept)."""
+    try:
+        grey = pygame.transform.grayscale(surf)
+    except AttributeError:      # pygame < 2.1.4
+        grey = surf.copy()
+    grey.fill((LOCKED_MULT, LOCKED_MULT, LOCKED_MULT, 255), special_flags=pygame.BLEND_RGBA_MULT)
+    return grey
+
+
+def _magnifier(surf, centre, r, color, width):
+    """A magnifying glass: a ring and a handle, drawn large and scaled down onto `surf`."""
+    k = SUPERSAMPLE
+    size = (r * 4) * k
+    big = pygame.Surface((size, size), pygame.SRCALPHA)
+    big.fill((color[0], color[1], color[2], 0))
+    c = (size // 2 - r * k // 3, size // 2 - r * k // 3)
+    pygame.draw.circle(big, color, c, r * k, width * k)
+    end = (c[0] + int(r * k * 1.9), c[1] + int(r * k * 1.9))
+    start = (c[0] + int(r * k * 0.7), c[1] + int(r * k * 0.7))
+    pygame.draw.line(big, color, start, end, width * k + k)
+    small = pygame.transform.smoothscale(big, (r * 4, r * 4))
+    surf.blit(small, (centre[0] - r * 2, centre[1] - r * 2))
