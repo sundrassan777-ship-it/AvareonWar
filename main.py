@@ -412,7 +412,11 @@ class Game:
 
             # Load original high-resolution image (4096×3072) in display format.
             # The .convert() inside _load_map_background saves ~9ms per frame.
-            self.map_image_original = _load_map_background(map_path)
+            # Only a campaign map is decoded here. initialize_game() loads any other game's
+            # picture in its look (_reload_map_assets), so decoding it here as well cost
+            # ~0.3 s for nothing - on Custom Game, and twice in multiplayer (the menu's
+            # Game and the game's own). Until then the dark fallback stands in.
+            self.map_image_original = _load_map_background(map_path if self.campaign_map else None)
 
             # Create scaled version for initial display
             # But keep original for high-quality zooming!
@@ -1503,14 +1507,15 @@ class Game:
         self.extra_small_font = self.font_manager.get_font(extra_small_size)
 
         # FPS OPTIMIZATION 6.4: Pre-load additional font sizes
-        # Pre-populate font cache with commonly used sizes to eliminate runtime font creation
-        # This adds ~0.1s to startup but ensures smooth text rendering from frame 1
-        for size in range(8, 36, 2):  # 8, 10, 12, ... 34
+        # Pre-populate font cache with commonly used sizes to eliminate runtime font creation.
+        # Every size 8-40, odd ones too: the battle screens and scaled UI ask for 13, 17, 21...
+        # (a font costs ~0.1 ms and no measurable memory, 2026-10-31)
+        for size in range(8, 41):
             try:
                 self.font_manager.get_font(size)
                 self.font_manager.get_bold_font(size)
-            except Exception:
-                pass  # Ignore errors for sizes that fail to load
+            except Exception as e:
+                logger.warning(f"Could not pre-load font size {size}: {e}")
 
         # Floating chat notification effect — shows new messages briefly on map area
         self.chat_notification_effect = ChatNotificationEffect(
@@ -16757,6 +16762,15 @@ if __name__ == "__main__":
         },
     }
 
+    def _mission_loading_tasks(mission_class, game):
+        """
+        A mission's own loading screen tasks (its static loading_tasks(game), e.g. the
+        Tutorial's and Mission 2's cloud cover), run before the mission object exists -
+        or none.
+        """
+        loading_tasks = getattr(mission_class, 'loading_tasks', None)
+        return loading_tasks(game) if loading_tasks is not None else []
+
     def _run_registered_mission(screen, mission_id, mission_info, music_manager):
         """
         Run one campaign mission or Book of Tales scenario from its registry entry.
@@ -16793,7 +16807,8 @@ if __name__ == "__main__":
         screen = game.screen
         # Pass mission_id so loading screen shows mission-specific tips
         # (unknown ids, e.g. tales, fall back to a generic tip)
-        loading = LoadingScreen(screen, game, mission_info['config'], mission_id=mission_id)
+        loading = LoadingScreen(screen, game, mission_info['config'], mission_id=mission_id,
+                                extra_tasks=_mission_loading_tasks(MissionClass, game))
         loading.run()
 
         # Start game music after loading completes
@@ -16889,7 +16904,8 @@ if __name__ == "__main__":
         # Create game with campaign map, run loading screen
         game = Game(existing_screen=screen, campaign_map=mission_info['map'])
         screen = game.screen
-        loading = LoadingScreen(screen, game, setup_config, mission_id=mission_id)
+        loading = LoadingScreen(screen, game, setup_config, mission_id=mission_id,
+                                extra_tasks=_mission_loading_tasks(MissionClass, game))
         loading.run()
 
         # Create mission object FIRST — constructor calls _setup_initial_state() which
@@ -17532,6 +17548,11 @@ if __name__ == "__main__":
             # Unpack setup result
             mode, network_connection, setup_config = setup_result
             logger.info(f"Multiplayer mode: {mode}")
+
+            # Let the setup screens' Game go: _play_multiplayer_game() builds the game's
+            # own, and this one (its map surface ~50 MB) stayed alive for the whole match
+            game = None
+            multiplayer_setup = None
 
             # Loading, game and recap (shared with Steam-invite joins)
             outcome, screen = _play_multiplayer_game(screen, mode, network_connection, setup_config)

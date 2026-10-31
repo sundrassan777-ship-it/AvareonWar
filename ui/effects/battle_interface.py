@@ -79,6 +79,10 @@ TIP_WIDTH_REF = 380  # The tags' tooltips, px at 1600x900 (a line each)
 REPORT_INSET_TOP = 0.11
 REPORT_INSET_BOTTOM = 0.19
 REPORT_PANEL_ART = "assets/BattlePlayerScreen.png"
+BATTLE_ICON_ART = "assets/mapicons/BattleIcon1.png"
+BATTLE_BAR_ART = "assets/BattleBar.png"
+VICTORY_SPLASH_ART = "assets/victoryscrn.png"
+DEFEAT_SPLASH_ART = "assets/defeatscrn.png"
 REPORT_CLOSE_Y = 0.92  # Close is centred here, on the art's bottom rail (share of the panel)
 # A report taller than the largest panel scrolls with the mouse wheel (owner, 2026-10-29):
 # its header (VICTORY / DEFEAT) stays, the body scrolls (battle_screen_kit.ScrollView, as
@@ -158,7 +162,7 @@ class BattleSplashEffect:
     - 2.5s - 3.0s:   Shrink to dot (ease-in cubic)
     """
 
-    def __init__(self, image, screen_width, screen_height):
+    def __init__(self, image, screen_width, screen_height, base_size=None):
         """
         Initialize splash effect.
 
@@ -166,6 +170,8 @@ class BattleSplashEffect:
             image: pygame.Surface of victory/defeat image
             screen_width: Width of screen for centering
             screen_height: Height of screen for centering
+            base_size: The picture's full size, which the scales are fractions of, when
+                `image` is kept smaller (splash_art(): at the hold size). None: image's size.
         """
         self.original_image = image
         self.screen_width = screen_width
@@ -177,8 +183,7 @@ class BattleSplashEffect:
         self.total_duration = SPLASH_GROW_DURATION + SPLASH_HOLD_DURATION + SPLASH_SHRINK_DURATION
 
         # Store original dimensions for scaling
-        self.original_width = image.get_width()
-        self.original_height = image.get_height()
+        self.original_width, self.original_height = base_size or image.get_size()
 
     def update(self, delta_time):
         """
@@ -236,11 +241,15 @@ class BattleSplashEffect:
         if scaled_width < 1 or scaled_height < 1:
             return
 
-        # Scale the image
-        scaled_image = pygame.transform.smoothscale(
-            self.original_image,
-            (scaled_width, scaled_height)
-        )
+        # Scale the image - not during the hold, when the picture kept at the hold size
+        # is the frame (a 1536 px smoothscale every frame for 2 s before)
+        if (scaled_width, scaled_height) == self.original_image.get_size():
+            scaled_image = self.original_image
+        else:
+            scaled_image = pygame.transform.smoothscale(
+                self.original_image,
+                (scaled_width, scaled_height)
+            )
 
         # Center on screen
         x = (self.screen_width - scaled_width) // 2
@@ -1036,19 +1045,58 @@ class BattleBarVolleyEffect:
 # ENHANCED BATTLE INTERFACE
 # ========================================
 
+# The victory / defeat pictures at the splash's hold size with their full sizes, which the
+# splash's scales are fractions of: {path: (surface, (w, h))}, decoded once per process.
+# Every battle decoded both 1536 px pictures again, and the splash smoothscaled the full
+# one on every frame (converted surfaces stay valid across display changes).
+_splash_art = {}
+
+
+def splash_art(path):
+    """The splash picture `path` at its hold size and its full size, or (None, None)."""
+    found = _splash_art.get(path)
+    if found is None:
+        try:
+            full = pygame.image.load(path).convert_alpha()
+        except (pygame.error, FileNotFoundError, OSError) as e:
+            # Not remembered: a missing picture costs only the failed open next time
+            logger.warning(f"Could not load {path}: {e}")
+            return None, None
+        w, h = full.get_size()
+        hold = (max(1, int(w * SPLASH_TARGET_SCALE)), max(1, int(h * SPLASH_TARGET_SCALE)))
+        found = _splash_art[path] = (pygame.transform.smoothscale(full, hold), (w, h))
+    return found
+
+
+def battle_icon_art(asset_scale):
+    """The centre-gap battle icon (25.5% of the art times the resolution scale), or None."""
+    full = battle_screen_kit.image(BATTLE_ICON_ART)
+    if full is None:
+        return None
+    icon_scale = 0.255 * asset_scale
+    return battle_screen_kit.art(BATTLE_ICON_ART, (int(full.get_width() * icon_scale),
+                                                   int(full.get_height() * icon_scale)))
+
+
 def prewarm_battle_screen(screen_size, icon_sources=None):
     """
-    Build what the battle report needs before the first battle (the loading screen, a
-    resolution change): its icons at this screen's size - from the surfaces the game has
-    already decoded (`icon_sources`, {path: surface}) - and the report panel's art at its
-    smallest size, the size of most reports. Without it the first report of a session
-    decoded ~10 images of 1024 px as its splash began (~130 ms).
+    Build what the battle screens need before the first battle (the loading screen, a
+    resolution change): the report's icons at this screen's size - from the surfaces the
+    game has already decoded (`icon_sources`, {path: surface}) - and the report panel's
+    art at its smallest size, the size of most reports. Without it the first report of a
+    session decoded ~10 images of 1024 px as its splash began (~130 ms). Then the battle
+    window's own art: the centre icon, the bars' frame and the splash pictures.
     """
     width, height = screen_size
     scale = (width / REFERENCE_WIDTH + height / REFERENCE_HEIGHT) / 2
     battle_screen_panels.prewarm(scale, icon_sources)
     battle_screen_kit.art(REPORT_PANEL_ART, (int(width * REPORT_PANEL_WIDTH_RATIO),
                                              int(height * REPORT_PANEL_MIN_HEIGHT_RATIO)))
+    battle_icon_art(scale)
+    # The bars' frame at the size _calculate_layout() gives it
+    battle_screen_kit.art(BATTLE_BAR_ART, (int(width * BAR_PNG_WIDTH_RATIO), int(BAR_PNG_HEIGHT_REF * scale)))
+    for path in (VICTORY_SPLASH_ART, DEFEAT_SPLASH_ART):
+        splash_art(path)
 
 
 class EnhancedBattleInterface:
@@ -1221,41 +1269,32 @@ class EnhancedBattleInterface:
         if self.panel_bg is None:
             logger.warning(f"Could not load {REPORT_PANEL_ART}")
 
-        try:
-            # Battle icon for center gap
-            battle_icon_full = pygame.image.load("assets/mapicons/BattleIcon1.png").convert_alpha()
-            # Scale to 25.5% of original, then apply resolution scale
-            icon_w, icon_h = battle_icon_full.get_size()
-            icon_scale = 0.255 * asset_scale
-            self.battle_icon = pygame.transform.smoothscale(
-                battle_icon_full,
-                (int(icon_w * icon_scale), int(icon_h * icon_scale))
-            )
+        # Every picture below is decoded once per process and its scaled copies are shared
+        # by every battle window - each window used to decode all four 1024-1536 px PNGs
+        # again as it opened (~40 ms each)
+
+        # Battle icon for the centre gap (the map's battle markers hold the art already)
+        self.battle_icon = battle_icon_art(asset_scale)
+        if self.battle_icon is not None:
             # Store base dimensions for pulsation animation
             self.battle_icon_base_w = self.battle_icon.get_width()
             self.battle_icon_base_h = self.battle_icon.get_height()
-        except (pygame.error, FileNotFoundError) as e:
-            logger.warning(f"Could not load BattleIcon1.png: {e}")
-            self.battle_icon = None
+        else:
+            logger.warning(f"Could not load {BATTLE_ICON_ART}")
             self.battle_icon_base_w = 0
             self.battle_icon_base_h = 0
 
-        try:
-            # Victory/defeat splash images
-            self.victory_img = pygame.image.load("assets/victoryscrn.png").convert_alpha()
-            self.defeat_img = pygame.image.load("assets/defeatscrn.png").convert_alpha()
-        except (pygame.error, FileNotFoundError) as e:
-            logger.warning(f"Could not load victory/defeat images: {e}")
-            self.victory_img = None
-            self.defeat_img = None
+        # Victory/defeat splash pictures, kept at the splash's hold size, with their
+        # full sizes (splash_art() logs a missing one)
+        self.victory_img, self.victory_size = splash_art(VICTORY_SPLASH_ART)
+        self.defeat_img, self.defeat_size = splash_art(DEFEAT_SPLASH_ART)
 
-        try:
-            # BattleBar.png for strength bar borders
-            self.bar_border_img = pygame.image.load("assets/BattleBar.png").convert_alpha()
+        # BattleBar.png for strength bar borders (the planning timer holds it already)
+        self.bar_border_img = battle_screen_kit.image(BATTLE_BAR_ART)
+        if self.bar_border_img is not None:
             self.bar_border_original_h = self.bar_border_img.get_height()
-        except (pygame.error, FileNotFoundError) as e:
-            logger.warning(f"Could not load BattleBar.png: {e}")
-            self.bar_border_img = None
+        else:
+            logger.warning(f"Could not load {BATTLE_BAR_ART}")
             # C2 fix: BAR_HEIGHT was undefined — use BAR_PNG_HEIGHT_REF instead
             self.bar_border_original_h = BAR_PNG_HEIGHT_REF
 
@@ -1396,12 +1435,13 @@ class EnhancedBattleInterface:
         self._report_parts = None
         self._layout_report(0)
 
-        # P2/P3 fix: pre-scale battle bar borders and panel backgrounds (constant sizes)
+        # P2/P3 fix: pre-scale battle bar borders and panel backgrounds (constant sizes),
+        # shared by every battle window at this screen size (battle_screen_kit.art)
         self._scaled_bar_border = None
         self._scaled_bar_border_flipped = None
         if self.bar_border_img:
-            self._scaled_bar_border = pygame.transform.smoothscale(
-                self.bar_border_img, (self.bar_png_width, self.bar_png_height))
+            self._scaled_bar_border = battle_screen_kit.art(
+                BATTLE_BAR_ART, (self.bar_png_width, self.bar_png_height))
             # The defender bar is mirrored, so its frame is mirrored too -
             # BattleBar.png is not horizontally symmetric.
             self._scaled_bar_border_flipped = pygame.transform.flip(
@@ -1411,8 +1451,8 @@ class EnhancedBattleInterface:
         self._pulsed_icon_cache = {}
         self._scaled_panel_bg = None
         if self.panel_bg:
-            self._scaled_panel_bg = pygame.transform.smoothscale(
-                self.panel_bg, (self.attacker_panel_rect.width, self.attacker_panel_rect.height))
+            self._scaled_panel_bg = battle_screen_kit.art(
+                REPORT_PANEL_ART, (self.attacker_panel_rect.width, self.attacker_panel_rect.height))
 
     @staticmethod
     def _panel_content(rect, inset_x_share=REPORT_INSET_X):
@@ -1805,15 +1845,16 @@ class EnhancedBattleInterface:
 
         # Choose appropriate image
         if self.current_player_won:
-            image = self.victory_img
+            image, base_size = self.victory_img, self.victory_size
         else:
-            image = self.defeat_img
+            image, base_size = self.defeat_img, self.defeat_size
 
         if image:
             self.splash_effect = BattleSplashEffect(
                 image=image,
                 screen_width=self.screen_width,
-                screen_height=self.screen_height
+                screen_height=self.screen_height,
+                base_size=base_size
             )
         else:
             # Skip splash if no image

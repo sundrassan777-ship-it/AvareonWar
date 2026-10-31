@@ -98,11 +98,18 @@ def _make_sound_loader(category, folder, volume_mult):
     """Create a closure that loads sounds for one category and sets volume.
     Uses default-arg binding to avoid late-binding closure gotcha."""
     def _load(cat=category, p=folder, v=volume_mult):
-        num = sound_manager.load_sounds_from_folder(cat, p)
+        loaded = sound_manager.sound_categories.get(cat)
+        if loaded:
+            # Loaded by an earlier game this session: the sounds stay decoded in memory
+            # (nothing unloads them), so only their volume is set again below - every
+            # game start used to decode all of them again
+            num = len(loaded)
+        else:
+            num = sound_manager.load_sounds_from_folder(cat, p)
         # Apply per-sound volume multiplier
         for snd in sound_manager.sound_categories.get(cat, []):
             snd.set_volume(sound_manager.volume * v)
-        logger.info(f"Loaded {num} {cat} sounds")
+        logger.info(f"{'Reused' if loaded else 'Loaded'} {num} {cat} sounds")
     return _load
 
 
@@ -551,6 +558,13 @@ def load_transmission_sounds():
 
     if not sound_manager.enabled:
         return 0
+
+    if _transmission_sounds:
+        # Loaded by an earlier campaign game this session (they stay in memory): only
+        # the volume is set again - every campaign start decoded all ~116 files again
+        for sound in _transmission_sounds.values():
+            sound.set_volume(sound_manager.volume * 1.0)
+        return len(_transmission_sounds)
 
     folder = 'assets/sounds/transmissions'
     if not os.path.exists(folder):

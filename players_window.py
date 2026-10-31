@@ -75,6 +75,12 @@ class PlayersWindow:
         self.feedback_timer_ms = 0
         self._last_tick_ms = pygame.time.get_ticks()
 
+        # Fonts by (size, bold) and the dimmed backdrop for one screen size: draw() used
+        # to open each font from its TTF file and allocate a full-screen surface on every
+        # frame. Kept per window, so they go with the game (never across pygame restarts).
+        self._fonts = {}
+        self._dim = None
+
         # Layout / hit-test rects — refreshed every frame by draw()
         self.panel_rect = None
         self.close_button_rect = None
@@ -96,9 +102,10 @@ class PlayersWindow:
         scale = self.game.ui_scale
 
         # Dimmed background (non-pausing — game keeps rendering beneath)
-        dark = pygame.Surface((screen_w, screen_h), pygame.SRCALPHA)
-        dark.fill((0, 0, 0, 150))
-        screen.blit(dark, (0, 0))
+        if self._dim is None or self._dim.get_size() != (screen_w, screen_h):
+            self._dim = pygame.Surface((screen_w, screen_h), pygame.SRCALPHA)
+            self._dim.fill((0, 0, 0, 150))
+        screen.blit(self._dim, (0, 0))
 
         # Panel
         panel_w = int(900 * scale)
@@ -554,8 +561,13 @@ class PlayersWindow:
         return text[:lo] + ellipsis if lo > 0 else ellipsis
 
     def _font(self, size, bold=False):
-        try:
-            path = 'assets/fonts/Cinzel-SemiBold.ttf' if bold else 'assets/fonts/Cinzel-Regular.ttf'
-            return pygame.font.Font(path, max(10, size))
-        except (FileNotFoundError, pygame.error, OSError):
-            return pygame.font.SysFont('arial', max(10, size), bold=bold)
+        key = (max(10, size), bold)
+        font = self._fonts.get(key)
+        if font is None:
+            try:
+                path = 'assets/fonts/Cinzel-SemiBold.ttf' if bold else 'assets/fonts/Cinzel-Regular.ttf'
+                font = pygame.font.Font(path, key[0])
+            except (FileNotFoundError, pygame.error, OSError):
+                font = pygame.font.SysFont('arial', key[0], bold=bold)
+            self._fonts[key] = font
+        return font

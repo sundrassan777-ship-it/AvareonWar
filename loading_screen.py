@@ -127,7 +127,7 @@ class LoadingScreen:
     """
 
     def __init__(self, screen, game, setup_config, network_connection=None,
-                 mission_id=None):
+                 mission_id=None, extra_tasks=None):
         """
         Args:
             screen: Pygame display surface
@@ -135,12 +135,17 @@ class LoadingScreen:
             setup_config: Config dict to pass to game.initialize_game()
             network_connection: NetworkServer (host) or NetworkClient (client), or None for SP
             mission_id: Campaign mission key (e.g. 'mission_1') or None for custom/MP games
+            extra_tasks: More (label, callable) tasks, run after the game is initialized -
+                a campaign mission's loading_tasks() (its cloud cover). Like every task
+                here they only prepare this PC's pictures and sounds: never the game
+                state or the shared random numbers (multiplayer PCs must stay identical).
         """
         self.screen = screen
         self.game = game
         self.setup_config = setup_config
         self.network_connection = network_connection
         self.mission_id = mission_id
+        self.extra_tasks = list(extra_tasks or [])
 
         # Loading state
         self.progress = 0.0            # 0.0 to 1.0
@@ -275,6 +280,21 @@ class LoadingScreen:
             prewarm_battle_screen(self.screen.get_size(), self.game._battle_screen_icon_sources())
         tasks.append(("Preparing the battle screen", _prepare_battle_screen))
 
+        # The Technology tab's icons (its first open decoded all 21 of 1024 px, ~36 MB)
+        def _prepare_tech_tree():
+            self.game.ui_renderer.prewarm_tech_icons()
+        tasks.append(("Preparing the technology tree", _prepare_tech_tree))
+
+        # The computer players' modules (~4,800 lines): imported on the first AI turn of a
+        # sequential game otherwise (~11 ms, a dropped frame at 120 fps)
+        if any(self.setup_config.get('player_is_ai') or []):
+            def _prepare_ai():
+                import ai_player, ai_strategy, ai_economy, ai_military, ai_hero  # noqa: F401
+            tasks.append(("Preparing the computer players", _prepare_ai))
+
+        # The caller's own (a campaign mission's loading_tasks(): its cloud cover)
+        tasks.extend(self.extra_tasks)
+
         return tasks
 
     def _draw(self):
@@ -403,12 +423,14 @@ class LoadingScreen:
                     pygame.quit()
                     sys.exit()
 
-            # Execute the loading task
+            # Execute the loading task (timed in the log, to see where loading goes)
+            started = time.perf_counter()
             try:
                 task_fn()
             except Exception as e:
                 logger.error(f"Loading task '{label}' failed: {e}")
                 # Continue loading remaining tasks even if one fails
+            logger.info(f"Loading task '{label}': {(time.perf_counter() - started) * 1000:.0f} ms")
 
             # Steam callbacks between tasks too (players joined through Steam are
             # carried by them - see steam_manager.run_callbacks)

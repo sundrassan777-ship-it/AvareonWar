@@ -335,13 +335,13 @@ class MapRenderer:
                 except Exception:
                     pass
 
-        # Pre-warm font cache for common sizes
-        common_font_sizes = [12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
-        for size in common_font_sizes:
+        # Pre-warm font cache for every size the plots ask for (odd ones too: 19 and 21
+        # were made on the first frame)
+        for size in range(12, 33):
             try:
                 self.get_cached_font(size)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"MapRenderer: could not pre-load font size {size}: {e}")
 
     def _prewarm_screen_polygon_cache(self):
         """
