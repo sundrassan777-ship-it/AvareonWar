@@ -2,6 +2,22 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-11-01 - Avareon's 3D map look: the owner's final art
+
+Branch `feature/avareon-3d-final`. Assets only, no code. The owner finished Avareon's art in
+the AvareonWorldEditor (tag `avareon-final-1`, its PLAN §25). This installs the new look over
+the one from the unify plan.
+- **The look:** mountain ranges with crisp ridges and snow on the highest crests, Earth-painted
+  highlands, open woodland, 66 small landmarks (castles, citadels, temples, hamlets).
+  Fragments of removed region names are cleaned up; Bedu's city mark is back.
+- **Same game geometry:** the outlines and plots move onto the new terrain. Banners shift
+  3.0 px on median and 18.2 px at most (was 41.6). No plot stands in water or on a steep slope.
+  Two outlines fold slightly over a ridge (Aelatania, Riar), as before.
+- **Replaced:** `maps/avareon/3d/` (picture, outlines, plots, `look.json`) and the 8 campaign
+  twins in `assets/CampaignMaps/3d/` (6 chapters, 2 cloud covers). 84.7 → 88.3 MB.
+- The 2D look is unchanged. The 3D option is still unhidden for testing; hide it before the
+  next patch release.
+
 ## 2026-10-31 - Banners wave in the breeze; the selected banner gives off motes
 
 Branch `feature/banner-wave`. The owner asked for waving banners before the patch, in both map

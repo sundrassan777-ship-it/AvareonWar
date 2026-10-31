@@ -2,12 +2,12 @@
   "format": 1,
   "map": "avareon",
   "editor_version": "0.1.0",
-  "date": "2026-10-26T10:00:43",
+  "date": "2026-10-31T22:33:00",
   "camera": {
-    "tilt_deg": 28.0,
+    "tilt_deg": 27.214285714285715,
     "oblique": true
   },
-  "exaggeration": 120.0,
+  "exaggeration": 116.0,
   "draw_borders": false,
   "source": {
     "territory_polygons": "ea6ca83c5439cdd3607d9f0b59a1755c1c8124254f42adb3c602df927995bcde",
