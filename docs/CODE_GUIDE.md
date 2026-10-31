@@ -2109,7 +2109,9 @@ loaded (`Game._battle_screen_icon_sources()`) - a loading screen task and
 `apply_display_settings()` (the kit drops its cache with the old display). **A new icon
 in the report must be added to `report_icons()`** and, if the game loads it, to
 `_battle_screen_icon_sources()` (`test_the_game_hands_over_every_report_icon`), or the
-first report decodes it again. Tests: `tests/test_battle_report_screen.py`.
+first report decodes it again. It also bakes the battle window's own art (`battle_icon_art()`,
+the bar frame, `splash_art()`), which every window shares - no battle decodes a picture.
+Tests: `tests/test_battle_report_screen.py`, `tests/test_loading_preload.py`.
 
 **Do not route its close through `_finalize_enhanced_battle()`** — that would re-broadcast
 a `BATTLE_RESOLVE` message and re-create alliance markers for a battle finalised long ago.
@@ -3559,6 +3561,11 @@ The codebase uses several performance patterns. Follow these when adding new ren
 - `_cached_negotiator_glow` / `_negotiator_motes` (main.py) - The Master Negotiator vignette (once per map size) and its mote table.
 - Turn banner (turn_announcement_effect.py) - Module-level `_shared`, rebuilt when the display or screen size changes: the darkening vignette as a multiply surface plus a scratch copy of the frame (~6 MB each at 1600x900), the glow sprites and `GlowFrame` (grey glows per banner size, LRU 32). Fonts are not kept (one used after `pygame.font` restarts crashes). Per announcement: the banner and its glow strips' scratch surfaces.
 
+- Battle window art (battle_interface.py) - `splash_art()`: the victory / defeat pictures at the splash's 75% hold size with their full sizes, once per process (the hold frame is the kept picture, 4.9 -> 0.55 ms a frame; growing and shrinking scale from it); `battle_icon_art()` and the bar frame / panel art through `battle_screen_kit.art()` (per display size). Every battle window decoded all four PNGs again (158 ms). Prewarmed by `prewarm_battle_screen()`.
+- `_tech_icon_sources` (ui_renderer.py) - The 21 technology icons at the largest button (`TECH_BUTTON_MAX`, 54 px, `transform.scale` as before), once per process (~0.25 MB); the tab's `tech_icons` scale from them. Prewarmed by `prewarm_tech_icons()` (loading screen).
+- `_board_art` (campaign_utils.py `board_art()`) - The Transmission Board's TransmissionBG / SpeakerBG at their shown sizes, once per process, for both `TransmissionOverlay` copies (every transmission decoded both again).
+- `PlayersWindow._fonts` / `_dim` (players_window.py) - The window's fonts by (size, bold) and its dimmed backdrop per screen size (it opened each font from its TTF and allocated a full-screen surface on every frame).
+
 **Always `.convert()` / `.convert_alpha()` loaded images — including backgrounds:**
 - An unconverted surface stays in *file* pixel format, so **every blit** of it (or of anything
   scaled from it) performs a per-pixel format conversion. Measured on the 4096x3072 map:
@@ -4741,9 +4748,22 @@ the lobby with AI slots used to earn them.
 
 `loading_screen.py` - Loading screen shown between setup and gameplay. Defers game asset loading (sounds, images, fonts) to after menu/setup for faster startup.
 
-**Architecture:** `LoadingScreen(screen, game, setup_config, network_connection)` builds a task list from `get_game_sound_tasks()` (11 sound categories) + `game.initialize_game()` (images, fonts, GameState). Renders progress bar at 30 FPS, then waits for player input.
+**Architecture:** `LoadingScreen(screen, game, setup_config, network_connection, mission_id, extra_tasks)` runs a task list (`_build_task_list()`), drawing the bar before each task and pumping events + Steam callbacks after it, then waits for player input (30 FPS). Each task's duration goes to the log (`Loading task '...': N ms`). The tasks, in order:
+1. `get_game_sound_tasks()` - 12 sound categories (73 files), plus the campaign's 116 transmission voice lines.
+2. "Initializing game" - `game.initialize_game()` (GameState, the map picture in the game's look, icons, fonts 8-40, the MapRenderer with its effect prewarms).
+3. "Preparing the battle screen" - `prewarm_battle_screen()`: the report's icons and panel art, and the battle window's own art (centre icon, bar frame, splash pictures).
+4. "Preparing the technology tree" - `UIRenderer.prewarm_tech_icons()` (the tab's first open decoded 21 icons of 1024 px: a 577 ms freeze).
+5. "Preparing the computer players" - imports the AI modules (only when a seat is AI).
+6. `extra_tasks` - a campaign mission's `loading_tasks(game)` (main.py `_mission_loading_tasks()`, both campaign launch paths): the Tutorial's and Mission 2's cloud cover (`campaign_utils.bake_cloud_cover()`), which froze the screen after "Click any key".
 
-**Sound Split:** `global_sound.py` provides `initialize_menu_sounds()` (3 files, called at startup) and `get_game_sound_tasks()` (136 files, deferred to loading screen).
+**Adding a preload (multiplayer rules - every PC runs the same tasks):**
+- **Render-only.** A task prepares this PC's pictures, fonts or sounds; it never changes the game state, the network queue or the shared `random` numbers (effects draw from their own `random.Random`). `tests/test_loading_preload.py` checks the random state and the state checksum around every task after "Initializing game", on a custom game and on every PC of a multiplayer session.
+- **Warm, never require.** The draw code keeps building what it needs on a miss; a failed task (caught and logged here) only means the old first-use cost.
+- **Before the handshake.** Work goes into the task list, never after `run()` returns `'start'` - there it delays one PC after the others have started.
+- **Short, separate tasks.** Events and Steam callbacks are pumped only between tasks (Steam warns after 15 s, Windows calls a window unresponsive after ~5 s); "Initializing game" alone takes up to ~7 s on a slow PC.
+- **Keep it for the process** when it doesn't depend on the game (module-level caches: `splash_art()`, the tech icon sources, `campaign_utils.board_art()`), so later games load faster; re-run or invalidate size-keyed work on a resolution change (`apply_display_settings`, next to `prewarm_battle_screen`).
+
+**Sound Split:** `global_sound.py` provides `initialize_menu_sounds()` (4 files and a generated denial tone, at startup) and `get_game_sound_tasks()` (deferred to the loading screen). The game sounds stay decoded for the process: a later game reuses a loaded category (and the transmissions) and only sets its volume again (it decoded them all again: 0.7 s for a campaign).
 
 **Multiplayer Sync:** Uses `GAME_READY` message type (`network_config.py`). Host collects GAME_READY from all clients, then broadcasts confirmation. Both sides wait for "click to start" after all ready.
 - The host waits for `expected_remote_players` (human clients). A `PLAYER_DISCONNECT`
@@ -4761,7 +4781,7 @@ the lobby with AI slots used to earn them.
 
 - **Add new deferred sound category**: Add entry in `get_game_sound_tasks()` in `global_sound.py`
 - **Change loading screen visuals**: Modify `_draw()` in `loading_screen.py`
-- **Add new loading task**: Append to `_build_task_list()` in `loading_screen.py`
+- **Add new loading task**: Append to `_build_task_list()` in `loading_screen.py` (follow "Adding a preload" above); a mission's own: a static `loading_tasks(game)` on its class
 - **Change multiplayer sync logic**: Modify `_send_game_ready()` / `_poll_network_ready()` / `_update_wait_state()` / `_handle_wait_event()` in `loading_screen.py`
 
 ## Player Level System
@@ -5687,12 +5707,18 @@ look; if anything it needs is missing or out of date, the whole screen is 2D.
 **Consumers** (all through the resolver):
 - `main.py` `initialize_game()`: sets `self.map_look` from the campaign picture (or the map's
   own) and its cover, then `load_map`; `_reload_map_assets()` loads the matching picture. A
-  campaign game reloads its chapter's twin; 2D keeps the picture from `__init__`.
+  campaign game reloads its chapter's twin; 2D keeps the picture from `__init__`. Only a
+  campaign `Game.__init__` decodes a picture: any other game shows the dark fallback until
+  `_reload_map_assets()` (decoding it in `__init__` too cost ~0.23 s, twice in multiplayer).
 - `integrated_setup.py` / `network/territory_selector.py` `_initialize_map()` (incl. the
   client's map change at launch).
 - `replay_viewer.py` `_load_map_assets()`.
-- The covers: `tutorial_mission.py` / `campaign_mission_2.py` `_bake_cloud_cover()`
-  (`look_picture` in the current look).
+- The covers: `campaign_utils.bake_cloud_cover()` (`look_picture` in the current look), run
+  as the Tutorial's / Mission 2's loading screen task (`loading_tasks()`); their
+  `_bake_cloud_cover()` then finds it done (`game.cloud_cover_baked`). Its alpha bake reads
+  the RGBA bytes as ARGB (each pixel's R, then G and B one / two bytes on, in the alpha slot)
+  and keeps the largest with `BLEND_RGBA_MAX` - byte-identical to the old per-pixel loop,
+  1.24 s -> 0.19 s.
 
 **Mixed multiplayer:** each PC picks its own look. Nothing coordinate-based crosses the network:
 claims, orders and battles go by territory name, and battles are seeded. Coordinates only drive

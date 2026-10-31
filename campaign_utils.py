@@ -8,6 +8,8 @@
 #
 # Contains:
 #   - TransmissionOverlay: text overlay with speaker header (~120 lines, was duplicated x3)
+#     (its art: board_art(), shared with tutorial_mission.py's copy)
+#   - bake_cloud_cover: a mission's cloud cover baked into the map (Tutorial, Mission 2)
 #   - CameraPanAnimation: smooth camera pan between territories (~50 lines, was duplicated x2)
 #   - CameraZoomAnimation: smooth camera zoom to a territory (~40 lines, was duplicated x3)
 #   - update_endgame_sequence / render_endgame_sequence: victory/defeat animation helpers
@@ -15,10 +17,42 @@
 
 import pygame
 
+import map_data
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 # ============================================================================
 # TRANSMISSION OVERLAY
 # ============================================================================
+
+# The Transmission Board's art at its shown sizes, decoded once per process: every
+# transmission built its overlay from disk again (TransmissionBG.png + SpeakerBG.png,
+# ~5 MB of PNG). Only the scaled surfaces are kept: {(path, width, share): surface or None}
+_board_art = {}
+
+
+def board_art(path, width, height_share=1.0):
+    """
+    `path` smoothscaled to `width` px wide at its own aspect, the height then times
+    `height_share` (the speaker header shows 20% of it) - cached; None if it can't be
+    loaded. Shared by both TransmissionOverlay copies (here and tutorial_mission.py).
+    """
+    key = (path, width, height_share)
+    if key not in _board_art:
+        try:
+            raw = pygame.image.load(path).convert_alpha()
+        except (pygame.error, FileNotFoundError, OSError) as e:
+            logger.warning(f"Could not load {path}: {e}")
+            _board_art[key] = None
+        else:
+            aspect = raw.get_height() / raw.get_width()
+            height = int(width * aspect)
+            if height_share != 1.0:
+                height = int(height * height_share)
+            _board_art[key] = pygame.transform.smoothscale(raw, (width, height))
+    return _board_art[key]
 
 class TransmissionOverlay:
     """Renders the Transmission Board with speaker header, flush at top-left of map area.
@@ -43,40 +77,24 @@ class TransmissionOverlay:
         BG_LEFT_FRAC = 0.069   # 6.9% left/right transparent margin
         BG_TOP_FRAC = 0.200    # 20% top transparent margin
 
-        # Load and scale body background (TransmissionBG.png)
-        try:
-            raw_bg = pygame.image.load('assets/TransmissionBG.png').convert_alpha()
-        except pygame.error:
-            raw_bg = None
-
-        if raw_bg:
-            aspect = raw_bg.get_height() / raw_bg.get_width()
-            self.body_height = int(self.width * aspect)
-            self.bg_surface = pygame.transform.smoothscale(raw_bg, (self.width, self.body_height))
+        # Body background (TransmissionBG.png), scaled to the board width (shared, board_art)
+        self.bg_surface = board_art('assets/TransmissionBG.png', self.width)
+        if self.bg_surface is not None:
+            self.body_height = self.bg_surface.get_height()
         else:
             self.body_height = int(screen_height * 0.12)
-            self.bg_surface = None
 
         # Calculate visible body area insets (in scaled pixels)
         bg_left_inset = int(self.width * BG_LEFT_FRAC)
         bg_top_inset = int(self.body_height * BG_TOP_FRAC)
         visible_body_width = self.width - 2 * bg_left_inset
 
-        # Load and scale speaker header (SpeakerBG.png) to match visible body width
-        try:
-            raw_header = pygame.image.load('assets/SpeakerBG.png').convert_alpha()
-        except pygame.error:
-            raw_header = None
-
-        if raw_header:
-            header_aspect = raw_header.get_height() / raw_header.get_width()
-            natural_header_h = int(visible_body_width * header_aspect)
-            self.header_height = int(natural_header_h * 0.2)  # 20% of natural height
-            self.header_surface = pygame.transform.smoothscale(
-                raw_header, (visible_body_width, self.header_height))
+        # Speaker header (SpeakerBG.png) at the visible body width, 20% of its natural height
+        self.header_surface = board_art('assets/SpeakerBG.png', visible_body_width, 0.2)
+        if self.header_surface is not None:
+            self.header_height = self.header_surface.get_height()
         else:
             self.header_height = int(screen_height * 0.03)
-            self.header_surface = None
 
         self.header_width = visible_body_width
 
@@ -178,6 +196,65 @@ class TransmissionOverlay:
         for i, line in enumerate(lines):
             line_surface = self.font.render(line, True, (255, 255, 240))
             screen.blit(line_surface, (x, y + i * line_height))
+
+
+# ============================================================================
+# CLOUD COVER
+# ============================================================================
+
+def bake_cloud_cover(game, cover_path):
+    """
+    Bake a mission's cloud cover into the game's map picture (map_image_original), once
+    per game. The cover is read in the game's map look (in 3D its twin, which covers the
+    same land on the 3D picture: map_data.look_picture; choose_look made sure it exists),
+    its brightness becomes its alpha (black -> transparent, white -> opaque), and it is
+    blitted onto the map. Pure pygame (no numpy) for PyInstaller compatibility.
+
+    The Tutorial and Mission 2 return it as a loading screen task (their loading_tasks()),
+    so it runs under the progress bar instead of after "Click any key"; their __init__
+    calls it again, which then does nothing (game.cloud_cover_baked).
+    """
+    if getattr(game, 'cloud_cover_baked', None) == cover_path:
+        return
+    try:
+        raw = pygame.image.load(map_data.look_picture(cover_path)).convert()
+    except pygame.error as e:
+        logger.warning(f"Could not load {cover_path}: {e}")
+        return
+
+    w, h = raw.get_size()
+
+    # alpha = max(R, G, B) for every pixel, by whole channels: the RGBA bytes read as
+    # ARGB put each pixel's R in its alpha slot - and one / two bytes on, its G / B - and
+    # BLEND_RGBA_MAX keeps the largest alpha of the three. Byte-identical to the per-pixel
+    # loop it replaces, which took ~1.2 s on the 4096x3072 cover (this: ~0.2 s).
+    rgba = pygame.image.tostring(raw, 'RGBA')
+    brightest = pygame.image.fromstring(rgba, (w, h), 'ARGB')
+    for shift in (1, 2):
+        brightest.blit(pygame.image.fromstring(rgba[shift:] + bytes(shift), (w, h), 'ARGB'),
+                       (0, 0), special_flags=pygame.BLEND_RGBA_MAX)
+    pixels = bytearray(rgba)
+    pixels[3::4] = pygame.image.tostring(brightest, 'ARGB')[0::4]
+    cover = pygame.image.fromstring(bytes(pixels), (w, h), 'RGBA')
+
+    # Scale cover to match map_image_original if sizes differ
+    map_w, map_h = game.map_image_original.get_size()
+    if (w, h) != (map_w, map_h):
+        cover = pygame.transform.smoothscale(cover, (map_w, map_h))
+
+    # Blit cloud cover onto the original map image
+    game.map_image_original.blit(cover, (0, 0))
+    game.cloud_cover_baked = cover_path
+
+    # Invalidate every cache derived from the map (scaled map, viewport slice and
+    # the east map extension) so they re-render with the composited image. The
+    # blit above draws in place, so id-keyed caches cannot notice it themselves.
+    invalidate = getattr(game, '_invalidate_map_background_caches', None)
+    if invalidate is not None:
+        invalidate()
+    else:
+        game.cached_scaled_map = None
+        game.cached_zoom_level = None
 
 
 # ============================================================================

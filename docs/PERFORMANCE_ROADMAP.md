@@ -144,6 +144,36 @@ What to know before touching them:
 
 ---
 
+## First-use work moved to the loading screen (2026-10-31, 1600x900)
+
+What waited for its first use during play was moved under the progress bar, and what was
+repeated is done once (CODE_GUIDE "Loading Screen"). Best of 3-5 on the owner's PC:
+
+| Moment | Before | After |
+|---|---|---|
+| Opening a battle window (its four pictures) | 158 ms, every battle | ~0 |
+| Splash hold frame (2 s of every battle) | 4.9 ms | 0.55 ms |
+| Technology tab, first open | 577 ms freeze | ~0 (566 ms on the first loading screen of a session) |
+| Tutorial / Mission 2 cloud cover | 1.24 s after "Click any key" | 0.19 s on the loading screen |
+| `Game()` for Custom Game / multiplayer | 229 ms map decode (x2 in multiplayer) | 24 ms dark fallback |
+| A later game's sounds | 219 ms (+478 ms campaign voice lines) | 0.4 ms |
+| Players window, per frame | ~1.7 ms (backdrop 1.2 + 6 TTF opens 0.5) | ~0 |
+
+Measured and **not** done: pre-importing `main` for the missions' `import main as _main`
+(3 ms) - and fonts cost ~0.1 ms each, so the odd sizes now prewarmed gain little.
+
+Still lazy, for later (measure first):
+- **Map icon caches** (flags, buildings, plots, units, borders in `map_renderer.py`) fill during
+  the opening zoom sweep from 1024 px sources; `zoom_sweep` worst frame ~52-55 ms. Prewarming
+  every size the zoom range produces would cost ~0.3-0.7 s of loading and ~2 MB - compare a
+  cold and a warm sweep before doing it.
+- **`initialize_game()` keeps ~245 MB of 1024 px originals** (30 ability icons, 6 of them the
+  same file twice, portraits, building / unit icons) for the caches that scale from them.
+  Deduplicating saves ~24 MB at once; keeping them smaller means every consumer's sizes.
+- The east map extension (built on frame 1) and the sequential first turn banner.
+
+---
+
 ## Deferred: small, safe, low value
 
 These were investigated and consciously skipped. Doing them is not wrong, but do not expect

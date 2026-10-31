@@ -9,7 +9,7 @@ import map_data
 from utils.logger import get_logger
 # Phase 2C refactoring: import shared campaign utilities instead of defining them locally
 from campaign_utils import TransmissionOverlay, CameraPanAnimation, CameraZoomAnimation
-from campaign_utils import update_endgame_sequence, render_endgame_sequence
+from campaign_utils import update_endgame_sequence, render_endgame_sequence, bake_cloud_cover
 
 logger = get_logger(__name__)
 
@@ -1261,52 +1261,19 @@ class Mission2:
     # RENDER
     # ========================================================================
 
-    def _bake_cloud_cover(self):
-        """Bake cloud cover directly into the map image.
-
-        Loads CampaignMission2Cover.png, converts black background to transparency
-        (pixel brightness → alpha), then blits it onto map_image_original.
-        This eliminates separate overlay rendering and any UI clipping issues.
-        Uses pure pygame (no numpy) for PyInstaller compatibility.
+    @staticmethod
+    def loading_tasks(game):
         """
-        try:
-            # The cover in the game's map look: in 3D its twin, which covers the same land
-            # on the 3D picture (map_data.look_picture; choose_look made sure it exists)
-            raw = pygame.image.load(map_data.look_picture('assets/CampaignMaps/CampaignMission2Cover.png')).convert()
-        except pygame.error as e:
-            logger.warning(f"Could not load CampaignMission2Cover.png: {e}")
-            return
+        Loading screen tasks run before this mission is created (main.py
+        _run_registered_mission / _launch_saved_game): the cloud cover, baked into the map
+        under the progress bar - it used to freeze the screen after "Click any key".
+        """
+        return [("Drawing the cloud cover", lambda: bake_cloud_cover(game, 'assets/CampaignMaps/CampaignMission2Cover.png'))]
 
-        w, h = raw.get_size()
-
-        # Extract raw RGBA pixel data as a bytearray for bulk manipulation.
-        # For each pixel, set alpha = max(R, G, B) so black → transparent, white → opaque.
-        raw_str = pygame.image.tostring(raw, 'RGBA')
-        pixels = bytearray(raw_str)
-        for i in range(0, len(pixels), 4):
-            pixels[i + 3] = max(pixels[i], pixels[i + 1], pixels[i + 2])
-
-        # Reconstruct surface from modified pixel data
-        cover = pygame.image.fromstring(bytes(pixels), (w, h), 'RGBA')
-
-        # Scale cover to match map_image_original if sizes differ
-        game = self.main_game
-        map_w, map_h = game.map_image_original.get_size()
-        if (w, h) != (map_w, map_h):
-            cover = pygame.transform.smoothscale(cover, (map_w, map_h))
-
-        # Blit cloud cover onto the original map image
-        game.map_image_original.blit(cover, (0, 0))
-
-        # Invalidate every cache derived from the map (scaled map, viewport slice and
-        # the east map extension) so they re-render with the composited image. The
-        # blit above draws in place, so id-keyed caches cannot notice it themselves.
-        invalidate = getattr(game, '_invalidate_map_background_caches', None)
-        if invalidate is not None:
-            invalidate()
-        else:
-            game.cached_scaled_map = None
-            game.cached_zoom_level = None
+    def _bake_cloud_cover(self):
+        """Bake the cloud cover into the map image (campaign_utils.bake_cloud_cover).
+        Already done on the loading screen (loading_tasks()), when it does nothing."""
+        bake_cloud_cover(self.main_game, 'assets/CampaignMaps/CampaignMission2Cover.png')
 
     def render(self, screen):
         """Called after normal game rendering to draw mission overlay."""

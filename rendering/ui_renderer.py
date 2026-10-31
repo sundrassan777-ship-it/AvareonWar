@@ -39,6 +39,13 @@ import map_data
 
 logger = get_logger(__name__)
 
+# The Technology tab's largest button (px); its icons are kept at this size
+TECH_BUTTON_MAX = 54
+# The technology icons at TECH_BUTTON_MAX, decoded once per process (~0.6 s for all 21,
+# ~0.25 MB kept): {path: Surface or None}. Display-format surfaces stay valid across
+# resolution changes, so nothing is decoded again for a new game or screen size.
+_tech_icon_sources = {}
+
 
 class UIRenderer:
     """
@@ -2695,6 +2702,40 @@ class UIRenderer:
         # tracker releases its hover every frame and would cancel ours)
         game.update_button_hover(current_hover, 'sidebar_hero_ability')
 
+    def _tech_icon_source(self, icon_path):
+        """
+        A technology icon decoded once per process and scaled (transform.scale, as the
+        tab always did) to the largest button, TECH_BUTTON_MAX px; None if it can't be
+        decoded. The tab's buttons are scaled from it - pixel-identical at the largest size.
+        """
+        sources = _tech_icon_sources
+        if icon_path not in sources:
+            try:
+                # convert_alpha: display pixel format, so the 21 per-frame blits
+                # don't convert on the fly (the load was never converted)
+                icon = pygame.image.load(icon_path).convert_alpha()
+                sources[icon_path] = pygame.transform.scale(icon, (TECH_BUTTON_MAX, TECH_BUTTON_MAX))
+            except (pygame.error, FileNotFoundError, OSError) as e:
+                logger.warning(f"Failed to load tech icon {icon_path}: {e}")
+                sources[icon_path] = None
+        return sources[icon_path]
+
+    def prewarm_tech_icons(self):
+        """
+        Decode every technology icon before the game starts (a loading screen task): the
+        Technology tab's first open used to decode all 21 icons of 1024 px (~36 MB of PNG)
+        in one frame.
+        """
+        exists_cache = self.__dict__.setdefault('_tech_icon_exists', {})
+        for tech in self.game.game_state.technologies:
+            icon_path = tech.get('icon')
+            if not icon_path:
+                continue
+            if icon_path not in exists_cache:
+                exists_cache[icon_path] = os.path.exists(icon_path)
+            if exists_cache[icon_path]:
+                self._tech_icon_source(icon_path)
+
     def _draw_technology_content(self, sidebar_x, sidebar_y, sidebar_width, sidebar_height, content_start_y):
         """Draw Technology tab content with 3x7 button grid."""
         # Get current player (needed for castle requirement checks and other player-specific data)
@@ -2724,7 +2765,7 @@ class UIRenderer:
         # could not be clicked. Buttons shrink to fit (min 30 px), gaps too (min 12 px).
         grid_start_y = content_start_y + header.get_height() + 12
         available_height = sidebar_y + sidebar_height - grid_start_y - 10  # 10px bottom margin
-        button_width = max(30, min(54, int((available_height - 6 * 18) / 7)))
+        button_width = max(30, min(TECH_BUTTON_MAX, int((available_height - 6 * 18) / 7)))
         button_height = button_width  # Square icons
         v_spacing = max(12, min(32, (available_height - 7 * button_height) // 6))
         h_spacing = 10
@@ -2880,10 +2921,14 @@ class UIRenderer:
                         # Cache key includes size so icons recalculate when dimensions change
                         cache_key = f"{icon_path}_{button_width}_{button_height}"
                         if cache_key not in self.tech_icons:
-                            # convert_alpha: display pixel format, so the 21 per-frame blits
-                            # don't convert on the fly (the load was never converted)
-                            icon = pygame.image.load(icon_path).convert_alpha()
-                            self.tech_icons[cache_key] = pygame.transform.scale(icon, (button_width, button_height))
+                            # From the icon kept at the largest button size (prewarmed on
+                            # the loading screen), not a 1024 px decode on the tab's first open
+                            icon = self._tech_icon_source(icon_path)
+                            if icon is None:
+                                raise pygame.error("could not be decoded")
+                            if icon.get_size() != (button_width, button_height):
+                                icon = pygame.transform.scale(icon, (button_width, button_height))
+                            self.tech_icons[cache_key] = icon
 
                         # FPS OPT: Determine tint state, cache tinted icon variants
                         # Only .copy() when hover/click effects need to modify the surface in-place
