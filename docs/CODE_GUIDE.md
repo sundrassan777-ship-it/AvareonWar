@@ -27,7 +27,7 @@ This guide provides module-specific guidance on when and how to modify different
 16. [Replay System](#replay-system) - Recording, viewer, browser
 17. [Campaign Save System](#campaign-save-system) - Save/load campaign progress
 18. [Browser Screens](#browser-screens-saved-games--replays) - Saved Games + Replays UI
-    - [Main Menu Windows](#main-menu-windows-options--achievements--profile) - The menu's windows kit (bronze window, drop + fade, WindowStage), the Options window, the Achievements trophy wall, the Profile player card, adding a setting
+    - [Main Menu Windows](#main-menu-windows-options--achievements--profile) - The menu's windows kit (bronze window, drop + fade, WindowStage), the Options window, the Achievements trophy wall, the Profile player card, the menu's memory, measuring on this PC, adding a setting
 19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
@@ -4983,9 +4983,8 @@ end of the drop). So:
   second half is opaque blits only.
 - Fade with `_blit_faded()` (alpha 0 skipped, 255 blitted with no surface alpha).
 - Measured at 1600x900 (best of 3): settled ~0.5 ms a frame, fading ~2 ms, the rest of the
-  drop ~0.6 ms, an opening's first frame ~10 ms (it captures the menu). After the game has
-  built a second MainMenu every blit in the process is ~4x slower (also on main, not
-  investigated yet): ~1.4 / ~6 / ~1.7 / ~28 ms.
+  drop ~0.6 ms, an opening's first frame ~10 ms (it captures the menu). Runs 2-4x slower
+  than that were the measuring thread on an E-core (see "Measuring frame cost on this PC").
 - A window provides `anim`, `title`, `rect()`, `draw()` / `draw_static()` /
   `draw_dynamic()`, `static_key()` and `prewarm()` (MainMenu calls it on creation, so the
   first opening builds no sprites - cold, that frame took ~85 ms).
@@ -5065,6 +5064,32 @@ end of the drop). So:
   the portrait, name, title line, chips, highlights, buttons and tooltip are drawn each
   frame. Portraits are decoded once per screen size (`prewarm()`); the corner Profile
   button in the menu still loads and scales its own pictures (`_calculate_layout`).
+
+### The menu's memory: pictures at the size they are shown
+
+- A MainMenu is made every time the game returns to the menu. It used to hold 126 MB of
+  surfaces - the 1024 px originals of its 60 px corner buttons - and main.py kept the last
+  one alive through the whole game; every return decoded them again (0.9 s).
+- Now: `utils.surface_utils.load_scaled_cached(path, size, brighten=)` decodes a file once
+  per process and keeps only the scaled surface (None for a missing file); the corner
+  buttons (heroes, rewards, achievements / replays / wishlist icons, the icon frame) and the
+  button art use it; the background and logo are built once per screen size (`_MENU_ART`);
+  `main.py` sets `main_menu = None` once the menu has run. A MainMenu holds ~7 MB besides
+  the screen; a return builds it in ~0.02 s. Tests: `tests/test_menu_memory.py`.
+- **Rule:** never keep a full-size original on a screen object to scale from - load at the
+  size shown (`load_scaled_cached()`), or through `MenuKit.preload_icons()` for the windows.
+  `load_cached_image()` keeps originals for the process: only for art drawn at many sizes.
+
+### Measuring frame cost on this PC
+
+The owner's i5-13420H has 4 P-cores (logical CPUs 0-7) and 4 E-cores (8-11). A full-screen
+opaque blit pinned to a P-core costs ~0.18 ms, on an E-core ~0.42 ms - a measuring thread
+Windows moves to an E-core reads 2-4x slower for the rest of its run. That was the
+"blits ~4x slower after a second MainMenu" seen during the glow-up (investigated
+2026-10-31: 10 MainMenus in a row showed no slowdown and no page faults; opting the
+process out of power throttling changed nothing). Also: the same blit in a tight loop
+~0.18 ms, with frame-like pauses between bursts ~0.6 ms (clocks and caches drop).
+So: interleave A / B runs, take best-of-N, and never trust a single run's number.
 
 ### Add a setting to the Options window
 

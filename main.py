@@ -17086,6 +17086,9 @@ if __name__ == "__main__":
                 # A friend's game chosen in Steam while the game runs (invite accepted /
                 # "Join Game"): the menu took the join request - join it like an invite
                 _steam_connect_target = main_menu.steam_join_target
+            # Let the menu go: it would otherwise stay alive (with its surfaces) for the
+            # whole game or screen that follows; the next loop makes a fresh one
+            main_menu = None
 
         if action == 'quit':
             pygame.quit()
