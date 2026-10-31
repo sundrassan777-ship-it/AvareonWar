@@ -1080,6 +1080,11 @@ class TestCrowdedMapPerformance:
             'player_ai_difficulty': [None, 'Normal', 'Normal', 'Normal'],
         })
         game.game_state.phase = 'playing'
+        # The banners' waving frames, as the loading screen builds them
+        if hasattr(game.map_renderer, 'prewarm_banners'):
+            from ui.effects.banner_fx_effect import size_steps
+            for step in size_steps():
+                game.map_renderer.prewarm_banners(step)
         return game
 
     @pytest.mark.parametrize('buildings', [0, 2, 4])

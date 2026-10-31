@@ -101,9 +101,11 @@ def custom_game():
 class TestTheLoadingScreen:
 
     def test_preloading_after_initializing_is_render_only(self, custom_game):
+        from ui.effects.banner_fx_effect import size_steps
         after = custom_game.labels[custom_game.labels.index('Initializing game') + 1:]
-        assert after == ['Preparing the battle screen', 'Preparing the technology tree',
-                         'Preparing the computer players']
+        assert after == (['Preparing the battle screen', 'Preparing the technology tree']
+                         + ['Preparing the banners'] * len(size_steps())
+                         + ['Preparing the computer players'])
         # The same random numbers and game state as right after "Initializing game"
         assert custom_game.at_end == custom_game.after_init
 
@@ -312,6 +314,70 @@ class TestTheTechnologyTab:
         monkeypatch.undo()
         old = pygame.transform.scale(pygame.image.load(paths[0]).convert_alpha(), (TECH_BUTTON_MAX,) * 2)
         assert _pixels(game.ui_renderer._tech_icon_source(paths[0])) == _pixels(old)
+
+
+class TestTheBanners:
+
+    def test_every_pose_is_built_on_the_loading_screen(self, custom_game):
+        from ui.effects.banner_fx_effect import size_steps
+        renderer = custom_game.game.map_renderer
+        pictures = renderer.banner_pictures()
+        # Both players' flags and the neutral ones, three tiers each
+        assert len(pictures) == 9
+        assert renderer.banner_wave.complete(pictures, size_steps())
+        # ...and the selected banner's mote sprites at every size
+        assert set(renderer.banner_motes._prepared) == set(size_steps())
+
+    def test_play_builds_none_of_them(self, custom_game, monkeypatch):
+        import copy
+        import map_data
+        game = custom_game.game
+        gs = game.game_state
+        renderer = game.map_renderer
+        wave = renderer.banner_wave
+        waved, mote_draws = [], []
+        real_draw, real_motes = wave.draw, renderer.banner_motes.draw
+        monkeypatch.setattr(wave, 'draw', lambda *a: waved.append(real_draw(*a)) or waved[-1])
+        monkeypatch.setattr(renderer.banner_motes, 'draw', lambda *a: mote_draws.append(real_motes(*a)))
+        built = wave.frames_built
+        motes = (renderer.banner_motes.glow.sprites_built, renderer.banner_motes.tint.sprites_built)
+        kept = (dict(gs.territory_owners), dict(gs.armies), copy.deepcopy(gs.territory_garrisons),
+                list(game.camera.offset), game.camera.zoom)
+        # A selected army of each tier and neutral and enemy neighbours, round the centre
+        home = sorted(game.scaled_centers)[len(game.scaled_centers) // 2]
+        around = [(home, 0, 12)] + [(n, owner, count) for n, owner, count in
+                                    zip(map_data.get_neighbors(home), (1, -1, 1, 0), (3, 6, 12, 3))]
+        for territory, owner, count in around:
+            gs.territory_owners[territory] = owner
+            gs.armies[territory] = count
+            gs.territory_garrisons[territory] = {owner: {'unmoved': count, 'moved': 0}}
+        gs._territory_owners_version += 1
+        gs.selected_army = (home, 12)
+        width, height = game.screen.get_size()
+        centre = game.scaled_centers[home]
+        try:
+            for zoom in (game.camera.min_zoom, (game.camera.min_zoom + game.camera.max_zoom) / 2.0,
+                         game.camera.max_zoom):
+                game.camera.zoom = game.camera.target_zoom = zoom
+                game.camera.offset = [centre[0] - width / 2.0 / zoom, centre[1] - height / 2.0 / zoom]
+                game.camera.clamp_to_bounds()
+                game.camera_zoom, game.camera_offset = game.camera.zoom, list(game.camera.offset)
+                game.cached_zoom_level = None
+                for _ in range(3):
+                    renderer.update_plot_effects(0.4)
+                    game.draw()
+        finally:
+            gs.selected_army = None
+            gs.territory_owners, gs.armies, gs.territory_garrisons = kept[0], kept[1], kept[2]
+            gs._territory_owners_version += 1
+            game.camera.offset, game.camera.zoom = kept[3], kept[4]
+            game.camera_zoom, game.camera_offset = game.camera.zoom, list(game.camera.offset)
+        # Every banner waved (5 a frame, 9 frames) and the selected one had its motes...
+        assert len(waved) >= 45 and all(waved)
+        assert len(mote_draws) == 9
+        # ...from what the loading screen built
+        assert wave.frames_built == built
+        assert (renderer.banner_motes.glow.sprites_built, renderer.banner_motes.tint.sprites_built) == motes
 
 
 class TestTheCloudCover:

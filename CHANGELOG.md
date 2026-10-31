@@ -2,6 +2,34 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-31 - Banners wave in the breeze; the selected banner gives off motes
+
+Branch `feature/banner-wave`. The owner asked for waving banners before the patch, in both map
+looks and while marching, plus subtle particles rising from the selected banner. FPS must stay
+as it is. The breeze is constant (owner): always rippling, never still, no gusts.
+- **The wave:** the crossbar and pole stay still and the cloth sways, more toward the tails,
+  with a ripple always running down it and its folds catching the light. One breeze over the
+  map: banners lean slightly downwind and neighbours ripple almost in step. A marching banner's
+  pose follows its world position, so it waves on from its territory to the next without a
+  jump. Every flag picture works, the four colours, three tiers and the neutral flag. The parts
+  are measured from the art, including a swallow-tail whose pole shows only between its tails.
+- **How it costs nothing much:** each picture is baked per size step into a 32-pose loop
+  (rows shifted by quarter pixels, shaded), so a banner is still one blit. The rows that move
+  half a pixel or more between poses are crossfaded into the next pose, so the motion is
+  continuous. Banner density benchmark (57 banners): +0.17 ms a frame, best of 3. In the
+  preview: ~0.4 ms against ~0.16 ms plain at the smallest zoom, every territory bannered.
+- **Loading screen:** "Preparing the banners", one task per size step, builds every pose
+  before play: +0.35 s for a 2-player game (~24 MB; 4 colours ~39 MB), nothing on a later game
+  with the same flags. None is built during play. A missing one would be built within a
+  frame budget, showing the nearest pose meanwhile.
+- **Selected-banner motes:** green light, the selection ring's colour, rising in a fan from
+  the pole base to the banner's top, with a green halo so they read on the parchment and on
+  white cloth (~0.04 ms).
+- **Unchanged:** the click / hover box (the waving banner sits in the same rectangle) and the
+  plain flag as fallback for an unregistered picture.
+- New: `ui/effects/banner_fx_style.py`, `ui/effects/banner_fx_effect.py`,
+  `tools/banner_fx_preview.py`, `tests/test_banner_fx.py`.
+
 ## 2026-10-31 - The test suite: faster, isolated from this PC, no blind spots
 
 Branch `fix/test-suite-speed`. The owner asked for a deep analysis of the full suite (over an

@@ -1172,6 +1172,66 @@ production rays and hero abilities. Select → order → target read as one inpu
 `tests/test_fps_benchmark.py` (`battle_markers_6`, `castle_complete_4`, `negotiator_glow`,
 `turn_banner`, reference `event_fx_none`).
 
+#### ✅ Change the banner wave
+
+**What it is (2026-10-31, banner FX pass):** every army banner on the map waves in a
+breeze, in both map looks. The breeze is constant (owner): always rippling, never still,
+no gusts. The crossbar and the pole stay still. The cloth below the crossbar sways more
+the further down it is, with a ripple always running down to the tails, and its rows
+lighten and darken with their slope. It is one breeze over the whole map: every banner
+leans a little downwind, and neighbours ripple almost in step, a little ahead or behind.
+A marching banner keeps waving from its territory to the next. The selected banner (the
+selected army, or the chosen player's flag in a shared territory) gives off motes of
+light in the selection green, rising from its pole base to its top.
+
+| To change | Where |
+|---|---|
+| Look (speed, sway, ripples, lean, fold light, wind direction / wavelength, motes) | `ui/effects/banner_fx_style.py` (`WAVE`, `WIND`, `MOTES`) |
+| Where banners are drawn | `MapRenderer.draw_territories()` (a garrison at the territory centre, a shared territory's flags) and `draw_animated_armies()` (marching): `banner_wave.draw()`, else the old plain blit |
+| The motes | after the army loop in `draw_territories()` (`banner_motes.draw()` at the selected banner's pole base) |
+| A new flag picture | `register_art()` where it is loaded (`main.py`'s flag loader). An unregistered picture is drawn plain |
+| Preview / tune / measure | `py tools/banner_fx_preview.py` (live: click selects, M marches, W wave on / off, L 2D/3D), `--sheet out.png`, `--bench` |
+
+**Rules:**
+- **Baked, not warped per frame:** each flag picture's cloth is baked once per size step
+  (banner heights rounded to 5 px, 50-75) into a loop of 32 poses: rows shifted by quarter
+  pixels (scaled 4x wide, shifted, scaled down) and shaded. The crossbar and the pole strip
+  are still layers, the pole drawn under the cloth so a swallow-tail's tails pass in front
+  of it. The parts are measured from the art's alpha (`measure_layout()`). Drawing a banner
+  is one blit of its pose, chosen from the clock and the banner's world position
+  (`BannerWave.pose()`).
+- **Crossfaded below `fade_top`:** a pose step moves the tails up to ~0.75 px, which would
+  tick ~9 times a second, so the next pose is blended over the lower rows by how far the
+  breeze is past this one. Only the rows that move half a pixel or more are blended
+  (`_Loop.fade_top`): a faded blit costs ~4 plain ones. Reset with `set_alpha(255)`, not
+  `None`, which switches a frame's per-pixel alpha off (pygame 2.6).
+- **One pose formula for standing and marching banners:** the pose comes from the world
+  position, so a banner leaves and arrives in its territory's pose. The wavelength is
+  long (~1500 world px) so a 0.5 s march drifts ~1.5 poses at most; at 700 px a banner
+  marching with the breeze all but stopped.
+- **Built on the loading screen,** one "Preparing the banners" task per size step
+  (`MapRenderer.prewarm_banners()`): every pose of every picture the game can show (in a
+  campaign all four colours, since missions move pictures between players after loading).
+  The loops are kept for the process, keyed by art name and size, so a later game with
+  the same flags builds nothing. A new game drops other pictures' loops (`keep_only()`):
+  the neutral flag's size follows the first player's colour. Anything still missing in
+  play is built a pose at a time within a per-frame budget, meanwhile the nearest built
+  pose or size is drawn, else the plain flag.
+- **The hit box is unchanged:** frames are padded by the sway and placed with the pole base
+  at the bottom centre of `get_army_banner_rect()`.
+- **Motes** are closed form from the clock (a hash per life), placed to quarter pixels, in
+  a fan from the pole base; a normal-blend green halo keeps their hue on white cloth and
+  the parchment. They light up over 0.15 s once a banner is selected. Their sprites are
+  rebuilt with the other light renderers (~5 ms).
+- **Cost** (1600x850, every territory bannered): the bake ~60 ms a size step for a
+  2-player game's 9 pictures (~0.35 s, ~24 MB; 15 pictures ~39 MB). In play, banners cost
+  ~0.4 ms at the smallest zoom against ~0.16 ms plain; motes ~0.04 ms. The banner density
+  benchmark (57 banners) is +0.17 ms a frame, best of 3.
+
+**Tests:** `tests/test_banner_fx.py`; `TestTheBanners` in `tests/test_loading_preload.py`
+(every pose built while loading, none in play); the banner density benchmarks in
+`tests/test_fps_benchmark.py` prewarm the banners as the loading screen does.
+
 #### ✅ Change the battle screen effects
 
 **What they are (2026-10-28, battle FX pass):** the battle screen (`EnhancedBattleInterface`)
@@ -4782,8 +4842,9 @@ the lobby with AI slots used to earn them.
 2. "Initializing game" - `game.initialize_game()` (GameState, the map picture in the game's look, icons, fonts 8-40, the MapRenderer with its effect prewarms).
 3. "Preparing the battle screen" - `prewarm_battle_screen()`: the report's icons and panel art, and the battle window's own art (centre icon, bar frame, splash pictures).
 4. "Preparing the technology tree" - `UIRenderer.prewarm_tech_icons()` (the tab's first open decoded 21 icons of 1024 px: a 577 ms freeze).
-5. "Preparing the computer players" - imports the AI modules (only when a seat is AI).
-6. `extra_tasks` - a campaign mission's `loading_tasks(game)` (main.py `_mission_loading_tasks()`, both campaign launch paths): the Tutorial's and Mission 2's cloud cover (`campaign_utils.bake_cloud_cover()`), which froze the screen after "Click any key".
+5. "Preparing the banners" - one task per banner size step (6): `MapRenderer.prewarm_banners()` bakes every waving pose of every flag picture the game can show (~60 ms a step for a 2-player game; nothing on a later game with the same flags). See "Change the banner wave".
+6. "Preparing the computer players" - imports the AI modules (only when a seat is AI).
+7. `extra_tasks` - a campaign mission's `loading_tasks(game)` (main.py `_mission_loading_tasks()`, both campaign launch paths): the Tutorial's and Mission 2's cloud cover (`campaign_utils.bake_cloud_cover()`), which froze the screen after "Click any key".
 
 **Adding a preload (multiplayer rules - every PC runs the same tasks):**
 - **Render-only.** A task prepares this PC's pictures, fonts or sounds; it never changes the game state, the network queue or the shared `random` numbers (effects draw from their own `random.Random`). `tests/test_loading_preload.py` checks the random state and the state checksum around every task after "Initializing game", on a custom game and on every PC of a multiplayer session.
