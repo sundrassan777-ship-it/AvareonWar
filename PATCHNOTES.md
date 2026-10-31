@@ -4,6 +4,19 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Main Menu: Quicker Returns, Less Memory
+
+*31 October 2026*
+
+### Improvements
+
+- **Returning to the main menu is quicker.** Coming back from a game or another screen no
+  longer reloads the menu's pictures each time.
+- **The game uses less memory.** The main menu now keeps its pictures only at the size they
+  are shown, and no longer holds on to them while you play.
+
+---
+
 ## Main Menu: New Options, Achievements and Profile Windows
 
 *30 October 2026*

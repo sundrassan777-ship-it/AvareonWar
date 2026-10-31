@@ -2,6 +2,28 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-31 - Main menu memory; the "slow blits" explained
+
+Branch `fix/menu-memory`. During the menu glow-up every blit read ~4x slower once a second
+MainMenu had been built in a process (also on main); the owner asked to look into it once
+the glow-up was merged.
+- **Not the game.** The owner's i5-13420H has 4 P-cores (CPUs 0-7) and 4 E-cores (8-11):
+  a pinned full-screen blit costs ~0.18 ms on a P-core, ~0.42 ms on an E-core - the slow
+  runs were the measuring thread on an E-core. 10 MainMenus in a row (1.4 GB): no slowdown,
+  no page faults; opting out of power throttling (HighQoS) changed nothing. Measuring notes
+  in CODE_GUIDE "Measuring frame cost on this PC".
+- **What it turned up:** every MainMenu held 126 MB of surfaces - the 1024 px originals of
+  its 60 px corner buttons (reward icons 61 MB, hero portraits 31 MB, wishlist / replays /
+  achievements icons, the icon frame, the button art) - main.py kept the last one alive
+  through the whole game, and every return to the menu decoded them again (0.9 s).
+- **Fix:** `utils.surface_utils.load_scaled_cached()` (decoded once per process, only the
+  scaled surface kept, None for a missing file; brightening before scaling, as before) for
+  the corner buttons and the button art; background and logo built once per screen size
+  (`main_menu._MENU_ART`); `main.py` lets the menu go once it has run. A MainMenu now holds
+  ~7 MB besides the screen, a return builds it in ~0.02 s, +7 MB per menu instead of +128;
+  the menu frame is pixel-identical (0 of 1,440,000 pixels differ).
+- Tests `tests/test_menu_memory.py` (5).
+
 ## 2026-10-30 - Main menu: the Profile player card (Phase 3)
 
 Branch `feature/menu-glow-up`, phase 3 of 3 - the last. The Profile panel had a name box, a
