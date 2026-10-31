@@ -86,6 +86,7 @@ from display_utils import set_display_mode, resolve_frame_cap, current_surface
 from ui.effects.turn_announcement_effect import TurnAnnouncementEffect
 from ui.effects.chat_notification_effect import ChatNotificationEffect
 from ui.effects.light_fx import vignette_surface, RisingMotes
+from ui.effects.banner_fx_effect import register_art as register_banner_art
 from global_sound import sound_manager, play_structure_sound  # Global sound manager instance
 from music_manager import music_manager, MUSIC_END_EVENT  # Background music system
 from tutorial_mission import CameraAnimation  # Reuse for Custom Game / Multiplayer start zoom
@@ -1060,6 +1061,8 @@ class Game:
                 try:
                     flag_image = pygame.image.load(flag_path).convert_alpha()
                     self.army_flag_icons[player_index][tier] = flag_image
+                    # Named, so its waving frames follow the picture to any player
+                    register_banner_art(flag_image, f"{color_name}Flag{tier}")
                     logger.debug(f"Loaded flag icon: {color_name}Flag{tier}.png")
                 except pygame.error as e:
                     logger.warning(f"Could not load {flag_path}: {e}. Flag icon will not be displayed for Player {player_index + 1} tier {tier}")
@@ -1076,6 +1079,7 @@ class Game:
                     self.army_flag_icons[-1][tier] = scaled
                 else:
                     self.army_flag_icons[-1][tier] = neutral_flag_base.copy()
+                register_banner_art(self.army_flag_icons[-1][tier], f"NeutralFlag{tier}")
         except pygame.error as e:
             logger.warning(f"Could not load NeutralFlag.png: {e}. Falling back to gray-tinted flags.")
             for tier in range(1, 4):
@@ -1084,6 +1088,7 @@ class Game:
                     gray_flag = source_flag.copy()
                     gray_flag.fill((150, 150, 150, 255), special_flags=pygame.BLEND_RGBA_MULT)
                     self.army_flag_icons[-1][tier] = gray_flag
+                    register_banner_art(gray_flag, f"Grey{player_flag_colors[color_indices[0] if color_indices else 0]}Flag{tier}")
                 else:
                     self.army_flag_icons[-1][tier] = None
 

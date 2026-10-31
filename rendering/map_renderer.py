@@ -37,6 +37,8 @@ from ui.effects.order_fx_style import get_order_fx_style
 from ui.effects.order_fx_effect import OrderLight, OrderArrow
 from ui.effects.marker_fx_style import get_marker_fx_style
 from ui.effects.marker_fx_effect import MarkerLight, MarkerState
+from ui.effects.banner_fx_style import get_banner_fx_style
+from ui.effects.banner_fx_effect import BannerWave, BannerMotes, size_steps as banner_size_steps
 
 logger = get_logger(__name__)
 
@@ -97,6 +99,11 @@ class MapRenderer:
         # Battle and alliance markers and the army overflow warning as light
         # (ui/effects/marker_fx_effect.py), drawn from the same clock
         self._marker_fx_style = get_marker_fx_style(map_data.get_current_look())
+        # The banners waving in a breeze and the selected banner's motes
+        # (ui/effects/banner_fx_effect.py), from the same clock. The wave's frames
+        # are kept for the process and built on the loading screen (prewarm_banners)
+        self._banner_fx_style = get_banner_fx_style(map_data.get_current_look())
+        self.banner_wave = BannerWave(self._banner_fx_style)
         self._build_plot_fx_renderers()
         # Active hero ability casts (HeroAbilityEffect), drawn in two layers
         self.ability_effects = []
@@ -293,6 +300,35 @@ class MapRenderer:
         self.order_light.prewarm(self._plot_radius_range())
         self.marker_light = MarkerLight(self._marker_fx_style)
         self.marker_light.prewarm(self._plot_radius_range())
+        self.banner_motes = BannerMotes(self._banner_fx_style['motes'], self._banner_fx_style['warm_white'])
+        self.banner_motes.prewarm(banner_size_steps())     # ~5 ms
+
+    def banner_pictures(self):
+        """
+        Every flag picture this game can show: the players' (each tier), the
+        neutral flags, and in a campaign all four colours - its missions move the
+        pictures between players after loading (army_flag_icons).
+        """
+        icons = self.game.army_flag_icons
+        players = list(range(self.game.game_state.num_players)) + [-1]
+        if getattr(self.game, 'campaign_map', None) is not None:
+            players = list(icons)
+        pictures = []
+        for player in players:
+            for icon in (icons.get(player) or {}).values():
+                if icon is not None and icon not in pictures:
+                    pictures.append(icon)
+        return pictures
+
+    def prewarm_banners(self, step):
+        """
+        Build the banners' waving frames at one size step (banner_fx_effect.size_steps):
+        a loading screen task, so none is built during play. Frames an earlier game
+        built for this game's pictures are kept; any other picture's are dropped.
+        """
+        pictures = self.banner_pictures()
+        self.banner_wave.keep_only(pictures)
+        self.banner_wave.prewarm(pictures, [step])
 
     def _plot_phase(self, territory, plot_index):
         """A plot's stable animation offset (plot_fx_style.plot_phase), cached."""
@@ -931,9 +967,11 @@ class MapRenderer:
         self.game.screen.blit(cached[0], cached[1])
     def draw_territories(self):
         """Draw territory overlays, markers and ownership colors"""
-        # Once per frame, before any selection ring, reticle, order arrow or marker
+        # Once per frame, before any selection ring, reticle, order arrow, marker or banner
         self.order_light.begin_frame()
         self.marker_light.begin_frame()
+        self.banner_wave.begin_frame()
+        self.banner_motes.begin_frame()
         # H8 fix: Rebuild overlay surfaces if window was resized
         current_size = (self.game.screen.get_width(), self.game.screen.get_height())
         if current_size != self._overlay_size:
@@ -1159,6 +1197,7 @@ class MapRenderer:
         # Old: 39 territories × 3 calls = 117 redundant calculations
         # New: 1 calculation per frame (99% reduction)
         ui_scale = self.game.get_ui_scale_factor()
+        selected_banner = None   # (selection, pole base screen x, y) of the selected banner
 
         for territory, world_center in self.game.scaled_centers.items():
             if territory not in self.game.game_state.territory_owners:
@@ -1239,6 +1278,8 @@ class MapRenderer:
                 circle_y_offset = int(ARMY_CIRCLE_RADIUS * ui_scale * ARMY_CIRCLE_DRAW_LIFT)
                 self.order_light.draw_selection(self._hero_fx_view(), glow_x, glow_y - circle_y_offset,
                                                 circle_radius, self._plot_fx_clock)
+                # Its motes rise from the banner's pole base after the banners are drawn
+                selected_banner = ((territory, selected_player), glow_x, glow_y)
 
             # Draw the destination reticle of the selected army's orders
             # Check if this territory is receiving an order from selected army OR composition UI
@@ -1404,12 +1445,18 @@ class MapRenderer:
                             )
                             banner_left, banner_top, flag_width, flag_height = banner
 
-                            # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
-                            scaled_flag = self.get_cached_scaled_flag(
-                                player_index, flag_tier, flag_icon,
-                                int(flag_width), int(flag_height)
-                            )
-                            self.game.screen.blit(scaled_flag, (int(banner_left), int(banner_top)))
+                            # Waving in the breeze: one blit of a prebuilt frame, its pole
+                            # base on the anchor; the plain flag if it has no frames
+                            if not self.banner_wave.draw(self.game.screen, flag_icon,
+                                                         banner_left + flag_width / 2.0,
+                                                         banner_top + flag_height, flag_height,
+                                                         flag_world_x, flag_world_y, self._plot_fx_clock):
+                                # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
+                                scaled_flag = self.get_cached_scaled_flag(
+                                    player_index, flag_tier, flag_icon,
+                                    int(flag_width), int(flag_height)
+                                )
+                                self.game.screen.blit(scaled_flag, (int(banner_left), int(banner_top)))
 
             else:
                 # SINGLE GARRISON: Draw one flag at territory center
@@ -1431,12 +1478,18 @@ class MapRenderer:
                         )
                         banner_left, banner_top, flag_width, flag_height = banner
 
-                        # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
-                        scaled_flag = self.get_cached_scaled_flag(
-                            garrison_player, flag_tier, flag_icon,
-                            int(flag_width), int(flag_height)
-                        )
-                        self.game.screen.blit(scaled_flag, (int(banner_left), int(banner_top)))
+                        # Waving in the breeze: one blit of a prebuilt frame, its pole
+                        # base on the anchor; the plain flag if it has no frames
+                        if not self.banner_wave.draw(self.game.screen, flag_icon,
+                                                     banner_left + flag_width / 2.0,
+                                                     banner_top + flag_height, flag_height,
+                                                     world_center[0], world_center[1], self._plot_fx_clock):
+                            # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
+                            scaled_flag = self.get_cached_scaled_flag(
+                                garrison_player, flag_tier, flag_icon,
+                                int(flag_width), int(flag_height)
+                            )
+                            self.game.screen.blit(scaled_flag, (int(banner_left), int(banner_top)))
                     else:
                         # Fallback to number if flag icon failed to load
                         # For single garrison, just show total
@@ -1449,6 +1502,14 @@ class MapRenderer:
                     army_text = self.game.font.render(str(total_armies), True, WHITE)
                     text_rect = army_text.get_rect(center=(int(x), int(y)))
                     self.game.screen.blit(army_text, text_rect)
+
+        # The selected banner's motes, rising from its pole base to its top - over
+        # every banner, so a neighbour's doesn't cover them
+        if selected_banner is not None:
+            selection, base_x, base_y = selected_banner
+            self.banner_motes.draw(self.game.screen, selection, base_x, base_y,
+                                   ARMY_CIRCLE_RADIUS * ui_scale * ARMY_FLAG_HEIGHT_RATIO,
+                                   self._plot_fx_clock)
 
         # Seventh pass: Draw animated moving armies (AFTER static armies!)
         # Animated armies also drawn last to appear on top of everything
@@ -1579,14 +1640,19 @@ class MapRenderer:
                         flag_height = int(scaled_army_radius * ARMY_FLAG_HEIGHT_RATIO)
                         flag_width = int(flag_icon.get_width() * (flag_height / flag_icon.get_height()))
 
-                        # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
-                        scaled_flag = self.get_cached_scaled_flag(player, flag_tier, flag_icon, flag_width, flag_height)
+                        # Waving as it marches: the breeze's pose comes from the banner's
+                        # world position, so it carries on from its territory to the next
+                        if not self.banner_wave.draw(self.game.screen, flag_icon, screen_x, screen_y,
+                                                     flag_height, current_x, current_y,
+                                                     self._plot_fx_clock):
+                            # Get cached scaled flag (PERFORMANCE: cached to avoid expensive scaling)
+                            scaled_flag = self.get_cached_scaled_flag(player, flag_tier, flag_icon, flag_width, flag_height)
 
-                        # Position flag with pole centered on circle, flag extends upward
-                        # Move flag up by half its height so the pole (bottom) is at circle center
-                        flag_rect = scaled_flag.get_rect(center=(int(screen_x), int(screen_y)))
-                        flag_rect.y -= flag_height // 2  # Shift up by half height
-                        self.game.screen.blit(scaled_flag, flag_rect)
+                            # Position flag with pole centered on circle, flag extends upward
+                            # Move flag up by half its height so the pole (bottom) is at circle center
+                            flag_rect = scaled_flag.get_rect(center=(int(screen_x), int(screen_y)))
+                            flag_rect.y -= flag_height // 2  # Shift up by half height
+                            self.game.screen.blit(scaled_flag, flag_rect)
                     else:
                         # Fallback to number if flag icon failed to load
                         # Phase 6: Army counts use Cinzel Regular font (already cached in main.py)

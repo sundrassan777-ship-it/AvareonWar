@@ -285,6 +285,16 @@ class LoadingScreen:
             self.game.ui_renderer.prewarm_tech_icons()
         tasks.append(("Preparing the technology tree", _prepare_tech_tree))
 
+        # The banners waving in the breeze: every pose of every flag picture of the
+        # game at every size step, so play builds none (~60 ms a step for a 2-player
+        # game's 9 pictures, ~24 MB; kept for the process, so a later game with the
+        # same flags finds them built)
+        from ui.effects.banner_fx_effect import size_steps
+        for step in size_steps():
+            def _prepare_banners(step=step):
+                self.game.map_renderer.prewarm_banners(step)
+            tasks.append(("Preparing the banners", _prepare_banners))
+
         # The computer players' modules (~4,800 lines): imported on the first AI turn of a
         # sequential game otherwise (~11 ms, a dropped frame at 120 fps)
         if any(self.setup_config.get('player_is_ai') or []):
