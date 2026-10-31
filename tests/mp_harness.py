@@ -45,8 +45,6 @@ import os
 import sys
 import time
 
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-
 import pygame  # noqa: E402
 import pytest  # noqa: E402
 

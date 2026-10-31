@@ -16,9 +16,6 @@ import os
 import pygame
 import pytest
 
-# Headless video driver so pygame.Surface works without a window
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-
 from ui.effects.battle_interface import (  # noqa: E402
     BattleBarVolleyEffect,
     ANIMATION_MIN_DURATION,

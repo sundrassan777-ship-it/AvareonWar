@@ -23,7 +23,6 @@ import types
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 
 import pygame  # noqa: E402
 

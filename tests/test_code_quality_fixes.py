@@ -16,7 +16,6 @@ import os
 import re
 import sys
 import enum
-import inspect
 import logging
 import threading
 import struct
@@ -28,9 +27,6 @@ from pathlib import Path
 # Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
-
-# Set up headless pygame for tests that need it
-os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 
 # ============================================================================
@@ -61,6 +57,39 @@ def read_file_contents(filepath):
         return fh.read()
 
 
+class _ModuleClock:
+    """Stands in for one module's `time`: monotonic() reads this test's clock, everything
+    else is the real time module. A wall-clock reading (time.time(), ~1.7e9) never matches it."""
+
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def monotonic(self):
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+def _game_state():
+    from game_state import GameState
+    gs = GameState(num_players=2, player_is_ai=[False, False], player_ai_difficulty=[1, 1],
+                   skip_setup_phase=True)
+    gs.phase = 'playing'
+    return gs
+
+
+def _garrison(gs, territory, player, count):
+    """`player` owns `territory` with `count` ready Swordsmen (orderable)."""
+    gs.territory_owners[territory] = player
+    units = [gs._make_unit('Swordsman', i, status='ready') for i in range(count)]
+    gs.add_garrison(territory, player, unmoved=count, moved=0, units=units)
+    gs.armies[territory] = count
+    gs.armies_unmoved[territory] = count
+    gs.armies_moved[territory] = 0
+    gs.army_units[territory] = [u.copy() for u in units]
+
+
 # ============================================================================
 # 1. SAFE Changes Tests
 # ============================================================================
@@ -75,24 +104,8 @@ class TestBareExceptRemoval:
                 if bare_except_pattern.match(line):
                     rel_path = os.path.relpath(filepath, PROJECT_ROOT)
                     violations.append(f'{rel_path}:{i}: {line.strip()}')
-        assert len(violations) == 0, f'Found {len(violations)} bare except clause(s)'
-
-    def test_except_clauses_have_specific_types(self):
-        critical_files = [
-            os.path.join(PROJECT_ROOT, 'network', 'client.py'),
-            os.path.join(PROJECT_ROOT, 'network', 'server.py'),
-            os.path.join(PROJECT_ROOT, 'network', 'protocol.py'),
-            os.path.join(PROJECT_ROOT, 'settings_manager.py'),
-        ]
-        bare_except_re = re.compile(r'^\s*except\s*:\s*(#.*)?$', re.MULTILINE)
-        for filepath in critical_files:
-            if not os.path.exists(filepath):
-                continue
-            content = read_file_contents(filepath)
-            for i, line in enumerate(content.splitlines(), 1):
-                if bare_except_re.match(line):
-                    rel = os.path.relpath(filepath, PROJECT_ROOT)
-                    assert False, f'Bare except found in {rel}:{i}'
+        assert len(violations) == 0, (
+            f'Found {len(violations)} bare except clause(s): ' + '; '.join(violations[:10]))
 
 
 class TestLogging:
@@ -198,15 +211,22 @@ class TestMessageTypeEnum:
 
 
 class TestNetworkClient:
-    def test_client_uses_monotonic_time(self):
-        client_path = os.path.join(PROJECT_ROOT, 'network', 'client.py')
-        content = read_file_contents(client_path)
-        assert 'time.monotonic()' in content, 'network/client.py should use time.monotonic()'
-        code_lines = [
-            line for line in content.splitlines()
-            if not line.strip().startswith('#') and 'time.time()' in line
-        ]
-        assert len(code_lines) == 0, f'network/client.py still uses time.time(): {code_lines}'
+    def test_client_timeout_runs_on_the_monotonic_clock(self, monkeypatch):
+        """A silent host times the client out after CONNECTION_TIMEOUT seconds of the
+        monotonic clock, not a second sooner (the wall clock jumps with NTP and DST)."""
+        from network import client as client_module
+        from network_config import CONNECTION_TIMEOUT
+        clock = _ModuleClock()
+        monkeypatch.setattr(client_module, 'time', clock)
+        client = client_module.NetworkClient()
+        client.last_pong_time = clock.now
+        clock.now += CONNECTION_TIMEOUT - 1
+        client._check_timeout()
+        assert not client.disconnected
+        clock.now += 2
+        client._check_timeout()
+        assert client.disconnected
+        assert client.disconnect_reason == "Connection timeout"
 
     def test_client_has_state_lock(self):
         from network.client import NetworkClient
@@ -249,10 +269,23 @@ class TestNetworkServer:
         decoded2 = protocol.decode_message(msg2)
         assert decoded2['seq'] == 1, 'Second message should have seq=1'
 
-    def test_server_uses_monotonic_time(self):
-        server_path = os.path.join(PROJECT_ROOT, 'network', 'server.py')
-        content = read_file_contents(server_path)
-        assert 'time.monotonic()' in content
+    def test_server_timeout_runs_on_the_monotonic_clock(self, monkeypatch):
+        """A client that stops answering is dropped after CONNECTION_TIMEOUT seconds of the
+        monotonic clock, not a second sooner."""
+        from network import server as server_module
+        from network_config import CONNECTION_TIMEOUT
+        clock = _ModuleClock()
+        monkeypatch.setattr(server_module, 'time', clock)
+        server = server_module.NetworkServer()
+        server.clients[1] = server_module.ClientConnection(
+            socket=Mock(), address=('127.0.0.1', 12345), player_index=1,
+            last_pong_time=clock.now, connected=True)
+        clock.now += CONNECTION_TIMEOUT - 1
+        server._check_timeouts()
+        assert 1 in server.clients
+        clock.now += 2
+        server._check_timeouts()
+        assert 1 not in server.clients
 
 
 # ============================================================================
@@ -260,18 +293,13 @@ class TestNetworkServer:
 # ============================================================================
 
 class TestAIPerformance:
-    def test_ai_player_uses_thread_pool(self):
-        ai_player_path = os.path.join(PROJECT_ROOT, 'ai_player.py')
-        content = read_file_contents(ai_player_path)
-        assert 'ThreadPoolExecutor' in content
-        assert 'from concurrent.futures import ThreadPoolExecutor' in content
-
     def test_ai_player_has_thread_pool_attribute(self):
         import pygame
+        from concurrent.futures import ThreadPoolExecutor
         pygame.init()
         from ai_player import AIPlayer
         ai = AIPlayer(player_index=1, difficulty=0)
-        assert hasattr(ai, '_thread_pool')
+        assert isinstance(ai._thread_pool, ThreadPoolExecutor)
         ai.shutdown()
 
     def test_ai_player_has_animation_event(self):
@@ -283,10 +311,36 @@ class TestAIPerformance:
         assert isinstance(ai._animation_done, threading.Event)
         ai.shutdown()
 
-    def test_ai_military_has_precomputed_reachability(self):
-        mil_path = os.path.join(PROJECT_ROOT, 'ai_military.py')
-        content = read_file_contents(mil_path)
-        assert 'precomputed_reachability' in content
+    def test_attack_planner_searches_each_garrison_once(self, monkeypatch):
+        """select_attack_targets() runs the reachability search once per territory with a
+        garrison (H5), not again inside its scoring loop."""
+        import pygame
+        pygame.init()
+        import map_data
+        from ai_player import AIPlayer
+        from ai_military import AttackPlanner
+        gs = _game_state()
+        home = sorted(map_data.get_all_territories())[:3]
+        for territory in home:
+            _garrison(gs, territory, 0, 4)
+        ai = AIPlayer(player_index=0, difficulty=1)
+        planner = AttackPlanner(ai)
+        searched = []
+        real_search = planner.find_reachable_enemies
+
+        def search(game_state, territory, *args, **kwargs):
+            searched.append(territory)
+            return real_search(game_state, territory, *args, **kwargs)
+
+        monkeypatch.setattr(planner, 'find_reachable_enemies', search)
+        try:
+            planner.select_attack_targets(gs)
+        finally:
+            ai.shutdown()
+        garrisoned = [t for t, g in gs.territory_garrisons.items()
+                      if 0 in g and g[0].get('unmoved', 0) + g[0].get('moved', 0) > 0]
+        assert set(home) <= set(garrisoned)
+        assert sorted(searched) == sorted(garrisoned)
 
 
 class TestAICodeQuality:
@@ -304,10 +358,15 @@ class TestAICodeQuality:
         assert hasattr(planner, '_score_building')
         assert callable(planner._score_building)
 
-    def test_ai_economy_score_building_is_used_by_public_api(self):
+    def test_ai_economy_score_building_is_used_by_public_api(self, monkeypatch):
         from ai_economy import BuildingPlanner
-        source = inspect.getsource(BuildingPlanner.score_building_placement)
-        assert '_score_building' in source
+        planner = BuildingPlanner()
+        calls = []
+        monkeypatch.setattr(planner, '_score_building',
+                            lambda *args, **kwargs: calls.append((args, kwargs)) or 42.0)
+        game_state = object()
+        assert planner.score_building_placement('Conda', 'Farm', game_state, 0) == 42.0
+        assert calls == [(('Conda', 'Farm', game_state, 0), {'cache': None})]
 
 
 # ============================================================================
@@ -315,35 +374,62 @@ class TestAICodeQuality:
 # ============================================================================
 
 class TestGameStateRefactor:
-    def test_execute_all_orders_exists(self):
-        # Phase 7: military methods moved to game_state/military.py
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state', 'military.py')
-        content = read_file_contents(gs_path)
-        assert 'def execute_all_orders' in content
+    """The order pipeline split out of execute_all_orders (Phase 7: game_state/military.py)."""
 
-    def test_execute_all_orders_has_helper_methods(self):
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state', 'military.py')
-        content = read_file_contents(gs_path)
-        assert 'def _process_arrivals' in content
+    def test_an_order_into_an_enemy_territory_opens_a_battle_there(self):
+        import map_data
+        gs = _game_state()
+        source = sorted(map_data.get_all_territories())[0]
+        target = map_data.get_neighbors(source)[0]
+        _garrison(gs, source, 0, 5)
+        _garrison(gs, target, 1, 3)
+        unit_ids = [u['id'] for u in gs.territory_garrisons[source][0]['units']]
+        gs.current_player = 0
+        assert gs.add_movement_order_for_units(source, target, unit_ids, player=0)
+        gs.execute_all_orders()
+        # The march (an animation in the game) arrives; _process_arrivals finds the fight
+        while gs.active_animations:
+            march = gs.active_animations.pop()
+            march.completed, march.progress = True, 1.0
+            gs.pending_arrivals.append(march)
+        gs._process_arrivals()
+        assert [battle.territory for battle in gs.pending_battles] == [target]
 
-    def test_format_unit_composition_helper_exists(self):
-        gs_path = os.path.join(PROJECT_ROOT, 'game_state', 'military.py')
-        content = read_file_contents(gs_path)
-        assert 'def _format_unit_composition' in content
+    def test_unit_composition_reads_as_sorted_counts(self):
+        gs = _game_state()
+        assert gs._format_unit_composition({'Swordsman': 3, 'Archer': 2}) == '2 Archer, 3 Swordsman'
+        assert gs._format_unit_composition({}) == 'none'
 
 
 class TestSimultaneousMode:
-    def test_mark_overflow_territory_exists(self):
-        # Check source file directly since sim_debug.py may have syntax issues
-        sim_state_path = os.path.join(PROJECT_ROOT, 'simultaneous', 'sim_state.py')
-        content = read_file_contents(sim_state_path)
-        assert 'def mark_overflow_territory' in content
+    def test_an_overflow_territory_is_disbanded_when_it_expires(self, monkeypatch):
+        import map_data
+        from simultaneous import SimultaneousGameState
+        sim = SimultaneousGameState(_game_state())
+        disbanded = []
+        monkeypatch.setattr(sim, '_disband_excess_armies', disbanded.append)
+        territory = sorted(map_data.get_all_territories())[0]
+        sim.mark_overflow_territory(territory)
+        assert sim.is_overflow_territory(territory)
+        expiry = sim.overflow_territories[territory]
+        assert expiry > sim.round_number
+        sim.round_number = expiry - 1
+        sim._process_overflow_territories()
+        assert disbanded == [] and sim.is_overflow_territory(territory)
+        sim.round_number = expiry
+        sim._process_overflow_territories()
+        assert disbanded == [territory] and not sim.is_overflow_territory(territory)
 
-    def test_order_deduplication_in_phase_manager(self):
-        spm_path = os.path.join(PROJECT_ROOT, 'simultaneous', 'sim_phase_manager.py')
-        content = read_file_contents(spm_path)
-        assert 'dedup' in content.lower()
-        assert 'seen_movement_orders' in content
+    def test_a_repeated_movement_order_runs_once(self):
+        """Only an exact repeat is dropped: the rest of a split army on the same route and
+        another player's order on that route both stay."""
+        from simultaneous import SimPhaseManager, SimultaneousGameState
+        manager = SimPhaseManager(SimultaneousGameState(_game_state()))
+        order = {'type': 'movement', 'from_territory': 'A', 'to_territory': 'B',
+                 'unit_ids': [0, 1], 'army_count': 2}
+        rest = dict(order, unit_ids=[2], army_count=1)
+        merged = manager._merge_orders({0: [order, dict(order), rest], 1: [dict(order)]})
+        assert [(o['player_id'], o['unit_ids']) for o in merged] == [(0, [0, 1]), (0, [2]), (1, [0, 1])]
 
     def test_no_commented_debug_prints_in_simultaneous(self):
         sim_dir = os.path.join(PROJECT_ROOT, 'simultaneous')
@@ -441,14 +527,17 @@ class TestCameraHandler:
             CameraHandler(1000, 800, 1600, 900, 700,
                           initial_zoom=5.0, min_zoom=1.5, max_zoom=4.0)
 
-    def test_clamp_to_bounds_called_in_update_map_dimensions(self):
+    def test_a_smaller_map_pulls_the_camera_back_inside(self):
+        """update_map_dimensions() clamps the offset (M1): after a resolution change the view
+        never shows the black area past the map's edge."""
         import pygame
         pygame.init()
         from input.camera_handler import CameraHandler
         cam = CameraHandler(1000, 800, 1600, 900, 700,
                             initial_zoom=2.0, min_zoom=1.5, max_zoom=4.0)
-        source = inspect.getsource(cam.update_map_dimensions)
-        assert 'clamp_to_bounds' in source
+        cam.offset = [200.0, 450.0]   # the far corner of the 1000x800 map at zoom 2
+        cam.update_map_dimensions(600, 500, 1600, 900, 700)
+        assert cam.offset == [0, 150.0]   # 600x500: no room across, 150 down
 
     def test_clamp_to_bounds_functionality(self):
         import pygame
@@ -463,16 +552,10 @@ class TestCameraHandler:
 
 
 class TestKeyboardHandler:
-    def test_multiplayer_cheat_guard_exists(self):
-        # Game keeps its connection in network_connection / multiplayer_mode. (This test
-        # used to require `network_client` / `network_server` - attributes Game never
-        # has - which is why the guard never fired and cheats worked online.)
-        from input.keyboard_handler import KeyboardHandler
-        source = inspect.getsource(KeyboardHandler._handle_cheat_code)
-        assert 'network_connection' in source
-        assert 'multiplayer_mode' in source
-
     def test_cheat_guard_returns_false_for_multiplayer(self):
+        # Game keeps its connection in network_connection / multiplayer_mode. (The guard
+        # once read `network_client` / `network_server` - attributes Game never has - so it
+        # never fired and cheats worked online.)
         from types import SimpleNamespace
         from input.keyboard_handler import KeyboardHandler
         handler = KeyboardHandler()
@@ -496,16 +579,6 @@ class TestKeyboardHandler:
 # ============================================================================
 
 class TestCodeQualityMeta:
-    def test_zero_bare_excepts_across_all_game_files(self):
-        bare_except_re = re.compile(r'^\s*except\s*:\s*(#.*)?$', re.MULTILINE)
-        count = 0
-        for filepath in get_game_py_files():
-            content = read_file_contents(filepath)
-            for line in content.splitlines():
-                if bare_except_re.match(line):
-                    count += 1
-        assert count == 0, f'Found {count} bare except clause(s) across all game files'
-
     def test_print_statement_count_reasonable(self):
         print_pattern = re.compile(r'(?<!\w)print\s*\(')
         total_prints = 0

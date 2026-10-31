@@ -20,8 +20,6 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-
 import map_data  # noqa: E402  (conftest autouse fixture handles load/cleanup)
 from game_state import GameState, Battle  # noqa: E402
 from config.font_manager import FontManager  # noqa: E402
@@ -387,7 +385,16 @@ class TestSkipButton:
         assert hovered != idle
         assert flashed != idle and flashed != hovered
 
-    def test_nothing_is_built_once_it_shows(self, battle_ui):
+    @pytest.fixture
+    def empty_kit(self):
+        """The battle screen kit as a fresh process has it, before battle_ui builds anything.
+        The kit is shared by the process and empties its label cache when it reaches
+        LABEL_CACHE_MAX, so earlier battles' labels could fill it to the brim and the clear
+        land inside this test (63 of 64 in a full run at one display size)."""
+        from ui import battle_screen_kit
+        battle_screen_kit._shared.clear()
+
+    def test_nothing_is_built_once_it_shows(self, empty_kit, battle_ui):
         """Its sprites and labels are baked once - and kept for the next battle."""
         from ui import battle_screen_kit
         ui, _, _ = battle_ui

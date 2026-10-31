@@ -24,8 +24,6 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-
 import mp_harness as h  # noqa: E402
 from config.font_manager import FontManager  # noqa: E402
 from game_state import Battle, GameState  # noqa: E402

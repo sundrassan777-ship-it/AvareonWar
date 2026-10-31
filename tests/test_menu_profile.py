@@ -23,7 +23,6 @@ import sys
 
 import pytest
 
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pygame  # noqa: E402
@@ -43,11 +42,23 @@ def display():
 
 @pytest.fixture(autouse=True)
 def quiet(monkeypatch):
-    """Counts click sounds and saves; restores the in-memory settings; no Steam name."""
+    """Counts click sounds and saves; restores the in-memory settings; no Steam name.
+    A known profile: one achievement's title and one's portrait earned, everything else
+    locked, so the choices below have both kinds on any PC (they used to follow this PC's
+    config.json, and on a fresh profile they skipped or checked only the locked side)."""
+    from achievement_manager import ACHIEVEMENTS, achievement_manager
     from global_sound import sound_manager
     from settings_manager import settings
     from steam_integration import steam_manager
+    # Every achievement that grants the first title / the first portrait (one reward can
+    # come from several, and the panel reads one of them)
+    wanted = {(kind, next(a['reward_id'] for a in ACHIEVEMENTS if a.get('reward_type') == kind))
+              for kind in ('title', 'icon')}
+    earned = {a['id']: '2026-10-01T12:00:00' for a in ACHIEVEMENTS
+              if {(a.get('reward_type'), a.get('reward_id')), (a.get('reward_type_2'), a.get('reward_id_2'))} & wanted}
     before = dict(settings.settings)
+    settings.settings['earned_achievements'] = earned   # the panel reloads the manager from here
+    achievement_manager.load()
     counts = {'clicks': 0, 'saves': 0}
     monkeypatch.setattr(sound_manager, 'play_ui_click',
                         lambda *a, **k: counts.__setitem__('clicks', counts['clicks'] + 1))
@@ -56,6 +67,7 @@ def quiet(monkeypatch):
     yield counts
     settings.settings.clear()
     settings.settings.update(before)
+    achievement_manager.load()
 
 
 def make_menu(size=(1600, 900)):

@@ -123,18 +123,19 @@ class TestTechResearch:
         territories = list(game.territory_owners.keys())
         game.territory_owners[territories[0]] = 0
 
-        # Find a tech with command_limit effect (tech_1_0 typically)
-        target_tech = None
-        for tech in game.technologies:
-            if tech.get('effect_type') == 'command_limit' and tech['id'] in game.player_tech_available.get(0, set()):
-                target_tech = tech
-                break
-
-        if target_tech is None:
-            pytest.skip("No command_limit tech available")
+        # Improved Command I (command_limit) is not available at the start: research the techs
+        # above it in its column first, each one unlocks the next (this test used to skip)
+        target_tech = next(t for t in game.technologies
+                           if t.get('effect_type') == 'command_limit' and not t.get('requires_castle'))
+        while target_tech['id'] not in game.player_tech_available[0]:
+            step = next(t for t in game.technologies if t['column'] == target_tech['column']
+                        and t['id'] in game.player_tech_available[0])
+            assert game.start_research(step['id']), f"could not research {step['name']}"
+            game.research_in_progress[0]['turns_remaining'] = 1
+            game.finish_research()
 
         old_limit = game.player_command_limit[0]
-        game.start_research(target_tech['id'])
+        assert game.start_research(target_tech['id'])
         game.research_in_progress[0]['turns_remaining'] = 1
         game.finish_research()
 

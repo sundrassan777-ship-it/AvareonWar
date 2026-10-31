@@ -27,6 +27,16 @@ import time
 import traceback
 
 
+# Every exception the simulation catches and prints, so the pytest wrapper can fail on it
+# (they used to be printed only: a crashing AI turn still passed)
+CRASHES = []
+
+
+def _crash(message):
+    print(message)
+    CRASHES.append(message.strip())
+
+
 class StateValidator:
     """Validates game state consistency after each round."""
 
@@ -265,7 +275,7 @@ def make_ai_decisions_sync(sim_state, ai_players, verbose=False):
             sim_state.mark_ready(player_id)
 
         except Exception as e:
-            print(f"  [ERROR] P{player_id+1} planning failed: {e}")
+            _crash(f"  [ERROR] P{player_id+1} planning failed: {e}")
             traceback.print_exc()
             sim_state.mark_ready(player_id)
             orders_per_player[player_id] = 0
@@ -344,7 +354,7 @@ def execute_round_sync(sim_state, phase_manager, ai_players, verbose=False):
                     battles_resolved += 1
 
             except Exception as e:
-                print(f"    [ERROR] Battle resolution failed: {e}")
+                _crash(f"    [ERROR] Battle resolution failed: {e}")
 
         # Also resolve any battles in game state's pending_battles
         while sim_state.gs.pending_battles:
@@ -352,7 +362,7 @@ def execute_round_sync(sim_state, phase_manager, ai_players, verbose=False):
                 sim_state.gs.resolve_battle(0)
                 battles_resolved += 1
             except Exception as e:
-                print(f"    [ERROR] Battle resolution failed: {e}")
+                _crash(f"    [ERROR] Battle resolution failed: {e}")
                 if sim_state.gs.pending_battles:
                     sim_state.gs.pending_battles.pop(0)
 
@@ -362,7 +372,7 @@ def execute_round_sync(sim_state, phase_manager, ai_players, verbose=False):
         return (True, battles_resolved, orders_per_player)
 
     except Exception as e:
-        print(f"  [CRITICAL] Round execution failed: {e}")
+        _crash(f"  [CRITICAL] Round execution failed: {e}")
         traceback.print_exc()
         return (False, 0, {})
 
@@ -405,6 +415,7 @@ def run_2v2_simultaneous_test(num_rounds=40, verbose=True):
     Returns:
         dict with test results
     """
+    CRASHES.clear()
     print("=" * 60)
     print("40-ROUND 2v2 SIMULTANEOUS MODE STRESS TEST")
     print("Teams: P1+P2 (Team 0) vs P3+P4 (Team 1)")
@@ -542,7 +553,7 @@ def run_2v2_simultaneous_test(num_rounds=40, verbose=True):
                 break
 
     except Exception as e:
-        print(f"[CRITICAL ERROR] Test failed: {e}")
+        _crash(f"[CRITICAL ERROR] Test failed: {e}")
         traceback.print_exc()
 
     # Final summary
@@ -644,6 +655,7 @@ def run_2v2_simultaneous_test(num_rounds=40, verbose=True):
         'final_gold': list(base_game.player_gold),
         'total_errors': len(all_errors),
         'errors': all_errors,
+        'crashes': list(CRASHES),
         'round_stats': round_stats
     }
 
@@ -657,6 +669,8 @@ def test_2v2_simultaneous_40turn():
     results = run_2v2_simultaneous_test(num_rounds=10, verbose=False)
     assert results is not None, "Test runner returned None"
     assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
+    assert results['crashes'] == [], (
+        f"The simulation caught {len(results['crashes'])} exception(s): {results['crashes'][:5]}")
     assert results['rounds_completed'] > 0, "No rounds were completed"
     assert sum(results['final_territories']) + results['neutral_territories'] == 57, f"Territory sum != 57: {results['final_territories']} + {results['neutral_territories']} neutral"
 

@@ -27,6 +27,16 @@ import time
 import traceback
 
 
+# Every exception the simulation catches and prints, so the pytest wrapper can fail on it
+# (they used to be printed only: a crashing AI turn still passed)
+CRASHES = []
+
+
+def _crash(message):
+    print(message)
+    CRASHES.append(message.strip())
+
+
 class StateValidator:
     """Validates game state consistency after each turn."""
 
@@ -178,7 +188,7 @@ def execute_ai_turn_sync(ai_player, game):
             try:
                 ai_player._execute_action_internal(game, action_type, action_data)
             except Exception as e:
-                print(f"    [ERROR] Action {action_type} failed: {e}")
+                _crash(f"    [ERROR] Action {action_type} failed: {e}")
 
         # End turn - executes movement orders
         game.next_player()
@@ -203,7 +213,7 @@ def execute_ai_turn_sync(ai_player, game):
                 game.resolve_battle(0)
                 battles_resolved += 1
             except Exception as e:
-                print(f"    [ERROR] Battle resolution failed: {e}")
+                _crash(f"    [ERROR] Battle resolution failed: {e}")
                 if game.pending_battles:
                     game.pending_battles.pop(0)
 
@@ -217,7 +227,7 @@ def execute_ai_turn_sync(ai_player, game):
         return (num_actions, battles_resolved, True)
 
     except Exception as e:
-        print(f"    [CRITICAL] AI turn failed: {e}")
+        _crash(f"    [CRITICAL] AI turn failed: {e}")
         traceback.print_exc()
         try:
             game.next_player()
@@ -264,6 +274,7 @@ def run_2v2_sequential_test(num_turns=40, verbose=True):
     Returns:
         dict with test results
     """
+    CRASHES.clear()
     print("=" * 60)
     print("40-TURN 2v2 SEQUENTIAL MODE STRESS TEST")
     print("Teams: P1+P2 (Team 0) vs P3+P4 (Team 1)")
@@ -410,7 +421,7 @@ def run_2v2_sequential_test(num_turns=40, verbose=True):
                 break
 
     except Exception as e:
-        print(f"[CRITICAL ERROR] Test failed: {e}")
+        _crash(f"[CRITICAL ERROR] Test failed: {e}")
         traceback.print_exc()
 
     # Final summary
@@ -512,6 +523,7 @@ def run_2v2_sequential_test(num_turns=40, verbose=True):
         'final_gold': list(game.player_gold),
         'total_errors': len(all_errors),
         'errors': all_errors,
+        'crashes': list(CRASHES),
         'turn_stats': turn_stats
     }
 
@@ -525,6 +537,8 @@ def test_2v2_sequential_40turn():
     results = run_2v2_sequential_test(num_turns=10, verbose=False)
     assert results is not None, "Test runner returned None"
     assert results.get('total_errors', 1) == 0, f"State validation errors: {results.get('total_errors')}"
+    assert results['crashes'] == [], (
+        f"The simulation caught {len(results['crashes'])} exception(s): {results['crashes'][:5]}")
     assert results['turns_completed'] > 0, "No turns were completed"
     assert sum(results['final_territories']) + results['neutral_territories'] == 57, f"Territory sum != 57: {results['final_territories']} + {results['neutral_territories']} neutral"
 
