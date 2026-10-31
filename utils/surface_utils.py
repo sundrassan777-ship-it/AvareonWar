@@ -59,6 +59,43 @@ def load_cached_image(path, alpha=True):
     return _image_cache[key]
 
 
+# Process-wide cache of images kept only at the size they are shown:
+# (path, size, alpha, brighten) -> Surface or None. The decoded original is dropped
+# at once - the main menu used to keep ~115 MB of 1024 px originals to show 60 px
+# corner buttons, and decoded them again on every return to the menu (0.9 s).
+_scaled_cache = {}
+
+
+def load_scaled_cached(path, size, alpha=True, brighten=0):
+    """
+    An image file scaled to `size` (w, h), decoded once per process. Only the scaled
+    surface is kept, never the original (load_cached_image() keeps originals - use it
+    only for art drawn at many sizes).
+
+    Args:
+        path: Path to the image file
+        size: (width, height) to scale to
+        alpha: True for convert_alpha() (per-pixel transparency), else convert()
+        brighten: Added to every RGB channel before scaling (e.g. the icon frame's +20%,
+            as the main menu always brightened it)
+
+    Returns:
+        pygame.Surface, or None if the file could not be loaded (remembered as well).
+    """
+    size = (max(1, int(size[0])), max(1, int(size[1])))
+    key = (path, size, alpha, brighten)
+    if key not in _scaled_cache:
+        try:
+            image = pygame.image.load(path)
+            image = image.convert_alpha() if alpha else image.convert()
+            if brighten:
+                image.fill((brighten, brighten, brighten), special_flags=pygame.BLEND_RGB_ADD)
+            _scaled_cache[key] = pygame.transform.smoothscale(image, size)
+        except (pygame.error, FileNotFoundError, OSError):
+            _scaled_cache[key] = None
+    return _scaled_cache[key]
+
+
 _cropped_button = []
 
 

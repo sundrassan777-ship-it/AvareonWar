@@ -31,8 +31,13 @@ from display_utils import menu_frame_cap
 from ui.menu_kit import MenuKit, WindowStage
 from ui.options_panel import OptionsPanel
 from ui.profile_panel import ProfilePanel
+from utils.surface_utils import load_scaled_cached
 
 logger = get_logger(__name__)
+
+# The menu's background and logo per screen size (background, logo), kept between
+# MainMenus - one is made every time the game returns to the menu (_load_background)
+_MENU_ART = {}
 
 
 class MainMenu:
@@ -150,14 +155,14 @@ class MainMenu:
         # Hero icons: index 0=question mark, indices 1-8=hero portraits
         self.hero_icon_names = [
             "Default",       # 0: Question mark
-            "Vearen Asford",        # 1: hero_icons[0]
-            "Ethan Nithieln",         # 2: hero_icons[1]
-            "Darius Brennhen",      # 3: hero_icons[2]
-            "Neil Hévilneu",      # 4: hero_icons[3]
-            "Aidam Narn",          # 5: hero_icons[4]
-            "Halon Nextroy",       # 6: hero_icons[5]
-            "Seledra Rennervail",    # 7: hero_icons[6]
-            "Erec Silvyr",        # 8: hero_icons[7]
+            "Vearen Asford",        # 1: HERO_ICON_FILES[0]
+            "Ethan Nithieln",         # 2: HERO_ICON_FILES[1]
+            "Darius Brennhen",      # 3: HERO_ICON_FILES[2]
+            "Neil Hévilneu",      # 4: HERO_ICON_FILES[3]
+            "Aidam Narn",          # 5: HERO_ICON_FILES[4]
+            "Halon Nextroy",       # 6: HERO_ICON_FILES[5]
+            "Seledra Rennervail",    # 7: HERO_ICON_FILES[6]
+            "Erec Silvyr",        # 8: HERO_ICON_FILES[7]
         ]
         # Reward icon display names (keyed by path, modify to customize)
         self.reward_icon_names = {
@@ -189,7 +194,22 @@ class MainMenu:
         self._calculate_layout()
 
     def _load_background(self):
-        """Load and scale background image to fit screen"""
+        """
+        The menu's art: the background (covering the screen) and the logo, built once per
+        screen size and kept between MainMenus (_MENU_ART). The buttons' pictures come at
+        the size they are shown (_calculate_layout, load_scaled_cached). No full-size
+        original is kept: a MainMenu used to hold 126 MB of them (the corner buttons' 1024 px
+        portraits and icons), all of it still alive during a game, and it decoded them
+        again on every return to the menu (0.9 s).
+        """
+        key = (self.width, self.height)
+        art = _MENU_ART.get(key)
+        if art is None:
+            art = _MENU_ART[key] = self._build_menu_art()
+        self.background, self.logo = art
+
+    def _build_menu_art(self):
+        """(background, logo) for this screen size, from the decoded files (dropped after)."""
         try:
             # Load the background image
             bg = pygame.image.load('assets/bg static.jpeg').convert()
@@ -216,20 +236,20 @@ class MainMenu:
             scaled_bg = pygame.transform.smoothscale(bg, (scale_width, scale_height))
 
             # Create surface and center the scaled background
-            self.background = pygame.Surface((self.width, self.height))
+            background = pygame.Surface((self.width, self.height))
 
             # Calculate position to center crop
             x_offset = (scale_width - self.width) // 2
             y_offset = (scale_height - self.height) // 2
 
             # Blit the centered portion
-            self.background.blit(scaled_bg, (-x_offset, -y_offset))
+            background.blit(scaled_bg, (-x_offset, -y_offset))
 
         except Exception as e:
             logger.warning(f"Error loading background: {e}")
             # Fallback to black background
-            self.background = pygame.Surface((self.width, self.height))
-            self.background.fill(BLACK)
+            background = pygame.Surface((self.width, self.height))
+            background.fill(BLACK)
 
         # Load logo
         try:
@@ -244,84 +264,13 @@ class MainMenu:
                 scale_factor = max_logo_width / logo_width
                 new_width = int(logo_width * scale_factor)
                 new_height = int(logo_height * scale_factor)
-                self.logo = pygame.transform.smoothscale(logo, (new_width, new_height))
-            else:
-                self.logo = logo
+                logo = pygame.transform.smoothscale(logo, (new_width, new_height))
 
         except Exception as e:
             logger.warning(f"Error loading logo: {e}")
-            self.logo = None
+            logo = None
 
-        # Load custom menu button background
-        try:
-            button_bg = pygame.image.load('assets/MainMenuButtonNew.png').convert_alpha()
-            # We'll scale this per button in _draw_button based on button dimensions
-            self.button_bg_image = button_bg
-        except Exception as e:
-            logger.warning(f"Error loading menu button background: {e}")
-            self.button_bg_image = None
-
-        # Load icon border for profile button
-        try:
-            icon_border = pygame.image.load('assets/mapicons/IconBorder.png').convert_alpha()
-            # Brighten the border by 20%
-            brightened = icon_border.copy()
-            bright_overlay = pygame.Surface(icon_border.get_size(), pygame.SRCALPHA)
-            bright_overlay.fill((51, 51, 51, 0))
-            brightened.blit(bright_overlay, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-            self.icon_border = brightened
-        except Exception as e:
-            logger.warning(f"Error loading icon border: {e}")
-            self.icon_border = None
-
-        # Load hero icons for profile (original size - will be pre-scaled later)
-        self.hero_icons = []
-        for hero_file in self.HERO_ICON_FILES:
-            try:
-                icon = pygame.image.load(f'assets/heroes/{hero_file}').convert_alpha()
-                self.hero_icons.append(icon)
-            except Exception as e:
-                logger.warning(f"Could not load hero icon {hero_file}: {e}")
-                self.hero_icons.append(None)
-
-        # Load achievement button icon
-        self.achievement_button_icon = None
-        try:
-            ach_icon = pygame.image.load('assets/achievements/GeneralAchievementsIcon.png').convert_alpha()
-            self.achievement_button_icon = ach_icon  # Will be pre-scaled in _calculate_layout
-        except Exception as e:
-            logger.warning(f"Error loading achievement icon: {e}")
-
-        # Load replays button icon (bottom-left corner)
-        self.replays_button_icon = None
-        try:
-            replays_icon = pygame.image.load('assets/ReplaysIcon.png').convert_alpha()
-            self.replays_button_icon = replays_icon  # Will be pre-scaled in _calculate_layout
-        except Exception as e:
-            logger.warning(f"Error loading replays icon: {e}")
-
-        # OPEN BETA ONLY (wishlist.py - remove at full release): the Wishlist button icon
-        # (bottom-left corner), the owner's art; None (it failed to load) = a drawn tile.
-        self.wishlist_button_icon = None
-        if OPEN_BETA:
-            try:
-                self.wishlist_button_icon = pygame.image.load(wishlist.WISHLIST_ICON_PATH).convert_alpha()
-            except (pygame.error, FileNotFoundError) as e:
-                logger.info(f"Wishlist icon not there yet ({e}); drawing a fallback tile")
-
-        # Load reward icons for profile (will be pre-scaled in _calculate_layout)
-        self.reward_icons_raw = {}
-        for icon_path in ALL_REWARD_ICON_PATHS:
-            try:
-                self.reward_icons_raw[icon_path] = pygame.image.load(icon_path).convert_alpha()
-            except Exception as e:
-                logger.warning(f"Could not load reward icon {icon_path}: {e}")
-                self.reward_icons_raw[icon_path] = None
-
-        # Pre-scaled versions for the profile button (created in _calculate_layout); the
-        # Profile window has its own (ui/profile_panel.py, through the menu kit)
-        self.hero_icons_button_scaled = []  # For profile button
-        self.icon_border_button_scaled = None  # For border on profile button
+        return background, logo
 
     def _get_cached_font(self, font_path, size):
         """P8 fix: return cached font, creating it only once per (path, size) pair."""
@@ -359,6 +308,8 @@ class MainMenu:
                 'rect': pygame.Rect(center_x - button_width // 2, y, button_width, button_height)
             }
             y += button_height + button_spacing
+        # The buttons' art at their size, decoded now rather than on the first frame
+        load_scaled_cached('assets/MainMenuButtonNew.png', (button_width, button_height))
 
         # Profile button in top right corner
         profile_button_size = 60
@@ -378,30 +329,21 @@ class MainMenu:
             profile_button_size
         )
 
-        # Pre-scale hero icons for profile button
-        self.hero_icons_button_scaled = []
-        for hero_icon in self.hero_icons:
-            if hero_icon:
-                scaled = pygame.transform.smoothscale(hero_icon, (profile_button_size, profile_button_size))
-                self.hero_icons_button_scaled.append(scaled)
-            else:
-                self.hero_icons_button_scaled.append(None)
+        # The corner buttons' pictures, at the size they are shown - decoded once per
+        # process and kept only that small (load_scaled_cached): the 1024 px originals
+        # used to stay on every MainMenu (~115 MB) and were decoded on every return here
+        button_size = (profile_button_size, profile_button_size)
+        self.hero_icons_button_scaled = [load_scaled_cached(f'assets/heroes/{hero_file}', button_size)
+                                         for hero_file in self.HERO_ICON_FILES]
 
-        # Pre-scale icon borders (2px larger than icon = 1px per side to fully contain icon edges)
-        if self.icon_border:
-            self.icon_border_button_scaled = pygame.transform.smoothscale(
-                self.icon_border, (profile_button_size + 2, profile_button_size + 2)
-            )
-        else:
-            self.icon_border_button_scaled = None
+        # Icon border, 2px larger than icon = 1px per side to fully contain icon edges;
+        # brightened by 20% (+51), as the game's own icon border
+        self.icon_border_button_scaled = load_scaled_cached(
+            'assets/mapicons/IconBorder.png', (profile_button_size + 2, profile_button_size + 2), brighten=51)
 
-        # Pre-scale achievement button icon
-        if self.achievement_button_icon:
-            self.achievement_button_icon_scaled = pygame.transform.smoothscale(
-                self.achievement_button_icon, (profile_button_size, profile_button_size)
-            )
-        else:
-            self.achievement_button_icon_scaled = None
+        # Achievement button icon
+        self.achievement_button_icon_scaled = load_scaled_cached(
+            'assets/achievements/GeneralAchievementsIcon.png', button_size)
 
         # Replays button in bottom-right corner (same size as profile/achievement buttons)
         self.replays_button_rect = pygame.Rect(
@@ -411,13 +353,8 @@ class MainMenu:
             profile_button_size
         )
 
-        # Pre-scale replays button icon
-        if self.replays_button_icon:
-            self.replays_button_icon_scaled = pygame.transform.smoothscale(
-                self.replays_button_icon, (profile_button_size, profile_button_size)
-            )
-        else:
-            self.replays_button_icon_scaled = None
+        # Replays button icon
+        self.replays_button_icon_scaled = load_scaled_cached('assets/ReplaysIcon.png', button_size)
 
         # OPEN BETA ONLY (remove at full release): Wishlist button in the bottom-left
         # corner (the only free corner), one version-text line above the version label
@@ -431,23 +368,19 @@ class MainMenu:
                 profile_button_size,
                 profile_button_size
             )
-            if self.wishlist_button_icon:
-                self.wishlist_button_icon_scaled = pygame.transform.smoothscale(
-                    self.wishlist_button_icon, (profile_button_size, profile_button_size))
+            # The owner's art; None (it failed to load) = a drawn tile
+            self.wishlist_button_icon_scaled = load_scaled_cached(wishlist.WISHLIST_ICON_PATH, button_size)
+            if self.wishlist_button_icon_scaled is None:
+                logger.info("Wishlist icon not there yet; drawing a fallback tile")
             # The navy glow round it, idle and hovered (baked once per size)
             self.wishlist_glow = {
                 hovered: self._wishlist_glow(profile_button_size, alpha)
                 for hovered, alpha in ((False, wishlist.WISHLIST_GLOW_ALPHA),
                                        (True, wishlist.WISHLIST_GLOW_ALPHA_HOVER))}
 
-        # Pre-scale reward icons for profile button display
-        self.reward_icons_button_scaled = {}
-        for path, raw_icon in self.reward_icons_raw.items():
-            if raw_icon:
-                self.reward_icons_button_scaled[path] = pygame.transform.smoothscale(
-                    raw_icon, (profile_button_size, profile_button_size))
-            else:
-                self.reward_icons_button_scaled[path] = None
+        # Reward icons for the profile button (a reward portrait the player chose)
+        self.reward_icons_button_scaled = {path: load_scaled_cached(path, button_size)
+                                           for path in ALL_REWARD_ICON_PATHS}
 
     def run(self):
         """Main menu loop - returns action to take"""
@@ -921,15 +854,10 @@ class MainMenu:
         is_hovered = (self.hovered_button == button_id)
         is_clicked = (self.clicked_button == button_id)
 
-        # Draw custom button background or fallback
-        if self.button_bg_image:
-            # P5 fix: cache pre-scaled button background instead of smoothscale per frame
-            btn_size = (rect.width, rect.height)
-            if not hasattr(self, '_scaled_button_bg_cache') or self._scaled_button_bg_cache is None or self._scaled_button_bg_cache.get_size() != btn_size:
-                self._scaled_button_bg_cache = pygame.transform.smoothscale(
-                    self.button_bg_image, btn_size)
-            scaled_button_bg = self._scaled_button_bg_cache
-
+        # Draw custom button background or fallback (the art at the button's size, decoded
+        # once per process - the 1225 px original is not kept)
+        scaled_button_bg = load_scaled_cached('assets/MainMenuButtonNew.png', rect.size)
+        if scaled_button_bg:
             # Darken the button base, then add brightness for states
             button_surface = scaled_button_bg.copy()
             button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
