@@ -2406,6 +2406,8 @@ python tests/test_2v2_simultaneous_40turn.py
 
 # All 4 tests validate: army limits, garrison consistency, gold, territory ownership
 # Plus AI behavior analysis, building analysis, hero analysis
+# Under pytest (10 turns) they also fail on any exception an AI turn, action or battle
+# raised: the simulations catch and print them to keep going, CRASHES collects them
 ```
 
 ---
@@ -4314,6 +4316,33 @@ UI clicks should only play in menus, not for gameplay actions (selecting territo
 ---
 
 ## Testing Checklist
+
+### Running the test suite
+
+`py -m pytest` runs everything but the FPS benchmarks; `py -m pytest tests/test_x.py` one file.
+`tests/conftest.py` sets every run up the same way:
+
+- **Video driver:** `SDL_VIDEODRIVER=dummy` (`setdefault`, so an exported value wins): no
+  windows and no fullscreen switches, and a file run alone sees the driver the full suite
+  sees. (A test module used to set it while being collected, so the full suite ran on the
+  dummy driver and a single file on real windows with this PC's fullscreen setting.)
+- **Settings:** `settings_manager` reads and writes a temp `config.json` (`config_file` and
+  `get_config_path()` point there, a fresh `SettingsManager()` too). A run starts from the
+  defaults - a fresh install, no achievements, XP or title - plus `TEST_SETTINGS`: windowed
+  1600x900, no vsync, the 2D look. Each test gets the settings back afterwards (values, the
+  dict, the file, the singleton). A test that needs a profile arranges it itself.
+- **Game log:** `utils.logger.LOG_DIR` is a temp folder, so a run keeps the player's own
+  `logs/avareonwar.log`. (A real end-of-game flow can still write `Logs/<id>_<date>.json`:
+  `game_logger` finds its folder from its own file.)
+- **Pictures:** `pygame.image.load` decodes each picture inside the project once per run and
+  hands out copies (same pixels, format, flags, colorkey and alpha as a fresh decode; checked
+  on every picture in `assets/`). A test `Game` decodes about 80 pictures (1.9 s), and some
+  1,300 tests build one. Tests that count decodes wrap the function and still see every call.
+  File objects, a namehint, pictures outside the project (`tmp_path`) go to the real load.
+- **Benchmarks:** `@pytest.mark.benchmark` tests are deselected unless
+  `tests/test_fps_benchmark.py` is named or `-m benchmark` is given. Such a run keeps the
+  real driver and this PC's settings (still saved to the temp file only), as the benchmarks
+  have always measured.
 
 When making changes, test:
 

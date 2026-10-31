@@ -2,6 +2,48 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-31 - The test suite: faster, isolated from this PC, no blind spots
+
+Branch `fix/test-suite-speed`. The owner asked for a deep analysis of the full suite (over an
+hour, ~2,600 tests): overlap, out-of-date tests, a shorter run without losing quality. Tests
+only; no game code changed.
+- **Where the hour went:** fixture setup, not test count. 809 tests build a full `Game` in a
+  fixture (plus the multiplayer harness, 2-3 per test). One build took 2.6 s, 1.9 s of it
+  decoding the same 82 pictures (1024 px icons, the 4096x3072 map) again; run alone, files
+  without an offscreen display also flipped the monitor to fullscreen and back (+3 s).
+- **`tests/conftest.py`:** `pygame.image.load` decodes each project picture once per run and
+  hands out copies (pixel-identical: checked on all 267 pictures in `assets/`), so a build
+  takes 0.7 s. Every run gets the dummy video driver (a test module used to set it while
+  being collected: the full suite ran on it, a single file on real windows). Settings read and
+  write a temp `config.json` started from the defaults in a 1600x900 window, and come back
+  after every test; the game log goes to a temp folder. The owner's `config.json`, game log and
+  `benchmark_results.json` are byte-identical after a full run (they used to be written).
+- **Benchmarks manual-only:** the 64 FPS measurements (`@pytest.mark.benchmark`) are deselected
+  unless `tests/test_fps_benchmark.py` is named or `-m benchmark` is given; such a run keeps the
+  real driver and this PC's settings. The 28 per-file `SDL_VIDEODRIVER` lines went: conftest
+  decides.
+- **Measured:** the same 291 tests (`test_bottom_panel`, `test_sidebar_collapse`,
+  `test_mp_sim_flow`) 962 s -> 268 s. Full suite **11:10** for 2,536 tests, all passing,
+  nothing skipped (over an hour before). An earlier run took 17:52: the PC ran ~2.7x slower for
+  about ten minutes of it (pure-logic files slowed alike), so compare per-file times between
+  runs before trusting a total. The biggest file left is `test_bottom_panel` (170 s, 207 tests
+  each building a `Game`).
+- **Blind spots closed:** the five AI simulations swallowed exceptions (a crashing AI turn
+  printed and passed); they collect them (`CRASHES`) and fail - 40 caught with a planted AI
+  bug. `test_research_effect_applied` always skipped (no command_limit tech at the start): it
+  researches up the column now. The 12 source-text checks in `test_code_quality_fixes.py`
+  became behaviour tests (monotonic timeouts on a fake clock, reachability searched once per
+  garrison, dedup keeps a split army, the camera clamp, ...): each caught its planted bug, and
+  6 of those 8 bugs passed the old text checks (the words were still there). The Profile tests arrange their own titles and portraits
+  (they followed the owner's profile and skipped on a fresh one).
+- **Removed:** `test_ffa_sequential_fixed.py` (a weaker copy of `test_ffa_sequential_40turn.py`),
+  two duplicate bare-except scans, the cheat-guard source check (its behaviour tests stay).
+- **Found on the way:** the skip-button test passed only while earlier battles had built its
+  labels; at one display size the shared kit reached 63 of 64 labels and cleared mid-test. It
+  starts from an empty kit now. Not changed: `mark_overflow_territory()` says "expires at end of
+  NEXT round" but stores `round_number + 2`, checked before the round counter moves (the end
+  of the round after next).
+
 ## 2026-10-31 - The loading screen prepares what play used to wait for
 
 Branch `feature/loading-preload`. The owner asked what could be pre-loaded on the loading
