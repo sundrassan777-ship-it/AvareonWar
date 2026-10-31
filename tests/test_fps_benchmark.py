@@ -6,6 +6,11 @@ Measures rendering performance under various game state conditions.
 Manual execution only (not for CI - hardware-dependent).
 
 Run with: pytest tests/test_fps_benchmark.py -v --tb=short
+
+Every measurement is marked @pytest.mark.benchmark: the full suite deselects them
+(tests/conftest.py) unless this file is named or -m benchmark is given, and a benchmark run
+keeps the real video driver. The two text-cache tests in TestOptimizationRegression measure
+nothing, so they run in every suite.
 """
 
 import pytest
@@ -262,6 +267,7 @@ def game_instance(pygame_init):
     return game
 
 
+@pytest.mark.benchmark
 class TestFPSBaseline:
     """Baseline FPS tests for regression detection."""
 
@@ -311,6 +317,7 @@ class TestFPSBaseline:
 class TestOptimizationRegression:
     """Tests to verify individual optimizations work correctly."""
 
+    @pytest.mark.benchmark
     def test_crop_to_circle_performance(self, pygame_init):
         """crop_to_circle should complete in under 10ms after optimization."""
         from rendering.helpers import DrawingHelpers
@@ -372,6 +379,7 @@ class TestOptimizationRegression:
         print("\n=== Rotated Tab Text Cache ===")
         print(f"  Cached labels: {len(cached)}")
 
+    @pytest.mark.benchmark
     def test_sidebar_slide_fps(self, game_instance):
         """Collapse/expand slide: panel + content redrawn at a new x every frame."""
         import pygame
@@ -389,6 +397,7 @@ class TestOptimizationRegression:
         assert result['avg_fps'] >= 50, f"Sidebar slide FPS too low: {result['avg_fps']:.1f}"
 
 
+@pytest.mark.benchmark
 class TestStressScenarios:
     """Stress tests for late-game performance scenarios."""
 
@@ -473,6 +482,7 @@ class TestStressScenarios:
         assert result['avg_fps'] >= 40, f"Movement arrow FPS too low: {result['avg_fps']:.1f}"
 
 
+@pytest.mark.benchmark
 class TestZoomPerformance:
     """
     Zoom/pan performance — the scenarios the original suite could not detect.
@@ -567,6 +577,7 @@ class TestZoomPerformance:
         assert result['avg_fps'] >= 12, f"Zoom sweep FPS too low: {result['avg_fps']:.1f}"
 
 
+@pytest.mark.benchmark
 class TestProductionGlowPerformance:
     """
     Production light rays on ~100 producing buildings, static and while zooming.
@@ -638,6 +649,7 @@ class TestProductionGlowPerformance:
             f"Zoom-with-glows worst frame too slow: {result['worst_frame_ms']:.1f}ms")
 
 
+@pytest.mark.benchmark
 class TestConstructionDustPerformance:
     """
     Construction dust (2026-10) on ~100 plots under construction, static and while
@@ -750,6 +762,7 @@ def enemy_neighbour(game, territory, player=0):
     return next(t for t, o in sorted(gs.territory_owners.items()) if o not in (-1, player))
 
 
+@pytest.mark.benchmark
 class TestHeroAbilityFxPerformance:
     """
     Hero ability effects (hero ability FX pass, 2026-10): the passive auras shown
@@ -892,6 +905,7 @@ class TestHeroAbilityFxPerformance:
         assert result['worst_frame_ms'] < 100
 
 
+@pytest.mark.benchmark
 class TestOrderFxPerformance:
     """
     Selection rings and order arrows (order FX pass, 2026-10): the ring round a
@@ -970,6 +984,7 @@ class TestOrderFxPerformance:
         assert result['worst_frame_ms'] < 100
 
 
+@pytest.mark.benchmark
 class TestEventFxPerformance:
     """
     Event effects (event FX pass, 2026-10): battle markers, a Keep -> Castle
@@ -1048,6 +1063,7 @@ class TestEventFxPerformance:
         assert result['worst_frame_ms'] < 100
 
 
+@pytest.mark.benchmark
 class TestCrowdedMapPerformance:
     """
     Documents how frame cost scales with on-map entity count, so a future
@@ -1090,6 +1106,7 @@ class TestCrowdedMapPerformance:
         assert result['avg_fps'] >= 25, f"Banners {total} FPS too low: {result['avg_fps']:.1f}"
 
 
+@pytest.mark.benchmark
 class TestMapEastEdgePerformance:
     """
     The zoom range in which the map is narrower than the window.
@@ -1142,6 +1159,7 @@ class TestMapEastEdgePerformance:
             f"East-gap zoom worst frame too slow: {result['worst_frame_ms']:.1f}ms")
 
 
+@pytest.mark.benchmark
 class TestSidebarScenarios:
     """
     Right-sidebar content under load, one scenario per tab (sidebar overhaul baseline).

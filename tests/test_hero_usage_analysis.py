@@ -21,6 +21,16 @@ import traceback
 from collections import defaultdict
 
 
+# Every exception the simulation catches, so the pytest wrapper can fail on it (they used to
+# be swallowed: a crashing AI turn still passed)
+CRASHES = []
+
+
+def _crash(message):
+    print(message)
+    CRASHES.append(message.strip())
+
+
 class HeroTracker:
     """Tracks hero training and ability usage statistics."""
 
@@ -163,6 +173,7 @@ def execute_ai_turn_with_tracking(ai_player, game, tracker):
             try:
                 ai_player._execute_action_internal(game, action_type, action_data)
             except Exception as e:
+                _crash(f"    [ERROR] Action {action_type} failed: {e}")
                 if action_type == 'train_hero':
                     tracker.record_training_failure(player_index, str(e))
 
@@ -187,6 +198,7 @@ def execute_ai_turn_with_tracking(ai_player, game, tracker):
                 game.resolve_battle(0)
                 battles_resolved += 1
             except Exception as e:
+                _crash(f"    [ERROR] Battle resolution failed: {e}")
                 if game.pending_battles:
                     game.pending_battles.pop(0)
 
@@ -196,6 +208,7 @@ def execute_ai_turn_with_tracking(ai_player, game, tracker):
         return (num_actions, hero_actions, True)
 
     except Exception as e:
+        _crash(f"    [CRITICAL] AI turn failed: {e}")
         traceback.print_exc()
         try:
             game.next_player()
@@ -223,6 +236,7 @@ def check_hero_completions(game, tracker, previous_heroes):
 
 def run_hero_analysis(num_turns=40, verbose=True):
     """Run 40-turn test with detailed hero tracking."""
+    CRASHES.clear()
     print("=" * 70)
     print("HERO USAGE ANALYSIS TEST")
     print("=" * 70)
@@ -391,7 +405,8 @@ def run_hero_analysis(num_turns=40, verbose=True):
     return {
         'summary': summary,
         'tracker': tracker,
-        'total_hero_actions': total_hero_actions
+        'total_hero_actions': total_hero_actions,
+        'crashes': list(CRASHES),
     }
 
 
@@ -403,6 +418,8 @@ def test_hero_usage_analysis():
     """Pytest wrapper: Hero training and ability usage analysis, 10 turns."""
     results = run_hero_analysis(num_turns=10, verbose=False)
     assert results is not None, "Test runner returned None"
+    assert results['crashes'] == [], (
+        f"The simulation caught {len(results['crashes'])} exception(s): {results['crashes'][:5]}")
     # Verify the summary was generated with hero tracking data
     summary = results.get('summary', {})
     assert summary is not None, "Summary not generated"

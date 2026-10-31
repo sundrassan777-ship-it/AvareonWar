@@ -41,10 +41,9 @@ def game(pygame_display):
         'player_ai_difficulty': [None, 'Normal'],
     })
     g.game_state.phase = 'playing'
-    # Normalize to a known windowed mode. Game.__init__ honours config.json, which
-    # may be fullscreen; a fullscreen window cannot always be resized afterwards
-    # (notably under SDL_VIDEODRIVER=dummy, which another test module sets at import
-    # time for the whole session).
+    # Normalize to a known windowed mode. A fullscreen window cannot always be resized
+    # afterwards (notably under SDL_VIDEODRIVER=dummy, which tests/conftest.py sets for the
+    # run); the test settings are windowed already, this keeps the file safe on its own.
     g.apply_display_settings(1600, 900, False)
     return g
 

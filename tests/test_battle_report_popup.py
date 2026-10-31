@@ -17,8 +17,6 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-
 import map_data  # noqa: E402  (conftest autouse fixture handles load/cleanup)
 from game_state import GameState  # noqa: E402
 from config.font_manager import FontManager  # noqa: E402

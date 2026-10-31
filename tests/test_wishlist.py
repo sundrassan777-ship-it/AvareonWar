@@ -8,8 +8,6 @@ import types
 
 import pytest
 
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-
 import pygame  # noqa: E402
 
 import wishlist  # noqa: E402
