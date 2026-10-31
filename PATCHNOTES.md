@@ -4,6 +4,25 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Smoother Play: The Loading Screen Prepares More
+
+*31 October 2026*
+
+### Improvements
+
+- **Battles open without a hitch.** The battle screen no longer loads its pictures each time
+  a battle opens, and the victory and defeat splash runs more smoothly.
+- **The Technology tab opens instantly.** Its icons are now prepared on the loading screen
+  instead of the first time you open the tab.
+- **The Tutorial and Mission 2 start straight away.** Their cloud cover is now drawn while the
+  loading screen shows, and much faster - no more pause after you press a key to start.
+- **Quicker game starts.** Custom and multiplayer games load the map picture once instead of
+  two or three times, and a second game in the same session no longer reloads all the sounds.
+- **The Players window no longer slows the game down** while it is open.
+- **Less memory during multiplayer matches.**
+
+---
+
 ## Main Menu: Quicker Returns, Less Memory
 
 *31 October 2026*

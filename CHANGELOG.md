@@ -2,6 +2,46 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-31 - The loading screen prepares what play used to wait for
+
+Branch `feature/loading-preload`. The owner asked what could be pre-loaded on the loading
+screen for load times, FPS and playability - with multiplayer loading correctly on every PC
+as the first priority. Measured best of 3-5 on the owner's PC (PERFORMANCE_ROADMAP
+"First-use work moved to the loading screen"):
+- **Battle window:** every battle decoded `BattleIcon1`, `victoryscrn`, `defeatscrn` and
+  `BattleBar` again (158 ms). The window now shares them, prewarmed by
+  `prewarm_battle_screen()`: the icon and bar frame through `battle_screen_kit` (the map's
+  markers and the planning timer hold the originals already), the splash pictures kept at
+  the 75% hold size (`splash_art()`), so the 2 s hold blits the kept picture (4.9 -> 0.55 ms
+  a frame, pixel-identical); growing and shrinking scale from it (~1-2 levels apart).
+- **Technology tab:** its first open decoded 21 icons of 1024 px (577 ms freeze). A loading
+  task keeps them at the largest button (`prewarm_tech_icons()`, `TECH_BUTTON_MAX`, once per
+  process); the tab scales from them, pixel-identical at 54 px.
+- **Cloud cover (Tutorial, Mission 2):** baked after "Click any key" by a per-pixel Python
+  loop (1.24 s). Now `campaign_utils.bake_cloud_cover()` (one copy for both), run as the
+  missions' loading task (`loading_tasks()`, `LoadingScreen(extra_tasks=...)` from both
+  campaign launch paths), byte-identical and 0.19 s (ARGB reinterpretation +
+  `BLEND_RGBA_MAX`, still no numpy).
+- **Map picture:** `Game.__init__` decoded it for every game, then `initialize_game()` again
+  (229 ms each; three decodes for a multiplayer start). Only a campaign `Game()` decodes it
+  now; the multiplayer menu's `Game` (~50 MB) is let go before the match.
+- **Sounds:** every game start decoded all game sounds again (219 ms, +478 ms for the
+  campaign's voice lines); a later game reuses them and only sets their volume.
+- **Players window:** it opened its fonts from the TTF files and allocated a full-screen
+  surface on every frame (~1.7 ms); both are kept now.
+- **Smaller:** fonts 8-40 (odd sizes too) and map fonts 12-32 prewarmed (~0.1 ms each, so
+  little gain), the AI modules imported on the loading screen when a seat is AI (~11 ms on
+  the first AI turn), Transmission Board art decoded once per process (`board_art()`, both
+  overlay copies), each loading task's duration logged, silent font-prewarm excepts log now.
+- **Multiplayer:** every new task is render-only and runs before the GAME_READY handshake;
+  nothing new is sent and `NETWORK_VERSION` stays 2.0.0. Tests run the tasks on every PC of a
+  multiplayer session: random state and state checksum unchanged, and the PCs stay in step
+  through a turn and a replayed battle. (Found on the way, not changed: the state checksum
+  hashes a unit's missing `order` key and `'order': None` differently, so after a replayed
+  battle the host's and client's checksums differ although the armies are the same - it only
+  feeds the sync log.)
+- Tests `tests/test_loading_preload.py` (20).
+
 ## 2026-10-31 - Main menu memory; the "slow blits" explained
 
 Branch `fix/menu-memory`. During the menu glow-up every blit read ~4x slower once a second
