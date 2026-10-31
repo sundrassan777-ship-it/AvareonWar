@@ -53,6 +53,10 @@ AvareonWar/
 
 **Setup & Menus:**
 - [main_menu.py](main_menu.py) - Main menu with game mode selection
+- [ui/menu_kit.py](ui/menu_kit.py) - The main menu windows' look (bronze window, title plate, switches / arrows / sliders / tabs), `WindowAnim` (drop + fade) and `WindowStage` (menu captured once, fixed parts baked, opaque fades only) - CODE_GUIDE "Main Menu Windows"
+- [ui/options_panel.py](ui/options_panel.py) - The main menu's Options window: Display / Gameplay / Audio tabs over MainMenu's pending `temp_*` values (`build_rows()`)
+- [config/options_hints.py](config/options_hints.py) - The Options window's one-line explanations, edited by the owner
+- [ui/profile_panel.py](ui/profile_panel.py) - The main menu's Profile window, the player card: portrait, name (Steam read-only), title, level + XP, stat tiles (win rates never above 100%), achievements + View (round trip to Achievements), title chips, hero / reward portraits with unlock tooltips
 - [integrated_setup.py](integrated_setup.py) - Setup window with map preview, territory selection
 - [campaign_screen.py](campaign_screen.py) - Campaign screen with background and return button
 - [book_of_tales.py](book_of_tales.py) - Book of Tales scenario picker (opened from the Campaign screen's bottom-right icon; description markup; Launch runs the tale via `main.py` `_TALE_REGISTRY`)
@@ -108,7 +112,7 @@ AvareonWar/
 
 **Achievement System (2 files):**
 - [achievement_manager.py](achievement_manager.py) - Achievement definitions, stat tracking, persistence, checking
-- [achievement_panel.py](achievement_panel.py) - Achievement list panel UI (category filters, search, scrollable list)
+- [achievement_panel.py](achievement_panel.py) - The main menu's Achievements window, the trophy wall (menu kit): summary, chips with counts, search, medal wall (ScrollView), details card
 
 **Campaign Missions:**
 - [tutorial_mission.py](tutorial_mission.py) - Tutorial mission (Lobardia unification)
@@ -155,11 +159,15 @@ AvareonWar/
 - [tools/plot_fx_preview.py](tools/plot_fx_preview.py) - Plot effects preview on the real map (production light rays, construction dust): live window with zoom / 2D-3D look / FPS, `--sheet` contact sheets, `--bench` frame cost
 - [tools/hero_fx_preview.py](tools/hero_fx_preview.py) - Hero ability effects preview on the real map: keys cast each ability at the territory under the mouse (with the Embargo embers / Silence fog they leave behind, C clears), A cycles the passive auras, `--sheet` stills over time (`--only` some effects), `--bench` frame cost
 - [tools/order_fx_preview.py](tools/order_fx_preview.py) - Selection ring / order arrows / destination reticle preview on the real map: click selects, right-click orders, keys add orders, reverse pairs, 2-hops, hover (gold), ally's order (dimmer), order kind (G), cancel (ash-grey fizzle); `--sheet` stills, `--bench` frame cost
+- [tools/menu_preview.py](tools/menu_preview.py) - Main menu windows preview (the real MainMenu, settings never saved): live window, `--sheet DIR` stills of every tab / state at 720p-1080p, `--bench` frame cost
 - [tools/battle_fx_preview.py](tools/battle_fx_preview.py) - Battle screen preview (the real `EnhancedBattleInterface` over the map): keys pick a battle (skirmish / large / close / defender wins) and colours (bright / dark / neutral grey), Space resolves or skips, the mouse clicks the screen's own buttons, S slow motion; `--sheet` stills (setup, a shot exchange, the finale), `--bench` render cost per frame with sprite builds / skips in the fight
 
 **Performance Tests:**
 - [tests/test_fps_benchmark.py](tests/test_fps_benchmark.py) - FPS benchmark suite (run with `py -m pytest tests/test_fps_benchmark.py -v -s`). Covers idle/stress plus zoom, pan, production-glow, construction-dust and entity-density scenarios. Pass `BENCH_LABEL=x BENCH_OUT=file.json` to record results for before/after comparison. **Camera-driven scenarios must change state via `before_frame`** — rendering the same frame N times measures nothing, since every camera-keyed cache hits after frame 1.
 - [tests/test_camera_zoom.py](tests/test_camera_zoom.py) - Smooth (eased) mouse-wheel zoom behaviour
+- [tests/test_menu_achievements.py](tests/test_menu_achievements.py) - Main menu Achievements window (trophy wall): layout at 720p-1440p, every card fits, grouping / earned-first order / chip counts, chips filter, search from any key + Esc clears first, medal click keeps / hover shows, wheel clamped, opens fresh, hover < flash, no clicks until landed, one window at a time, a later MainMenu decodes no icon, no smoothscale in steady frames
+- [tests/test_menu_profile.py](tests/test_menu_profile.py) - Main menu Profile window (player card): layout at 720p-1440p, win rates never above 100%, titles / portraits (locked not chosen, unlock tooltip), name typing (Backspace, 20 max, Enter / Esc end it, then save / cancel), Steam name read-only, Save / Cancel, View → Achievements → back with the choices kept, hover < flash, no clicks until landed, no smoothscale in steady frames
+- [tests/test_menu_options.py](tests/test_menu_options.py) - Main menu Options window: layout at 720p-1440p (rows above the footer, controls in their column, text fits), every control (tabs, switches + their names, arrows, choices, sliders, "Set by VSync", dimmed rows), Apply / Cancel / Esc / Enter / Reset to the settings defaults, unsaved count, hover < flash, no clicks until landed, no smoothscale in steady frames, the alpha-255 trap, the zoom speed range fix
 - [tests/test_resolution_caches.py](tests/test_resolution_caches.py) - Renderer caches must follow `scale_factor` across resolution changes
 - [tests/test_hero_fx.py](tests/test_hero_fx.py) - Hero ability effects: light kit (sprite caches and build budget, rings, territory raster, bead chains), outlines drop shared borders, cue timelines, auras (fade, firefly density by area, no territory lookups per frame), game wiring (aura of the selected hero, Embargo embers from game state, Silence vignette, every active ability shows, AI casts shown once, no cast-time border building)
 - [tests/test_mission_refusal_toasts.py](tests/test_mission_refusal_toasts.py) - "Not yet" toasts for what a mission has locked: the section G texts, the game-state locks (route, building, unit), every tutorial refusal click by click (Damlere, a greyed building, a locked unit, End Turn, tab, technology, plot, cancel, sidebar), story steps and clouded territories silent, toasts below the speech board
@@ -578,7 +586,7 @@ After making code changes, ask yourself:
 - Modify anti-win-farming XP → `player_level.py` (_is_disconnect_farming, DISCONNECT_FARMING_XP_THRESHOLD; AI takeovers count via `gs.ai_takeover_xp`)
 - Add new achievement → `achievement_manager.py` ACHIEVEMENTS list
 - Add achievement reward icon → `achievement_manager.py` ALL_REWARD_ICON_PATHS
-- Change achievement panel UI → `achievement_panel.py`
+- Change achievement panel UI → `achievement_panel.py` (the trophy wall; CODE_GUIDE "Main Menu Windows" → "The Achievements window")
 - Add campaign cutscene → Use `Cutscene_Tool.py`, data in `cutscene_data.json`
 - Modify cutscene player → `cutscene_player.py` (volume = slide volume × `master_volume`, passed by every in-game `CutscenePlayer(...)` call)
 - Change a bottom panel view (End Turn, Territory, empty plot, finished / under-construction plot, Barracks, Keep, Army, Hero) → `main.py` view method using `rendering/bottom_panel_kit.py`; section geometry via `_section_layout()` / `_*_view_layout()`, **never fixed x offsets**; text sized by `kit.font(role)` (panel height, not `ui_scale`). New buttons: `kit.ornate_button()` + rect reset in `draw_bottom_ui()` + `handle_bottom_ui_click()` + a hover/flash test in `tests/test_bottom_panel.py`. See "Bottom panel: sections, kit and views" in CODE_GUIDE.md
@@ -588,7 +596,9 @@ After making code changes, ask yourself:
 - Change sound playback → `sound_manager.py`
 - Change background music → `music_manager.py`
 - Change volume settings → `settings_manager.py` + `music_manager.py`
-- Change volume slider UI → `rendering/ui_renderer.py` (in-game) + `main_menu.py` (main menu)
+- Change volume slider UI → `rendering/ui_renderer.py` (in-game) + `ui/options_panel.py` (main menu)
+- Change the main menu's Options window (rows, tabs, wording) → `ui/options_panel.py` `build_rows()` + `config/options_hints.py`; pending values / Apply / Reset in `main_menu.py`. Add a setting: CODE_GUIDE "Main Menu Windows" → "Add a setting to the Options window"
+- Change the main menu windows' look or their drop → `ui/menu_kit.py` (preview: `py tools/menu_preview.py`). **Never fade a big per-pixel-alpha surface, never `set_alpha(255)`** (`_blit_faded()`), never cache a `Font` across MainMenus. See CODE_GUIDE "Main Menu Windows"
 - Change VSync / FPS limit → `display_utils.py` (`set_display_mode`, `resolve_frame_cap`, `menu_frame_cap`) + `settings_manager.py` keys + both options menus
 - Create/recreate the display window → **always** `display_utils.set_display_mode()`, never `pygame.display.set_mode()` directly (VSync needs `SCALED` + a fresh display, and is silently lost otherwise)
 - Shared campaign utilities → `campaign_utils.py`
@@ -606,12 +616,12 @@ After making code changes, ask yourself:
 - Change Steam friend invites → `steam_integration.py` (can_invite, get_online_friends, invite_friend)
 - Change Steam invite UI → `network/territory_selector.py` (friend picker modal)
 - Change Steam invite auto-connect → `main.py` (`steam_invite_join` action, `+connect` launch param - read by `steam_manager.launch_connect_target()`, Steam's launch command line first, argv as fallback)
-- Change Steam player name behavior → `main_menu.py` `_open_profile()` + `_draw_profile_panel()`
+- Change Steam player name behavior → `main_menu.py` `_open_profile()` + `ui/profile_panel.py` `_draw_name()`
 - Multiplayer lobby → `network/lobby.py`; lobby UI / slot seating / launch → `network/territory_selector.py` (slot = the server's player index, never look players up by name; a client's slot update changes only its own colour / team)
 - Lobby chat → model `network/lobby_chat.py`, panel `ui/lobby_chat_panel.py`, send / receive / System lines in `territory_selector.py` (`send_lobby_chat()`, `_receive_lobby_chat()`), keys via `TerritorySelector.handle_key()`. **Keep it separate from the game's chat** (LOBBY_CHAT, never CHAT_MESSAGE; nothing passed to the game; cleared in `run()`'s `finally`). Sidebar look changes go to the shared helpers in `rendering/sidebar_widgets.py`. See "Lobby chat" in CODE_GUIDE.md
 - Modify player level/XP → `player_level.py`
 - Change level formula/XP amounts → `player_level.py` constants
-- Player level profile UI → `main_menu.py` `_draw_profile_panel()`
+- Player level profile UI → `ui/profile_panel.py` `_draw_level()` (the Profile window: CODE_GUIDE "Main Menu Windows" → "The Profile window")
 - Player level recap screen → `recap_screen.py` XP bar methods
 - Modify replay recording → `replay_recorder.py` `_serialize_state()`
 - Modify replay viewer UI → `replay_viewer.py` - in-game HUD style (TopPanel/BottomBar/RightPanel + GMenuButton), **not** the campaign frames; keep the rect attribute names and hover-ID strings or input breaks silently. See "Replay Viewer HUD" in CODE_GUIDE.md

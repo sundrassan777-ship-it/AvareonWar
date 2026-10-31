@@ -598,7 +598,7 @@ Persistent player level that tracks progression across all game modes. XP is ear
 
 **Halving:** If player's team has more total players than enemy team (e.g. 3v1, 2v1), all XP (actions + bonuses) is halved.
 
-**UI:** Level bar in Profile panel (gold fill, right of player name). Animated XP bar in Recap screen after achievements with level-up particle burst.
+**UI:** Level medallion and XP bar on the Profile card (the XP written out: "204 / 500 XP"). Animated XP bar in Recap screen after achievements with level-up particle burst.
 
 ---
 

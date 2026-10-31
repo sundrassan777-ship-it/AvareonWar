@@ -241,7 +241,7 @@ Max level: 10,000.
 **Eligibility:** Campaign always. Custom/MP only if >=1 enemy exists. No XP on premature quit.
 **Halving:** All XP halved if player's team has more players than enemy team.
 
-**Key Files:** `player_level.py` (logic), `settings_manager.py` (persistence), `main_menu.py` (profile UI), `recap_screen.py` (recap UI)
+**Key Files:** `player_level.py` (logic), `settings_manager.py` (persistence), `ui/profile_panel.py` (profile UI), `recap_screen.py` (recap UI)
 
 ---
 

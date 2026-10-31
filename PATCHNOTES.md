@@ -4,6 +4,42 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Main Menu: New Options, Achievements and Profile Windows
+
+*30 October 2026*
+
+### Improvements
+
+- **A new Profile.** Your profile is now a player card: your portrait, name and title,
+  your level with the experience you need for the next one, your wins in Custom and
+  Multiplayer games, and the achievements you've earned. All titles and portraits are in
+  view to choose from - hover over a locked one to see which achievement unlocks it. View
+  takes you to your achievements and back without losing your unsaved choices.
+
+- **A new Achievements window.** Every achievement is now a medal on one wall, grouped by
+  category: the ones you've earned shine in colour, the rest wait in grey with a padlock -
+  and those you work towards show how far along you are. The top shows how many you've
+  earned, the one you're closest to and your latest. Filter by category (each shows its
+  count) or just start typing to search. Hover over a medal to read it, click to keep it
+  in view: its description, when you earned it or your progress, and its reward.
+
+- **A new Options window.** Options now opens in a larger window with Display, Gameplay
+  and Audio tabs, so every setting is in view without scrolling, and each one has a short
+  line explaining what it does. Switches, arrows and sliders replace the old boxes, and
+  sliders show their value as you drag. Settings that depend on another one (Scroll From,
+  Tooltip Delay) stay in place and dim while they don't apply. The window shows how many
+  changes you haven't applied yet; press Enter to apply or Esc to cancel.
+
+### Fixes
+
+- **Win rates in your profile no longer go above 100%.** Profiles from before games were
+  counted could show more wins than games played.
+- **Zooming out with the mouse wheel no longer jumps straight to the furthest view.** If
+  you had never changed Zoom Speed, a single notch out zoomed all the way out. Zoom Speed
+  now starts at a sensible value, and an out-of-range saved value is reset to it.
+
+---
+
 ## Battle Screen: Preview, Skip Button and Report
 
 *29 October 2026*

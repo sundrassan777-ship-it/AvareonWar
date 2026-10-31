@@ -2,6 +2,98 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-10-30 - Main menu: the Profile player card (Phase 3)
+
+Branch `feature/menu-glow-up`, phase 3 of 3 - the last. The Profile panel had a name box, a
+level bar whose XP showed only on hover, a title dropdown showing 4 of 16 titles at a time,
+a 7-wide icon grid that rescaled every icon and border on every frame, and six grey stat
+lines below its scroll.
+- **The player card** (`ui/profile_panel.py`, on the menu kit): the chosen portrait large,
+  the name typed on the card (a Steam name read-only with a "Steam" tag), the title under
+  it, the level medallion with the XP written out, Custom / Multiplayer stat tiles, the
+  achievements earned with a View button; every title as a chip and every portrait (the
+  default "?", 8 heroes, 16 achievement rewards) in view, locked ones saying on hover which
+  achievement unlocks them. Enter saves, Esc cancels (while typing the name they only end
+  the typing).
+- **View**: the card leaves with its choices kept, the Achievements window opens once it
+  has, closing that brings the card back as it was (`MainMenu._queued_open`,
+  `_return_to_profile`, `_open_profile(keep=True)`).
+- **Fix: win rate above 100%.** The "games finished" counters arrived after the wins
+  counters (b00c2e7), so an older profile had more wins than games - 210 wins of 8 games
+  read 2625%. The games played never count fewer than the wins (`win_line()`).
+- Removed from `main_menu.py`: the old panel, its title dropdown and scroll, the
+  OptionsMenuBG loads of all three panels and the panel icon pre-scaling; added
+  `MainMenu.HERO_ICON_FILES`. The corner Profile button keeps its own pictures.
+- `tools/menu_preview.py --window profile`; tests `tests/test_menu_profile.py` (20).
+
+## 2026-10-30 - Main menu: the Achievements trophy wall (Phase 2)
+
+Branch `feature/menu-glow-up`, phase 2 of 3. The Achievements panel showed two plaque
+rows at a time (AchievementFull.png stretched per row), the categories mixed in "All"
+(sorted by stat key), progress and earned dates only in a hover tooltip, and Esc in its
+search closed the whole window; the category kept from the last visit.
+- **The trophy wall** (`achievement_panel.py`, rewritten on the menu kit): a summary
+  (earned of total with a bar, the closest counted achievement, the latest earned),
+  category chips with counts, a search over names and descriptions (typing anywhere starts
+  it; Esc clears it before it closes the window), every achievement as a medal grouped by
+  category - earned first in colour with a glow, the rest in the game's own order, grey
+  with a padlock and a thin progress bar when counted - scrolling with the wheel, and a
+  details card (hover shows a medal, a click keeps it): description, earned date or
+  progress, the reward with its own icon or the title. Opens fresh each time.
+- **Frame cost**: board, summary and the wall's visible part baked into the WindowStage
+  picture (`static_key()` = chip, search, scroll); ~0.5 ms a settled frame, ~1.1 ms with
+  the mouse over medals, ~3.5 ms a wheel notch at 1600x900.
+- **Icons decoded once**: `MenuKit.preload_icons()` keeps each icon at the sizes the window
+  uses, per screen size, shared between MainMenus - the old panel decoded all 44 1024 px
+  icons on every MainMenu (every return to the menu).
+- Kit: medals, chips, search box, lock badge, selection ring, progress bars; letter-spaced
+  capitals step by each glyph's advance (a Q's / R's tail had left a gap: "CONQ UEST").
+- One menu-kit window at a time: `MainMenu._windows()` / `_end_window_fades()`.
+- `tools/menu_preview.py --window achievements`; tests `tests/test_menu_achievements.py` (19).
+
+## 2026-10-30 - Main menu: the Options window glow-up (Phase 1)
+
+Branch `feature/menu-glow-up`, phase 1 of 3 (Options, then Achievements, then Profile).
+The owner asked to modernize the main menu's Options window and Achievements menu, then
+added the Profile menu; the look was agreed on a mockup page ("Menu Glow-up") built from
+the game's own art: the battle screen's bronze frame, Options in tabs, Achievements as a
+trophy wall, Profile as a player card. The old Options panel was half the screen on
+OptionsMenuBG with grey boxes, green / red buttons, six rows visible and the rest scrolled.
+- **The window** (`ui/options_panel.py`): Display / Gameplay / Audio tabs, a row per
+  setting with a one-line explanation (`config/options_hints.py`) and its control - a
+  switch (its name toggles it too), arrows (Resolution, FPS Limit, Tooltip Delay - the
+  old click-to-cycle boxes and the Resolution dropdown, whose list covered the rows below
+  it, are gone), a two-way choice (Map Look, Scroll From), a slider with its value on the
+  same line (volumes still preview live). Scroll From and Tooltip Delay dim and ignore
+  clicks while their switch is off instead of disappearing; FPS Limit reads "Set by
+  VSync" while VSync is on. The footer counts unsaved changes; Reset to Defaults reads
+  `settings.defaults` instead of its own copy. Enter applies, Esc cancels, Tab / Shift+Tab
+  step the tabs. Hover lights and a click flashes every control.
+- **The kit** (`ui/menu_kit.py`, for all three windows): a bronze-framed window (~76% x
+  90% of the screen at 16:9, scaled by min(W/1600, H/900) so it keeps growing past 900p)
+  under a bronze title plate, the battle screen's ornate buttons (`battle_screen_kit.
+  draw_button(color=)`: a gold label for the primary action), baked sprites shared
+  between MainMenus per screen size (fonts excepted: a Font dies with pygame.quit(), and a
+  shared one crashed the test run with an access violation). Opening: an eased 0.3 s drop
+  and fade with the menu dimming behind (closing 0.22 s).
+- **Frame cost** (`WindowStage`): the first build drew everything every frame - 4 ms a
+  settled frame and 37 ms an opening one, as pygame blits big translucent surfaces slowly
+  (a full-screen vignette at partial alpha 12 ms) and takes a ~12 ms slow path for a
+  surface alpha of exactly 255. Now the menu is captured once (plain and dimmed), the
+  window's fixed parts are baked into that picture, and only opaque surfaces fade, ending
+  halfway through the drop: ~0.5 ms a settled frame, ~2 ms a fading one, ~0.6 ms the rest
+  of the drop at 1600x900; sprites are prewarmed when the menu is made (the cold first
+  frame was 85 ms); a slow frame advances the drop at most 1/60 s.
+- **Fix: zoom speed default.** `camera_zoom_speed` defaulted to 1.1 (settings_manager,
+  main.py) while the slider and the camera expect 0.05-0.30: the camera zooms by
+  (1 +/- speed), so on any config whose player never moved the slider one wheel notch
+  out jumped to the furthest zoom. Default 0.15 (`CAMERA_ZOOM_SPEED`), range
+  `CAMERA_ZOOM_SPEED_MIN` / `MAX`, values out of range reset when settings load.
+- Preview `tools/menu_preview.py` (live / `--sheet` / `--bench`; never saves). Tests
+  `tests/test_menu_options.py` (31); `tests/test_map_look.py` follows the new window.
+- Noticed, not changed (also on main): once a second MainMenu has been built in a
+  process, every blit in it is ~4x slower. To be looked at after the three phases.
+
 ## 2026-10-29 - Battle screen: the preview, its rows and an informed mystery (Phase 3)
 
 Branch `feature/battle-screens`, phase 3, the last. Each side of the battle window showed

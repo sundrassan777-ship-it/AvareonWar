@@ -17,6 +17,7 @@ import json
 import os
 import sys
 
+from config.constants import CAMERA_ZOOM_SPEED, CAMERA_ZOOM_SPEED_MIN, CAMERA_ZOOM_SPEED_MAX
 from utils.logger import get_logger
 logger = get_logger(__name__)
 
@@ -133,7 +134,7 @@ class SettingsManager:
             'tooltips_enabled': True,
             'tooltip_delay_ms': 500,
             'camera_pan_speed': 10.0,
-            'camera_zoom_speed': 1.1,
+            'camera_zoom_speed': CAMERA_ZOOM_SPEED,   # Was 1.1: outside the slider's range
             'show_fps': False,
 
             # Audio settings
@@ -352,6 +353,16 @@ class SettingsManager:
                 f"{self.defaults['edge_scrolling_mode']!r} - expected one of {valid_edge_modes}"
             )
 
+        # Zoom speed must be in the slider's range: the old default 1.1 (saved into every
+        # config.json whose player never moved the slider) made one wheel notch out jump
+        # straight to the furthest zoom (camera zoom factor 1 - 1.1 < 0)
+        zoom_speed = self.settings.get('camera_zoom_speed')
+        if not (CAMERA_ZOOM_SPEED_MIN <= zoom_speed <= CAMERA_ZOOM_SPEED_MAX):
+            self.settings['camera_zoom_speed'] = self.defaults['camera_zoom_speed']
+            corrections.append(
+                f"Reset 'camera_zoom_speed' from {zoom_speed!r} to {CAMERA_ZOOM_SPEED} - expected "
+                f"{CAMERA_ZOOM_SPEED_MIN} to {CAMERA_ZOOM_SPEED_MAX}")
+
         # The map look is one of two values (map_data.map_look)
         if self.settings.get('map_style') not in ('2d', '3d'):
             old_style = self.settings.get('map_style')
@@ -490,7 +501,7 @@ class SettingsManager:
         game.tooltips_enabled = self.get('tooltips_enabled', True)
         game.tooltip_delay_ms = self.get('tooltip_delay_ms', 500)
         game.camera_pan_speed = self.get('camera_pan_speed', 10.0)
-        game.camera_zoom_speed = self.get('camera_zoom_speed', 1.1)
+        game.camera_zoom_speed = self.get('camera_zoom_speed', CAMERA_ZOOM_SPEED)
         game.show_fps = self.get('show_fps', False)
 
         # Audio settings

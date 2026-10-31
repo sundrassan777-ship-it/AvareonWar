@@ -306,7 +306,12 @@ RANDOM_START_ATTEMPTS = 200
 
 CAMERA_SCROLL_SPEED = 15  # Edge scrolling speed (pixels per frame)
 CAMERA_PAN_SPEED = 10  # Keyboard pan speed (pixels per frame)
-CAMERA_ZOOM_SPEED = 0.15  # Zoom increment per scroll
+CAMERA_ZOOM_SPEED = 0.15  # Zoom increment per scroll (the 'camera_zoom_speed' setting's default)
+# The Zoom Speed slider's range (both options menus). The camera zooms by (1 +/- speed) per
+# wheel notch, so a value of 1 or more makes zooming out jump to the furthest zoom - the
+# old default of 1.1 did exactly that; settings_manager resets anything outside the range.
+CAMERA_ZOOM_SPEED_MIN = 0.05
+CAMERA_ZOOM_SPEED_MAX = 0.30
 
 # ===========================================
 # AI DIFFICULTY MODIFIERS

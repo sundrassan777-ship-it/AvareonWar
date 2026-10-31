@@ -1,608 +1,670 @@
 # -*- coding: utf-8 -*-
 # achievement_panel.py
-# Achievement list panel UI for the main menu
+# The main menu's Achievements window - the trophy wall
 
 """
 Achievement Panel
 =================
 
-UI helper class that renders the achievement list panel content inside the
-sliding OptionsMenuBG.png panel in main_menu.py. Handles category filtering,
-name search, scrollable achievement list, and sorting (earned first, clustered by progression with lowest threshold on top).
+The main menu's Achievements window (Menu Glow-up, agreed with the owner 2026-10-30 -
+the "trophy wall"), drawn with the menu windows' kit (ui/menu_kit.py) as the Options
+window is:
+
+- A summary: earned out of total with a bar, the achievement closest to done and the
+  latest one earned.
+- Category chips with counts (All / General / Campaign / Training / Conquest) and a
+  search over names and descriptions (typing anywhere starts it; Esc clears it before it
+  closes the window).
+- Every achievement as a medal, grouped by category: earned ones first (in colour, with
+  a soft glow), the rest in the game's own order (grey, a padlock, and a thin progress
+  bar for the counted ones). The wall scrolls with the mouse wheel.
+- A details card: hovering a medal shows it, clicking one keeps it there - its
+  description, the date it was earned or its progress, and its reward (the reward icon
+  itself, or the title).
+
+The unchanging parts (window, summary, the visible part of the wall) are baked into
+the WindowStage's picture of the menu (again when the filter or the scroll changes);
+the chips, the search, the highlights, the card and Close are drawn every frame.
 """
 
+import math
+from collections import OrderedDict
+
 import pygame
-from config.constants import WHITE
+
 from achievement_manager import achievement_manager, CATEGORIES, CATEGORY_LABELS
+from config.constants import CLICK_FLASH_DURATION_MS
 from global_sound import sound_manager
+from rendering.bottom_panel_kit import GOLD_TEXT
+from rendering.sidebar_widgets import GOLD, GOLD_DARK, GOLD_LIGHT, PARCHMENT, PARCHMENT_DIM
+from ui.battle_screen_kit import ScrollView, SCROLL_BAR, SCROLL_BAR_GAP
+from ui.menu_kit import WindowAnim, PARCHMENT_FAINT
 from utils.logger import get_logger
-from utils.surface_utils import crop_to_opaque
 
 logger = get_logger(__name__)
 
-# Colors
-BRASS_COLOR = (181, 166, 66)
-REWARD_TEXT_COLOR = (200, 180, 100)
-DESCRIPTION_COLOR = (200, 200, 200)
-SEARCH_PLACEHOLDER_COLOR = (150, 150, 150)
+TROPHY_ICON = 'assets/achievements/GeneralAchievementsIcon.png'
+SEARCH_MAX = 30
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+CARD_CACHE_MAX = 16
+PROGRESS_TEXT = (216, 200, 166)
+
+# Layout, px at 1600x900 (window-local; the window is 1220 x 806 there)
+CONTENT_INSET = 28
+SUMMARY_TOP = 44            # Board top to the summary row
+SUMMARY_HEIGHT = 62
+TROPHY = 56
+SUMMARY_GAP = 18
+SUMMARY_BAR = (240, 10)
+TOOLS_TOP = 116             # Board top to the chips and the search
+CHIP_GAP = 10
+SEARCH_SIZE = (250, 38)
+BODY_TOP = 168              # Board top to the wall and the card
+BODY_GAP = 12               # The body's bottom to the footer
+CARD_WIDTH = 372
+CARD_GAP = 22               # Between the wall's scrollbar and the card
+MEDAL = 74
+MEDAL_GAP = (14, 18)        # Across, down (the progress bar sits in the gap below)
+MINI_BAR_HEIGHT = 4
+GROUP_HEAD = 38             # A category heading's height
+GROUP_GAP = 6               # After a category's last row
+CARD_PAD = 22
+CARD_MEDAL = 132
+REWARD_ICON = 44
+FOOTER_GAP = 16
+BUTTON_WIDTH = 230
+
+
+def _date(iso):
+    """'2026-10-12T...' -> '12 Oct 2026' ('' when missing or unreadable)."""
+    try:
+        y, m, d = (int(part) for part in str(iso)[:10].split('-'))
+        return f"{d} {MONTHS[m - 1]} {y}"
+    except (ValueError, IndexError, TypeError):
+        return ""
+
+
+def is_counted(ach):
+    """A counted achievement (Win 10 games...) - progress shows; a one-off does not."""
+    return (ach.get('stat_threshold') or 0) > 1
+
+
+def progress(ach):
+    """Done share of a counted achievement, 0..1."""
+    need = ach.get('stat_threshold') or 0
+    if need <= 0:
+        return 1.0 if ach['earned'] else 0.0
+    return max(0.0, min(1.0, (ach.get('stat_progress') or 0) / float(need)))
+
+
+def progress_text(ach):
+    need = ach.get('stat_threshold') or 0
+    have = min(ach.get('stat_progress') or 0, need)
+    if ach.get('stat_key') == 'player_level':
+        return f"Level {have} / {need}"
+    return f"{have:,} / {need:,}"
+
+
+def rewards(ach):
+    """[('icon', name, path) | ('title', title)] - the primary reward, then a second one."""
+    found = []
+    for kind, rid, name in ((ach.get('reward_type'), ach.get('reward_id'), ach.get('reward_name')),
+                            (ach.get('reward_type_2'), ach.get('reward_id_2'), ach.get('reward_name_2'))):
+        if kind == 'icon' and rid:
+            found.append(('icon', name or "Exclusive Icon", rid))
+        elif kind == 'title' and rid:
+            found.append(('title', rid))
+    return found
 
 
 class AchievementPanel:
-    """
-    Renders achievement list content inside the main menu's sliding panel.
-    Created once by MainMenu.__init__ and reused across panel open/close cycles.
-    """
+    """The Achievements window over a MainMenu (`menu`), drawn with a MenuKit (`kit`)."""
 
-    def __init__(self, screen_width, screen_height, ui_scale):
-        self.screen_width = screen_width
-        self.screen_height = screen_height
-        self.ui_scale = ui_scale
+    title = "Achievements"
 
-        # Filter state
-        self.selected_category = None  # None = show all
+    def __init__(self, menu, kit):
+        self.menu = menu
+        self.kit = kit
+        self.anim = WindowAnim()
+        self.category = 'all'
         self.search_text = ''
         self.search_active = False
-        self.scroll_offset = 0
+        self.selected = None        # The achievement id the card keeps
+        self.hover = None           # ('chip', cat) | ('search',) | ('medal', id) | ('button', 'close')
+        self._flash = None
+        self._layout = None
+        self._grids = {}            # (category, query) -> grid
+        self._cards = OrderedDict()
+        self.card_content_bottom = {}   # id -> how far down its card's content runs
+        self._summary = None
+        self._load()
 
-        # UI element rects (populated during draw, used for click detection)
-        self.ui_elements = {}
+    # ------------------------------------------------------------ data
 
-        # Item height for each achievement row (AchievementFull.png is 1331x649, ~2:1)
-        self.item_height = int(110 * ui_scale)
+    def _load(self):
+        """The achievements as they are now (definition order), and the summary's facts."""
+        self.achievements = achievement_manager.get_all_achievements()
+        self.by_id = {a['id']: a for a in self.achievements}
+        self.earned_count = sum(1 for a in self.achievements if a['earned'])
+        pending = [a for a in self.achievements if not a['earned'] and is_counted(a)]
+        self.closest = max(pending, key=progress) if pending else None
+        earned = [a for a in self.achievements if a['earned']]
+        self.latest = max(earned, key=lambda a: a.get('earned_timestamp') or '') if earned else None
+        self._grids = {}
+        self._cards = OrderedDict()
+        self._summary = None
+        self._layout = None          # The chips' widths follow their counts
 
-        # Fonts
-        try:
-            self.title_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf',
-                                               max(18, int(30 * ui_scale)))
-            self.category_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf',
-                                                  max(12, int(17 * ui_scale)))
-            self.name_font = pygame.font.Font('assets/fonts/Cinzel-SemiBold.ttf',
-                                              max(13, int(18 * ui_scale)))
-            self.desc_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf',
-                                              max(11, int(14 * ui_scale)))
-            self.desc_font_small = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf',
-                                                     max(9, int(11 * ui_scale)))
-            self.reward_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf',
-                                                max(11, int(13 * ui_scale)))
-            self.search_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf',
-                                                max(12, int(16 * ui_scale)))
-            self.close_font = pygame.font.Font('assets/fonts/Cinzel-Regular.ttf',
-                                               max(14, int(20 * ui_scale)))
-        except Exception:
-            self.title_font = pygame.font.SysFont('arial', max(18, int(30 * ui_scale)), bold=True)
-            self.category_font = pygame.font.SysFont('arial', max(12, int(17 * ui_scale)))
-            self.name_font = pygame.font.SysFont('arial', max(13, int(18 * ui_scale)), bold=True)
-            self.desc_font = pygame.font.SysFont('arial', max(11, int(14 * ui_scale)))
-            self.desc_font_small = pygame.font.SysFont('arial', max(9, int(11 * ui_scale)))
-            self.reward_font = pygame.font.SysFont('arial', max(11, int(13 * ui_scale)))
-            self.search_font = pygame.font.SysFont('arial', max(12, int(16 * ui_scale)))
-            self.close_font = pygame.font.SysFont('arial', max(14, int(20 * ui_scale)))
+    def _default_selection(self):
+        pick = self.closest or self.latest or (self.achievements[0] if self.achievements else None)
+        return pick['id'] if pick else None
 
-        # Load and cache assets
-        self._load_assets()
+    def groups(self):
+        """[(category, label, [achievements])] shown under the current chip and search:
+        earned first, then the rest, each part in the game's own order."""
+        query = self.search_text.strip().lower()
+        result = []
+        for cat in CATEGORIES:
+            if self.category not in ('all', cat):
+                continue
+            items = [a for a in self.achievements if a['category'] == cat and
+                     (not query or query in a['name'].lower() or query in a['description'].lower())]
+            if items:
+                items = [a for a in items if a['earned']] + [a for a in items if not a['earned']]
+                result.append((cat, CATEGORY_LABELS.get(cat, cat.title()), items))
+        return result
 
-        # FPS OPTIMIZATION 5A: Cache scaled surfaces (only change on resize)
-        self._cached_category_btn_bg = None
-        self._cached_category_btn_bg_size = (0, 0)
-        self._cached_achievement_bg = None
-        self._cached_achievement_bg_size = (0, 0)
-        self._cached_icon_border = None
-        self._cached_icon_border_size = 0
-        self._cached_scaled_icons = {}  # keyed by (icon_path, icon_size)
+    def chip_counts(self):
+        """[(key, label, 'earned/total')] - All, then each category."""
+        chips = [('all', "All", f"{self.earned_count}/{len(self.achievements)}")]
+        for cat in CATEGORIES:
+            items = [a for a in self.achievements if a['category'] == cat]
+            done = sum(1 for a in items if a['earned'])
+            chips.append((cat, CATEGORY_LABELS.get(cat, cat.title()), f"{done}/{len(items)}"))
+        return chips
 
-    def _load_assets(self):
-        """Load and pre-cache all achievement panel assets."""
-        # AchievementFull.png background for each list item
-        try:
-            self.achievement_bg = pygame.image.load(
-                'assets/achievements/AchievementFull.png').convert_alpha()
-        except Exception:
-            self.achievement_bg = None
+    # ------------------------------------------------------------ open / close
 
-        # CampaignBTN.png for category filter buttons
-        try:
-            raw_btn = pygame.image.load('assets/CampaignBTN.png').convert_alpha()
-            self.category_btn_image = crop_to_opaque(raw_btn, threshold=128)
-        except Exception:
-            self.category_btn_image = None
+    def prewarm(self):
+        """
+        Decode every icon once and build the wall's sprites now (MainMenu creation), not on
+        the window's first frame. MenuKit keeps them per screen size, so a later MainMenu
+        (the game makes one each time it returns to the menu) decodes nothing.
+        """
+        k = self.kit
+        paths = sorted({a['icon'] for a in self.achievements})
+        k.preload_icons(paths, [k.px(MEDAL) - 2, k.px(CARD_MEDAL) - 2])
+        reward_paths = sorted({r[2] for a in self.achievements for r in rewards(a) if r[0] == 'icon'})
+        k.preload_icons(reward_paths, [k.px(REWARD_ICON)])
+        k.preload_icons([TROPHY_ICON], [k.px(TROPHY)])
+        self.selected = self.selected or self._default_selection()
+        scratch = pygame.Surface(self.rect().size, pygame.SRCALPHA)
+        self.draw(scratch, 0, 0)
+        # What the first hovers would otherwise build: lit medals, the card's big medals
+        for a in self.achievements:
+            k.medal(a['icon'], k.px(MEDAL), a['earned'], 'hover')
+            k.medal(a['icon'], k.px(CARD_MEDAL), a['earned'])
+        for key, label, count in self.chip_counts():
+            k.chip(label, count, False, 'hover')
+            k.chip(label, count, True, 'normal')
+        self.kit.backdrop()
 
-        # IconBorder.png for achievement icons
-        try:
-            self.icon_border = pygame.image.load('assets/mapicons/IconBorder.png').convert_alpha()
-        except Exception:
-            self.icon_border = None
-
-        # Pre-load all achievement icons (keyed by icon path)
-        self._icon_cache = {}
-        for ach in achievement_manager.get_all_achievements():
-            path = ach['icon']
-            if path not in self._icon_cache:
-                try:
-                    self._icon_cache[path] = pygame.image.load(path).convert_alpha()
-                except Exception:
-                    self._icon_cache[path] = None
-
-    def reset(self):
-        """Reset panel state when opened."""
-        self.search_text = ''
-        self.search_active = False
-        self.scroll_offset = 0
-        # Reload achievements in case new ones were earned
+    def open(self):
+        """Opened fresh: the latest achievements, All, no search, the top of the wall."""
         achievement_manager.load()
+        self._load()
+        self.category = 'all'
+        self.search_text = ''
+        self.search_active = False
+        self.selected = self._default_selection()
+        self.hover = None
+        self.anim.open()
 
-    def _get_filtered_achievements(self):
-        """Get achievements filtered by category and search, sorted: earned first, then unearned. Within each group, clustered by stat_key with lowest threshold on top."""
-        if self.selected_category:
-            achievements = achievement_manager.get_achievements_by_category(self.selected_category)
+    def close(self):
+        self.search_active = False
+        self.anim.close()
+
+    def update(self, dt):
+        self.anim.update(dt)
+
+    # ------------------------------------------------------------ geometry
+
+    def rect(self):
+        return self.kit.window_rect()
+
+    def layout(self):
+        """Window-local rects (computed once): summary, chips row, search, wall, card, Close."""
+        if self._layout is not None:
+            return self._layout
+        k = self.kit
+        px = k.px
+        w, h = self.rect().size
+        b = k.border()
+        inner_x = b + px(CONTENT_INSET)
+        inner_w = w - 2 * inner_x
+        L = {}
+        L['summary'] = pygame.Rect(inner_x, b + px(SUMMARY_TOP), inner_w, px(SUMMARY_HEIGHT))
+        tools_y = b + px(TOOLS_TOP)
+        sw, sh = px(SEARCH_SIZE[0]), px(SEARCH_SIZE[1])
+        L['search'] = pygame.Rect(inner_x + inner_w - sw, tools_y, sw, sh)
+        L['chips_origin'] = (inner_x, tools_y)
+        btn_w, btn_h = k.button_size(BUTTON_WIDTH)
+        footer_y = h - b - px(FOOTER_GAP) - btn_h
+        L['close'] = pygame.Rect((w - btn_w) // 2, footer_y, btn_w, btn_h)
+        body_top = b + px(BODY_TOP)
+        body_h = footer_y - px(BODY_GAP) - body_top
+        card_w = px(CARD_WIDTH)
+        L['card'] = pygame.Rect(inner_x + inner_w - card_w, body_top, card_w, body_h)
+        gutter = px(SCROLL_BAR_GAP) + max(2, px(SCROLL_BAR))
+        wall_w = inner_w - card_w - px(CARD_GAP) - gutter
+        L['wall'] = pygame.Rect(inner_x, body_top, wall_w, body_h)
+        # Chips, left to right (their widths come from their text)
+        chips = {}
+        x = inner_x
+        for key, label, count in self.chip_counts():
+            sprite = k.chip(label, count, False, 'normal')
+            chips[key] = pygame.Rect(x, tools_y, sprite.get_width(), sprite.get_height())
+            x += sprite.get_width() + px(CHIP_GAP)
+        L['chips'] = chips
+        self._layout = L
+        return L
+
+    def grid(self):
+        """The wall for the current chip and search: its surface, each medal's rect on it
+        and its ScrollView (kept until the filter changes; the scroll lives in the view)."""
+        key = (self.category, self.search_text.strip().lower())
+        grid = self._grids.get(key)
+        if grid is None:
+            grid = self._grids[key] = self._compose_grid()
+        return grid
+
+    def _compose_grid(self):
+        k = self.kit
+        px = k.px
+        L = self.layout()
+        wall = L['wall']
+        pad = k.medal_pad()
+        cell, gx, gy = px(MEDAL), px(MEDAL_GAP[0]), px(MEDAL_GAP[1])
+        usable = wall.w - 2 * pad
+        cols = max(1, (usable + gx) // (cell + gx))
+        groups = self.groups()
+        # Measure, then draw
+        height = 0
+        for _cat, _label, items in groups:
+            rows = math.ceil(len(items) / cols)
+            height += px(GROUP_HEAD) + rows * (cell + gy) + px(GROUP_GAP)
+        surf = pygame.Surface((wall.w, max(1, height)), pygame.SRCALPHA)
+        cells = []
+        y = 0
+        for cat, label, items in groups:
+            self._draw_group_head(surf, y, label, cat)
+            y += px(GROUP_HEAD)
+            for i, a in enumerate(items):
+                x = pad + (i % cols) * (cell + gx)
+                cy = y + (i // cols) * (cell + gy)
+                sprite = k.medal(a['icon'], cell, a['earned'])
+                surf.blit(sprite, (x - pad, cy - pad))
+                if not a['earned'] and is_counted(a):
+                    bar_w = cell - 2 * px(8)
+                    surf.blit(k.bar((bar_w, px(MINI_BAR_HEIGHT)), progress(a)),
+                              (x + px(8), cy + cell + px(4)))
+                cells.append((a['id'], pygame.Rect(x, cy, cell, cell)))
+            y += math.ceil(len(items) / cols) * (cell + gy) + px(GROUP_GAP)
+        view = ScrollView(surf, pygame.Rect(wall), k.scale)
+        return {'surface': surf, 'cells': cells, 'view': view, 'cols': cols}
+
+    def _draw_group_head(self, surf, y, label, cat):
+        """A category's heading on the wall: its name, a fading gold rule, earned / total."""
+        k = self.kit
+        px = k.px
+        pad = k.medal_pad()
+        items = [a for a in self.achievements if a['category'] == cat]
+        done = sum(1 for a in items if a['earned'])
+        name = k.text(label.upper(), 'group', GOLD, spacing=0.14)
+        count = k.text(f"{done} / {len(items)}", 'group_count', PARCHMENT_DIM)
+        cy = y + px(GROUP_HEAD) // 2
+        surf.blit(name, (pad, cy - name.get_height() // 2))
+        right = surf.get_width() - pad
+        surf.blit(count, (right - count.get_width(), cy - count.get_height() // 2))
+        x0 = pad + name.get_width() + px(14)
+        x1 = right - count.get_width() - px(14)
+        span = max(1, x1 - x0)
+        for x in range(x0, x1):
+            t = (x - x0) / float(span)
+            alpha = int(200 * (1.0 - t))
+            surf.fill((GOLD_DARK[0], GOLD_DARK[1], GOLD_DARK[2], alpha), (x, cy, 1, 1))
+
+    # ------------------------------------------------------------ hit-testing
+
+    def _local(self, pos):
+        rect = self.rect()
+        return pos[0] - rect.x, pos[1] - rect.y
+
+    def element_at(self, pos):
+        L = self.layout()
+        x, y = self._local(pos)
+        if L['close'].collidepoint(x, y):
+            return ('button', 'close')
+        for key, r in L['chips'].items():
+            if r.collidepoint(x, y):
+                return ('chip', key)
+        if L['search'].collidepoint(x, y):
+            return ('search',)
+        wall = L['wall']
+        if wall.collidepoint(x, y):
+            grid = self.grid()
+            offset = grid['view'].offset
+            gx, gy = x - wall.x, y - wall.y + offset
+            for ach_id, cell in grid['cells']:
+                if cell.collidepoint(gx, gy):
+                    return ('medal', ach_id)
+        return None
+
+    def medal_rect(self, ach_id):
+        """A medal's rect on screen, or None when it is not on the wall (tests, previews)."""
+        grid = self.grid()
+        wall = self.layout()['wall']
+        rect = self.rect()
+        for cid, cell in grid['cells']:
+            if cid == ach_id:
+                return cell.move(rect.x + wall.x, rect.y + wall.y - grid['view'].offset)
+        return None
+
+    def part_rect(self, element):
+        """A control's rect on screen: ('chip', key), ('search',), ('button', 'close')."""
+        L = self.layout()
+        rect = self.rect()
+        if element[0] == 'chip':
+            r = L['chips'][element[1]]
+        elif element[0] == 'search':
+            r = L['search']
+        elif element[0] == 'button':
+            r = L['close']
         else:
-            achievements = achievement_manager.get_all_achievements()
+            return self.medal_rect(element[1])
+        return r.move(rect.x, rect.y)
 
-        # Apply name search filter
-        if self.search_text.strip():
-            query = self.search_text.strip().lower()
-            achievements = [a for a in achievements if query in a['name'].lower()]
+    def update_hover(self, pos):
+        self.hover = self.element_at(pos) if self.anim.interactive else None
 
-        # Sort: earned first, then unearned.
-        # Within each group, cluster by stat_key and sort by stat_threshold ascending
-        # (lowest requirement on top within a progression cluster).
-        earned = [a for a in achievements if a['earned']]
-        unearned = [a for a in achievements if not a['earned']]
-        earned.sort(key=lambda a: (a.get('stat_key', ''), a.get('stat_threshold', 0)))
-        unearned.sort(key=lambda a: (a.get('stat_key', ''), a.get('stat_threshold', 0)))
+    # ------------------------------------------------------------ input
 
-        return earned + unearned
+    def _click(self, element):
+        sound_manager.play_ui_click()
+        self._flash = (element, pygame.time.get_ticks() + CLICK_FLASH_DURATION_MS)
 
-    def handle_click(self, pos, panel_x, panel_y, panel_w, panel_h):
-        """Handle mouse click inside the panel. Returns True if click was consumed."""
-        # Category buttons
-        for cat_id, elem in self.ui_elements.items():
-            if cat_id.startswith('cat_') and elem['rect'].collidepoint(pos):
-                sound_manager.play_ui_click()
-                cat = cat_id[4:]  # Remove 'cat_' prefix
-                if self.selected_category == cat:
-                    self.selected_category = None  # Deselect
-                else:
-                    self.selected_category = cat
-                self.scroll_offset = 0
-                return True
+    def handle_click(self, pos):
+        """A left click: 'close' for MainMenu, else None."""
+        if not self.anim.interactive:
+            return None
+        element = self.element_at(pos)
+        self.search_active = bool(element and element[0] == 'search')
+        if element is None:
+            return None
+        if element[0] == 'button':
+            self._click(element)
+            return 'close'
+        if element[0] == 'chip':
+            if element[1] != self.category:
+                self._click(element)
+                self.set_category(element[1])
+        elif element[0] == 'medal':
+            if element[1] != self.selected:
+                self._click(element)
+                self.selected = element[1]
+        return None
 
-        # Search input
-        if 'search_input' in self.ui_elements:
-            if self.ui_elements['search_input']['rect'].collidepoint(pos):
-                self.search_active = True
-                return True
-            else:
-                self.search_active = False
+    def set_category(self, category):
+        self.category = category
+        self.grid()['view'].offset = 0
+        self._keep_selection_visible()
 
-        # Close button
-        if 'close_button' in self.ui_elements:
-            if self.ui_elements['close_button']['rect'].collidepoint(pos):
-                sound_manager.play_ui_click()
-                return 'close'
+    def _keep_selection_visible(self):
+        ids = [cid for cid, _cell in self.grid()['cells']]
+        if ids and self.selected not in ids:
+            self.selected = ids[0]
 
-        return True  # Consume click inside panel to prevent passthrough
+    def wheel(self, dy):
+        """Mouse wheel (+1 up, -1 down): scroll the wall."""
+        if self.anim.interactive:
+            self.grid()['view'].wheel(dy)
 
-    def handle_scroll(self, direction, max_scroll):
-        """Handle mouse wheel for scrolling. direction: 1=up, -1=down."""
-        scroll_step = int(40 * self.ui_scale)
-        self.scroll_offset -= direction * scroll_step
-        self.scroll_offset = max(0, min(self.scroll_offset, max_scroll))
-
-    def handle_keydown(self, event):
-        """Handle keyboard input for search field."""
-        if not self.search_active:
-            return False
-        if event.key == pygame.K_BACKSPACE:
-            self.search_text = self.search_text[:-1]
-            self.scroll_offset = 0
-            return True
-        elif event.key == pygame.K_RETURN or event.key == pygame.K_ESCAPE:
+    def handle_escape(self):
+        """Esc: clears the search (True), else lets MainMenu close the window (False)."""
+        if self.search_text or self.search_active:
+            self.search_text = ''
             self.search_active = False
-            return True
-        elif len(self.search_text) < 30 and event.unicode.isprintable():
-            self.search_text += event.unicode
-            self.scroll_offset = 0
+            self._after_search()
             return True
         return False
 
-    def draw(self, screen, panel_x, panel_y, panel_w, panel_h, hovered_element=None):
-        """
-        Render all panel content at the given position.
-        Called by main_menu._draw_achievement_panel() each frame.
-        """
-        self.ui_elements = {}
+    def handle_key(self, event):
+        """Typing searches (it starts the search from anywhere); Enter leaves the field."""
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self.search_active = False
+        elif event.key == pygame.K_BACKSPACE:
+            if self.search_active and self.search_text:
+                self.search_text = self.search_text[:-1]
+                self._after_search()
+        elif event.unicode and event.unicode.isprintable() and len(self.search_text) < SEARCH_MAX:
+            if event.unicode == ' ' and not self.search_active:
+                return
+            self.search_active = True
+            self.search_text += event.unicode
+            self._after_search()
 
-        # Content area inside ornate border (asymmetric padding for OptionsMenuBG.png)
-        pad_left = int(130 * self.ui_scale)
-        pad_right = int(110 * self.ui_scale)
-        pad_top = int(130 * self.ui_scale)
-        pad_bottom = int(110 * self.ui_scale)
+    def _after_search(self):
+        self.grid()['view'].offset = 0
+        self._keep_selection_visible()
 
-        content_x = panel_x + pad_left
-        content_y = panel_y + pad_top
-        content_w = panel_w - pad_left - pad_right
-        content_h = panel_h - pad_top - pad_bottom
+    def _state(self, element):
+        if self._flash and self._flash[0] == element and pygame.time.get_ticks() < self._flash[1]:
+            return 'flash'
+        if self.hover == element:
+            return 'hover'
+        return 'normal'
 
-        y = content_y
+    # ------------------------------------------------------------ drawing (WindowStage)
 
-        # --- Title ---
-        title_surf = self.title_font.render("Achievements", True, WHITE)
-        title_rect = title_surf.get_rect(centerx=panel_x + panel_w // 2, top=y)
-        screen.blit(title_surf, title_rect)
-        y += title_surf.get_height() + int(15 * self.ui_scale)
+    def static_key(self):
+        grid = self.grid()
+        return (self.category, self.search_text.strip().lower(), grid['view'].offset)
 
-        # --- Category filter buttons ---
-        y = self._draw_category_buttons(screen, content_x, y, content_w, hovered_element)
-        y += int(12 * self.ui_scale)
+    def draw(self, surface, ox, oy):
+        self.draw_static(surface, ox, oy)
+        self.draw_dynamic(surface, ox, oy)
 
-        # --- Search input ---
-        y = self._draw_search_input(screen, content_x, y, content_w, hovered_element)
-        y += int(12 * self.ui_scale)
-
-        # --- Close button at bottom ---
-        close_btn_w = int(150 * self.ui_scale)
-        close_btn_h = int(40 * self.ui_scale)
-        close_btn_x = panel_x + (panel_w - close_btn_w) // 2
-        close_btn_y = content_y + content_h - close_btn_h
-        close_rect = pygame.Rect(close_btn_x, close_btn_y, close_btn_w, close_btn_h)
-
-        # Draw close button
-        is_hovered = (hovered_element == 'close_button')
-        from utils.colors import lighten_color
-        close_bg = lighten_color((120, 50, 50), 0.2) if is_hovered else (120, 50, 50)
-        pygame.draw.rect(screen, close_bg, close_rect, border_radius=8)
-        pygame.draw.rect(screen, (150, 150, 150), close_rect, 2, border_radius=8)
-        close_text = self.close_font.render("Close", True, WHITE)
-        close_text_rect = close_text.get_rect(center=close_rect.center)
-        screen.blit(close_text, close_text_rect)
-        self.ui_elements['close_button'] = {'rect': close_rect}
-
-        # --- Achievement list (scrollable area between search and close button) ---
-        list_top = y
-        list_bottom = close_btn_y - int(10 * self.ui_scale)
-        list_height = list_bottom - list_top
-        if list_height > 0:
-            self._draw_achievement_list(screen, content_x, list_top, content_w, list_height, hovered_element)
-
-    def _draw_category_buttons(self, screen, x, y, available_width, hovered_element):
-        """Draw 4 category filter buttons in a row. Returns y after buttons."""
-        btn_spacing = int(8 * self.ui_scale)
-        btn_count = len(CATEGORIES)
-        btn_width = (available_width - (btn_count - 1) * btn_spacing) // btn_count
-
-        # Compute button height from CampaignBTN.png aspect ratio
-        if self.category_btn_image:
-            img_w, img_h = self.category_btn_image.get_size()
-            btn_height = int(btn_width * (img_h / img_w))
+    def draw_static(self, surface, ox, oy):
+        """Board, title plate, summary and the wall's visible part."""
+        k = self.kit
+        L = self.layout()
+        w, h = self.rect().size
+        surface.blit(k.window((w, h)), (ox, oy))
+        banner = k.banner(self.title)
+        surface.blit(banner, (ox + (w - banner.get_width()) // 2, oy - k.banner_overhang()))
+        summary = self._summary_surface()
+        surface.blit(summary, (ox + L['summary'].x, oy + L['summary'].centery - summary.get_height() // 2))
+        grid = self.grid()
+        wall = L['wall'].move(ox, oy)
+        if grid['cells']:
+            view = grid['view']
+            view.rect = wall
+            view.draw(surface)
         else:
-            btn_height = int(40 * self.ui_scale)
+            query = self.search_text.strip()
+            text = k.text(f"No achievement matches “{query}”" if query else "Nothing here yet",
+                          'empty', PARCHMENT_DIM)
+            surface.blit(text, text.get_rect(center=(wall.centerx, wall.y + wall.h // 3)))
 
-        for i, cat_id in enumerate(CATEGORIES):
-            btn_x = x + i * (btn_width + btn_spacing)
-            btn_rect = pygame.Rect(btn_x, y, btn_width, btn_height)
+    def draw_dynamic(self, surface, ox, oy):
+        """Chips, search, the hovered / chosen medal, the card, Close."""
+        k = self.kit
+        L = self.layout()
+        for key, label, count in self.chip_counts():
+            r = L['chips'][key].move(ox, oy)
+            on = key == self.category
+            surface.blit(k.chip(label, count, on, 'normal' if on else self._state(('chip', key))), r.topleft)
+        self._draw_search(surface, L['search'].move(ox, oy))
 
-            is_selected = (self.selected_category == cat_id)
-            is_hovered = (hovered_element == f'cat_{cat_id}')
-
-            if self.category_btn_image:
-                # FPS OPTIMIZATION 5A: Cache scaled category button background
-                btn_size = (btn_width, btn_height)
-                if self._cached_category_btn_bg is None or self._cached_category_btn_bg_size != btn_size:
-                    self._cached_category_btn_bg = pygame.transform.smoothscale(
-                        self.category_btn_image, btn_size)
-                    self._cached_category_btn_bg_size = btn_size
-                scaled_bg = self._cached_category_btn_bg
-                button_surface = scaled_bg.copy()
-
-                if is_selected:
-                    button_surface.fill((140, 140, 140, 255), special_flags=pygame.BLEND_RGBA_MULT)
-                else:
-                    button_surface.fill((100, 100, 100, 255), special_flags=pygame.BLEND_RGBA_MULT)
-
-                if is_hovered:
-                    button_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
-
-                screen.blit(button_surface, btn_rect)
-            else:
-                # Fallback solid color
-                color = (100, 130, 180) if is_selected else (60, 80, 120)
-                pygame.draw.rect(screen, color, btn_rect, border_radius=5)
-
-            # Button text
-            label = CATEGORY_LABELS[cat_id]
-            text_surf = self.category_font.render(label, True, WHITE)
-            text_rect = text_surf.get_rect(center=btn_rect.center)
-            screen.blit(text_surf, text_rect)
-
-            self.ui_elements[f'cat_{cat_id}'] = {'rect': btn_rect}
-
-        return y + btn_height
-
-    def _draw_search_input(self, screen, x, y, width, hovered_element):
-        """Draw the name search input field. Returns y after input."""
-        input_height = int(32 * self.ui_scale)
-        input_rect = pygame.Rect(x, y, width, input_height)
-
-        # Draw input background (black)
-        is_active = self.search_active
-        input_bg = (30, 30, 30) if is_active else (20, 20, 20)
-        pygame.draw.rect(screen, input_bg, input_rect, border_radius=5)
-        pygame.draw.rect(screen, WHITE if is_active else (100, 100, 100), input_rect, 2, border_radius=5)
-
-        # Draw text or placeholder
-        if self.search_text:
-            text_surf = self.search_font.render(self.search_text, True, WHITE)
-        elif not is_active:
-            text_surf = self.search_font.render("Search...", True, SEARCH_PLACEHOLDER_COLOR)
-        else:
-            text_surf = self.search_font.render("", True, WHITE)
-
-        text_rect = text_surf.get_rect(midleft=(input_rect.left + 10, input_rect.centery))
-        screen.blit(text_surf, text_rect)
-
-        # Blinking cursor when active
-        if is_active and int(pygame.time.get_ticks() / 500) % 2 == 0:
-            cursor_x = text_rect.right + 2
-            pygame.draw.line(screen, WHITE,
-                             (cursor_x, input_rect.top + 6),
-                             (cursor_x, input_rect.bottom - 6), 2)
-
-        self.ui_elements['search_input'] = {'rect': input_rect}
-        return y + input_height
-
-    def _draw_achievement_list(self, screen, x, y, width, height, hovered_element):
-        """Draw the scrollable achievement list."""
-        achievements = self._get_filtered_achievements()
-
-        # Calculate total content height
-        item_spacing = int(8 * self.ui_scale)
-        # A4 fix: clamp to 0 to avoid negative height when achievement list is empty
-        total_content_height = max(0, len(achievements) * (self.item_height + item_spacing) - item_spacing)
-        max_scroll = max(0, total_content_height - height)
-
-        # Clamp scroll
-        self.scroll_offset = max(0, min(self.scroll_offset, max_scroll))
-
-        # Store max_scroll for handle_scroll
-        self._max_scroll = max_scroll
-
-        # Create clipping rect for the list area
-        clip_rect = pygame.Rect(x, y, width, height)
-        old_clip = screen.get_clip()
-        screen.set_clip(clip_rect)
-
-        # Draw each achievement item
-        item_y = y - self.scroll_offset
-        icon_size = int(65 * self.ui_scale)
-        icon_margin = int(10 * self.ui_scale)
-        mouse_pos = pygame.mouse.get_pos()
-        hovered_ach = None
-
-        for ach in achievements:
-            # Skip items fully above visible area
-            if item_y + self.item_height < y:
-                item_y += self.item_height + item_spacing
+        # The hovered medal lit and the chosen one ringed, inside the wall only
+        grid = self.grid()
+        wall = L['wall'].move(ox, oy)
+        offset = grid['view'].offset
+        hovered = self.hover[1] if self.hover and self.hover[0] == 'medal' else None
+        clip = surface.get_clip()
+        surface.set_clip(wall.inflate(k.ring_offset() * 2, 0).clip(surface.get_rect()))
+        pad = k.medal_pad()
+        for ach_id, cell in grid['cells']:
+            if ach_id not in (hovered, self.selected):
                 continue
-            # Stop if items are fully below visible area
-            if item_y > y + height:
-                break
+            r = cell.move(wall.x, wall.y - offset)
+            if r.bottom < wall.top or r.top > wall.bottom:
+                continue
+            a = self.by_id[ach_id]
+            if ach_id == hovered:
+                sprite = k.medal(a['icon'], cell.w, a['earned'], self._state(('medal', ach_id)))
+                surface.blit(sprite, (r.x - pad, r.y - pad))
+            if ach_id == self.selected:
+                ring = k.ring(r.size)
+                surface.blit(ring, (r.x - k.ring_offset(), r.y - k.ring_offset()))
+        surface.set_clip(clip)
 
-            item_rect = pygame.Rect(x, item_y, width, self.item_height)
-            self._draw_achievement_item(screen, item_rect, ach, icon_size, icon_margin)
+        shown = hovered or self.selected
+        if shown in self.by_id:
+            card = self._card(shown)
+            surface.blit(card, L['card'].move(ox, oy).topleft)
+        k.draw_button(surface, L['close'].move(ox, oy), "Close", self._state(('button', 'close')))
 
-            # Track hovered achievement for tooltip (earned date or progress)
-            if item_rect.collidepoint(mouse_pos):
-                hovered_ach = ach
-
-            item_y += self.item_height + item_spacing
-
-        # Restore clip
-        screen.set_clip(old_clip)
-
-        # Draw scroll indicator if needed
-        if max_scroll > 0:
-            self._draw_scroll_indicator(screen, x + width - int(6 * self.ui_scale), y,
-                                        int(4 * self.ui_scale), height, total_content_height)
-
-        # Draw hover tooltip (after clip restore so it's not clipped)
-        # Earned: show date. Unearned with threshold > 1: show progress.
-        if hovered_ach:
-            try:
-                tooltip_lines = []
-                tooltip_font = self.reward_font
-                if hovered_ach['earned'] and hovered_ach.get('earned_timestamp'):
-                    tooltip_lines.append(f"Earned: {hovered_ach['earned_timestamp'][:10]}")
-                elif not hovered_ach['earned'] and hovered_ach.get('stat_threshold', 1) > 1:
-                    # Show progress toward the achievement
-                    progress = hovered_ach.get('stat_progress', 0)
-                    threshold = hovered_ach['stat_threshold']
-                    tooltip_lines.append(f"Progress: {progress} / {threshold}")
-
-                if tooltip_lines:
-                    line_surfs = [tooltip_font.render(line, True, (255, 255, 255)) for line in tooltip_lines]
-                    line_h = tooltip_font.get_linesize()
-                    pad = int(6 * self.ui_scale)
-                    tw = max(s.get_width() for s in line_surfs) + pad * 2
-                    th = len(line_surfs) * line_h + pad * 2
-                    tx = min(mouse_pos[0] + 15, x + width - tw - 5)
-                    ty = max(mouse_pos[1] - th - 5, 5)
-                    bg = pygame.Surface((tw, th), pygame.SRCALPHA)
-                    bg.fill((30, 30, 50, 220))
-                    pygame.draw.rect(bg, (150, 150, 150), (0, 0, tw, th), 1)
-                    screen.blit(bg, (tx, ty))
-                    for i, surf in enumerate(line_surfs):
-                        screen.blit(surf, (tx + pad, ty + pad + i * line_h))
-            except (TypeError, IndexError):
-                pass
-
-    def _draw_achievement_item(self, screen, rect, ach, icon_size, icon_margin):
-        """Draw a single achievement list item with AchievementFull.png background."""
-        is_earned = ach['earned']
-
-        # Draw background
-        item_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-
-        if self.achievement_bg:
-            # FPS OPTIMIZATION 5A: Cache scaled achievement background (same size for all items)
-            ach_bg_size = (rect.width, rect.height)
-            if self._cached_achievement_bg is None or self._cached_achievement_bg_size != ach_bg_size:
-                self._cached_achievement_bg = pygame.transform.smoothscale(self.achievement_bg, ach_bg_size)
-                self._cached_achievement_bg_size = ach_bg_size
-            # MP5 fix: Blit directly instead of copy() — modifications happen on item_surface
-            item_surface.blit(self._cached_achievement_bg, (0, 0))
+    def _draw_search(self, surface, r):
+        k = self.kit
+        px = k.px
+        box = k.search_box(r.size, self.search_active)
+        pad = k.search_pad()
+        surface.blit(box, (r.x - pad, r.y - pad))
+        text_x = r.x + r.h
+        room = r.right - px(14) - text_x
+        if self.search_text:
+            shown = self._tail(self.search_text, room)
+            text = k.text(shown, 'search', PARCHMENT, shadow=False)
         else:
-            item_surface.fill((40, 40, 55, 200))
-            pygame.draw.rect(item_surface, BRASS_COLOR, (0, 0, rect.width, rect.height), 1)
+            text = k.text("Search achievements", 'search', PARCHMENT_FAINT, shadow=False)
+        ty = r.centery - text.get_height() // 2
+        surface.blit(text, (text_x, ty))
+        if self.search_active and (pygame.time.get_ticks() // 500) % 2 == 0:
+            cx = text_x + (text.get_width() if self.search_text else 0) + 1
+            pygame.draw.line(surface, GOLD_LIGHT, (cx, r.y + px(10)), (cx, r.bottom - px(10)),
+                             max(1, px(2)))
 
-        # Grey out if not earned
-        if not is_earned:
-            item_surface.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
+    def _tail(self, text, room):
+        """The end of `text` that fits `room` px (the search keeps the last letters typed)."""
+        font = self.kit.font('search')
+        while text and font.size(text)[0] > room:
+            text = text[1:]
+        return text
 
-        # Hover highlight
-        mouse_pos = pygame.mouse.get_pos()
-        if rect.collidepoint(mouse_pos):
-            item_surface.fill((40, 40, 40, 0), special_flags=pygame.BLEND_RGB_ADD)
-
-        screen.blit(item_surface, rect)
-
-        # Achievement icon on left edge
-        icon_x = rect.x + icon_margin
-        icon_y = rect.y + (rect.height - icon_size) // 2 - int(5 * self.ui_scale)
-
-        icon_img = self._icon_cache.get(ach['icon'])
-        if icon_img:
-            # FPS OPTIMIZATION 5A: Cache scaled achievement icons (keyed by icon path + size)
-            icon_cache_key = (ach['icon'], icon_size)
-            if icon_cache_key not in self._cached_scaled_icons:
-                self._cached_scaled_icons[icon_cache_key] = pygame.transform.smoothscale(icon_img, (icon_size, icon_size))
-            # MP5 fix: Only copy() when we need to modify (darken unearned icons)
-            if not is_earned:
-                scaled_icon = self._cached_scaled_icons[icon_cache_key].copy()
-                scaled_icon.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
-            else:
-                scaled_icon = self._cached_scaled_icons[icon_cache_key]
-            screen.blit(scaled_icon, (icon_x, icon_y))
-
-        # Icon border (2px larger than icon = 1px per side to fully contain icon edges)
-        if self.icon_border:
-            # FPS OPTIMIZATION 5A: Cache scaled icon border (same size for all items)
-            if self._cached_icon_border is None or self._cached_icon_border_size != icon_size:
-                self._cached_icon_border = pygame.transform.smoothscale(self.icon_border, (icon_size + 2, icon_size + 2))
-                self._cached_icon_border_size = icon_size
-            # MP5 fix: Only copy() when we need to modify (darken unearned borders)
-            if not is_earned:
-                border = self._cached_icon_border.copy()
-                border.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
-            else:
-                border = self._cached_icon_border
-            screen.blit(border, (icon_x - 1, icon_y - 1))
-
-        # Text area (to the right of icon)
-        text_x = icon_x + icon_size + int(15 * self.ui_scale)
-        text_max_w = rect.right - text_x - int(10 * self.ui_scale)
-
-        # Achievement name (top of the bright area)
-        name_color = BRASS_COLOR if is_earned else (120, 110, 50)
-        name_surf = self.name_font.render(ach['name'], True, name_color)
-        name_y = rect.y + int(12 * self.ui_scale)
-        screen.blit(name_surf, (text_x, name_y))
-
-        # Description (below name) - word-wrap if too long, shrink font if needed
-        desc_color = DESCRIPTION_COLOR if is_earned else (130, 130, 130)
-        desc_y = name_y + name_surf.get_height() + int(4 * self.ui_scale)
-
-        # Calculate max vertical space for description (above reward text area)
-        reward_text = self._get_reward_text(ach)
-        reward_reserve = int(25 * self.ui_scale) if reward_text else int(10 * self.ui_scale)
-        desc_max_h = (rect.y + rect.height - reward_reserve) - desc_y
-
-        # Use normal font for single-line descriptions, small font for multi-line
-        desc_lines = self._wrap_text(ach['description'], self.desc_font, text_max_w)
-        if len(desc_lines) > 1:
-            # Switch to smaller font for consistent multi-line appearance
-            desc_lines = self._wrap_text(ach['description'], self.desc_font_small, text_max_w)
-            line_h = self.desc_font_small.get_linesize()
-            use_font = self.desc_font_small
-        else:
-            line_h = self.desc_font.get_linesize()
-            use_font = self.desc_font
-
-        for line in desc_lines:
-            line_surf = use_font.render(line, True, desc_color)
-            screen.blit(line_surf, (text_x, desc_y))
-            desc_y += line_h
-
-        # Reward text in bottom dark band
-        if reward_text:
-            reward_color = REWARD_TEXT_COLOR if is_earned else (100, 90, 50)
-            reward_surf = self.reward_font.render(reward_text, True, reward_color)
-            reward_y = rect.y + rect.height - reward_surf.get_height() - int(12 * self.ui_scale)
-            screen.blit(reward_surf, (text_x, reward_y))
-
-    @staticmethod
-    def _get_reward_text(ach):
-        """Get reward display text for an achievement. Supports dual rewards (reward_type_2)."""
-        parts = []
-        # Primary reward
-        if ach['reward_type'] == 'title':
-            parts.append(f"\"{ach['reward_id']}\" Title")
-        elif ach['reward_type'] == 'icon':
-            icon_name = ach.get('reward_name', 'Exclusive Icon')
-            parts.append(icon_name)
-        # Secondary reward (dual-reward achievements like Conqueror, Devastator)
-        if ach.get('reward_type_2') == 'title':
-            parts.append(f"\"{ach['reward_id_2']}\" Title")
-        elif ach.get('reward_type_2') == 'icon':
-            icon_name = ach.get('reward_name_2', 'Exclusive Icon')
-            parts.append(icon_name)
-        if not parts:
-            return None
-        return "Reward: " + " + ".join(parts)
-
-    @staticmethod
-    def _wrap_text(text, font, max_width):
-        """Word-wrap text to fit within max_width. Returns list of line strings."""
-        words = text.split(' ')
+    def _summary_surface(self):
+        """Trophy, '17 of 44 earned', the bar; closest and latest on the right. Built per open."""
+        if self._summary is not None:
+            return self._summary
+        k = self.kit
+        px = k.px
+        L = self.layout()
+        width, height = L['summary'].size
+        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        trophy = k.icon(TROPHY_ICON, px(TROPHY))
+        surf.blit(trophy, (0, (height - trophy.get_height()) // 2), special_flags=pygame.BLEND_RGBA_MAX)
+        x = trophy.get_width() + px(SUMMARY_GAP)
+        count = k.text(str(self.earned_count), 'count', GOLD_LIGHT)
+        rest = k.text(f"of {len(self.achievements)} earned", 'count_small', PARCHMENT_DIM)
+        base = height // 2 + count.get_height() // 2
+        surf.blit(count, (x, base - count.get_height()))
+        x += count.get_width() + px(8)
+        surf.blit(rest, (x, base - rest.get_height() - px(2)))
+        x += rest.get_width() + px(SUMMARY_GAP)
+        frac = self.earned_count / float(max(1, len(self.achievements)))
+        bar = k.bar((px(SUMMARY_BAR[0]), px(SUMMARY_BAR[1])), frac)
+        surf.blit(bar, (x, (height - bar.get_height()) // 2))
         lines = []
-        current_line = ''
-        for word in words:
-            test_line = (current_line + ' ' + word).strip()
-            if font.size(test_line)[0] <= max_width:
-                current_line = test_line
-            else:
-                if current_line:
-                    lines.append(current_line)
-                current_line = word
-        if current_line:
-            lines.append(current_line)
-        return lines if lines else [text]
+        if self.closest:
+            lines.append(("Closest: ", self.closest['name'], f" · {int(progress(self.closest) * 100)}%"))
+        if self.latest:
+            lines.append(("Latest: ", self.latest['name'], f" · {_date(self.latest.get('earned_timestamp'))}"))
+        row_h = k.font('summary_b').get_linesize()
+        y = (height - row_h * len(lines)) // 2
+        for lead, name, tail in lines:
+            parts = [k.text(lead, 'summary', PARCHMENT_DIM), k.text(name, 'summary_b', GOLD_TEXT),
+                     k.text(tail, 'summary', PARCHMENT_DIM)]
+            total = sum(p.get_width() for p in parts)
+            px_x = width - total
+            for p in parts:
+                surf.blit(p, (px_x, y))
+                px_x += p.get_width()
+            y += row_h
+        self._summary = surf
+        return surf
 
-    def _draw_scroll_indicator(self, screen, x, y, width, height, total_content):
-        """Draw a scroll position indicator bar."""
-        if total_content <= 0:
-            return
-        # Indicator height proportional to visible area
-        visible_ratio = height / total_content
-        indicator_height = max(int(20 * self.ui_scale), int(height * visible_ratio))
-        # Indicator position proportional to scroll offset
-        scroll_range = total_content - height
-        if scroll_range > 0:
-            scroll_ratio = self.scroll_offset / scroll_range
+    def _card(self, ach_id):
+        """The details card for one achievement, composed once and kept (a few at a time)."""
+        card = self._cards.get(ach_id)
+        if card is not None:
+            self._cards.move_to_end(ach_id)
+            return card
+        card = self._compose_card(self.by_id[ach_id])
+        self._cards[ach_id] = card
+        if len(self._cards) > CARD_CACHE_MAX:
+            self._cards.popitem(last=False)
+        return card
+
+    def _compose_card(self, a):
+        k = self.kit
+        px = k.px
+        size = self.layout()['card'].size
+        w, h = size
+        card = k.card_plate(size).copy()
+        inner = w - 2 * px(CARD_PAD)
+        y = px(CARD_PAD)
+
+        def centred(surface, gap_after):
+            nonlocal y
+            card.blit(surface, ((w - surface.get_width()) // 2, y))
+            y += surface.get_height() + gap_after
+
+        medal = k.medal(a['icon'], px(CARD_MEDAL), a['earned'])
+        card.blit(medal, ((w - medal.get_width()) // 2, y - k.medal_pad()))
+        y += px(CARD_MEDAL) + px(12)
+        centred(k.text(CATEGORY_LABELS.get(a['category'], a['category']).upper(), 'card_cat',
+                       PARCHMENT_DIM, spacing=0.18), px(6))
+        for line in k.wrap(a['name'], 'card_name', inner, max_lines=2):
+            centred(k.text(line, 'card_name', GOLD_LIGHT), 0)
+        y += px(8)
+        for line in k.wrap(a['description'], 'card_text', inner, max_lines=5):
+            centred(k.text(line, 'card_text', PARCHMENT), px(1))
+        y += px(10)
+        centred(k.rule(inner), px(12))
+        if a['earned']:
+            when = _date(a.get('earned_timestamp'))
+            centred(k.text(f"Earned {when}" if when else "Earned", 'card_status', GOLD_LIGHT), px(14))
+        elif is_counted(a):
+            centred(k.bar((inner, px(10)), progress(a)), px(6))
+            centred(k.text(progress_text(a), 'card_prog', PROGRESS_TEXT), px(14))
         else:
-            scroll_ratio = 0
-        indicator_y = y + int((height - indicator_height) * scroll_ratio)
-
-        # Draw track
-        track_rect = pygame.Rect(x, y, width, height)
-        # A3 fix: use RGB only — alpha in RGBA is ignored on non-SRCALPHA screen surface
-        pygame.draw.rect(screen, (60, 60, 80), track_rect, border_radius=2)
-        # Draw indicator
-        indicator_rect = pygame.Rect(x, indicator_y, width, indicator_height)
-        pygame.draw.rect(screen, (150, 150, 170), indicator_rect, border_radius=2)
-
-    def get_element_at(self, pos):
-        """Get the UI element ID at the given position (for hover detection)."""
-        for elem_id, elem in self.ui_elements.items():
-            if elem['rect'].collidepoint(pos):
-                return elem_id
-        return None
+            centred(k.text("Not yet earned", 'card_prog', PARCHMENT_FAINT), px(14))
+        found = rewards(a)
+        if found:
+            centred(k.text("REWARD", 'card_label', PARCHMENT_DIM, spacing=0.18), px(8))
+            for reward in found:
+                if reward[0] == 'icon':
+                    icon = k.icon(reward[2], px(REWARD_ICON))
+                    name = k.text(k.fit(reward[1], 'card_reward', inner - icon.get_width() - px(10)),
+                                  'card_reward', GOLD_TEXT)
+                    row_w = icon.get_width() + px(10) + name.get_width()
+                    x = (w - row_w) // 2
+                    card.blit(icon, (x, y))
+                    pygame.draw.rect(card, GOLD_DARK, (x, y, icon.get_width(), icon.get_height()), 1)
+                    card.blit(name, (x + icon.get_width() + px(10),
+                                     y + (icon.get_height() - name.get_height()) // 2))
+                    y += icon.get_height() + px(8)
+                else:
+                    centred(k.text(f"Title: “{reward[1]}”", 'card_reward', GOLD_TEXT), px(8))
+        self.card_content_bottom[a['id']] = y     # Tests: the content fits the card
+        return card

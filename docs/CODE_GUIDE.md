@@ -27,6 +27,7 @@ This guide provides module-specific guidance on when and how to modify different
 16. [Replay System](#replay-system) - Recording, viewer, browser
 17. [Campaign Save System](#campaign-save-system) - Save/load campaign progress
 18. [Browser Screens](#browser-screens-saved-games--replays) - Saved Games + Replays UI
+    - [Main Menu Windows](#main-menu-windows-options--achievements--profile) - The menu's windows kit (bronze window, drop + fade, WindowStage), the Options window, the Achievements trophy wall, the Profile player card, adding a setting
 19. [Book of Tales Screen](#book-of-tales-screen) - Tale picker, description markup, launch registry
 20. [Tale I: Lack of Funds](#tale-i-lack-of-funds-tale_lack_of_fundspy) - Built-in-AI tale, Popularity
 21. [Tale II: Final Breaths](#tale-ii-final-breaths-tale_final_breathspy) - Hold-out tale, attack cap, forced attacks, Rebels
@@ -3704,7 +3705,8 @@ AI-turn branch of `run()` (it only passes ESC, F2, the wheel and whitelisted cli
 #### When to Modify
 
 ✅ **Change camera behavior:**
-- Modify pan speed, zoom speed
+- Modify pan speed, zoom speed (the Zoom Speed setting's range: `CAMERA_ZOOM_SPEED_MIN` /
+  `MAX` in `config/constants.py` - see "Main Menu Windows")
 - Adjust edge scrolling sensitivity
 - Change zoom limits (min/max)
 
@@ -4672,12 +4674,12 @@ using filename stem as key (only for games with a `campaign_map`, which tales ha
 
 ## Achievement System
 
-**Files:** `achievement_manager.py` (definitions, logic), `achievement_panel.py` (UI helper), `steam_integration.py` (Steam sync)
-**Integration:** `main_menu.py` (button/panel/profile), `recap_screen.py` (preview popup), `main.py` (post-game hook), `settings_manager.py` (persistence)
+**Files:** `achievement_manager.py` (definitions, logic), `achievement_panel.py` (the main menu's Achievements window - the trophy wall), `steam_integration.py` (Steam sync)
+**Integration:** `main_menu.py` (button/window/profile), `recap_screen.py` (preview popup), `main.py` (post-game hook), `settings_manager.py` (persistence)
 
-**Architecture:** Singleton `AchievementManager` owns all definitions and stat tracking. `AchievementPanel` is a UI helper class created by `MainMenu` to render panel content. Achievement data persisted to `config.json` via `settings_manager`.
+**Architecture:** Singleton `AchievementManager` owns all definitions and stat tracking. `AchievementPanel(menu, kit)` is the main menu's Achievements window, a menu-kit window like Options (see "Main Menu Windows"). Achievement data persisted to `config.json` via `settings_manager`.
 
-**Steam integration:** `steam_integration.py` provides `SteamManager` singleton. On startup: `initialize()` calls `SteamInit()` + `RequestCurrentStats()`, then `pump_until_stats_ready()` waits for stats callback before `sync_to_steam()`. Achievement IDs are encoded to bytes before passing to SteamworksPy (no argtypes on achievement methods). Steam persona name auto-updates `settings.player_name` on startup; profile panel shows "(Steam)" indicator and disables name editing when Steam is active. **Friend invites:** `can_invite()` checks Steam is initialized, `get_online_friends()` enumerates friends via `GetFriendCount`/`GetFriendByIndex`/`GetFriendPersonaName`, `invite_friend(steam_id, connect_string)` sends invite via `InviteFriend` with every host address (`+connect ip1:port,ip2:port`, see "Joining with several addresses" under network/upnp.py). Invited friends receive Steam notification; accepting launches game with that `+connect` arg. A friend can be invited again after `INVITE_COOLDOWN_SECONDS` (30, `network/territory_selector.py`); meanwhile the row shows "Invited" + "again in 0:23" (`_invited_friends` = {steam_id: monotonic time}, `_invite_cooldown_left()`).
+**Steam integration:** `steam_integration.py` provides `SteamManager` singleton. On startup: `initialize()` calls `SteamInit()` + `RequestCurrentStats()`, then `pump_until_stats_ready()` waits for stats callback before `sync_to_steam()`. Achievement IDs are encoded to bytes before passing to SteamworksPy (no argtypes on achievement methods). Steam persona name auto-updates `settings.player_name` on startup; the Profile window (`ui/profile_panel.py`) shows a "Steam" tag and keeps the name read-only when Steam is active. **Friend invites:** `can_invite()` checks Steam is initialized, `get_online_friends()` enumerates friends via `GetFriendCount`/`GetFriendByIndex`/`GetFriendPersonaName`, `invite_friend(steam_id, connect_string)` sends invite via `InviteFriend` with every host address (`+connect ip1:port,ip2:port`, see "Joining with several addresses" under network/upnp.py). Invited friends receive Steam notification; accepting launches game with that `+connect` arg. A friend can be invited again after `INVITE_COOLDOWN_SECONDS` (30, `network/territory_selector.py`); meanwhile the row shows "Invited" + "again in 0:23" (`_invited_friends` = {steam_id: monotonic time}, `_invite_cooldown_left()`).
 
 **Data flow:** Game ends → `show_recap_if_ended()` → `achievement_manager.record_game_result(game)` → detects mode, increments stats, checks thresholds → returns newly earned list → `RecapScreen` shows preview popups → user returns to main menu → achievement panel shows all achievements. Campaign missions set `gs.winner = 0` and `gs.phase = 'ended'` in their `_start_victory` method to trigger this flow.
 
@@ -4710,12 +4712,12 @@ the lobby with AI slots used to earn them.
 - **Add new reward icon**: Add icon file to `assets/achievements/RewardsIcons/`, add path to `ALL_REWARD_ICON_PATHS` in `achievement_manager.py`.
 - **Add new stat trigger**: Extend `record_game_result()` in `achievement_manager.py` to increment the new stat based on game conditions.
 - **Add campaign bonus achievement**: Add tracking flag in mission `__init__`, update the flag in existing event handlers (e.g., `_check_attack_awakening`, `_on_faction_defeated`), expose via `get_bonus_conditions()`. Stats are bridged to `achievement_manager` automatically by `record_game_result()`.
-- **Change achievement panel layout**: Modify `achievement_panel.py` draw methods.
+- **Change the Achievements window (trophy wall)**: `achievement_panel.py` - see "Main Menu Windows" → "The Achievements window". A new achievement needs nothing there: its icon is decoded and its medal built when the window prewarms, and its group / chip counts follow `CATEGORIES`.
 - **Change preview popup**: Modify `_draw_achievement_preview()` / `_update_achievement_preview()` in `recap_screen.py`.
-- **Change profile title/icon UI**: Modify `_draw_profile_panel()` in `main_menu.py`.
+- **Change profile title/icon UI**: `ui/profile_panel.py` (the player card) - see "Main Menu Windows" -> "The Profile window".
 - **Change Steam achievement sync**: Modify `steam_integration.py` (`unlock_achievement`, `pump_until_stats_ready`). Achievement IDs must be bytes-encoded.
 - **Change Steam friend invites**: Modify `steam_integration.py` (`can_invite`, `get_online_friends`, `invite_friend`). Friend picker UI in `network/territory_selector.py` (`_draw_friend_picker`, `_handle_friend_picker_click`). Auto-connect via `+connect` launch param handled in `main.py` (`steam_invite_join` action). Joining through Steam itself (relay, presence, join requests): see "Steam joining (SDR bridge)" in the Network System.
-- **Change Steam name behavior**: Modify `_open_profile()` in `main_menu.py` (detection) and `_draw_profile_panel()` (UI). Startup auto-set in `main.py`.
+- **Change Steam name behavior**: Modify `_open_profile()` in `main_menu.py` (detection) and `ProfilePanel._draw_name()` in `ui/profile_panel.py` (UI). Startup auto-set in `main.py`.
 
 ## Recap Screen
 
@@ -4764,14 +4766,14 @@ the lobby with AI slots used to earn them.
 
 ## Player Level System
 
-**Files:** `player_level.py` (logic), `settings_manager.py` (persistence), `main_menu.py` (profile UI), `recap_screen.py` (recap UI)
+**Files:** `player_level.py` (logic), `settings_manager.py` (persistence), `ui/profile_panel.py` (profile UI), `recap_screen.py` (recap UI)
 
 The player level system tracks persistent XP across games. XP is accumulated during gameplay via `_track_stat(player, 'xp_earned', amount)` hooks in `game_state/buildings.py`, `heroes.py`, and `military.py`. At game end, `player_level_manager.record_game_xp(game)` reads the accumulated stat, applies eligibility checks, halving, and end-of-game bonuses, then persists via `settings_manager`.
 
 **Architecture:**
 - `player_level.py`: Singleton `PlayerLevelManager`, tiered XP formula (`XP_TIERS`), `xp_for_level()`/`level_from_xp()` conversion, `record_game_xp()` end-of-game calculation
 - `game_state/`: 10 hook sites use `_track_stat(player, 'xp_earned', amount)` — stats tracked for all players, only the local human's read at game end (`local_human_index(game)`; multiplayer: this PC's player). The victory bonus goes to every member of the winning team (`gs.is_winner()`), not only the team's representative `gs.winner`
-- `main_menu.py`: Gold-filled level bar in profile panel (to the right of name input)
+- `ui/profile_panel.py`: the level medallion, a gold bar and the XP written out on the Profile card (`_draw_level()`)
 - `recap_screen.py`: Animated XP bar after achievement popups with level-up particle burst
 
 ### When to Modify
@@ -4781,7 +4783,7 @@ The player level system tracks persistent XP across games. XP is accumulated dur
 - **Add new XP-granting action**: Add `self._track_stat(player_index, 'xp_earned', amount)` at the event site in `game_state/`
 - **Change end-of-game bonuses**: Edit `_calculate_end_bonus()` in `player_level.py`
 - **Change eligibility/halving rules**: Edit `_has_enemy_player()` / `_should_halve()` in `player_level.py`
-- **Change profile level bar appearance**: Edit `_draw_profile_panel()` in `main_menu.py`
+- **Change profile level bar appearance**: Edit `ProfilePanel._draw_level()` in `ui/profile_panel.py`
 - **Change recap XP bar animation**: Edit `_update_xp_bar()` / `_draw_xp_bar()` in `recap_screen.py`
 
 ## Version Info
@@ -4926,6 +4928,162 @@ close the dialog only), RETURN = open, and wheel scrolling via legacy buttons 4/
 | Rows | single line, `row_height = 64 * s` | two lines (+ `mode - victory` sub-line), `78 * s` |
 | Buttons | Return / Delete / **Load** | Back / Delete / **Watch** |
 | List source | `save_manager.scan_saves()` | `ReplayBrowser._scan_replays()` |
+
+## Main Menu Windows (Options / Achievements / Profile)
+
+**Files:** `ui/menu_kit.py` (the look, the drop + fade, `WindowStage`), `ui/options_panel.py`
+(the Options window), `config/options_hints.py` (its explanation lines, edited by the
+owner), `main_menu.py` (opens / closes them; Apply / Cancel / Reset to Defaults; `render()`)
+**Preview:** `py tools/menu_preview.py` (live, never saves), `--sheet DIR` (every tab and
+state at 720p / 900p / 1080p), `--bench` (frame cost)
+**Tests:** `tests/test_menu_options.py`; the Map Look row: `tests/test_map_look.py`
+
+Agreed with the owner on the "Menu Glow-up" mockup (2026-10-30): the battle screen's
+bronze TableBorder frame and palette, a window about three quarters of the screen over
+the dimmed menu, Options in tabs, Achievements as a trophy wall (phase 2), Profile as a
+player card (phase 3). No old slide-down panel is left in `main_menu.py`.
+The in-game Options (`rendering/ui_renderer.py` `draw_options_menu`) is separate code and
+not restyled.
+
+### The kit (`ui/menu_kit.py`)
+
+- `MenuKit(screen_size)`: `scale = min(W/1600, H/900)` (grows past 900p - the old panels
+  stopped at 900p sizes); `px()`; fonts by role (`FONT_ROLES`) from the Cinzel files
+  directly, as the browser screens (not `font_manager`, which maps weights one step
+  bolder); `text()` with a drop shadow and optional letter spacing; sprites for the
+  window, title plate, tabs, switch, arrows, two-way choice, slider, knob, row wash.
+  Buttons are the battle screen's (`battle_screen_kit.draw_button`, `color=` gold for the
+  primary action).
+- Text and sprites are kept between MainMenus per screen size (`_SHARED`: one MainMenu is
+  made every time the game returns to the menu). **Fonts are not** - a `Font` dies with
+  `pygame.quit()`, and using one afterwards crashes the process (access violation).
+- Glows (`_soft_glow()`) fade to nothing exactly at the sprite's edge (a wider blur is cut
+  off there and shows as a square) and carry the glow colour at alpha 0 everywhere (no
+  dark fringe). Put one on an empty sprite with `BLEND_RGBA_MAX`: a plain blit onto a
+  clear surface darkens it. The same goes for anything drawn large and smoothscaled down:
+  fill it with its colour at alpha 0 first.
+- `WindowAnim`: opens in `OPEN_SECONDS` (0.30), closes in `CLOSE_SECONDS` (0.22), eased
+  (`level`); one frame advances it at most `MAX_STEP` (1/60 s), so a slow frame does not
+  make the drop jump; clicks and hover only once it has landed (`interactive`).
+
+### Drawing a window cheaply (`WindowStage`)
+
+pygame blits a big translucent surface slowly: a full-screen per-pixel-alpha surface at
+partial alpha costs ~12 ms, an opaque surface faded with `set_alpha()` ~0.6 ms, and a
+surface alpha of **exactly 255 takes a ~12 ms slow path** (the cause of a stutter at the
+end of the drop). So:
+
+- When a window starts to show, the menu is drawn once and captured plain and dimmed (the
+  vignette `backdrop()`); its buttons cannot change under a window.
+- Landed: the window's fixed parts (`draw_static()`: board, title plate, row names) are
+  baked into the dimmed picture, again whenever `static_key()` changes (the tab, which rows
+  are dimmed). A frame is one opaque blit plus `draw_dynamic()` (tabs, controls, buttons).
+- Moving: the two menu pictures cross-fade and one opaque picture of the window (its title
+  plate apart) fades and drops; both fades end at `FADE_END` (0.85) of the drop, so its
+  second half is opaque blits only.
+- Fade with `_blit_faded()` (alpha 0 skipped, 255 blitted with no surface alpha).
+- Measured at 1600x900 (best of 3): settled ~0.5 ms a frame, fading ~2 ms, the rest of the
+  drop ~0.6 ms, an opening's first frame ~10 ms (it captures the menu). After the game has
+  built a second MainMenu every blit in the process is ~4x slower (also on main, not
+  investigated yet): ~1.4 / ~6 / ~1.7 / ~28 ms.
+- A window provides `anim`, `title`, `rect()`, `draw()` / `draw_static()` /
+  `draw_dynamic()`, `static_key()` and `prewarm()` (MainMenu calls it on creation, so the
+  first opening builds no sprites - cold, that frame took ~85 ms).
+
+### The Options window (`ui/options_panel.py`)
+
+- Rows come from `build_rows()`: `Row(key, tab, label, kind, attr, ...)`, kind `switch` /
+  `arrows` / `choice` / `slider`, each editing a MainMenu `temp_*` attribute. MainMenu
+  keeps the rest: `_open_options()` reads the settings, `_apply_options()` saves them
+  (`'recreate_window'` for a resolution / fullscreen / VSync change), `_close_options()`
+  reverts the live volume preview, `_reset_to_defaults()` reads `settings.defaults`.
+- `depends=`: the row dims and ignores clicks while that switch is off (Scroll From,
+  Tooltip Delay). `locked_by=`: the arrows give way to a note (FPS Limit: "Set by VSync").
+  A value that is not one of the arrows' choices (a hand-edited config.json) is shown as
+  it is (`value_label()`). Clicking a switch row's name toggles it.
+- Geometry: `_layout(tab)`, once per tab - drawing and hit-testing (`element_at()`,
+  `part_rect()`) use the same rects. One row height for every tab: the longest tab must
+  fit above the footer.
+- Keys (`MainMenu.handle_events`): Esc cancels, Enter applies, Tab / Shift+Tab step the
+  tabs. One click sound per action; a `CLICK_FLASH_DURATION_MS` flash.
+- The Map Look row exists only while `MAP_3D_AVAILABLE` (tests patch
+  `ui.options_panel.MAP_3D_AVAILABLE` as well as `main_menu`'s).
+
+### The Achievements window (`achievement_panel.py`)
+
+- The trophy wall (phase 2): a summary (earned of total + bar, the closest counted
+  achievement, the latest earned), category chips with counts (`chip_counts()`), a search
+  over names and descriptions, the medal wall and a details card. `open()` reloads the
+  manager and starts fresh: All, no search, the top, the closest achievement chosen.
+- The wall (`groups()` → `_compose_grid()`): grouped in `CATEGORIES` order, earned first,
+  then the rest - each part in the `ACHIEVEMENTS` order. One surface per (chip, search),
+  shown through `battle_screen_kit.ScrollView` (wheel: `wheel()`, from MainMenu's buttons
+  4 / 5). Medals: `MenuKit.medal()` - in colour with a glow when earned; grey, darkened,
+  with a padlock (`lock_badge()`) when not; counted ones (`stat_threshold` > 1) carry a
+  thin progress bar.
+- The card: hovering a medal shows it, a click keeps it (`selected`, ringed); composed
+  once per achievement (`_card()`, a few kept) - description, earned date / progress
+  (`progress_text()`: "Level 32 / 40", "722 / 2,000"), rewards (`rewards()`: the reward
+  icon itself, or the title).
+- Keys: typing anywhere searches (`handle_key()`), Esc clears the search first
+  (`handle_escape()`; MainMenu closes the window only when it returns False), Enter leaves
+  the field. Search length capped at 30.
+- Static parts (board, title plate, summary, the wall's visible part) are baked by
+  `WindowStage` - `static_key()` is (chip, search, scroll offset); chips, search, the
+  hovered / chosen medal, the card and Close are drawn each frame. ~0.5 ms a settled frame,
+  ~1.1 ms with the mouse moving over medals, ~3.5 ms a wheel notch (1600x900).
+- Icons: `MenuKit.preload_icons()` decodes each 1024 px file once and keeps it at every
+  size the window uses, per screen size, shared between MainMenus - `prewarm()` does it
+  (the old panel decoded all 44 on every MainMenu).
+- Only one menu-kit window shows at a time: `MainMenu._windows()`; opening one while another
+  still fades out ends that one at once (`_end_window_fades()`).
+
+### The Profile window (`ui/profile_panel.py`)
+
+- The player card (phase 3), over MainMenu's `temp_player_name` / `temp_player_icon` /
+  `temp_selected_title`. MainMenu keeps the rest: `_open_profile(keep=False)` reads the
+  settings (the Steam name when Steam runs: `_steam_name_active`, read-only, a "Steam"
+  tag), `_save_profile()` writes them, `_close_profile()` drops the choices.
+- The card: the chosen portrait (`portrait_path()`: None = the default "?" tile, a hero
+  index 1-8 = `MainMenu.HERO_ICON_FILES`, a reward path), the name (`editing`: typed on the
+  card, at most 20), the title line, the level (`_draw_level()`: "Max level" at
+  `MAX_LEVEL`), the stat tiles and the achievements line with View.
+- **Win rates** (`win_line()`): the games played never count fewer than the wins - the
+  "games finished" counters arrived after the wins counters (b00c2e7), so older profiles
+  have more wins than games.
+- The pickers: `self.titles` / `self.rewards` (unlocked first) from the achievements'
+  rewards; locked ones are not chosen and say on hover which achievement unlocks them
+  (`_draw_tooltip()` with `MenuKit.tooltip()`, the battle screen's box).
+- Keys (MainMenu): Enter saves (`handle_key()` returns 'save'), Esc cancels; while typing
+  the name, Enter and Esc only end the typing (`handle_escape()` returns True).
+- **View** (`_view_achievements_from_profile()`): the card leaves with its choices kept,
+  the Achievements window opens once it has (`MainMenu._queued_open`, run by
+  `_update_options_animation()` when no window shows), and closing that brings the card
+  back as it was (`_return_to_profile` → `_open_profile(keep=True)`).
+- Static parts (board, title plate, the card's plate / level / tiles / achievements line,
+  headings, the portraits at rest) are baked once per opening (`static_key()` is fixed);
+  the portrait, name, title line, chips, highlights, buttons and tooltip are drawn each
+  frame. Portraits are decoded once per screen size (`prewarm()`); the corner Profile
+  button in the menu still loads and scales its own pictures (`_calculate_layout`).
+
+### Add a setting to the Options window
+
+1. Its default in `settings_manager.py` (`defaults` + `SETTING_TYPES`). It lands in every
+   player's config.json on the next save - add one deliberately.
+2. `main_menu.py`: `temp_<name>` in `__init__` and `_open_options()`, saved in
+   `_apply_options()`, reset in `_reset_to_defaults()`.
+3. A `Row` in `build_rows()` and its line in `config/options_hints.py`.
+4. The in-game Options too, if it belongs there (`ui_renderer.draw_options_menu` +
+   `main.py` `handle_options_menu_click`).
+5. `tests/test_menu_options.py` checks every row's layout at 720p-1440p; add a test for its
+   control. Look at it with `py tools/menu_preview.py --sheet DIR`.
+
+### Zoom speed range
+
+`camera_zoom_speed` defaults to `CAMERA_ZOOM_SPEED` (0.15); the slider's range is
+`CAMERA_ZOOM_SPEED_MIN` / `CAMERA_ZOOM_SPEED_MAX` (0.05-0.30) in `config/constants.py`, and
+settings validation resets anything outside it. The camera zooms by (1 +/- speed) per
+wheel notch, so the old default of 1.1 made one notch out jump to the furthest zoom.
 
 ## Book of Tales Screen
 
