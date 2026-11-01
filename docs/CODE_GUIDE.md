@@ -4662,6 +4662,35 @@ INTRO_SEQUENCE = [
 
 **MP4 Export:** Click "Export MP4" in Cutscene_Tool.py to export the selected cutscene as a video file. Options: include/exclude subtitles, include/exclude audio. Export uses [cutscene_exporter.py](../cutscene_exporter.py) which renders frames offscreen and pipes to ffmpeg (bundled via `imageio-ffmpeg`). Two-pass: silent video first, then audio muxing via ffmpeg `filter_complex`.
 
+**Cutscene camera (`cutscene_player._plan_axis`):** most slides show a 1536x1024 painting
+enlarged 1-4x. The player used to cut the view at whole picture pixels, each edge truncated on
+its own, and stretch it to the screen. The picture froze, then jumped 1-4 px, and the cut's
+width toggled between N and N+1, so its scale wobbled and parts of it moved at different
+moments, sometimes backwards (the owner's "stutter", 2026-11-01). Now, per axis:
+- The view is first shifted inside the picture (keeping its size); a view past the edge used
+  to be squashed.
+- **Enlarging:** smoothscale samples output pixel `x` at picture pixel
+  `start + x·step/65536`, `step = (0x10000·(len-1)) // scaled` (pixel centres line up). The blit
+  offset is whole pixels, but the cut's start and length move where the samples fall.
+  `_plan_axis` tries 12 starts × 8 lengths and keeps the mapping closest to the ideal
+  (a vernier, ~0.16 ms a frame), which places the view at sub-pixel accuracy.
+- **Shrinking:** a whole-pixel cut, both edges rounded alike, scaled to exactly the screen.
+- Measured on a line grid through the real smoothscale (all 53 slides, start/middle/end):
+  99% of lines within 0.40 px of where they belong (was 2.07 px), backward moves over 0.5 px
+  0.0% (was 1.7%, up to 3.10 px). `tests/test_cutscene_camera.py` tracks lines through the real smoothscale,
+  so it also catches a pygame whose smoothscale maps differently.
+- **Crossfade:** the outgoing slide is blitted opaque, the incoming one over it at alpha f
+  (`f·B + (1-f)·A`). Fading both on black dimmed every crossfade to 74% at its midpoint.
+  `run()` makes a one-thread worker that scales the incoming slide while the main thread
+  scales the outgoing one (smoothscale releases the GIL); the exporter has none and scales
+  both itself.
+- **Pictures:** `_load_slide_images()` (the exporter uses it too) loads opaque pictures with
+  `convert()`, a deliberate exception to the convert_alpha rule, since opaque surfaces scale and
+  blit cheaper. A picture with transparent pixels keeps its alpha. One at least 2× the screen
+  gets a half-size copy, used while the view is at least 2× the screen. The mission 3 outro's
+  zoom-out over its 4096 px picture: 18.3 → 7.6 ms a frame.
+- **Rotation** (`_render_rotated_crop`) is still whole-pixel; no slide uses it.
+
 #### ✅ Add AI Awakening Trigger
 
 **In `_awaken_faction()` method:**
@@ -5200,6 +5229,10 @@ Windows moves to an E-core reads 2-4x slower for the rest of its run. That was t
 process out of power throttling changed nothing). Also: the same blit in a tight loop
 ~0.18 ms, with frame-like pauses between bursts ~0.6 ms (clocks and caches drop).
 So: interleave A / B runs, take best-of-N, and never trust a single run's number.
+Runs of several minutes at full load throttle this laptop: the cutscene frame-cost harness
+(2026-11-01) read ~2x its short-run numbers for old and new code alike, so compare interleaved
+ratios there, or keep runs short. Pinning the process to the P-cores (affinity 0xFF) is refused
+inside Claude Code's sandbox.
 
 ### Add a setting to the Options window
 

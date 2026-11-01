@@ -100,6 +100,7 @@ class _ExportableCutscenePlayer:
 
         # Asset containers (images only -- audio is handled by the exporter)
         p._images = {}
+        p._half_images = {}
         p._voices = {}
         p._music = {}
         p._voice_channel = None
@@ -121,9 +122,7 @@ class _ExportableCutscenePlayer:
         p._fade_duration = CutscenePlayer.SKIP_FADE_DURATION
         p._done = False
 
-        # Reusable rendering surfaces
-        p._render_surface_a = pygame.Surface((p.screen_width, p.screen_height))
-        p._render_surface_b = pygame.Surface((p.screen_width, p.screen_height))
+        # Reusable black overlay for fades
         p._fade_overlay = pygame.Surface((p.screen_width, p.screen_height))
 
         # Fonts
@@ -143,15 +142,8 @@ class _ExportableCutscenePlayer:
 
     def _preload_images_only(self):
         """Pre-load only image assets (skip audio -- handled by ffmpeg muxing)."""
-        p = self._player
-        for i, slide in enumerate(p.slides):
-            image_path = slide.get('image', '')
-            if image_path and os.path.exists(image_path):
-                try:
-                    img = pygame.image.load(image_path).convert_alpha()
-                    p._images[i] = img
-                except pygame.error as e:
-                    logger.warning(f"Could not load image {image_path}: {e}")
+        # The player's own loader: same opaque conversion and half-size copies as in game
+        self._player._load_slide_images()
 
     @property
     def has_cutscene(self):
