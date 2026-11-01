@@ -88,13 +88,11 @@ def _scaled(game, polygons, name):
 
 # --- Locked: nothing changes ---------------------------------------------------------------
 
-def test_reminder_hide_before_the_next_patch_release():
-    """The owner unhid the switch for testing (2026-10-26) and wants it hidden again for the
-    next patch release: every test run says so while MAP_3D_AVAILABLE is True."""
-    if constants.MAP_3D_AVAILABLE:
-        import warnings
-        warnings.warn('The 3D map look is UNHIDDEN (MAP_3D_AVAILABLE = True in config/constants.py): '
-                      'hide it again before the next patch release.', UserWarning)
+def test_the_lock_is_on_in_this_build():
+    """The owner wants 3D invisible to players until it's ready. It was unhidden for testing
+    (2026-10-26 - 2026-11-01); unhiding it again for a test session makes this fail on purpose,
+    as a reminder to hide it before a release."""
+    assert constants.MAP_3D_AVAILABLE is False
 
 
 class TestLocked:

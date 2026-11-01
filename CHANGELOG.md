@@ -2,6 +2,15 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-11-01 - The 3D map look hidden again for the patch
+
+Branch `feature/hide-3d-switch`. The owner's testing is done; the switch is hidden again
+before the patch release, as planned on 2026-10-26. `MAP_3D_AVAILABLE = False`
+(`config/constants.py`): no "3D Map Look" row in the Options, and every map is 2D whatever
+config.json says. The test run's reminder warning is replaced by
+`test_the_lock_is_on_in_this_build` (fails while it is True). The locked-behaviour tests still
+lock the switch themselves, and the unlocked ones unlock it, so both run either way.
+
 ## 2026-11-01 - Cutscene camera: sub-pixel pans and zooms, crossfades at full brightness
 
 Branch `feature/cutscene-camera-smooth`. The owner saw a "very weird stutter" in some campaign
