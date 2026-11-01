@@ -2,6 +2,40 @@
 
 All notable changes to the AvareonWar project.
 
+## 2026-11-01 - Cutscene camera: sub-pixel pans and zooms, crossfades at full brightness
+
+Branch `feature/cutscene-camera-smooth`. The owner saw a "very weird stutter" in some campaign
+cutscenes' camera and suspected uneven movement across the picture. Confirmed, in
+`cutscene_player.py` (the game, the Cutscene Tool's Preview and the MP4 export share it).
+- **The cause:** the view was cut at whole picture pixels, each edge truncated on its own, and
+  stretched to the screen. Slides show 1536x1024 paintings enlarged 1.06-4.3x, so the picture
+  froze, then jumped 1-4 px, and the cut's width toggled between N and N+1. Its scale wobbled,
+  and parts of the picture moved at different moments, sometimes backwards. It sat 1.2 px off
+  on average.
+- **The fix:** `_plan_axis()` picks, per axis, the cut start and length whose smoothscale
+  mapping (16.16 fixed point, pixel centres aligned) is closest to the ideal one, and blits it
+  at a whole-pixel offset: sub-pixel placement with plain smoothscale. Shrinking views use a
+  whole-pixel cut with both edges rounded alike. Views past the picture's edge are shifted
+  inside instead of squashed (mission 1 intro slide 3, mission 1 outro slide 2, mission 3
+  outro slide 3). A line grid through the real smoothscale, all 53 slides (start, middle, end):
+  99% of lines within 0.40 px of where they belong (was 2.07, worst 1.15 was 8.47), backward
+  moves over 0.5 px 0.0% (was 1.7%, up to 3.10 px), worst jump past the true motion 1.30 px
+  (was 3.60).
+- **Crossfades:** both slides used to fade on black, `f·B + (1-f)²·A`, so the picture dimmed to
+  74% at the midpoint. Now the outgoing slide is drawn opaque and the incoming one goes over it
+  at alpha f. A one-thread worker made by `run()` scales the incoming slide in parallel
+  (smoothscale releases the GIL).
+- **Cost:** opaque pictures load with `convert()` (5.2 → 4.6 ms a slide). Pictures at least 2×
+  the screen get a half-size copy for views at least 2× the screen: the mission 3 outro's
+  zoom-out 18.3 → 7.6 ms. Short runs: a crossfade frame 13.3 → 7.9 ms median (11.4 on one
+  thread), a single slide 5.9 → 5.7 ms. Over minutes of full load this laptop throttles and
+  everything about doubles; interleaved along every cutscene, crossfade frames p95 53-61 →
+  20-22 ms. Crossfades still don't always fit 8.3 ms.
+- `dt` from `time.perf_counter()` as in main.py (`Clock.tick()` gives whole ms).
+- `tests/test_cutscene_camera.py`: lines tracked through the real smoothscale on a slow pan and
+  on mission 3's opening zoom; every slide covers the screen at 720p-1080p; crossfade
+  brightness; half-size copy; opaque loading. CODE_GUIDE "Cutscene camera".
+
 ## 2026-11-01 - Avareon's 3D map look: the owner's final art
 
 Branch `feature/avareon-3d-final`. Assets only, no code. The owner finished Avareon's art in

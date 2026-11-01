@@ -28,6 +28,8 @@ import pygame
 import json
 import os
 import math
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from utils.logger import get_logger
 from utils.cursor import draw_custom_cursor
@@ -70,6 +72,88 @@ EASING_FUNCTIONS = {
 
 
 # ========================================================================
+# CAMERA PLACEMENT
+# ========================================================================
+
+# How many cut starts / cut lengths _plan_axis tries when enlarging (0.16 ms a frame)
+_CUT_START_CHOICES = 12
+_CUT_LENGTH_CHOICES = 8
+
+
+def _plan_axis(view_pos, view_size, image_size, screen_size):
+    """
+    Where to cut a slide's picture along one axis, and how to scale and place the cut, so
+    the camera view lands on the screen at sub-pixel accuracy.
+
+    The view (view_pos, view_size: picture pixels, fractional) should fill the screen:
+    picture point u belongs at screen (u - view_pos) * screen_size / view_size. The cut used
+    to be taken at whole picture pixels with each edge truncated on its own (int(x),
+    int(x + w)) and stretched to the screen. Enlarged 1-4x (most slides), the picture then
+    moved only when an edge crossed a picture pixel - frozen, then a 1-4 px jump - and the
+    cut's width toggled between N and N+1, so the scale wobbled and parts of the picture
+    moved at different moments, sometimes backwards: the cutscene camera stutter.
+
+    Returns (cut_start, cut_len, offset, scaled_len): smoothscale the picture's
+    [cut_start, cut_start + cut_len) to scaled_len pixels and blit it at offset (<= 0: the
+    scaled cut covers the whole screen, the blit clips the rest). See "Cutscene camera" in
+    CODE_GUIDE.md; tests/test_cutscene_camera.py checks it against the real smoothscale.
+    """
+    # Keep the view inside the picture by shifting it (its size is what was authored); a
+    # view running past the picture's edge used to be squashed to fit instead
+    view_pos = min(max(view_pos, 0.0), max(0.0, image_size - view_size))
+    scale = screen_size / view_size
+
+    if scale <= 1.0:
+        # Shrinking (smoothscale averages areas; pixel edges line up): a picture pixel is
+        # already smaller than a screen pixel, so a whole-pixel cut is fine. Both edges are
+        # rounded alike, so the cut's width changes only with the view's size.
+        start = min(max(0, round(view_pos)), image_size - 1)
+        length = max(1, min(image_size - start, round(view_size)))
+        return start, length, 0, screen_size
+
+    # Enlarging: smoothscale samples output pixel x at picture pixel
+    #     start + x * step / 65536,   step = (0x10000 * (length - 1)) // scaled
+    # (16.16 fixed point; the first and last pixel centres line up). The blit offset is in
+    # whole pixels, but the cut's start and length move where the samples fall: try a few of
+    # each and keep the one closest to the ideal mapping (a vernier). Error = the screen
+    # centre's error + the scale mismatch over half the view.
+    centre = view_pos + view_size / 2.0
+    best = None
+    for back in range(_CUT_START_CHOICES):
+        start = math.floor(view_pos) - 1 - back
+        if start < 0:
+            if back:
+                break
+            start = 0
+        min_length = math.ceil(view_pos + view_size) + 2 - start
+        for length in range(min_length, min_length + _CUT_LENGTH_CHOICES):
+            if start + length > image_size:
+                break
+            scaled = round(scale * (length - 1))
+            if scaled <= length:
+                continue  # smoothscale would not enlarge this cut
+            k = 0x10000 / ((0x10000 * (length - 1)) // scaled)  # screen px per picture px
+            offset = round(screen_size / 2.0 - 0.5 - (centre - 0.5 - start) * k)
+            if offset > 0 or offset + scaled < screen_size:
+                continue  # would leave a black edge
+            error = (abs(offset + 0.5 + (centre - 0.5 - start) * k - screen_size / 2.0)
+                     + abs(k - scale) * view_size / 2.0)
+            if best is None or error < best[0]:
+                best = (error, start, length, offset, scaled)
+    if best is not None:
+        return best[1], best[2], best[3], best[4]
+
+    # Nothing fits (a view against the picture's edge, or barely enlarged): whole-pixel
+    # placement around the screen centre, stretched by at most a pixel to cover the screen
+    start = max(0, math.floor(view_pos) - 1)
+    length = max(1, min(image_size - start, math.ceil(view_size) + 3))
+    scaled = round(scale * (length - 1))
+    offset = min(0, round(screen_size / 2.0 - 0.5
+                          - (centre - 0.5 - start) * scaled / max(1, length - 1)))
+    return start, length, offset, max(scaled, screen_size - offset)
+
+
+# ========================================================================
 # CUTSCENE PLAYER
 # ========================================================================
 
@@ -108,6 +192,10 @@ class CutscenePlayer:
     # Rotation padding factor -- how much extra to crop around viewport for rotation headroom
     ROTATION_PAD_FACTOR = 0.25
 
+    # Worker thread that scales a crossfade's incoming slide (set by run(); None = scale
+    # both slides on the calling thread, e.g. the MP4 exporter's offscreen frames)
+    _scale_worker = None
+
     def __init__(self, screen, cutscene_id, master_volume=1.0):
         """
         Initialize the cutscene player.
@@ -134,6 +222,7 @@ class CutscenePlayer:
 
         # Pre-loaded assets (images and dual-track audio)
         self._images = {}       # slide index -> pygame.Surface
+        self._half_images = {}  # slide index -> half-size copy of a huge picture
         self._voices = {}       # slide index -> pygame.mixer.Sound (voiceover)
         self._music = {}        # slide index -> pygame.mixer.Sound (background music)
         self._voice_channel = None   # Currently active voiceover channel
@@ -155,10 +244,8 @@ class CutscenePlayer:
         self._fade_duration = self.SKIP_FADE_DURATION  # Active fade duration (skip vs natural end)
         self._done = False
 
-        # Reusable rendering surfaces (avoid per-frame allocation)
-        self._render_surface_a = pygame.Surface((self.screen_width, self.screen_height))
-        self._render_surface_b = pygame.Surface((self.screen_width, self.screen_height))
-        self._fade_overlay = pygame.Surface((self.screen_width, self.screen_height))  # Reusable black overlay for fades
+        # Reusable black overlay for fades (avoid per-frame allocation)
+        self._fade_overlay = pygame.Surface((self.screen_width, self.screen_height))
 
         # Font for subtitles and skip hint
         self._subtitle_font = None
@@ -220,16 +307,8 @@ class CutscenePlayer:
 
     def _preload_assets(self):
         """Pre-load all images and audio files referenced by the cutscene slides."""
+        self._load_slide_images()
         for i, slide in enumerate(self.slides):
-            # Load image
-            image_path = slide.get('image', '')
-            if image_path and os.path.exists(image_path):
-                try:
-                    img = pygame.image.load(image_path).convert_alpha()
-                    self._images[i] = img
-                except pygame.error as e:
-                    logger.warning(f"Could not load image {image_path}: {e}")
-
             # Load voiceover audio
             audio_path = slide.get('audio')
             if audio_path and os.path.exists(audio_path):
@@ -252,6 +331,45 @@ class CutscenePlayer:
                     self._music[i] = music
                 except pygame.error as e:
                     logger.warning(f"Could not load music {music_path}: {e}")
+
+    def _load_slide_images(self):
+        """
+        Load every slide's picture (the MP4 exporter calls this too).
+
+        Pictures at least twice the screen's size in both directions also get a half-size
+        copy, which _scale_view() uses while the camera shows at least twice the screen.
+        """
+        self._images = {}
+        self._half_images = {}
+        for i, slide in enumerate(self.slides):
+            image_path = slide.get('image', '')
+            if not (image_path and os.path.exists(image_path)):
+                continue
+            try:
+                img = self._load_picture(image_path)
+            except pygame.error as e:
+                logger.warning(f"Could not load image {image_path}: {e}")
+                continue
+            self._images[i] = img
+            w, h = img.get_size()
+            if w >= 2 * self.screen_width and h >= 2 * self.screen_height:
+                self._half_images[i] = pygame.transform.smoothscale(img, (w // 2, h // 2))
+
+    @staticmethod
+    def _load_picture(path):
+        """
+        Load a slide picture: opaque unless it really has transparent pixels.
+
+        A deliberate exception to the convert_alpha() rule for PNGs: cutscene pictures are
+        full-frame paintings (all 53 are opaque - 51 RGB, 2 RGBA with alpha 255
+        everywhere), and an opaque surface scales and blits cheaper (5.2 -> 4.6 ms a slide
+        at 1600x900). A picture with any transparent pixel keeps its alpha.
+        """
+        img = pygame.image.load(path)
+        w, h = img.get_size()
+        if img.get_flags() & pygame.SRCALPHA and pygame.mask.from_surface(img, 254).count() < w * h:
+            return img.convert_alpha()
+        return img.convert()
 
     # ========================================================================
     # TIMELINE COMPUTATION
@@ -301,16 +419,30 @@ class CutscenePlayer:
         self._done = False
         self._global_elapsed = 0.0
 
-        while not self._done:
-            dt = self.clock.tick(menu_frame_cap()) / 1000.0  # Delta time in seconds
-            # Cap delta time to prevent large jumps (e.g. window drag on Windows)
-            dt = min(dt, 0.1)
+        # Scales a crossfade's incoming slide while this thread scales the outgoing one
+        # (see _render_cutscene_frame)
+        self._scale_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='cutscene-scale')
+        last_frame_time = time.perf_counter()
+        try:
+            while not self._done:
+                self.clock.tick(menu_frame_cap())  # frame cap only
+                # Delta time from a float clock, as main.py's game loop does: Clock.tick()
+                # returns whole milliseconds (8 or 9 ms at 120 fps), which changed the
+                # camera's step by up to ~12% from frame to frame
+                now = time.perf_counter()
+                dt = now - last_frame_time
+                last_frame_time = now
+                # Cap delta time to prevent large jumps (e.g. window drag on Windows)
+                dt = min(dt, 0.1)
 
-            self._handle_events()
-            self._update(dt)
-            self._render()
-            draw_custom_cursor(self.screen)
-            pygame.display.flip()
+                self._handle_events()
+                self._update(dt)
+                self._render()
+                draw_custom_cursor(self.screen)
+                pygame.display.flip()
+        finally:
+            self._scale_worker.shutdown(wait=True)
+            self._scale_worker = None
 
     # ========================================================================
     # EVENT HANDLING
@@ -466,7 +598,7 @@ class CutscenePlayer:
             # Single slide, no crossfade -- render directly to screen
             idx = active_slides[0]
             slide_progress = self._get_slide_progress(idx, t)
-            self._render_slide_to_surface(idx, slide_progress, self.screen)
+            self._blit_slide(self._scaled_slide(idx, slide_progress))
             self._render_subtitle(idx, 1.0)
 
         elif len(active_slides) >= 2:
@@ -483,17 +615,24 @@ class CutscenePlayer:
             else:
                 fade_progress = 1.0
 
-            # Render outgoing slide
+            # Scale both slides. With the worker (run()), the incoming one scales on it
+            # while this thread scales the outgoing one - smoothscale releases the GIL, so a
+            # crossfade frame drops from ~9.4 to ~6.5 ms at 1600x900 (budget 8.3 ms at 120 fps)
             outgoing_progress = self._get_slide_progress(outgoing_idx, t)
-            self._render_slide_to_surface(outgoing_idx, outgoing_progress, self._render_surface_a)
-            self._render_surface_a.set_alpha(int(255 * (1.0 - fade_progress)))
-            self.screen.blit(self._render_surface_a, (0, 0))
-
-            # Render incoming slide
             incoming_progress = self._get_slide_progress(incoming_idx, t)
-            self._render_slide_to_surface(incoming_idx, incoming_progress, self._render_surface_b)
-            self._render_surface_b.set_alpha(int(255 * fade_progress))
-            self.screen.blit(self._render_surface_b, (0, 0))
+            if self._scale_worker is not None:
+                incoming_job = self._scale_worker.submit(self._scaled_slide, incoming_idx, incoming_progress)
+                outgoing = self._scaled_slide(outgoing_idx, outgoing_progress)
+                incoming = incoming_job.result()
+            else:
+                outgoing = self._scaled_slide(outgoing_idx, outgoing_progress)
+                incoming = self._scaled_slide(incoming_idx, incoming_progress)
+
+            # Outgoing slide opaque, incoming over it at the fade's alpha: f*B + (1-f)*A.
+            # Both used to fade on black, which gave f*B + (1-f)^2*A - every crossfade
+            # dimmed the picture to 74% at its midpoint.
+            self._blit_slide(outgoing)
+            self._blit_slide(incoming, int(255 * fade_progress))
 
             # Render subtitle from the incoming slide (fading in)
             self._render_subtitle(incoming_idx, fade_progress)
@@ -518,18 +657,29 @@ class CutscenePlayer:
         easing_fn = EASING_FUNCTIONS.get(easing_name, _ease_in_out)
         return easing_fn(raw_progress)
 
-    def _render_slide_to_surface(self, slide_idx, progress, target_surface):
+    def _blit_slide(self, scaled_slide, alpha=255):
+        """Blit a _scaled_slide() result onto the screen (None = no picture: stays black)."""
+        if scaled_slide is None:
+            return
+        surface, offset = scaled_slide
+        if alpha < 255:
+            surface.set_alpha(alpha)  # a fresh surface every frame, so this is safe
+        self.screen.blit(surface, offset)
+
+    def _scaled_slide(self, slide_idx, progress):
         """
-        Render a single slide's Ken Burns frame at the given progress to target_surface.
+        Scale a slide's Ken Burns view at the given progress for the screen.
 
         progress: 0.0 = camera at rect A, 1.0 = camera at rect B.
+        Returns (surface, (x, y)) to blit, or None when the slide has no picture. This is
+        the heavy part of a frame (smoothscale); it touches no shared state, so a
+        crossfade runs one slide's on the worker thread.
         """
         slide = self.slides[slide_idx]
 
         # Get source image
         if slide_idx not in self._images:
-            target_surface.fill((0, 0, 0))
-            return
+            return None
 
         src_image = self._images[slide_idx]
         img_w = src_image.get_width()
@@ -551,39 +701,44 @@ class CutscenePlayer:
         ch = max(1, ch)
 
         if abs(crot) < 0.01:
-            # No rotation -- simple crop and scale
-            self._render_simple_crop(src_image, cx, cy, cw, ch, img_w, img_h, target_surface)
-        else:
-            # With rotation -- need extra padding for rotation headroom
-            self._render_rotated_crop(src_image, cx, cy, cw, ch, crot, img_w, img_h, target_surface)
+            # No rotation -- crop and scale at sub-pixel accuracy
+            return self._scale_view(slide_idx, src_image, cx, cy, cw, ch)
+        # With rotation -- need extra padding for rotation headroom
+        return self._render_rotated_crop(src_image, cx, cy, cw, ch, crot, img_w, img_h)
 
-    def _render_simple_crop(self, src_image, cx, cy, cw, ch, img_w, img_h, target_surface):
-        """Crop viewport from source image and scale to target surface (no rotation)."""
-        # Clamp crop rect to image bounds
-        x1 = max(0, int(cx))
-        y1 = max(0, int(cy))
-        x2 = min(img_w, int(cx + cw))
-        y2 = min(img_h, int(cy + ch))
+    def _scale_view(self, slide_idx, src_image, cx, cy, cw, ch):
+        """
+        Cut the camera view out of the picture and scale it for the screen (no rotation).
+        _plan_axis() places it at sub-pixel accuracy; see its docstring for the stutter
+        the old whole-pixel crop caused.
+        """
+        half = self._half_images.get(slide_idx)
+        if half is not None and cw >= 2 * self.screen_width and ch >= 2 * self.screen_height:
+            # Showing at least twice the screen: shrink from the half-size copy instead (still
+            # a shrink, so it looks the same) - the mission 3 outro's zoom-out over its
+            # 4096 px picture went from 18.3 to 7.6 ms a frame
+            rx = half.get_width() / src_image.get_width()
+            ry = half.get_height() / src_image.get_height()
+            src_image = half
+            cx, cw = cx * rx, cw * rx
+            cy, ch = cy * ry, ch * ry
 
-        crop_w = max(1, x2 - x1)
-        crop_h = max(1, y2 - y1)
+        x, w, offset_x, scaled_w = _plan_axis(cx, cw, src_image.get_width(), self.screen_width)
+        y, h, offset_y, scaled_h = _plan_axis(cy, ch, src_image.get_height(), self.screen_height)
 
         # Use subsurface for zero-copy crop
         try:
-            crop_rect = pygame.Rect(x1, y1, crop_w, crop_h)
-            cropped = src_image.subsurface(crop_rect)
+            cropped = src_image.subsurface(pygame.Rect(x, y, w, h))
         except ValueError:
-            target_surface.fill((0, 0, 0))
-            return
+            return None
+        return pygame.transform.smoothscale(cropped, (scaled_w, scaled_h)), (offset_x, offset_y)
 
-        # Scale cropped region to fill target surface
-        scaled = pygame.transform.smoothscale(cropped, (self.screen_width, self.screen_height))
-        target_surface.blit(scaled, (0, 0))
-
-    def _render_rotated_crop(self, src_image, cx, cy, cw, ch, rotation, img_w, img_h, target_surface):
+    def _render_rotated_crop(self, src_image, cx, cy, cw, ch, rotation, img_w, img_h):
         """
         Crop viewport with rotation from source image.
         Crops a padded area, rotates it, then re-crops the center to the target aspect ratio.
+        Returns (surface, (0, 0)) like _scaled_slide(), or None. Still whole-pixel: no slide
+        uses rotation.
         """
         # Pad the crop area to avoid black corners after rotation
         pad_w = cw * self.ROTATION_PAD_FACTOR
@@ -602,8 +757,7 @@ class CutscenePlayer:
             padded_rect = pygame.Rect(px1, py1, padded_w, padded_h)
             padded_crop = src_image.subsurface(padded_rect)
         except ValueError:
-            target_surface.fill((0, 0, 0))
-            return
+            return None
 
         # Rotate the padded crop (pygame.transform.rotate expands the surface to fit)
         rotated = pygame.transform.rotate(padded_crop, rotation)
@@ -633,12 +787,10 @@ class CutscenePlayer:
             final_rect = pygame.Rect(ex1, ey1, final_w, final_h)
             final_crop = rotated.subsurface(final_rect)
         except ValueError:
-            target_surface.fill((0, 0, 0))
-            return
+            return None
 
         # Scale to screen size
-        scaled = pygame.transform.smoothscale(final_crop, (self.screen_width, self.screen_height))
-        target_surface.blit(scaled, (0, 0))
+        return pygame.transform.smoothscale(final_crop, (self.screen_width, self.screen_height)), (0, 0)
 
     # ========================================================================
     # SUBTITLE RENDERING

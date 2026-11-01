@@ -4,6 +4,21 @@ Player-facing release notes. For the full technical history, see [CHANGELOG.md](
 
 ---
 
+## Smoother Campaign Cutscenes
+
+*1 November 2026*
+
+### Improvements
+
+- **The cutscene camera glides.** Pans and zooms over the campaign's paintings no longer
+  stutter or wobble - the whole picture now moves together, smoothly.
+- **Crossfades keep their brightness.** The picture no longer dims while one painting fades
+  into the next.
+- **Pictures stay in frame.** A few views that ran past the edge of their painting no longer
+  squash it.
+
+---
+
 ## Smoother Play: The Loading Screen Prepares More
 
 *31 October 2026*
